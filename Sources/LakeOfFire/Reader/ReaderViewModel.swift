@@ -38,7 +38,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     })
     ]
     """
-    
     init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration) {
         super.init()
         
