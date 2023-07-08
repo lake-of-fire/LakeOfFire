@@ -27,9 +27,6 @@ struct ReaderSettingsForm: View {
         Form {
             Section("Display") {
                 Group {
-                    if storeViewModel.isSubscribed || true {
-                        ColorPicker("App Tint Color", selection: $appTint, supportsOpacity: true)
-                    }
                     Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
                     Picker("Light Mode Theme", selection: $lightModeTheme) {
                         ForEach(LightModeTheme.allCases) { theme in
@@ -101,7 +98,7 @@ public struct DataSettingsForm: View {
                     Button("Clear Unsaved RSS Feed Entries", role: .destructive) {
                         Task.detached {
                             autoreleasepool {
-                                let realm = try! Realm(configuration: LibraryConfiguration.realmConfiguration)
+                                let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
                                 try! realm.write {
                                     for entry in realm.objects(FeedEntry.self).where({ $0.isDeleted == false }) {
                                         entry.isDeleted = true

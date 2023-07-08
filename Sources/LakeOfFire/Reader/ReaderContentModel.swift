@@ -1,6 +1,7 @@
 import Foundation
 import RealmSwift
 import SwiftUIWebView
+import SwiftUtilities
 
 public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable {
     var compoundKey: String { get set }
@@ -185,8 +186,8 @@ public extension ReaderContentModel {
         }
 //        guard let bareHostURL = URL(string: "\(url.scheme ?? "https")://\(url.host ?? "")") else { return false }
 //        let exists = realm.objects(FeedEntry.self).contains { $0.url.absoluteString.starts(with: bareHostURL.absoluteString) && $0.isReaderModeByDefault } // not strict enough?
-        let realm = try! Realm(configuration: SharedRealmConfigurer.configuration)
-        let exists = !realm.objects(FeedEntry.self).where { $0.url == url && $0.isReaderModeByDefault }.isEmpty
+        guard let configuration = realm?.configuration else { return false }
+        let exists = try! !Realm(configuration: configuration).objects(FeedEntry.self).where { $0.url == url && $0.isReaderModeByDefault }.isEmpty
         return exists
     }
 }

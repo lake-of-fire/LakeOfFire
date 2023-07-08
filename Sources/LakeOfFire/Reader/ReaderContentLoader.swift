@@ -77,7 +77,7 @@ public struct ReaderContentLoader {
     
     public static func load(urlString: String) -> (any ReaderContentModel)? {
         guard let url = URL(string: urlString) else { return nil }
-        return load(url: url, bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+        return load(url: url)
     }
     
     public static func load(html: String) -> (any ReaderContentModel)? {

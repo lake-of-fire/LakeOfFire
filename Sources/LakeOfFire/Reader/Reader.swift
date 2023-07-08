@@ -266,6 +266,12 @@ public struct Reader: View {
         }
     }
     
+    @MainActor func refreshTitleInWebView() {
+        if readerViewModel.content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading {
+            readerViewModel.scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(readerViewModel.content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
+        }
+    }
+    
     func refreshSettingsInWebView() {
         Task { @MainActor in
             readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
@@ -316,7 +322,7 @@ fileprivate extension Reader {
             let defaultFontSize = defaultFontSize
             let processReadabilityContent = processReadabilityContent
             Task.detached {
-                let doc: SwiftSoup.Document
+                var doc: SwiftSoup.Document
                 do {
                     if let url = url {
                         doc = try SwiftSoup.parse(content, url.absoluteString)
@@ -366,9 +372,10 @@ fileprivate extension Reader {
                 
                 #warning("SwiftUIDrag menu")
                 
+                let docToSet = doc
                 Task { @MainActor in
                     do {
-                        if let renderToSelector = renderToSelector, let body = doc.body() {
+                        if let renderToSelector = renderToSelector, let body = docToSet.body() {
                             let transformedContent: String
                             transformedContent = try body.html()
                             await readerViewModel.scriptCaller.evaluateJavaScript(
@@ -377,7 +384,7 @@ fileprivate extension Reader {
                             continuation.resume()
                         } else {
                             let transformedContent: String
-                            transformedContent = try doc.outerHtml()
+                            transformedContent = try docToSet.outerHtml()
                             if let url = url {
                                 action = .loadHTMLWithBaseURL(transformedContent, url)
                             } else {

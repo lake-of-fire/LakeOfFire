@@ -45,8 +45,9 @@ public enum LibraryRoute: Hashable, Codable {
     case category(FeedCategory)
 }
 
-//extension Array<LibraryRoute>: RawRepresentable {
-extension Array<LibraryRoute> {
+extension Array<LibraryRoute>: RawRepresentable {
+//extension LibraryRoute: RawRepresentable {
+//public extension Array<LibraryRoute> {
     public init?(rawValue: String) {
         guard let data = rawValue.data(using: .utf8),
               let result = try? JSONDecoder().decode([Element].self, from: data)
@@ -67,7 +68,7 @@ extension Array<LibraryRoute> {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-class LibraryManagerViewModel: NSObject, ObservableObject {
+public class LibraryManagerViewModel: NSObject, ObservableObject {
     static let shared = LibraryManagerViewModel()
     
     @Published var exportedOPML: OPML?
@@ -85,10 +86,10 @@ class LibraryManagerViewModel: NSObject, ObservableObject {
         return exportedOPML ?? OPML(entries: [])
     }
 
-    override init() {
+    public override init() {
         super.init()
         
-        let realm = try! Realm(configuration: SharedRealmConfigurer.configuration)
+        let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
         
         let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
         for objectType in exportableTypes {
@@ -167,7 +168,7 @@ class LibraryManagerViewModel: NSObject, ObservableObject {
         if category == nil {
             category = LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
             if let category = category {
-                safeWrite(category, configuration: SharedRealmConfigurer.configuration) { (_, category: FeedCategory) in
+                safeWrite(category, configuration: LibraryDataManager.realmConfiguration) { (_, category: FeedCategory) in
                     category.title = "User Library"
                 }
             }
@@ -175,7 +176,7 @@ class LibraryManagerViewModel: NSObject, ObservableObject {
         guard let category = category else { return }
         
         let feed = LibraryDataManager.shared.createEmptyFeed(inCategory: category)
-        safeWrite(feed, configuration: SharedRealmConfigurer.configuration) { (_, feed: Feed) in
+        safeWrite(feed, configuration: LibraryDataManager.realmConfiguration) { (_, feed: Feed) in
             feed.rssUrl = rssURL
             if let title = title {
                 feed.title = title
@@ -188,7 +189,7 @@ class LibraryManagerViewModel: NSObject, ObservableObject {
         do {
             let newFeed = try LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true)
             Task { @MainActor in
-                presentedCategories = [.category(category)]
+                presentedCategories = [LibraryRoute.category(category)]
                 selectedFeed = newFeed
             }
         } catch { }

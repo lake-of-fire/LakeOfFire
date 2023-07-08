@@ -1,6 +1,7 @@
 import SwiftUI
 import RealmSwift
 import SwiftUIWebView
+import SwiftUtilities
 
 @available(iOS 16.0, macOS 13.0, *)
 struct WebFeedMenuAddButtons: View {
@@ -107,7 +108,7 @@ struct WebFeedButton: View {
     private func refresh() {
         let rssURLs = Array(readerContent.rssURLs)
         Task.detached {
-            let realm = try! Realm(configuration: LibraryConfiguration.realmConfiguration)
+            let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
             let feed = realm.objects(Feed.self).filter { rssURLs.map({ $0 }).contains($0.rssUrl) }.first?.freeze()
             Task { @MainActor in
                 guard let feed = feed?.thaw() else { return }
