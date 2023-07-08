@@ -10,6 +10,7 @@ import DebouncedOnChange
 import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
+import LakeImage
 
 @available(iOS 16.0, macOS 13, *)
 struct LibraryFeedFormSections: View {
@@ -1182,7 +1183,7 @@ struct LibraryCategoriesView: View {
 public struct LibraryManagerView: View {
     @Binding var isPresented: Bool
     @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
-    @StateObject var viewModel = LibraryManagerViewModel.shared
+    @ObservedObject var viewModel: LibraryManagerViewModel
     
     @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
     @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var feeds
@@ -1293,8 +1294,8 @@ public struct LibraryManagerView: View {
     
     public init(isPresented: Binding<Bool>, libraryConfiguration: LibraryConfiguration, viewModel: LibraryManagerViewModel = .shared) {
         _isPresented = isPresented
-        libraryConfiguration = libraryConfiguration
-        viewModel = viewModel
+        self.libraryConfiguration = libraryConfiguration
+        _viewModel = viewModel
     }
     
     func sidebarNavigationDestination(route: LibraryRoute) -> some View {
