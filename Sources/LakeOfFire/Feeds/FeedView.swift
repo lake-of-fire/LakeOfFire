@@ -2,14 +2,14 @@ import SwiftUI
 import RealmSwift
 import AsyncView
 
-struct FeedView: View {
+public struct FeedView: View {
     @ObservedRealmObject var feed: Feed
     
     @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
     
     @ObservedResults(FeedEntry.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false }) var entries
     
-    var body: some View {
+    public var body: some View {
         let entries = entries.where { $0.feed == feed }
         AsyncView(operation: {
             try await feed.fetch()
@@ -19,7 +19,7 @@ struct FeedView: View {
 //        .id(feed.id)
     }
     
-    init(feed: Feed) {
+    public init(feed: Feed) {
         self.feed = feed
     }
 }

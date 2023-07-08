@@ -142,6 +142,8 @@ public struct Reader: View {
     var forceReaderModeWhenAvailable = false
     var bounces = true
     var processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil
+    var obscuredInsets: EdgeInsets? = nil
+    var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     
     @ObservedObject private var downloadController = DownloadController.shared
     
@@ -159,7 +161,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, state: Binding<WebViewState>, action: Binding<WebViewAction>, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil) {
+    public init(readerViewModel: ReaderViewModel, state: Binding<WebViewState>, action: Binding<WebViewAction>, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:]) {
         self.readerViewModel = readerViewModel
         _state = state
         _action = action
@@ -167,136 +169,132 @@ public struct Reader: View {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
         self.processReadabilityContent = processReadabilityContent
+        self.obscuredInsets = obscuredInsets
+        self.messageHandlers = messageHandlers
     }
     
     public var body: some View {
         // TODO: Capture segment identifier and use it for unique word tracking instead of element ID
         // TODO: capture reading progress via sentence identifiers from a read section
-        GeometryReader { geometry in
-            WebView(
-                config: WebViewConfig(
-                    contentRules: readerViewModel.contentRules,
-                    userScripts: readerViewModel.allScripts),
-                action: $action,
-                state: $state,
-                scriptCaller: readerViewModel.scriptCaller,
-                blockedHosts: Set([
-                    "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
-                    "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
-                    "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
-                    "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
-                    "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
-                    "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
-                ]),
-                obscuredInsets: geometry.safeAreaInsets,
-                bounces: bounces,
-                persistentWebViewID: persistentWebViewID)
-            .onMessageReceived(forName: "readabilityParsed") { message in
-                guard let result = ReadabilityParsedMessage(fromMessage: message) else {
-                    return
-                }
-                guard readerViewModel.content.url == result.pageURL else { return }
-                guard !result.content.isEmpty else {
-                    safeWrite(readerViewModel.content) { _, content in
-                        readerViewModel.content.isReaderModeAvailable = false
+        WebView(
+            config: WebViewConfig(
+                contentRules: readerViewModel.contentRules,
+                userScripts: readerViewModel.allScripts),
+            action: $action,
+            state: $state,
+            scriptCaller: readerViewModel.scriptCaller,
+            blockedHosts: Set([
+                "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
+                "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
+                "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
+                "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
+                "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
+                "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
+            ]),
+            obscuredInsets: obscuredInsets ?? EdgeInsets(),
+            bounces: bounces,
+            persistentWebViewID: persistentWebViewID,
+            messageHandlers: [
+                "readabilityParsed": { message in
+                    guard let result = ReadabilityParsedMessage(fromMessage: message) else {
+                        return
                     }
-                    return
-                }
-                Task { @MainActor in
-                    guard !url.isNativeReaderView else { return }
-                    readerViewModel.readabilityContent = result.outputHTML
-                    if readerViewModel.isNextLoadInReaderMode || forceReaderModeWhenAvailable {
-                        readerViewModel.isNextLoadInReaderMode = false
-                        showReaderView()
-                    } else if result.content.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
-                        readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
-                    }
-                    safeWrite(readerViewModel.content) { _, content in
-                        readerViewModel.content.isReaderModeAvailable = true
-                    }
-                }
-            }
-            .onMessageReceived(forName: "showReaderView") { _ in
-                Task { @MainActor in showReaderView() }
-            }
-            .onMessageReceived(forName: "showOriginal") { _ in
-                Task { @MainActor in showOriginal() }
-            }
-//            .onMessageReceived(forName: "youtubeCaptions") { message in
-//                Task { @MainActor in
-//                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
-//                }
-//            }
-            .onMessageReceived(forName: "rssURLs") { message in
-                Task { @MainActor in
-                    guard !url.isNativeReaderView else { return }
-                    guard let result = RSSURLsMessage(fromMessage: message) else { return }
-                    let pairs = result.rssURLs.prefix(10)
-                    let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
-                    let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                    safeWrite(readerViewModel.content) { _, content in
-                        content.rssURLs.removeAll()
-                        content.rssTitles.removeAll()
-                        content.rssURLs.append(objectsIn: urls)
-                        content.rssTitles.append(objectsIn: titles)
-                        content.isRSSAvailable = !content.rssURLs.isEmpty
-                    }
-                }
-            }
-            .onMessageReceived(forName: "titleUpdated") { message in
-                Task { @MainActor in
-                    guard !url.isNativeReaderView else { return }
-                    guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
-                    guard result.url == state.pageURL && result.url == readerViewModel.content.url else { return }
-                    let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
-                    // Only update if empty... sometimes annoying titles load later.
-                    if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
+                    guard readerViewModel.content.url == result.pageURL else { return }
+                    guard !result.content.isEmpty else {
                         safeWrite(readerViewModel.content) { _, content in
-                            content.title = newTitle
+                            readerViewModel.content.isReaderModeAvailable = false
                         }
-                        refreshTitleInWebView()
+                        return
                     }
-                }
-            }
-            .edgesIgnoringSafeArea(.all)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Color.clear
-                    .background(.thinMaterial)
-                    .frame(height: geometry.safeAreaInsets.top)
-                    .edgesIgnoringSafeArea(.top)
-            }
-            .onChange(of: state.pageImageURL) { imageURL in
-                Task { @MainActor in
-                    if let imageURL = imageURL, readerViewModel.content.imageUrl == nil {
+                    Task { @MainActor in
+                        guard !url.isNativeReaderView else { return }
+                        readerViewModel.readabilityContent = result.outputHTML
+                        if readerViewModel.isNextLoadInReaderMode || forceReaderModeWhenAvailable {
+                            readerViewModel.isNextLoadInReaderMode = false
+                            showReaderView()
+                        } else if result.content.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
+                            readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
+                        }
                         safeWrite(readerViewModel.content) { _, content in
-                            content.imageUrl = imageURL
+                            readerViewModel.content.isReaderModeAvailable = true
+                        }
+                    }
+                },
+                "showReaderView": { _ in
+                    Task { @MainActor in showReaderView() }
+                },
+                "showOriginal": { _ in
+                    Task { @MainActor in showOriginal() }
+                },
+                //            .onMessageReceived(forName: "youtubeCaptions") { message in
+                //                Task { @MainActor in
+                //                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
+                //                }
+                //            }
+                "rssURLs": { message in
+                    Task { @MainActor in
+                        guard !url.isNativeReaderView else { return }
+                        guard let result = RSSURLsMessage(fromMessage: message) else { return }
+                        let pairs = result.rssURLs.prefix(10)
+                        let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
+                        let titles = pairs.map { $0.last ?? $0.first ?? "" }
+                        safeWrite(readerViewModel.content) { _, content in
+                            content.rssURLs.removeAll()
+                            content.rssTitles.removeAll()
+                            content.rssURLs.append(objectsIn: urls)
+                            content.rssTitles.append(objectsIn: titles)
+                            content.isRSSAvailable = !content.rssURLs.isEmpty
+                        }
+                    }
+                },
+                "titleUpdated": { message in
+                    Task { @MainActor in
+                        guard !url.isNativeReaderView else { return }
+                        guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
+                        guard result.url == state.pageURL && result.url == readerViewModel.content.url else { return }
+                        let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
+                        // Only update if empty... sometimes annoying titles load later.
+                        if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
+                            safeWrite(readerViewModel.content) { _, content in
+                                content.title = newTitle
+                            }
+                            refreshTitleInWebView()
                         }
                     }
                 }
-            }
-            .onChange(of: readerFontSize) { newFontSize in
-                guard let newFontSize = newFontSize else { return }
-                Task { @MainActor in
-                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(newFontSize)px';")
+            ].merging(messageHandlers) { (current, _) in current })
+        .edgesIgnoringSafeArea(.all)
+        .onChange(of: state.pageImageURL) { imageURL in
+            Task { @MainActor in
+                if let imageURL = imageURL, readerViewModel.content.imageUrl == nil {
+                    safeWrite(readerViewModel.content) { _, content in
+                        content.imageUrl = imageURL
+                    }
                 }
             }
-            .onChange(of: lightModeTheme) { lightModeTheme in
-                Task { @MainActor in
-                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
-                }
+        }
+        .onChange(of: readerFontSize) { newFontSize in
+            guard let newFontSize = newFontSize else { return }
+            Task { @MainActor in
+                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(newFontSize)px';")
             }
-            .onChange(of: darkModeTheme) { darkModeTheme in
-                Task { @MainActor in
-                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
-                }
+        }
+        .onChange(of: lightModeTheme) { lightModeTheme in
+            Task { @MainActor in
+                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
             }
-            .onChange(of: state) { [oldState = state] newState in
-                handleState(oldState: oldState, newState: newState)
+        }
+        .onChange(of: darkModeTheme) { darkModeTheme in
+            Task { @MainActor in
+                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
             }
-            .onChange(of: readerViewModel.audioURLs) { audioURLs in
-                Task { @MainActor in
-                    readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
-                }
+        }
+        .onChange(of: state) { [oldState = state] newState in
+            handleState(oldState: oldState, newState: newState)
+        }
+        .onChange(of: readerViewModel.audioURLs) { audioURLs in
+            Task { @MainActor in
+                readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
             }
         }
         .safeAreaInset(edge: .bottom) {

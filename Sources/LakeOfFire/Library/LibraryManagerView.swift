@@ -1292,10 +1292,10 @@ public struct LibraryManagerView: View {
         }
     }
     
-    public init(isPresented: Binding<Bool>, libraryConfiguration: LibraryConfiguration, viewModel: LibraryManagerViewModel = .shared) {
+    public init(isPresented: Binding<Bool>, libraryConfiguration: LibraryConfiguration, viewModel: LibraryManagerViewModel = LibraryManagerViewModel.shared) {
         _isPresented = isPresented
         self.libraryConfiguration = libraryConfiguration
-        _viewModel = viewModel
+        self.viewModel = viewModel
     }
     
     func sidebarNavigationDestination(route: LibraryRoute) -> some View {

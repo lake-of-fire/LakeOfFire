@@ -40,7 +40,7 @@ struct WebFeedMenuAddButtons: View {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-struct WebFeedButton: View {
+public struct WebFeedButton: View {
     @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
     @Binding var readerContent: any ReaderContentModel
     
@@ -58,7 +58,7 @@ struct WebFeedButton: View {
         return readerContent.rssURLs.isEmpty
     }
     
-    var body: some View {
+    public  var body: some View {
         Menu {
             if let feed = feed, !feed.isDeleted, let category = feed.category {
                 Button("Edit Feed in Library") {
@@ -103,6 +103,11 @@ struct WebFeedButton: View {
         .onChange(of: readerContent.isRSSAvailable) { _ in
             refresh()
         }
+    }
+    
+    public init(libraryConfiguration: LibraryConfiguration, readerContent: Binding<any ReaderContentModel>) {
+        self.libraryConfiguration = libraryConfiguration
+        _readerContent = readerContent
     }
     
     private func refresh() {
