@@ -69,7 +69,7 @@ extension Array<LibraryRoute>: RawRepresentable {
 
 @available(iOS 16.0, macOS 13.0, *)
 public class LibraryManagerViewModel: NSObject, ObservableObject {
-    static let shared = LibraryManagerViewModel()
+    public static let shared = LibraryManagerViewModel()
     
     @Published var exportedOPML: OPML?
     @Published var exportedOPMLFileURL: URL?

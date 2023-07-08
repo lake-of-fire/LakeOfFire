@@ -7,6 +7,116 @@ import Combine
 import RealmSwiftGaps
 import SwiftUIDownloads
 
+
+
+import SwiftUI
+import WebURL
+import WebURLFoundationExtras
+import Nuke
+import NukeUI
+
+//private class RedirectHandler: ImageDownloadRedirectHandler {
+//    func handleHTTPRedirection(for task: SessionDataTask, response: HTTPURLResponse, newRequest: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+//        var modified = newRequest
+//        //    modified.allHTTPHeaderFields = authorizationHeaders
+//        completionHandler(modified)
+//    }
+//}
+
+//private let requestModifier = AnyModifier { request in
+//    var r = request
+//    if let url = r.url, let webURL = WebURL(url) {
+//        r.url = URL(webURL) // Standardize safely.
+//    }
+//    return r
+//}
+
+public struct LakeImage: View {
+    let url: URL
+    var maxWidth: CGFloat? = nil
+    var minHeight: CGFloat? = nil
+    var maxHeight: CGFloat? = nil
+    
+    private var cleanURL: URL {
+        if let webURL = WebURL(url), let url = URL(webURL) {
+            return url
+        }
+        return url
+    }
+    
+    private let imagePipeline = ImagePipeline(configuration: .withDataCache)
+    
+    public var body: some View {
+        LazyImage(url: cleanURL) { state in
+            if let image = state.image {
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: maxWidth, minHeight: minHeight, maxHeight: maxHeight)
+            } else if state.error != nil {
+                Color.clear
+//                Color.gray // Indicates an error
+//                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else {
+                Color.gray
+                    .opacity(0.7)
+                    .frame(minHeight: minHeight)
+//                    .brightness(0.1)
+            }
+        }
+        .priority(.high)
+        .pipeline(imagePipeline)
+        .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+    }
+    
+    public init(_ url: URL, maxWidth: CGFloat? = nil, minHeight: CGFloat? = nil, maxHeight: CGFloat? = nil) {
+        self.url = url
+        self.maxWidth = maxWidth
+        self.minHeight = minHeight
+        self.maxHeight = maxHeight
+    }
+  }
+
+////////////////////////////////////////
+
+
+
+struct ReaderActionKey: EnvironmentKey {
+    static let defaultValue: Binding<WebViewAction> = .constant(.idle)
+}
+struct ReaderWebViewStateKey: EnvironmentKey {
+    static let defaultValue: WebViewState = .empty
+}
+struct ReaderContentKey: EnvironmentKey {
+    static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
+}
+struct ReaderContentBindingKey: EnvironmentKey {
+    static let defaultValue: Binding<(any ReaderContentModel)> = .constant(ReaderContentLoader.unsavedHome)
+}
+
+public extension EnvironmentValues {
+//    var readerContentURL: URL {
+//        get { self[ReaderContentURLKey.self] }
+//        set { self[ReaderContentURLKey.self] = newValue }
+//    }
+    var readerContent: (any ReaderContentModel) {
+        get { self[ReaderContentKey.self] }
+        set { self[ReaderContentKey.self] = newValue }
+    }
+    var readerContentBinding: Binding<(any ReaderContentModel)> {
+        get { self[ReaderContentBindingKey.self] }
+        set { self[ReaderContentBindingKey.self] = newValue }
+    }
+    var readerAction: Binding<WebViewAction> {
+        get { self[ReaderActionKey.self] }
+        set { self[ReaderActionKey.self] = newValue }
+    }
+    var readerWebViewState: WebViewState {
+        get { self[ReaderWebViewStateKey.self] }
+        set { self[ReaderWebViewStateKey.self] = newValue }
+    }
+}
+
 public extension URL {
     var isNativeReaderView: Bool {
         return scheme == "about" && (["about:blank"].contains(absoluteString) || absoluteString.hasPrefix("about:load"))
@@ -182,6 +292,11 @@ public struct Reader: View {
             }
             .onChange(of: state) { [oldState = state] newState in
                 handleState(oldState: oldState, newState: newState)
+            }
+            .onChange(of: readerViewModel.audioURLs) { audioURLs in
+                Task { @MainActor in
+                    readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {

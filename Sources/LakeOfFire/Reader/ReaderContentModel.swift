@@ -43,6 +43,8 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     var isDeleted: Bool { get }
     
     func configureBookmark(_ bookmark: Bookmark)
+    /// Float is progress, Bool is whether article is "finished".
+    func loadReadingProgress() -> (Float, Bool)?
 }
 
 public extension ReaderContentModel {
@@ -56,6 +58,10 @@ public extension ReaderContentModel {
             return nil
         }
         set { }
+    }
+    
+    func loadReadingProgress() -> (Float, Bool)? {
+        return nil
     }
 }
 

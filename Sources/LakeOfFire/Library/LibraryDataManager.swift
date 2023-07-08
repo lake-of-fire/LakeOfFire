@@ -33,7 +33,6 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     public static var securityApplicationGroupIdentifier = ""
     public static var downloadstDirectoryName = "library-configuration"
     public static var opmlURLs = [URL]()
-    public static var currentUsername: String? = nil
 
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var modifiedAt: Date
@@ -62,7 +61,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     
     public var downloadables: Set<Downloadable> {
         guard !Self.securityApplicationGroupIdentifier.isEmpty else { fatalError("securityApplicationGroupIdentifier unset") }
-        return Set(opmlURLs.compactMap { url in
+        return Set(Self.opmlURLs.compactMap { url in
             Downloadable(
                 name: "App Data (\(url.lastPathComponent))",
                 groupIdentifier: Self.securityApplicationGroupIdentifier,
@@ -96,7 +95,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         }
         
         let configuration = LibraryConfiguration()
-        safeWrite(configuration: Self.realmConfiguration) { realm in
+        safeWrite(configuration: LibraryDataManager.realmConfiguration) { realm in
             realm.add(configuration, update: .modified)
         }
         cachedShared = configuration.freeze()
@@ -123,7 +122,8 @@ public class LibraryDataManager: NSObject {
     public static let shared = LibraryDataManager()
     
     public static var realmConfiguration: Realm.Configuration = .defaultConfiguration
-    
+    public static var currentUsername: String? = nil
+
     var cancellables = Set<AnyCancellable>()
     
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))

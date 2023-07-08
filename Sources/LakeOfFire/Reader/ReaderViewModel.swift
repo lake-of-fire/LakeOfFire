@@ -12,8 +12,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published var webViewSystemScripts = LibraryConfiguration.shared.systemScripts
     
     @Published var contentRules: String? = nil
-    @Published var isMediaPlayerPresented = false
-    @Published var audioURLs = [URL]()
+    @Published public var isMediaPlayerPresented = false
+    @Published public var audioURLs = [URL]()
     
     private var cancellables = Set<AnyCancellable>()
     

@@ -18,7 +18,9 @@ let package = Package(
         .package(path: "../SwiftUIDownloads"),
         .package(path: "../JapaneseLanguageTools"),
         .package(path: "../SwiftUtilities"),
+        .package(path: "../LakeImage"),
         .package(url: "https://github.com/realm/realm-swift.git", from: "10.28.1"),
+        .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/techprimate/TPPDF.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/GRDB.swift.git", branch: "master"), // FTS5 fork
         .package(url: "https://github.com/apple/swift-collections.git", branch: "main"),
@@ -39,6 +41,7 @@ let package = Package(
                 .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
+                .product(name: "AsyncView", package: "AsyncView"),
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "OpenGraph", package: "OpenGraph"),
                 .product(name: "OPML", package: "OPML"),
@@ -51,6 +54,7 @@ let package = Package(
                 .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
+                .product(name: "LakeImage", package: "LakeImage"),
             ]),
 //        .testTarget(
 //            name: "LakeOfFireTests",

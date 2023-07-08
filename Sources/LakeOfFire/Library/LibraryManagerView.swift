@@ -9,6 +9,7 @@ import FaviconFinder
 import DebouncedOnChange
 import OpenGraph
 import RealmSwiftGaps
+import SwiftUtilities
 
 @available(iOS 16.0, macOS 13, *)
 struct LibraryFeedFormSections: View {
@@ -34,7 +35,7 @@ struct LibraryFeedFormSections: View {
     }
     
     var body: some View {
-        if feed.category?.opmlURL == manabiOPMLURL {
+        if let opmlURL = feed.category?.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
             Section("Synchronized") {
                 Text("Manabi Reader manages this feed for you.")
                     .fixedSize(horizontal: false, vertical: true)
@@ -292,7 +293,7 @@ struct LibraryFeedFormSections: View {
     }
     
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
-        guard let feed = try! Realm(configuration: SharedRealmConfigurer.configuration).object(ofType: Feed.self, forPrimaryKey: feed.id) else {
+        guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: feed.id) else {
             readerFeedEntry = nil
             readerAction = .load(URLRequest(url: URL(string: "about:blank")!))
             return
@@ -373,13 +374,13 @@ struct LibraryScriptFormSections: View {
     }
     
     var body: some View {
-        if script.opmlURL == manabiOPMLURL {
+        if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL)  {
             Section("Synchronized") {
                 Text("Manabi Reader manages this User Script for you.")
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
-
+        
         Section("User Script") {
             Toggle("Enabled", isOn: Binding(get: { !script.isArchived }, set: { isEnabled in
                 safeWrite(script) { $1.isArchived = !isEnabled }}))
@@ -399,7 +400,7 @@ struct LibraryScriptFormSections: View {
         .disabled(!script.isUserEditable)
         if let opmlURL = script.opmlURL {
             Section("Synchronization") {
-                if opmlURL == manabiOPMLURL {
+                if LibraryConfiguration.opmlURLs.contains(opmlURL) {
                     Text("Manabi Reader manages and actively improves this user script for you.")
                         .fixedSize(horizontal: true, vertical: false)
                 } else {
@@ -445,7 +446,7 @@ struct LibraryScriptFormSections: View {
         Section(header: Text("JavaScript"), footer: Text("This JavaScript will run on every page load. It has access to the DOM and runs in a sandbox independent of other user and system scripts. User Script execution order is not guaranteed. Use Safari Developer Tools to inspect.").font(.footnote).foregroundColor(.secondary)) {
             CodeEditor(text: $scriptText, isWordWrapping: isWordWrapping)
                 .frame(idealHeight: textEditorHeight)
-//            Toggle("Word Wrap", isOn: $isWordWrapping)
+            //            Toggle("Word Wrap", isOn: $isWordWrapping)
         }
         .task {
             Task { @MainActor in
@@ -472,7 +473,7 @@ struct LibraryScriptFormSections: View {
                 refresh(forceRefresh: true)
             }
         }
-
+        
         Section {
             HStack {
                 TextField("Preview URL", text: Binding(
@@ -502,27 +503,33 @@ struct LibraryScriptFormSections: View {
             if script.previewURL != nil {
                 Toggle("Reader Mode", isOn: $isPreviewReaderMode)
                 /*
-                GroupBox("Reader Mode") {
-                    if !readerModeViewModel.content.isReaderModeAvailable {
-                        Text("Reader Mode currently unavailable for this URL.")
-                            .foregroundColor(.secondary)
-                            .padding(5)
-                    }
-                    Reader(readerViewModel: readerModeViewModel, state: $readerState, action: $readerAction, wordTrackingStats: .constant(nil), isPresentingReaderSettings: .constant(false), forceReaderModeWhenAvailable: true)
-                        .frame(width: readerModeViewModel.content.isReaderModeAvailable ? computedReaderPreviewHeight : 0, height: readerModeViewModel.content.isReaderModeAvailable ? nil : 0)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .onAppear {
-                            refresh()
-                        }
-                }
-                GroupBox("Web Original") {
-                    Reader(readerViewModel: webViewModel, state: $webState, action: $webAction, wordTrackingStats: .constant(nil), isPresentingReaderSettings: .constant(false))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .frame(idealHeight: readerPreviewHeight)
-                }*/
+                 GroupBox("Reader Mode") {
+                 if !readerModeViewModel.content.isReaderModeAvailable {
+                 Text("Reader Mode currently unavailable for this URL.")
+                 .foregroundColor(.secondary)
+                 .padding(5)
+                 }
+                 Reader(readerViewModel: readerModeViewModel, state: $readerState, action: $readerAction, wordTrackingStats: .constant(nil), isPresentingReaderSettings: .constant(false), forceReaderModeWhenAvailable: true)
+                 .frame(width: readerModeViewModel.content.isReaderModeAvailable ? computedReaderPreviewHeight : 0, height: readerModeViewModel.content.isReaderModeAvailable ? nil : 0)
+                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                 .onAppear {
+                 refresh()
+                 }
+                 }
+                 GroupBox("Web Original") {
+                 Reader(readerViewModel: webViewModel, state: $webState, action: $webAction, wordTrackingStats: .constant(nil), isPresentingReaderSettings: .constant(false))
+                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                 .frame(idealHeight: readerPreviewHeight)
+                 }*/
                 Group {
                     if isPreviewReaderMode {
-                        Reader(readerViewModel: webViewModel, state: $readerState, action: $readerAction, wordTrackingStats: .constant(nil), isPresentingReaderSettings: .constant(false), /*persistentWebViewID: "library-script-preview-\(script.id.uuidString)",*/ bounces: false)
+                        Reader(
+                            readerViewModel: readerModeViewModel,
+                            state: $readerState,
+                            action: $readerAction,
+                            forceReaderModeWhenAvailable: false,
+                            /*persistentWebViewID: "library-script-preview-\(script.id.uuidString)",*/
+                            bounces: false)
                     } else {
                         WebView(
                             config: WebViewConfig(userScripts: [script.webViewUserScript]),
@@ -536,9 +543,9 @@ struct LibraryScriptFormSections: View {
                 .task {
                     refresh()
                 }
-//                .onAppear {
-//                    refresh()
-//                }
+                //                .onAppear {
+                //                    refresh()
+                //                }
             } else {
                 Text("Enter URL to view preview.")
                     .foregroundColor(.secondary)
@@ -623,7 +630,7 @@ struct LibraryScriptsListView: View {
                                 Text("Disabled")
                                     .foregroundColor(.secondary)
                             } else {
-                                if script.opmlURL == manabiOPMLURL {
+                                if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
                                     Text("Official Manabi Reader system script")
                                         .bold()
                                 } else {
@@ -696,7 +703,9 @@ struct LibraryScriptsListView: View {
         }
         
         safeWrite(script) { _, script in
-            if script.isArchived && script.opmlURL != manabiOPMLURL {
+            if script.isArchived, let opmlURL = script.opmlURL, !LibraryConfiguration.opmlURLs.contains(opmlURL) {
+                script.isDeleted = true
+            } else if script.isArchived && script.opmlURL == nil {
                 script.isDeleted = true
             } else if !script.isArchived {
                 script.isArchived = true
@@ -801,7 +810,7 @@ struct LibraryCategoryView: View {
             List(selection: $selectedFeed) {
                 Section(header: Text("Category"), footer: Text("Enter an image URL to show as the category button background.").font(.footnote).foregroundColor(.secondary)) {
                     ZStack {
-                        CategoryImage(category: category)
+                        FeedCategoryImage(category: category)
                             .allowsHitTesting(false)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .frame(maxHeight: scaledCategoryHeight)
@@ -810,7 +819,8 @@ struct LibraryCategoryView: View {
                             .multilineTextAlignment(.center)
                             .font(.title3.bold())
                             .foregroundColor(.white)
-                            .backgroundColor(.clear)
+                            .background { Color.clear }
+//                            .backgroundColor(.clear)
                             .padding(.horizontal)
                             .background(.ultraThinMaterial)
                             .padding(.horizontal, 10)
@@ -832,7 +842,7 @@ struct LibraryCategoryView: View {
                 }
                 if let opmlURL = category.opmlURL {
                     Section("Synchronized") {
-                        if opmlURL == manabiOPMLURL {
+                        if LibraryConfiguration.opmlURLs.contains(opmlURL) {
                             Text("Manabi Reader manages and actively improves this category for you.")
                                 .fixedSize(horizontal: false, vertical: true)
                         } else {
@@ -1025,7 +1035,7 @@ struct LibraryCategoriesView: View {
                 Section("Library") {
                     ForEach(libraryConfiguration.categories) { category in
                         NavigationLink(value: LibraryRoute.category(category)) {
-                            CategoryButtonLabel(category: category, font: .headline, scaledCategoryHeight: 17)
+                            FeedCategoryButtonLabel(category: category, font: .headline, isCompact: true)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .listRowSeparator(.hidden)
@@ -1048,7 +1058,7 @@ struct LibraryCategoriesView: View {
                 Section("Archive") {
                     ForEach(archivedCategories) { category in
                         NavigationLink(value: LibraryRoute.category(category)) {
-                            CategoryButtonLabel(category: category, font: .headline, scaledCategoryHeight: 17)
+                            FeedCategoryButtonLabel(category: category, font: .headline, isCompact: true)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 .saturation(0)
                         }
@@ -1138,7 +1148,7 @@ struct LibraryCategoriesView: View {
         }
         
         safeWrite(category) { _, category in
-            if category.isArchived && category.opmlURL != manabiOPMLURL {
+            if category.isArchived && !LibraryConfiguration.opmlURLs.map({ $0 }).contains(category.opmlURL) {
                 category.isDeleted = true
             } else if !category.isArchived {
                 category.isArchived = true
@@ -1169,7 +1179,7 @@ struct LibraryCategoriesView: View {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-struct LibraryManagerView: View {
+public struct LibraryManagerView: View {
     @Binding var isPresented: Bool
     @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
     @StateObject var viewModel = LibraryManagerViewModel.shared
@@ -1184,7 +1194,7 @@ struct LibraryManagerView: View {
 #endif
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
-    var body: some View {
+    public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
             NavigationStack(path: $viewModel.presentedCategories) {
                 LibraryCategoriesView(libraryConfiguration: libraryConfiguration, viewModel: viewModel)
@@ -1279,6 +1289,12 @@ struct LibraryManagerView: View {
                 }
             }
         }
+    }
+    
+    public init(isPresented: Binding<Bool>, libraryConfiguration: LibraryConfiguration, viewModel: LibraryManagerViewModel = .shared) {
+        _isPresented = isPresented
+        libraryConfiguration = libraryConfiguration
+        viewModel = viewModel
     }
     
     func sidebarNavigationDestination(route: LibraryRoute) -> some View {
