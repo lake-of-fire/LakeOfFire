@@ -1,8 +1,6 @@
 import Foundation
 import SwiftUIWebView
 import RealmSwift
-import ManabiDictionaries
-import ManabiCommon
 
 public struct ReadabilityParsedMessage {
     public let pageURL: URL?

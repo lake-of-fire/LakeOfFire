@@ -5,6 +5,7 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
+import SwiftUIDownloads
 
 public extension URL {
     var isNativeReaderView: Bool {
@@ -236,6 +237,8 @@ public struct Reader: View {
                             }
                         }
                     }
+                } else {
+                    refreshSettingsInWebView()
                 }
             }
         }
@@ -260,6 +263,14 @@ public struct Reader: View {
             }
         } else if newState.pageURL.isNativeReaderView, readerViewModel.isMediaPlayerPresented {
             readerViewModel.isMediaPlayerPresented = false
+        }
+    }
+    
+    func refreshSettingsInWebView() {
+        Task { @MainActor in
+            readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
+            readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
+            refreshTitleInWebView()
         }
     }
 }

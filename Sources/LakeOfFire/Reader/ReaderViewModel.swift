@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftUIWebView
-import LakeKit
 import RealmSwift
 import Combine
 
@@ -38,8 +37,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     })
     ]
     """
-    init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration) {
+    
+    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         super.init()
+        
+        webViewUserScripts = webViewUserScripts + systemScripts
         
         let realm = try! Realm(configuration: realmConfiguration)
         realm.objects(UserScript.self)

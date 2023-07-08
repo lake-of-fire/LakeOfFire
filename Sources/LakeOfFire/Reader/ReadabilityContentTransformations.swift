@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import JapaneseLanguageTools
 
 public func transformContentSpecificToFeed(doc: Document, url: URL) {
     guard let host = url.host else { return }

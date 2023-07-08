@@ -1,5 +1,6 @@
 import Foundation
 import RealmSwift
+import RealmSwiftGaps
 
 public class Bookmark: Object, ReaderContentModel {
     @Persisted(primaryKey: true) public var compoundKey = ""

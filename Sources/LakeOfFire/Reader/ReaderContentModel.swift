@@ -169,6 +169,29 @@ public extension ReaderContentModel {
 }
 
 public extension ReaderContentModel {
+//    var rawEntryThumbnailContentMode: Int = UIView.ContentMode.scaleAspectFill.rawValue
+    /*var entryThumbnailContentMode: UIView.ContentMode {
+        get {
+            return UIView.ContentMode(rawValue: rawEntryThumbnailContentMode)!
+        }
+        set {
+            rawEntryThumbnailContentMode = newValue.rawValue
+        }
+    }*/
+    
+    var isReaderModeByDefault: Bool {
+        if isFromClipboard {
+            return true
+        }
+//        guard let bareHostURL = URL(string: "\(url.scheme ?? "https")://\(url.host ?? "")") else { return false }
+//        let exists = realm.objects(FeedEntry.self).contains { $0.url.absoluteString.starts(with: bareHostURL.absoluteString) && $0.isReaderModeByDefault } // not strict enough?
+        let realm = try! Realm(configuration: SharedRealmConfigurer.configuration)
+        let exists = !realm.objects(FeedEntry.self).where { $0.url == url && $0.isReaderModeByDefault }.isEmpty
+        return exists
+    }
+}
+
+public extension ReaderContentModel {
     /// Returns whether the result is having a bookmark or not.
     func toggleBookmark(realmConfiguration: Realm.Configuration) -> Bool {
         if removeBookmark(realmConfiguration: realmConfiguration) {

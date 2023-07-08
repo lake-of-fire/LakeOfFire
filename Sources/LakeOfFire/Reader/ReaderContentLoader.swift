@@ -7,9 +7,14 @@ import AppKit
 #else
 import UIKit
 #endif
+import RealmSwiftGaps
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+    public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+    
     public static var unsavedHome: (any ReaderContentModel) {
         return Self.load(url: URL(string: "about:blank")!, persist: false)!
     }
@@ -17,7 +22,7 @@ public struct ReaderContentLoader {
         return Self.load(url: URL(string: "about:blank")!, persist: true)!
     }
     
-    public static func load(url: URL, persist: Bool = true, bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) -> (any ReaderContentModel)? {
+    public static func load(url: URL, persist: Bool = true) -> (any ReaderContentModel)? {
         let lowerURL = url.absoluteString.lowercased()
         if url.scheme == "about" && lowerURL.starts(with: "about:load") {
             // Don't persist about:load
@@ -70,12 +75,12 @@ public struct ReaderContentLoader {
         return match
     }
     
-    public static func load(urlString: String, bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) -> (any ReaderContentModel)? {
+    public static func load(urlString: String) -> (any ReaderContentModel)? {
         guard let url = URL(string: urlString) else { return nil }
         return load(url: url, bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
     }
     
-    public static func load(html: String, bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) -> (any ReaderContentModel)? {
+    public static func load(html: String) -> (any ReaderContentModel)? {
         guard let bookmarkRealm = try? Realm(configuration: bookmarkRealmConfiguration), let historyRealm = try? Realm(configuration: historyRealmConfiguration), let feedRealm = try? Realm(configuration: feedEntryRealmConfiguration) else { return nil }
         
         let data = html.readerContentData
@@ -138,8 +143,8 @@ public struct ReaderContentLoader {
         return URL(string: "about:snippet?key=\(key)")
     }
     
-    public static func load(text: String, bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) -> (any ReaderContentModel)? {
-        return load(html: textToHTML(text, forceRaw: true), bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+    public static func load(text: String) -> (any ReaderContentModel)? {
+        return load(html: textToHTML(text, forceRaw: true))
     }
     
     public static func loadPasteboard(bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) -> (any ReaderContentModel)? {
@@ -156,16 +161,16 @@ public struct ReaderContentLoader {
         if let html = html {
             if let doc = try? SwiftSoup.parse(html) {
                 if docIsPlainText(doc: doc), let text = text {
-                    match = load(html: textToHTML(text), bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+                    match = load(html: textToHTML(text))
                 } else {
-                    match = load(html: html, bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+                    match = load(html: html)
                 }
-                match = load(html: html, bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+                match = load(html: html)
             } else {
-                match = load(html: textToHTML(html), bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+                match = load(html: textToHTML(html))
             }
         } else if let text = text {
-            match = load(html: textToHTML(text), bookmarkRealmConfiguration: bookmarkRealmConfiguration, historyRealmConfiguration: historyRealmConfiguration, feedEntryRealmConfiguration: feedEntryRealmConfiguration)
+            match = load(html: textToHTML(text))
         }
         if let match = match {
             let url = snippetURL(key: match.compoundKey) ?? match.url
@@ -177,17 +182,17 @@ public struct ReaderContentLoader {
         return match
     }
     
-    public static func saveBookmark(text: String?, title: String?, url: URL, isFromClipboard: Bool, isReaderModeByDefault: Bool, realmConfiguration: Realm.Configuration = .defaultConfiguration) {
+    public static func saveBookmark(text: String?, title: String?, url: URL, isFromClipboard: Bool, isReaderModeByDefault: Bool) {
         if let text = text {
-            _ = Bookmark.add(url: url, title: title ?? "", html: textToHTML(text), isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
+            _ = Bookmark.add(url: url, title: title ?? "", html: textToHTML(text), isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
         } else {
-            _ = Bookmark.add(url: url, title: title ?? "", isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
+            _ = Bookmark.add(url: url, title: title ?? "", isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
         }
     }
     
-    public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool, realmConfiguration: Realm.Configuration = .defaultConfiguration) {
+    public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool) {
         let html = Self.textToHTML(text)
-        _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
+        _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
     }
 }
 
