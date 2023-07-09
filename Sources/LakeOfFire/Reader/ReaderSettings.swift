@@ -1,6 +1,8 @@
 import SwiftUI
 import RealmSwift
 import SwiftUIDownloads
+import SwiftUtilities
+import SwiftUIBackports
 
 public enum LightModeTheme: String, CaseIterable, Identifiable {
     case white
@@ -41,11 +43,7 @@ struct ReaderSettingsForm: View {
                 }
             }
         }
-        .modifier {
-            if #available(iOS 16, macOS 13, *) {
-                $0.formStyle(.grouped)
-            } else { $0 }
-        }
+        .groupedFormStyleIfAvailable()
     }
 }
 
@@ -121,11 +119,7 @@ public struct DataSettingsForm: View {
                  */
             }
         }
-        .modifier {
-            if #available(iOS 16, macOS 13, *) {
-                $0.formStyle(.grouped)
-            } else { $0 }
-        }
+        .groupedFormStyleIfAvailable()
     }
 }
 
@@ -170,26 +164,28 @@ struct ReaderSettings: View {
 #if os(macOS)
         .padding()
 #endif
-        .modifier {
-            if #available(iOS 16.0, macOS 13.0, *) {
-                $0.scrollContentBackground(.hidden)
-            } else { $0 }
-        }
+        .scrollContentBackgroundIfAvailable(.hidden)
 #if os(macOS)
         Spacer()
 #endif
     }
 }
 
+struct ReaderSettingsPopoverConditionalModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    
+    func body(content: Content) -> some View {
+        if #available(iOS 16, macOS 13, *) {
+            content.modifier(ReaderSettingsPopoverModifier(isPresented: $isPresented))
+        } else {
+            content.modifier(LegacyReaderSettingsPopoverModifier(isPresented: $isPresented))
+        }
+    }
+}
+
 extension View {
     func readerSettingsPopover(isPresented: Binding<Bool>) -> some View {
-        self.modifier {
-            if #available(iOS 16, macOS 13, *) {
-                $0.modifier(ReaderSettingsPopoverModifier(isPresented: isPresented))
-            } else {
-                $0.modifier(LegacyReaderSettingsPopoverModifier(isPresented: isPresented))
-            }
-        }
+        modifier(ReaderSettingsPopoverConditionalModifier(isPresented: isPresented))
     }
 }
 

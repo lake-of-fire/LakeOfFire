@@ -25,7 +25,7 @@ public struct FeedCategoryButtons: View {
     
     public var body: some View {
         if isCompact {
-            VStack {
+            VStack(spacing: 5) {
                 ForEach(libraryConfiguration.categories) { category in
                     FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
                 }
@@ -73,7 +73,7 @@ public struct FeedCategoryButton: View {
 struct ReaderCategoryButtonStyle: ButtonStyle {
     func makeBody(configuration: Self.Configuration) -> some View {
         configuration.label
-            .clipped()
+//            .clipped()
 //#if os(iOS)
 //            .clipShape(Capsule())
 //#else

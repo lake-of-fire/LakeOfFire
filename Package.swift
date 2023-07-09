@@ -29,6 +29,7 @@ let package = Package(
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", branch: "main"),
         .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
+        .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/witekbobrowski/EPUBKit.git", branch: "main"),
     ],
     targets: [
@@ -43,6 +44,7 @@ let package = Package(
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "AsyncView", package: "AsyncView"),
                 .product(name: "Collections", package: "swift-collections"),
+                .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
                 .product(name: "OpenGraph", package: "OpenGraph"),
                 .product(name: "OPML", package: "OPML"),
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
