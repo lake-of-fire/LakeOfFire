@@ -44,7 +44,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     public lazy var systemScripts: [WebViewUserScript] = {
         return [
             Readability().userScript,
-//            ReaderUserScript().userScript,
+//            ManabiReaderUserScript().userScript,
             YoutubeAdBlockUserScript.userScript,
             YoutubeAdSkipUserScript.userScript,
             //            YoutubeCaptionsUserScript.userScript,

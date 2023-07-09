@@ -41,7 +41,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         super.init()
         
-        webViewSystemScripts = LibraryConfiguration.shared.systemScripts + systemScripts
+        webViewSystemScripts = systemScripts + LibraryConfiguration.shared.systemScripts
         webViewUserScripts = webViewUserScripts
         
         let realm = try! Realm(configuration: realmConfiguration)

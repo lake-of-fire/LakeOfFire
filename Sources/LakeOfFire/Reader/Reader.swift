@@ -75,7 +75,6 @@ public struct Reader: View {
     
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
     @AppStorage("readerFontSize") private var readerFontSize: Double?
-    
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
@@ -276,11 +275,12 @@ public struct Reader: View {
                             }
                         }
                     }
-                } else {
-                    refreshSettingsInWebView()
                 }
             }
+        } else if oldState.isLoading && !newState.isLoading && !newState.isProvisionallyNavigating {
+            refreshSettingsInWebView()
         }
+        
         /*
          else if oldState.pageURL == newState.pageURL, newState.isProvisionallyNavigating != oldState.isProvisionallyNavigating || newState.isLoading != oldState.isLoading, let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
          readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
