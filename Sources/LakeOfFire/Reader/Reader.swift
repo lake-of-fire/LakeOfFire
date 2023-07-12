@@ -70,6 +70,7 @@ public struct Reader: View {
     var processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil
     var obscuredInsets: EdgeInsets? = nil
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
+    var onNavigationFinished: ((WebViewState) -> Void)?
     
     @ObservedObject private var downloadController = DownloadController.shared
     
@@ -86,7 +87,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, state: Binding<WebViewState>, action: Binding<WebViewAction>, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:]) {
+    public init(readerViewModel: ReaderViewModel, state: Binding<WebViewState>, action: Binding<WebViewAction>, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.readerViewModel = readerViewModel
         _state = state
         _action = action
@@ -96,6 +97,7 @@ public struct Reader: View {
         self.processReadabilityContent = processReadabilityContent
         self.obscuredInsets = obscuredInsets
         self.messageHandlers = messageHandlers
+        self.onNavigationFinished = onNavigationFinished
     }
     
     public var body: some View {
@@ -187,7 +189,77 @@ public struct Reader: View {
                         }
                     }
                 }
-            ].merging(messageHandlers) { (current, _) in current })
+            ].merging(messageHandlers) { (current, _) in current },
+            onNavigationFinished: { state in
+                Task { @MainActor in
+                    if readerViewModel.contentRules != nil {
+                        readerViewModel.contentRules = nil
+                    }
+                    if state.pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = state.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(state.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL) {
+                        readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
+                        readerViewModel.content = content
+                        if var html = content.htmlToDisplay {
+                            if readerViewModel.isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
+                                if let _ = html.range(of: "<html", options: .caseInsensitive) {
+                                    html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
+                                } else {
+                                    html = "<html data-is-next-load-in-reader-mode>\n\(html)\n</html>"
+                                }
+                                readerViewModel.contentRules = readerViewModel.contentRulesForReadabilityLoading
+                            }
+                            self.action = .loadHTMLWithBaseURL(html, contentURL)
+                        } else {
+                            // Shouldn't come here... results in duplicate history. Here for safety though.
+                            self.action = .load(URLRequest(url: contentURL))
+                        }
+                    } else if let content = ReaderContentLoader.load(url: state.pageURL, persist: !state.pageURL.isNativeReaderView) {
+                        readerViewModel.content = content
+                        readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
+                        
+                        if readerViewModel.isNextLoadInReaderMode {
+                            Task { @MainActor in
+                                await readerViewModel.scriptCaller.evaluateJavaScript("if (document.documentElement && !document.documentElement.classList.contains('readability-mode')) { document.documentElement.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
+                                    switch result {
+                                    case .success(let value):
+                                        if let isReaderMode = value as? Bool, !isReaderMode {
+                                            readerViewModel.contentRules = readerViewModel.contentRulesForReadabilityLoading
+                                        } else {
+                                            print("Error getting isReaderMode bool from \(value)")
+                                        }
+                                    case .failure(let error):
+                                        print(error.localizedDescription)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if let pageTitle = state.pageTitle, !pageTitle.isEmpty, pageTitle != readerViewModel.content.title, readerViewModel.content.url == state.pageURL {
+                        safeWrite(readerViewModel.content) { (realm, content) in
+                            content.title = pageTitle
+                        }
+                    }
+                    
+                    if !state.pageURL.isNativeReaderView, (state.pageURL.host != nil && !state.pageURL.isNativeReaderView) {
+                        let urls = Array(readerViewModel.content.voiceAudioURLs)
+                        if urls != readerViewModel.audioURLs {
+                            readerViewModel.audioURLs = urls
+                        } else if !urls.isEmpty {
+                            readerViewModel.isMediaPlayerPresented = true
+                        }
+                    } else if state.pageURL.isNativeReaderView, readerViewModel.isMediaPlayerPresented {
+                        readerViewModel.isMediaPlayerPresented = false
+                    }
+
+//                    try? await Task.sleep(nanoseconds: UInt64(round(1 * 1_000_000_000)))
+                    refreshSettingsInWebView()
+                    refreshTitleInWebView()
+                    
+                    if let onNavigationFinished = onNavigationFinished {
+                        onNavigationFinished(state)
+                    }
+                }
+            })
         .edgesIgnoringSafeArea(.all)
         .onChange(of: state.pageImageURL) { imageURL in
             Task { @MainActor in
@@ -214,9 +286,6 @@ public struct Reader: View {
                 readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
             }
         }
-        .onChange(of: state) { [oldState = state] newState in
-            handleState(oldState: oldState, newState: newState)
-        }
         .onChange(of: readerViewModel.audioURLs) { audioURLs in
             Task { @MainActor in
                 readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
@@ -228,83 +297,7 @@ public struct Reader: View {
             }
         }
     }
-    
-    @MainActor private func handleState(oldState: WebViewState, newState: WebViewState) {
-        // TODO: use uuid key prefix for security... maybe like mozilla did
-        let pageURL = newState.pageURL
-        
-        if readerViewModel.contentRules != nil {
-            readerViewModel.contentRules = nil
-        }
-        
-        // TODO: load from content html even if reloading same url (via various methods)
-        if oldState.pageURL != newState.pageURL, pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL) {
-            readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
-            readerViewModel.content = content
-            if var html = content.htmlToDisplay {
-                if readerViewModel.isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
-                    if let _ = html.range(of: "<html", options: .caseInsensitive) {
-                        html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
-                    } else {
-                        html = "<html data-is-next-load-in-reader-mode>\n\(html)\n</html>"
-                    }
-                    readerViewModel.contentRules = readerViewModel.contentRulesForReadabilityLoading
-                }
-                self.action = .loadHTMLWithBaseURL(html, contentURL)
-            } else {
-                // Shouldn't come here... results in duplicate history. Here for safety though.
-                self.action = .load(URLRequest(url: contentURL))
-            }
-        } else if oldState.pageURL != newState.pageURL, let newContent = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
-            if readerViewModel.content.url != newContent.url {
-                readerViewModel.isNextLoadInReaderMode = newContent.isReaderModeByDefault
-                readerViewModel.content = newContent
-                
-                if readerViewModel.isNextLoadInReaderMode {
-                    Task { @MainActor in
-                        await readerViewModel.scriptCaller.evaluateJavaScript("if (document.documentElement && !document.documentElement.classList.contains('readability-mode')) { document.documentElement.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
-                            switch result {
-                            case .success(let value):
-                                if let isReaderMode = value as? Bool, !isReaderMode {
-                                    readerViewModel.contentRules = readerViewModel.contentRulesForReadabilityLoading
-                                } else {
-                                    print("Error getting isReaderMode bool from \(value)")
-                                }
-                            case .failure(let error):
-                                print(error.localizedDescription)
-                            }
-                        }
-                    }
-                }
-            }
-        } else if oldState.isLoading && !newState.isLoading && !newState.isProvisionallyNavigating {
-            refreshSettingsInWebView()
-        }
-        
-        /*
-         else if oldState.pageURL == newState.pageURL, newState.isProvisionallyNavigating != oldState.isProvisionallyNavigating || newState.isLoading != oldState.isLoading, let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
-         readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
-         }
-         */
-        
-        if let pageTitle = newState.pageTitle, !pageTitle.isEmpty, pageTitle != readerViewModel.content.title, readerViewModel.content.url == pageURL {
-            safeWrite(readerViewModel.content) { (realm, content) in
-                content.title = pageTitle
-            }
-        }
-        
-        if !newState.isProvisionallyNavigating, (newState.pageURL.host != nil && !newState.pageURL.isNativeReaderView && newState.pageURL != oldState.pageURL) /*|| (!(newState.pageTitle ?? "").isEmpty && newState.pageTitle != oldState.pageTitle)*/ || (oldState.isLoading && !newState.isLoading) /*|| (oldState.isProvisionallyNavigating && !newState.isProvisionallyNavigating)*/ {
-            let urls = Array(readerViewModel.content.voiceAudioURLs)
-            if urls != readerViewModel.audioURLs {
-                readerViewModel.audioURLs = urls
-            } else if !urls.isEmpty {
-                readerViewModel.isMediaPlayerPresented = true
-            }
-        } else if newState.pageURL.isNativeReaderView, readerViewModel.isMediaPlayerPresented {
-            readerViewModel.isMediaPlayerPresented = false
-        }
-    }
-    
+   
     @MainActor func refreshTitleInWebView() {
         if readerViewModel.content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading {
             readerViewModel.scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(readerViewModel.content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
