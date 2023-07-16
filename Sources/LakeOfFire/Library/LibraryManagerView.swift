@@ -659,7 +659,6 @@ struct LibraryCategoriesView: View {
                     }
                     .labelStyle(.titleAndIcon)
                     .disabled(viewModel.exportedOPML == nil)
-                    
 #if os(macOS)
                     Button {
                         savePanel.allowedContentTypes = [UTType(exportedAs: "public.opml")]
@@ -692,7 +691,7 @@ struct LibraryCategoriesView: View {
                     .disabled(viewModel.exportedOPML == nil)
 #endif
                     
-                    FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, afterPresented: nil, onPicked: { urls in
+                    FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, onPicked: { urls in
                         Task.detached {
                             LibraryDataManager.shared.importOPML(fileURLs: urls)
                         }
@@ -703,13 +702,12 @@ struct LibraryCategoriesView: View {
                 }
                 .labelStyle(.titleOnly)
                 .tint(appTint)
-                
+                /*
                 Section("Extensions") {
                     NavigationLink(value: LibraryRoute.userScripts, label: {
                         Label("User Scripts", systemImage: "wrench.and.screwdriver")
                     })
                 }
-                
                 Section("Library") {
                     ForEach(libraryConfiguration.categories) { category in
                         NavigationLink(value: LibraryRoute.category(category)) {
@@ -776,6 +774,7 @@ struct LibraryCategoriesView: View {
                     }
                     .onDelete(perform: { deleteCategory(at: $0) })
                 }
+                 */
             }
             .listStyle(.sidebar)
 #if os(macOS)
