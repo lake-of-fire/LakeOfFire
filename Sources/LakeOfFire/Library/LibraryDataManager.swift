@@ -329,7 +329,7 @@ public class LibraryDataManager: NSObject {
         // Move scripts
         var desiredScripts = allImportedScripts
         for (idx, script) in configuration.userScripts.enumerated() {
-            if let downloadURL = download?.url, script.opmlURL == downloadURL {
+            if let downloadURL = download?.url, script.opmlURL == downloadURL, !desiredScripts.isEmpty {
                 let desiredScript = desiredScripts.removeFirst()
                 if let fromIdx = configuration.userScripts.firstIndex(of: desiredScript), fromIdx != idx {
                     safeWrite(configuration) { _, configuration in
