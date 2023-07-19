@@ -4,13 +4,11 @@ import FilePicker
 import UniformTypeIdentifiers
 import OPML
 import SwiftUIWebView
-import SwiftUIBackports
 import FaviconFinder
 import DebouncedOnChange
 import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
-import LakeImage
 
 struct UserScriptAllowedDomainCell: View {
     @ObservedRealmObject var domain: UserScriptAllowedDomain
@@ -690,7 +688,6 @@ struct LibraryCategoriesView: View {
                     .background(WindowAccessor(for: $window))
                     .disabled(viewModel.exportedOPML == nil)
 #endif
-                    
                     FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, onPicked: { urls in
                         Task.detached {
                             LibraryDataManager.shared.importOPML(fileURLs: urls)
@@ -699,6 +696,7 @@ struct LibraryCategoriesView: View {
                         Label("Import OPML…", systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     })
+                    
                 }
                 .labelStyle(.titleOnly)
                 .tint(appTint)

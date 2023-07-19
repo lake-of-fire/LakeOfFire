@@ -131,20 +131,22 @@ public class LibraryDataManager: NSObject {
     public override init() {
         super.init()
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
-        DownloadController.shared.$finishedDownloads
-            .removeDuplicates()
-            .sink(receiveValue: { [weak self] feedDownloads in
-                Task.detached { [weak self] in
-                    for download in feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") }) {
-                        do {
-                            try self?.importOPML(download: download)
-                        } catch {
-                            print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+        Task { @MainActor in
+            DownloadController.shared.$finishedDownloads
+                .removeDuplicates()
+                .sink(receiveValue: { [weak self] feedDownloads in
+                    Task.detached { [weak self] in
+                        for download in feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") }) {
+                            do {
+                                try self?.importOPML(download: download)
+                            } catch {
+                                print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                            }
                         }
                     }
-                }
-            })
-            .store(in: &cancellables)
+                })
+                .store(in: &cancellables)
+        }
 
 //        DownloadController.shared.finishedDownloads.publisher
 //            .print("FOOBAR ")
@@ -176,22 +178,24 @@ public class LibraryDataManager: NSObject {
 //            })
 //            .store(in: &cancellables)
         
-        let realm = try! Realm(configuration: Self.realmConfiguration)
-        realm.objects(UserScript.self)
-            .changesetPublisher
-            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] changes in
-                switch changes {
-                case .initial(_):
-                    self?.refreshScripts()
-                case .update(_, deletions: _, insertions: _, modifications: _):
-                    self?.refreshScripts()
-                case .error(let error):
-                    print(error.localizedDescription)
+        Task { @MainActor in
+            let realm = try! Realm(configuration: Self.realmConfiguration)
+            realm.objects(UserScript.self)
+                .changesetPublisher
+                .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] changes in
+                    switch changes {
+                    case .initial(_):
+                        self?.refreshScripts()
+                    case .update(_, deletions: _, insertions: _, modifications: _):
+                        self?.refreshScripts()
+                    case .error(let error):
+                        print(error.localizedDescription)
+                    }
                 }
-            }
-            .store(in: &cancellables)
+                .store(in: &cancellables)
+        }
     }
     
     private func refreshScripts() {
