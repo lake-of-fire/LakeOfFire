@@ -12,7 +12,8 @@ let package = Package(
             targets: ["LakeOfFire"]),
     ],
     dependencies: [
-        .package(path: "../swiftui-webview"),
+        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
+//        .package(path: "../swiftui-webview"),
         .package(path: "../RealmSwiftGaps"),
         .package(path: "../BigSyncKit"),
         .package(path: "../SwiftUIDownloads"),

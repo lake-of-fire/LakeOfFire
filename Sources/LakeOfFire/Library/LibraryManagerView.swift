@@ -688,7 +688,7 @@ struct LibraryCategoriesView: View {
                     .background(WindowAccessor(for: $window))
                     .disabled(viewModel.exportedOPML == nil)
 #endif
-                    FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, onPicked: { urls in
+                    FilePicker(types: [UTType(exportedAs: "public.opml"), .xml], allowMultiple: true, afterPresented: nil, onPicked: { urls in
                         Task.detached {
                             LibraryDataManager.shared.importOPML(fileURLs: urls)
                         }
