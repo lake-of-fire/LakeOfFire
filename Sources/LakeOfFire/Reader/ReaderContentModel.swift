@@ -3,7 +3,7 @@ import RealmSwift
 import SwiftUIWebView
 import SwiftUtilities
 
-public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable {
+public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
     var compoundKey: String { get set }
     var keyPrefix: String? { get }
     

@@ -38,8 +38,8 @@ struct LibraryFeedFormSections: View {
     @ScaledMetric(relativeTo: .body) private var readerPreviewLocationBarHeight = 40
     
 //    @State private var readerContent: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-    @State private var readerState = WebViewState.empty
-    @State private var readerAction = WebViewAction.idle
+//    @State private var readerState = WebViewState.empty
+//    @State private var readerAction = WebViewAction.idle
     @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     
     @State private var readerFeedEntry: FeedEntry?
@@ -139,8 +139,6 @@ struct LibraryFeedFormSections: View {
     private var previewReader: some View {
         Reader(
             readerViewModel: readerViewModel,
-            state: $readerState,
-            action: $readerAction,
             persistentWebViewID: "library-feed-preview-\(feed.id.uuidString)",
             bounces: false)
         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -148,14 +146,14 @@ struct LibraryFeedFormSections: View {
         .padding(.horizontal, 15)
     }
     
-    private var feedPreviewSection: some View {
-        Section("Feed Preview") {
+    private var feedPreview: some View {
+        Group {
             if let readerFeedEntry = readerFeedEntry {
                 ReaderContentCell(item: readerFeedEntry)
                 HStack(alignment: .center) {
                     GroupBox {
-                        Button(readerState.pageURL.absoluteString) {
-                            openURL(readerState.pageURL)
+                        Button(readerViewModel.state.pageURL.absoluteString) {
+                            openURL(readerViewModel.state.pageURL)
                         }
 #if os(macOS)
                         .buttonStyle(.link)
@@ -163,7 +161,7 @@ struct LibraryFeedFormSections: View {
                         .padding(10)
                     }
                     Spacer()
-                    if readerState.isLoading || readerState.isProvisionallyNavigating {
+                    if readerViewModel.state.isLoading || readerViewModel.state.isProvisionallyNavigating {
                         ProgressView()
                             .scaleEffect(0.5)
                     }
@@ -185,6 +183,12 @@ struct LibraryFeedFormSections: View {
                     .font(.callout)
                     .foregroundColor(.secondary)
             }
+        }
+    }
+    
+    private var feedPreviewSection: some View {
+        Section("Feed Preview") {
+            feedPreview
         }
         .task {
             Task { @MainActor in
@@ -264,7 +268,7 @@ struct LibraryFeedFormSections: View {
         feedTitle = feed.title
         feedDescription = feed.markdownDescription
         readerFeedEntry = nil
-        readerAction = .load(URLRequest(url: URL(string: "about:blank")!))
+        readerViewModel.action = .load(URLRequest(url: URL(string: "about:blank")!))
         
         refreshFromOpenGraph()
         if feed.entries.isEmpty {
@@ -340,7 +344,7 @@ struct LibraryFeedFormSections: View {
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
         guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: feed.id) else {
             readerFeedEntry = nil
-            readerAction = .load(URLRequest(url: URL(string: "about:blank")!))
+            readerViewModel.action = .load(URLRequest(url: URL(string: "about:blank")!))
             return
         }
         
@@ -348,15 +352,15 @@ struct LibraryFeedFormSections: View {
         Task { @MainActor in
 //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
             if let entry = entries.last {
-                if forceRefresh || (entry.url != readerState.pageURL && !readerState.isProvisionallyNavigating), let load = WebViewAction.load(content: entry) {
+                if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating), let load = WebViewAction.load(content: entry) {
                     readerFeedEntry = entry
-                    if readerAction != load {
-                        readerAction = load
+                    if readerViewModel.action != load {
+                        readerViewModel.action = load
                     }
                 }
             } else {
                 readerFeedEntry = nil
-                readerAction = .load(URLRequest(url: URL(string: "about:blank")!))
+                readerViewModel.action = .load(URLRequest(url: URL(string: "about:blank")!))
             }
         }
     }

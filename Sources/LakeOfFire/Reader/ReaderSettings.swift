@@ -121,6 +121,8 @@ public struct DataSettingsForm: View {
         }
         .groupedFormStyleIfAvailable()
     }
+    
+    public init() { }
 }
 
 struct ReaderSettings: View {
@@ -183,7 +185,7 @@ struct ReaderSettingsPopoverConditionalModifier: ViewModifier {
     }
 }
 
-extension View {
+public extension View {
     func readerSettingsPopover(isPresented: Binding<Bool>) -> some View {
         modifier(ReaderSettingsPopoverConditionalModifier(isPresented: isPresented))
     }

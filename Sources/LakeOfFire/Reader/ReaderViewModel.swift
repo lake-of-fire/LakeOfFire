@@ -2,8 +2,23 @@ import SwiftUI
 import SwiftUIWebView
 import RealmSwift
 import Combine
+import RealmSwiftGaps
+import WebKit
 
 public class ReaderViewModel: NSObject, ObservableObject {
+    @Published public var action: WebViewAction = .idle
+    public var state: WebViewState = .empty {
+        didSet {
+            if let imageURL = state.pageImageURL, content.imageUrl == nil {
+                Task { @MainActor in
+                    safeWrite(content) { _, content in
+                        content.imageUrl = imageURL
+                    }
+                }
+            }
+        }
+    }
+    
     @Published public var content: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
     @Published var readabilityContent: String? = nil
     @Published var isNextLoadInReaderMode = false
@@ -15,6 +30,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public var isMediaPlayerPresented = false
     @Published public var audioURLs = [URL]()
     
+    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    
+    private var navigationTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     
     public var allScripts: [WebViewUserScript] {
@@ -69,5 +88,129 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 webViewUserScripts = scripts
             }
         }
+    }
+    
+    public func onNavigationFinished(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+        if contentRules != nil {
+            contentRules = nil
+        }
+        
+        navigationTask?.cancel()
+        navigationTask = Task.detached {
+            var newContent: (any ReaderContentModel)? = nil
+            if newState.pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL) {
+                newContent = content
+                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
+                let contentKey = content.compoundKey
+                
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    guard let content = getContent(configuration: realmConfiguration, type: contentType, key: contentKey) else { return }
+                    isNextLoadInReaderMode = content.isReaderModeByDefault
+                    self.content = content
+                    
+                    if var html = content.htmlToDisplay {
+                        if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
+                            if let _ = html.range(of: "<html", options: .caseInsensitive) {
+                                html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
+                            } else {
+                                html = "<html data-is-next-load-in-reader-mode>\n\(html)\n</html>"
+                            }
+                            contentRules = contentRulesForReadabilityLoading
+                        }
+                        self.action = .loadHTMLWithBaseURL(html, contentURL)
+                    } else {
+                        // Shouldn't come here... results in duplicate history. Here for safety though.
+                        self.action = .load(URLRequest(url: contentURL))
+                    }
+                }
+            } else if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
+                newContent = content
+                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
+                let contentKey = content.compoundKey
+                
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    guard let content = getContent(configuration: realmConfiguration, type: contentType, key: contentKey) else { return }
+                    isNextLoadInReaderMode = content.isReaderModeByDefault
+                    self.content = content
+                    
+                    if isNextLoadInReaderMode {
+                        await scriptCaller.evaluateJavaScript("if (document.documentElement && !document.documentElement.classList.contains('readability-mode')) { document.documentElement.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
+                            switch result {
+                            case .success(let value):
+                                if let isReaderMode = value as? Bool, !isReaderMode {
+                                    Task { @MainActor [weak self] in
+                                        guard let self = self else { return }
+                                        contentRules = contentRulesForReadabilityLoading
+                                    }
+                                } else {
+                                    print("Error getting isReaderMode bool from \(value)")
+                                }
+                            case .failure(let error):
+                                print(error.localizedDescription)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if let newContent = newContent, let pageTitle = newState.pageTitle, !pageTitle.isEmpty, pageTitle != newContent.title, newContent.url == newState.pageURL {
+                safeWrite(newContent) { (realm, content) in
+                    content.title = pageTitle
+                }
+            }
+            
+            if let newContent = newContent, !newState.pageURL.isNativeReaderView, (newState.pageURL.host != nil && !newState.pageURL.isNativeReaderView) {
+                let urls = Array(newContent.voiceAudioURLs)
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if urls != audioURLs {
+                        audioURLs = urls
+                    } else if !urls.isEmpty {
+                        isMediaPlayerPresented = true
+                    }
+                }
+            } else if newState.pageURL.isNativeReaderView {
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if isMediaPlayerPresented {
+                        isMediaPlayerPresented = false
+                    }
+                }
+            }
+            
+            //                    try? await Task.sleep(nanoseconds: UInt64(round(1 * 1_000_000_000)))
+            Task { @MainActor [weak self] in
+                self?.refreshSettingsInWebView(newState: newState)
+                self?.refreshTitleInWebView(newState: newState)
+                
+                Task { @MainActor in
+                    if let completion = completion {
+                        completion(newState)
+                    }
+                }
+            }
+        }
+    }
+    
+    private func getContent(configuration: Realm.Configuration, type: RealmSwift.Object.Type, key: String) -> (any ReaderContentModel)? {
+        guard let content = try! Realm(configuration: configuration).object(ofType: type, forPrimaryKey: key) as? any ReaderContentModel else { return nil }
+        return content
+    }
+    
+    @MainActor
+    func refreshTitleInWebView(newState: WebViewState? = nil) {
+        let state = newState ?? state
+        if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading {
+            scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
+        }
+    }
+    
+    @MainActor
+    func refreshSettingsInWebView(newState: WebViewState) {
+        scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
+        scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
+        refreshTitleInWebView(newState: newState)
     }
 }

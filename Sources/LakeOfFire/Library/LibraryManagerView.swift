@@ -32,8 +32,6 @@ struct LibraryScriptFormSections: View {
     //    @State private var readerContent: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
     @State private var webState = WebViewState.empty
     @State private var webAction = WebViewAction.idle
-    @State private var readerState = WebViewState.empty
-    @State private var readerAction = WebViewAction.idle
     @StateObject private var webViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     @StateObject private var readerModeViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     
@@ -70,7 +68,7 @@ struct LibraryScriptFormSections: View {
         if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL)  {
             Section("Synchronized") {
                 Text("Manabi Reader manages this User Script for you.")
-                    .fixedSize(horizontal: true, vertical: false)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         
@@ -95,10 +93,10 @@ struct LibraryScriptFormSections: View {
             Section("Synchronization") {
                 if LibraryConfiguration.opmlURLs.contains(opmlURL) {
                     Text("Manabi Reader manages and actively improves this user script for you.")
-                        .fixedSize(horizontal: true, vertical: false)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text("Synchronized with: \(opmlURL.absoluteString)")
-                        .fixedSize(horizontal: true, vertical: false)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -129,7 +127,7 @@ struct LibraryScriptFormSections: View {
                 $script.allowedDomains.append(UserScriptAllowedDomain())
             } label: {
                 Label("Add Domain", systemImage: "plus.circle")
-                    .fixedSize(horizontal: true, vertical: false)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if script.allowedDomains.isEmpty {
                 Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
@@ -189,7 +187,7 @@ struct LibraryScriptFormSections: View {
                     refresh(forceRefresh: true)
                 } label: {
                     Label("Reload", systemImage: "arrow.clockwise")
-                        .fixedSize()
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .labelStyle(.iconOnly)
             }
@@ -218,8 +216,6 @@ struct LibraryScriptFormSections: View {
                     if isPreviewReaderMode {
                         Reader(
                             readerViewModel: readerModeViewModel,
-                            state: $readerState,
-                            action: $readerAction,
                             forceReaderModeWhenAvailable: false,
                             /*persistentWebViewID: "library-script-preview-\(script.id.uuidString)",*/
                             bounces: false)
@@ -257,8 +253,8 @@ struct LibraryScriptFormSections: View {
             if webState.pageURL != url || forceRefresh {
                 webAction = .load(URLRequest(url: url))
             }
-            if readerState.pageURL != url || forceRefresh {
-                readerAction = .load(URLRequest(url: url))
+            if readerModeViewModel.state.pageURL != url || forceRefresh {
+                readerModeViewModel.action = .load(URLRequest(url: url))
             }
         }
     }
@@ -682,7 +678,7 @@ struct LibraryCategoriesView: View {
                             }
                         }
                     } label: {
-                        Label("Save User Library As…", systemImage: "square.and.arrow.down")
+                        Label("Export User Library…", systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .background(WindowAccessor(for: $window))
@@ -693,14 +689,13 @@ struct LibraryCategoriesView: View {
                             LibraryDataManager.shared.importOPML(fileURLs: urls)
                         }
                     }, label: {
-                        Label("Import OPML…", systemImage: "square.and.arrow.down")
+                        Label("Import User Library…", systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     })
                     
                 }
                 .labelStyle(.titleOnly)
                 .tint(appTint)
-                /*
                 Section("Extensions") {
                     NavigationLink(value: LibraryRoute.userScripts, label: {
                         Label("User Scripts", systemImage: "wrench.and.screwdriver")
@@ -772,7 +767,6 @@ struct LibraryCategoriesView: View {
                     }
                     .onDelete(perform: { deleteCategory(at: $0) })
                 }
-                 */
             }
             .listStyle(.sidebar)
 #if os(macOS)

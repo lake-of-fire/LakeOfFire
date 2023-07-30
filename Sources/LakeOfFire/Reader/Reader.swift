@@ -62,8 +62,6 @@ public extension WebViewAction {
 
 public struct Reader: View {
     @ObservedObject var readerViewModel: ReaderViewModel
-    @Binding var state: WebViewState
-    @Binding var action: WebViewAction
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
     var bounces = true
@@ -87,10 +85,8 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, state: Binding<WebViewState>, action: Binding<WebViewAction>, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationFinished: ((WebViewState) -> Void)? = nil) {
+    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.readerViewModel = readerViewModel
-        _state = state
-        _action = action
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
@@ -107,8 +103,8 @@ public struct Reader: View {
             config: WebViewConfig(
                 contentRules: readerViewModel.contentRules,
                 userScripts: readerViewModel.allScripts),
-            action: $action,
-            state: $state,
+            action: $readerViewModel.action,
+            state: $readerViewModel.state,
             scriptCaller: readerViewModel.scriptCaller,
             blockedHosts: Set([
                 "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
@@ -178,98 +174,28 @@ public struct Reader: View {
                     Task { @MainActor in
                         guard !url.isNativeReaderView else { return }
                         guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
-                        guard result.url == state.pageURL && result.url == readerViewModel.content.url else { return }
+                        guard result.url == readerViewModel.state.pageURL && result.url == readerViewModel.content.url else { return }
                         let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
                         // Only update if empty... sometimes annoying titles load later.
                         if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
                             safeWrite(readerViewModel.content) { _, content in
                                 content.title = newTitle
                             }
-                            refreshTitleInWebView()
+                            readerViewModel.refreshTitleInWebView()
                         }
                     }
                 }
             ].merging(messageHandlers) { (current, _) in current },
             onNavigationFinished: { state in
                 Task { @MainActor in
-                    if readerViewModel.contentRules != nil {
-                        readerViewModel.contentRules = nil
-                    }
-                    if state.pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = state.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(state.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL) {
-                        readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
-                        readerViewModel.content = content
-                        if var html = content.htmlToDisplay {
-                            if readerViewModel.isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
-                                if let _ = html.range(of: "<html", options: .caseInsensitive) {
-                                    html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
-                                } else {
-                                    html = "<html data-is-next-load-in-reader-mode>\n\(html)\n</html>"
-                                }
-                                readerViewModel.contentRules = readerViewModel.contentRulesForReadabilityLoading
-                            }
-                            self.action = .loadHTMLWithBaseURL(html, contentURL)
-                        } else {
-                            // Shouldn't come here... results in duplicate history. Here for safety though.
-                            self.action = .load(URLRequest(url: contentURL))
+                    readerViewModel.onNavigationFinished(newState: state) { newState in
+                        if let onNavigationFinished = onNavigationFinished {
+                            onNavigationFinished(newState)
                         }
-                    } else if let content = ReaderContentLoader.load(url: state.pageURL, persist: !state.pageURL.isNativeReaderView) {
-                        readerViewModel.content = content
-                        readerViewModel.isNextLoadInReaderMode = content.isReaderModeByDefault
-                        
-                        if readerViewModel.isNextLoadInReaderMode {
-                            Task { @MainActor in
-                                await readerViewModel.scriptCaller.evaluateJavaScript("if (document.documentElement && !document.documentElement.classList.contains('readability-mode')) { document.documentElement.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
-                                    switch result {
-                                    case .success(let value):
-                                        if let isReaderMode = value as? Bool, !isReaderMode {
-                                            readerViewModel.contentRules = readerViewModel.contentRulesForReadabilityLoading
-                                        } else {
-                                            print("Error getting isReaderMode bool from \(value)")
-                                        }
-                                    case .failure(let error):
-                                        print(error.localizedDescription)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    if let pageTitle = state.pageTitle, !pageTitle.isEmpty, pageTitle != readerViewModel.content.title, readerViewModel.content.url == state.pageURL {
-                        safeWrite(readerViewModel.content) { (realm, content) in
-                            content.title = pageTitle
-                        }
-                    }
-                    
-                    if !state.pageURL.isNativeReaderView, (state.pageURL.host != nil && !state.pageURL.isNativeReaderView) {
-                        let urls = Array(readerViewModel.content.voiceAudioURLs)
-                        if urls != readerViewModel.audioURLs {
-                            readerViewModel.audioURLs = urls
-                        } else if !urls.isEmpty {
-                            readerViewModel.isMediaPlayerPresented = true
-                        }
-                    } else if state.pageURL.isNativeReaderView, readerViewModel.isMediaPlayerPresented {
-                        readerViewModel.isMediaPlayerPresented = false
-                    }
-
-//                    try? await Task.sleep(nanoseconds: UInt64(round(1 * 1_000_000_000)))
-                    refreshSettingsInWebView()
-                    refreshTitleInWebView()
-                    
-                    if let onNavigationFinished = onNavigationFinished {
-                        onNavigationFinished(state)
                     }
                 }
             })
         .edgesIgnoringSafeArea(.all)
-        .onChange(of: state.pageImageURL) { imageURL in
-            Task { @MainActor in
-                if let imageURL = imageURL, readerViewModel.content.imageUrl == nil {
-                    safeWrite(readerViewModel.content) { _, content in
-                        content.imageUrl = imageURL
-                    }
-                }
-            }
-        }
         .onChange(of: readerFontSize) { newFontSize in
             guard let newFontSize = newFontSize else { return }
             Task { @MainActor in
@@ -297,20 +223,6 @@ public struct Reader: View {
             }
         }
     }
-   
-    @MainActor func refreshTitleInWebView() {
-        if readerViewModel.content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading {
-            readerViewModel.scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(readerViewModel.content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
-        }
-    }
-    
-    func refreshSettingsInWebView() {
-        Task { @MainActor in
-            readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
-            readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
-            refreshTitleInWebView()
-        }
-    }
 }
 
 fileprivate extension Reader {
@@ -323,7 +235,7 @@ fileprivate extension Reader {
                 content.isReaderModeByDefault = false
             }
         }
-        action = .reload
+        readerViewModel.action = .reload
     }
     
     @MainActor
@@ -418,9 +330,9 @@ fileprivate extension Reader {
                             let transformedContent: String
                             transformedContent = try docToSet.outerHtml()
                             if let url = url {
-                                action = .loadHTMLWithBaseURL(transformedContent, url)
+                                readerViewModel.action = .loadHTMLWithBaseURL(transformedContent, url)
                             } else {
-                                action = .loadHTML(transformedContent)
+                                readerViewModel.action = .loadHTML(transformedContent)
                             }
                             continuation.resume()
                         }
