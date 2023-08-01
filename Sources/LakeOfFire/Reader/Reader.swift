@@ -7,17 +7,11 @@ import Combine
 import RealmSwiftGaps
 import SwiftUIDownloads
 
-struct ReaderActionKey: EnvironmentKey {
-    static let defaultValue: Binding<WebViewAction> = .constant(.idle)
-}
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
 struct ReaderContentKey: EnvironmentKey {
     static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-}
-struct ReaderContentBindingKey: EnvironmentKey {
-    static let defaultValue: Binding<(any ReaderContentModel)> = .constant(ReaderContentLoader.unsavedHome)
 }
 
 public extension EnvironmentValues {
@@ -28,14 +22,6 @@ public extension EnvironmentValues {
     var readerContent: (any ReaderContentModel) {
         get { self[ReaderContentKey.self] }
         set { self[ReaderContentKey.self] = newValue }
-    }
-    var readerContentBinding: Binding<(any ReaderContentModel)> {
-        get { self[ReaderContentBindingKey.self] }
-        set { self[ReaderContentBindingKey.self] = newValue }
-    }
-    var readerAction: Binding<WebViewAction> {
-        get { self[ReaderActionKey.self] }
-        set { self[ReaderActionKey.self] = newValue }
     }
     var readerWebViewState: WebViewState {
         get { self[ReaderWebViewStateKey.self] }
@@ -49,14 +35,15 @@ public extension URL {
     }
 }
 
-public extension WebViewAction {
+public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
-    static func load(content: any ReaderContentModel) -> WebViewAction? {
+    func load(content: any ReaderContentModel) {
         if content.isReaderModeByDefault && content.htmlToDisplay != nil {
-            guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "about:load/reader?reader-url=\(encodedURL)") else { return nil }
-            return .load(URLRequest(url: historyURL))
+            guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "about:load/reader?reader-url=\(encodedURL)") else { return }
+            load(URLRequest(url: historyURL))
+        } else {
+            load(URLRequest(url: content.url))
         }
-        return .load(URLRequest(url: content.url))
     }
 }
 
@@ -68,6 +55,7 @@ public struct Reader: View {
     var processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil
     var obscuredInsets: EdgeInsets? = nil
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
+    var onNavigationCommitted: ((WebViewState) -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     
     @ObservedObject private var downloadController = DownloadController.shared
@@ -85,7 +73,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationFinished: ((WebViewState) -> Void)? = nil) {
+    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.readerViewModel = readerViewModel
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -93,6 +81,7 @@ public struct Reader: View {
         self.processReadabilityContent = processReadabilityContent
         self.obscuredInsets = obscuredInsets
         self.messageHandlers = messageHandlers
+        self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
     }
     
@@ -103,7 +92,7 @@ public struct Reader: View {
             config: WebViewConfig(
                 contentRules: readerViewModel.contentRules,
                 userScripts: readerViewModel.allScripts),
-            action: $readerViewModel.action,
+            navigator: readerViewModel.navigator,
             state: $readerViewModel.state,
             scriptCaller: readerViewModel.scriptCaller,
             blockedHosts: Set([
@@ -119,6 +108,7 @@ public struct Reader: View {
             persistentWebViewID: persistentWebViewID,
             messageHandlers: [
                 "readabilityParsed": { message in
+                    print("##### \(readerViewModel.content.url)")
                     guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                         return
                     }
@@ -186,12 +176,17 @@ public struct Reader: View {
                     }
                 }
             ].merging(messageHandlers) { (current, _) in current },
+            onNavigationCommitted: { state in
+                readerViewModel.onNavigationCommitted(newState: state) { newState in
+                    if let onNavigationCommitted = onNavigationCommitted {
+                        onNavigationCommitted(newState)
+                    }
+                }
+            },
             onNavigationFinished: { state in
-                Task { @MainActor in
-                    readerViewModel.onNavigationFinished(newState: state) { newState in
-                        if let onNavigationFinished = onNavigationFinished {
-                            onNavigationFinished(newState)
-                        }
+                readerViewModel.onNavigationFinished(newState: state) { newState in
+                    if let onNavigationFinished = onNavigationFinished {
+                        onNavigationFinished(newState)
                     }
                 }
             })
@@ -235,7 +230,7 @@ fileprivate extension Reader {
                 content.isReaderModeByDefault = false
             }
         }
-        readerViewModel.action = .reload
+        readerViewModel.navigator.reload()
     }
     
     @MainActor
@@ -329,11 +324,7 @@ fileprivate extension Reader {
                         } else {
                             let transformedContent: String
                             transformedContent = try docToSet.outerHtml()
-                            if let url = url {
-                                readerViewModel.action = .loadHTMLWithBaseURL(transformedContent, url)
-                            } else {
-                                readerViewModel.action = .loadHTML(transformedContent)
-                            }
+                            readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
                             continuation.resume()
                         }
                     } catch {

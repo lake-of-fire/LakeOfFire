@@ -268,7 +268,7 @@ struct LibraryFeedFormSections: View {
         feedTitle = feed.title
         feedDescription = feed.markdownDescription
         readerFeedEntry = nil
-        readerViewModel.action = .load(URLRequest(url: URL(string: "about:blank")!))
+        readerViewModel.navigator.load(URLRequest(url: URL(string: "about:blank")!))
         
         refreshFromOpenGraph()
         if feed.entries.isEmpty {
@@ -344,7 +344,7 @@ struct LibraryFeedFormSections: View {
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
         guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: feed.id) else {
             readerFeedEntry = nil
-            readerViewModel.action = .load(URLRequest(url: URL(string: "about:blank")!))
+            readerViewModel.navigator.load(URLRequest(url: URL(string: "about:blank")!))
             return
         }
         
@@ -352,15 +352,15 @@ struct LibraryFeedFormSections: View {
         Task { @MainActor in
 //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
             if let entry = entries.last {
-                if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating), let load = WebViewAction.load(content: entry) {
+                if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
-                    if readerViewModel.action != load {
-                        readerViewModel.action = load
+                    if readerViewModel.content != entry {
+                        readerViewModel.navigator.load(content: entry)
                     }
                 }
             } else {
                 readerFeedEntry = nil
-                readerViewModel.action = .load(URLRequest(url: URL(string: "about:blank")!))
+                readerViewModel.navigator.load(URLRequest(url: URL(string: "about:blank")!))
             }
         }
     }

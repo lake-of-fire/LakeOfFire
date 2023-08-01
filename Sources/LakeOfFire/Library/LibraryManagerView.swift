@@ -31,7 +31,7 @@ struct LibraryScriptFormSections: View {
     
     //    @State private var readerContent: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
     @State private var webState = WebViewState.empty
-    @State private var webAction = WebViewAction.idle
+    @State private var webNavigator = WebViewNavigator()
     @StateObject private var webViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     @StateObject private var readerModeViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     
@@ -222,7 +222,7 @@ struct LibraryScriptFormSections: View {
                     } else {
                         WebView(
                             config: WebViewConfig(userScripts: [script.webViewUserScript]),
-                            action: $webAction,
+                            navigator: webNavigator,
                             state: $webState,
                             bounces: false)
                     }
@@ -251,10 +251,10 @@ struct LibraryScriptFormSections: View {
         Task { @MainActor in
             guard let url = url ?? script.previewURL else { return }
             if webState.pageURL != url || forceRefresh {
-                webAction = .load(URLRequest(url: url))
+                webNavigator.load(URLRequest(url: url))
             }
             if readerModeViewModel.state.pageURL != url || forceRefresh {
-                readerModeViewModel.action = .load(URLRequest(url: url))
+                readerModeViewModel.navigator.load(URLRequest(url: url))
             }
         }
     }

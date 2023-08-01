@@ -107,9 +107,9 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
 
     @StateObject private var viewModel = ReaderContentListViewModel<ReaderContentType>()
     
-    @Environment(\.readerAction) private var readerAction
     @Environment(\.readerWebViewState) private var readerState
-
+    @EnvironmentObject private var navigator: WebViewNavigator
+    
     var filteredContents: [ReaderContentType] {
         let filtered: LazyFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
             contentFilter($0)
@@ -122,9 +122,9 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerList(entrySelection: $entrySelection, filteredContents: filteredContents)
             .onChange(of: entrySelection) { itemSelection in
-                guard let itemSelection = itemSelection, let content = filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerState.pageURL), let action = WebViewAction.load(content: content) else { return }
+                guard let itemSelection = itemSelection, let content = filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerState.pageURL) else { return }
                 Task { @MainActor in
-                    readerAction.wrappedValue = action
+                    navigator.load(content: content)
                     // TODO: This is crashy sadly.
 //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 //                        scrollViewProxy.scrollTo(entrySelection)

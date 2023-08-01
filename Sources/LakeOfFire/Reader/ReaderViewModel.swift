@@ -6,8 +6,10 @@ import RealmSwiftGaps
 import WebKit
 
 public class ReaderViewModel: NSObject, ObservableObject {
-    @Published public var action: WebViewAction = .idle
-    public var state: WebViewState = .empty {
+    public let navigator = WebViewNavigator()
+    @Published public var state: WebViewState = .empty {
+//    public var action: WebViewAction = .idle
+//    public var state: WebViewState = .empty {
         didSet {
             if let imageURL = state.pageImageURL, content.imageUrl == nil {
                 Task { @MainActor in
@@ -33,7 +35,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
-    private var navigationTask: Task<Void, Never>?
+    private var navigationTask: Task<Void, Error>?
     private var cancellables = Set<AnyCancellable>()
     
     public var allScripts: [WebViewUserScript] {
@@ -90,6 +92,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
+    public func onNavigationCommitted(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+//        Task { @MainActor in
+        
+        if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
+            self.content = content
+        }
+//        }
+    }
+    
     public func onNavigationFinished(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
         if contentRules != nil {
             contentRules = nil
@@ -97,6 +108,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         
         navigationTask?.cancel()
         navigationTask = Task.detached {
+            try Task.checkCancellation()
             var newContent: (any ReaderContentModel)? = nil
             if newState.pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL) {
                 newContent = content
@@ -104,6 +116,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 let contentKey = content.compoundKey
                 
                 Task { @MainActor [weak self] in
+                    try Task.checkCancellation()
                     guard let self = self else { return }
                     guard let content = getContent(configuration: realmConfiguration, type: contentType, key: contentKey) else { return }
                     isNextLoadInReaderMode = content.isReaderModeByDefault
@@ -118,10 +131,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             }
                             contentRules = contentRulesForReadabilityLoading
                         }
-                        self.action = .loadHTMLWithBaseURL(html, contentURL)
+                        try Task.checkCancellation()
+                        navigator.loadHTML(html, baseURL: contentURL)
                     } else {
                         // Shouldn't come here... results in duplicate history. Here for safety though.
-                        self.action = .load(URLRequest(url: contentURL))
+                        navigator.load(URLRequest(url: contentURL))
                     }
                 }
             } else if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
@@ -130,6 +144,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 let contentKey = content.compoundKey
                 
                 Task { @MainActor [weak self] in
+                    try Task.checkCancellation()
                     guard let self = self else { return }
                     guard let content = getContent(configuration: realmConfiguration, type: contentType, key: contentKey) else { return }
                     isNextLoadInReaderMode = content.isReaderModeByDefault
@@ -145,7 +160,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                                         contentRules = contentRulesForReadabilityLoading
                                     }
                                 } else {
-                                    print("Error getting isReaderMode bool from \(value)")
+                                    print("Error getting isReaderMode bool from \(value) or is already true")
                                 }
                             case .failure(let error):
                                 print(error.localizedDescription)
@@ -156,6 +171,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             }
             
             if let newContent = newContent, let pageTitle = newState.pageTitle, !pageTitle.isEmpty, pageTitle != newContent.title, newContent.url == newState.pageURL {
+                try Task.checkCancellation()
                 safeWrite(newContent) { (realm, content) in
                     content.title = pageTitle
                 }
@@ -164,6 +180,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             if let newContent = newContent, !newState.pageURL.isNativeReaderView, (newState.pageURL.host != nil && !newState.pageURL.isNativeReaderView) {
                 let urls = Array(newContent.voiceAudioURLs)
                 Task { @MainActor [weak self] in
+                    try Task.checkCancellation()
                     guard let self = self else { return }
                     if urls != audioURLs {
                         audioURLs = urls
@@ -173,6 +190,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 }
             } else if newState.pageURL.isNativeReaderView {
                 Task { @MainActor [weak self] in
+                    try Task.checkCancellation()
                     guard let self = self else { return }
                     if isMediaPlayerPresented {
                         isMediaPlayerPresented = false
@@ -180,15 +198,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 }
             }
             
-            //                    try? await Task.sleep(nanoseconds: UInt64(round(1 * 1_000_000_000)))
             Task { @MainActor [weak self] in
+                try Task.checkCancellation()
                 self?.refreshSettingsInWebView(newState: newState)
                 self?.refreshTitleInWebView(newState: newState)
                 
-                Task { @MainActor in
-                    if let completion = completion {
-                        completion(newState)
-                    }
+                if let completion = completion {
+                    completion(newState)
                 }
             }
         }

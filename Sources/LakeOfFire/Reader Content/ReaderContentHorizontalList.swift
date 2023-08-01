@@ -6,7 +6,7 @@ import SwiftUtilities
 fileprivate struct ReaderContentInnerHorizontalList<ReaderContentType: ReaderContentModel>: View where ReaderContentType: RealmCollectionValue {
     var filteredContents: [ReaderContentType]
     
-    @Environment(\.readerAction) var readerAction
+    @EnvironmentObject private var navigator: WebViewNavigator
     @Environment(\.readerWebViewState) private var readerState
     @AppStorage("appTint") private var appTint: Color = Color.accentColor
     
@@ -22,9 +22,9 @@ fileprivate struct ReaderContentInnerHorizontalList<ReaderContentType: ReaderCon
             LazyHStack {
                 ForEach(filteredContents, id: \.compoundKey)  { (content: ReaderContentType) in
                     Button {
-                        guard !content.url.matchesReaderURL(readerState.pageURL), let action = WebViewAction.load(content: content) else { return }
+                        guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
                         Task { @MainActor in
-                            readerAction.wrappedValue = action
+                            navigator.load(content: content)
                         }
                     } label: {
                         cellView(content)
