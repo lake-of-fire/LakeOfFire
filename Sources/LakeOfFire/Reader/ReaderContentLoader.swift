@@ -22,10 +22,11 @@ public struct ReaderContentLoader {
         return Self.load(url: URL(string: "about:blank")!, persist: true)!
     }
     
-    public static func load(url: URL, persist: Bool = true) -> (any ReaderContentModel)? {
+    public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) -> (any ReaderContentModel)? {
         let lowerURL = url.absoluteString.lowercased()
         if url.scheme == "about" && lowerURL.starts(with: "about:load") {
             // Don't persist about:load
+            // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
             return nil
         } else if url.scheme == "about" && lowerURL.starts(with: "about:blank") && !persist {
             let historyRecord = HistoryRecord()
@@ -41,21 +42,28 @@ public struct ReaderContentLoader {
         
         guard let bookmarkRealm = try? Realm(configuration: bookmarkRealmConfiguration), let historyRealm = try? Realm(configuration: historyRealmConfiguration), let feedRealm = try? Realm(configuration: feedEntryRealmConfiguration) else { return nil }
         
-        let bookmark = bookmarkRealm.objects(Bookmark.self)
+        var match: (any ReaderContentModel)?
+        let history = historyRealm.objects(HistoryRecord.self)
+            .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
             .filter("url == %@", url.absoluteString)
             .first
-        let history = historyRealm.objects(HistoryRecord.self)
+        let bookmark = bookmarkRealm.objects(Bookmark.self)
+            .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
             .filter("url == %@", url.absoluteString)
             .first
         let feed = feedRealm.objects(FeedEntry.self)
+            .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
             .filter("url == %@", url.absoluteString)
             .first
         let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
-        var match = candidates.max(by: { $0.createdAt > $1.createdAt })
-        if match == nil {
+        match = candidates.max(by: { $0.createdAt < $1.createdAt })
+        
+        if let match = match, countsAsHistoryVisit && persist, match.className != HistoryRecord.className() {
+            let historyRecord = match.addHistoryRecord(realmConfiguration: historyRealmConfiguration)
+        } else if match == nil {
             let historyRecord = HistoryRecord()
             historyRecord.url = url
             //        historyRecord.isReaderModeByDefault

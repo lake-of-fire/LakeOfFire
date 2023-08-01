@@ -3,6 +3,7 @@ import RealmSwift
 import SwiftSoup
 import BigSyncKit
 import FeedKit
+import RealmSwiftGaps
 
 public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable {
     public var needsSyncToServer: Bool {
@@ -137,8 +138,19 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     }
     
     public var imageURLToDisplay: URL? {
-        if extractImageFromContent, let url = imageURLExtractedFromContent {
-            return url
+        if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
+            let legacyHTMLContent = htmlContent
+            let ref = ThreadSafeReference(to: self)
+            Task.detached {
+                if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html) {
+                    Task { @MainActor in
+                        safeWrite(configuration: configuration) { realm in
+                            let entry = realm.resolve(ref)
+                            entry?.imageUrl = url
+                        }
+                    }
+                }
+            }
         }
         return imageUrl
     }
@@ -234,8 +246,8 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
 }
 
 fileprivate extension FeedEntry {
-    var imageURLExtractedFromContent: URL? {
-        guard let htmlContent = html, let doc = try? SwiftSoup.parse(htmlContent) else { return nil }
+    static func imageURLExtractedFromContent(htmlContent: String) -> URL? {
+        guard let doc = try? SwiftSoup.parse(htmlContent) else { return nil }
         doc.outputSettings().prettyPrint(pretty: false)
         do {
             let threshold: Float = 0.3

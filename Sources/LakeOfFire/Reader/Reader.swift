@@ -108,7 +108,6 @@ public struct Reader: View {
             persistentWebViewID: persistentWebViewID,
             messageHandlers: [
                 "readabilityParsed": { message in
-                    print("##### \(readerViewModel.content.url)")
                     guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                         return
                     }
@@ -130,6 +129,7 @@ public struct Reader: View {
                         }
                         safeWrite(readerViewModel.content) { _, content in
                             readerViewModel.content.isReaderModeAvailable = true
+                            #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
                         }
                     }
                 },
@@ -213,8 +213,13 @@ public struct Reader: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
+            VStack {
+                Text(readerViewModel.content.className)
+                Text(readerViewModel.content.isReaderModeAvailable.description)
+                Text(readerViewModel.content.isReaderModeByDefault.description)
             if readerViewModel.content.isReaderModeAvailable && !readerViewModel.content.isReaderModeByDefault {
                 ReaderModeButtonBar(showReaderView: showReaderView)
+            }
             }
         }
     }

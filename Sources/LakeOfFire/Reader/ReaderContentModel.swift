@@ -238,7 +238,7 @@ public extension ReaderContentModel {
         return Array(realm.objects(Bookmark.self).where({ $0.isDeleted == false }).sorted(by: \.createdAt)).reversed()
     }
 
-    func addHistoryRecord(realmConfiguration: Realm.Configuration) {
+    func addHistoryRecord(realmConfiguration: Realm.Configuration) -> HistoryRecord {
         let realm = try! Realm(configuration: realmConfiguration)
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: url, html: html)) {
             try! realm.write {
@@ -252,6 +252,7 @@ public extension ReaderContentModel {
                 record.isDeleted = false
                 configureBookmark(record)
             }
+            return record
         } else {
             let record = HistoryRecord()
             record.url = url
@@ -267,6 +268,7 @@ public extension ReaderContentModel {
             try! realm.write {
                 realm.add(record, update: .modified)
             }
+            return record
         }
     }
 }
