@@ -128,6 +128,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
 //        let existingTitle = content.title
 //        let contentURL = content.url
         
+         // FIXME: move isNextLoadInReaderMode setting to onCommitted, so that readabilityParsed can trigger showReaderView
         navigationTask?.cancel()
         navigationTask = Task.detached {
             try Task.checkCancellation()

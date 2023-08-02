@@ -124,7 +124,7 @@ public struct Reader: View {
                         if readerViewModel.isNextLoadInReaderMode || forceReaderModeWhenAvailable {
                             readerViewModel.isNextLoadInReaderMode = false
                             showReaderView()
-                        } else if result.content.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
+                        } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
                             readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
                         }
                         safeWrite(readerViewModel.content) { _, content in
@@ -213,13 +213,8 @@ public struct Reader: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            VStack {
-                Text(readerViewModel.content.className)
-                Text(readerViewModel.content.isReaderModeAvailable.description)
-                Text(readerViewModel.content.isReaderModeByDefault.description)
             if readerViewModel.content.isReaderModeAvailable && !readerViewModel.content.isReaderModeByDefault {
                 ReaderModeButtonBar(showReaderView: showReaderView)
-            }
             }
         }
     }

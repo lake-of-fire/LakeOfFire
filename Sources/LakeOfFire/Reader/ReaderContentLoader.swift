@@ -61,8 +61,8 @@ public struct ReaderContentLoader {
         let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
         match = candidates.max(by: { $0.createdAt < $1.createdAt })
         
-        if let match = match, countsAsHistoryVisit && persist, match.className != HistoryRecord.className() {
-            let historyRecord = match.addHistoryRecord(realmConfiguration: historyRealmConfiguration)
+        if !url.isFileURL, let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.className != HistoryRecord.className() {
+            return nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration)
         } else if match == nil {
             let historyRecord = HistoryRecord()
             historyRecord.url = url
