@@ -430,6 +430,7 @@ public class LibraryDataManager: NSObject {
                 if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
                     if script.opmlURL == download?.url || script.isDeleted {
                         Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
+                        Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                         importedScripts.append(script)
                     }
                 } else {
@@ -441,6 +442,7 @@ public class LibraryDataManager: NSObject {
                         }
                         Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
                         realm.add(script, update: .modified)
+                        Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                         importedScripts.append(script)
                     }
                 }
@@ -480,6 +482,29 @@ public class LibraryDataManager: NSObject {
             importedScripts.append(contentsOf: newScripts)
         }
         return (importedCategories, importedFeeds, importedScripts)
+    }
+    
+    static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) {
+        guard let realm = script.realm else { return }
+        let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
+//        script.allowedDomains.removeAll()
+        for (idx, existingDomain) in script.allowedDomains.enumerated() {
+            if !domains.contains(existingDomain.domain) {
+                existingDomain.isDeleted = true
+                script.allowedDomains.remove(at: idx)
+            } else if existingDomain.isDeleted {
+                existingDomain.isDeleted = false
+            }
+        }
+        let existingDomains = script.allowedDomains.map { $0.domain }
+        for domain in domains {
+            if !existingDomains.contains(domain) {
+                let newDomain = UserScriptAllowedDomain()
+                newDomain.domain = domain
+                realm.add(newDomain, update: .modified)
+                script.allowedDomains.append(newDomain)
+            }
+        }
     }
     
     static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, script: UserScript) {
@@ -551,6 +576,7 @@ public class LibraryDataManager: NSObject {
         ], children: LibraryConfiguration.shared.userScripts.where({ $0.opmlURL == nil }).map({ script in
             return OPMLEntry(text: script.title, attributes: [
                 Attribute(name: "uuid", value: script.id.uuidString),
+                Attribute(name: "allowedDomains", value: script.allowedDomains.filter { !$0.isDeleted }.compactMap { $0.domain.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) }.joined(separator: ",")),
                 Attribute(name: "script", value: script.script.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) ?? script.script),
                 Attribute(name: "injectAtStart", value: script.injectAtStart ? "true" : "false"),
                 Attribute(name: "mainFrameOnly", value: script.mainFrameOnly ? "true" : "false"),

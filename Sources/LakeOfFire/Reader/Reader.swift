@@ -121,8 +121,7 @@ public struct Reader: View {
                     Task { @MainActor in
                         guard !url.isNativeReaderView else { return }
                         readerViewModel.readabilityContent = result.outputHTML
-                        if readerViewModel.isNextLoadInReaderMode || forceReaderModeWhenAvailable {
-                            readerViewModel.isNextLoadInReaderMode = false
+                        if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                             showReaderView()
                         } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
                             readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
@@ -225,11 +224,11 @@ fileprivate extension Reader {
    
     @MainActor
     func showOriginal() {
-        if !(readerViewModel.content is FeedEntry) {
-            safeWrite(readerViewModel.content) { _, content in
-                content.isReaderModeByDefault = false
-            }
+//        if !(readerViewModel.content is FeedEntry) {
+        safeWrite(readerViewModel.content) { _, content in
+            content.isReaderModeByDefault = false
         }
+//        }
         readerViewModel.navigator.reload()
     }
     

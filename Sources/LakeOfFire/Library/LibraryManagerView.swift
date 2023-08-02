@@ -631,7 +631,7 @@ struct LibraryCategoriesView: View {
     }
     
 #if os(macOS)
-    @State private var savePanel = NSSavePanel()
+    @State private var savePanel: NSSavePanel?
     @State private var window: NSWindow?
 #endif
 
@@ -655,6 +655,8 @@ struct LibraryCategoriesView: View {
                     .disabled(viewModel.exportedOPML == nil)
 #if os(macOS)
                     Button {
+                        savePanel = savePanel ?? NSSavePanel()
+                        guard let savePanel = savePanel else { return }
                         savePanel.allowedContentTypes = [UTType(exportedAs: "public.opml")]
                         savePanel.allowsOtherFileTypes = false
                         savePanel.prompt = "Export OPML"
