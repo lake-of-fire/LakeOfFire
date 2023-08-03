@@ -238,16 +238,16 @@ public extension ReaderContentModel {
         return Array(realm.objects(Bookmark.self).where({ $0.isDeleted == false }).sorted(by: \.createdAt)).reversed()
     }
 
-    func addHistoryRecord(realmConfiguration: Realm.Configuration) -> HistoryRecord {
+    func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) -> HistoryRecord {
         let realm = try! Realm(configuration: realmConfiguration)
-        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: url, html: html)) {
+        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
             try! realm.write {
                 record.title = title
                 record.imageUrl = imageUrl
                 record.isFromClipboard = isFromClipboard
                 record.content = content
                 record.publicationDate = publicationDate
-                record.isReaderModeByDefault = isReaderModeByDefault
+//                record.isReaderModeByDefault = isReaderModeByDefault
                 record.lastVisitedAt = Date()
                 record.isDeleted = false
                 configureBookmark(record)
@@ -255,7 +255,7 @@ public extension ReaderContentModel {
             return record
         } else {
             let record = HistoryRecord()
-            record.url = url
+            record.url = pageURL
             record.title = title
             record.imageUrl = imageUrl
             record.content = content

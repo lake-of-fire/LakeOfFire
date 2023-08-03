@@ -9,6 +9,14 @@ import UIKit
 #endif
 import RealmSwiftGaps
 
+fileprivate extension URL {
+    func settingScheme(_ value: String) -> URL {
+        let components = NSURLComponents.init(url: self, resolvingAgainstBaseURL: true)
+        components?.scheme = value
+        return (components?.url!)!
+    }
+}
+    
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
@@ -53,18 +61,24 @@ public struct ReaderContentLoader {
             .sorted(by: \.createdAt, ascending: false)
             .filter("url == %@", url.absoluteString)
             .first
-        let feed = feedRealm.objects(FeedEntry.self)
+        let feeds = feedRealm.objects(FeedEntry.self)
             .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
-            .filter("url == %@", url.absoluteString)
-            .first
+        
+        var feed: FeedEntry?
+        if url.scheme == "https" {
+            feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
+        } else {
+            feed = feeds.filter("url == %@", url.absoluteString).first
+        }
+        
         let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
         match = candidates.max(by: {
             ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
         })
         
         if !url.isFileURL, let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.className != HistoryRecord.className() {
-            return nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration)
+            return nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
         } else if match == nil {
             let historyRecord = HistoryRecord()
             historyRecord.url = url
