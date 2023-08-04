@@ -36,9 +36,13 @@ public class Bookmark: Object, ReaderContentModel {
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
     
-    public var htmlToDisplay: String? { html }
+    public var htmlToDisplay: String? {
+        if rssContainsFullContent {
+            return html
+        }
+        return nil
+    }
     public var imageURLToDisplay: URL? { imageUrl }
-    
     
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url

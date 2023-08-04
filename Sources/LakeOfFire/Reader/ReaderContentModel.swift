@@ -2,6 +2,7 @@ import Foundation
 import RealmSwift
 import SwiftUIWebView
 import SwiftUtilities
+import RealmSwiftGaps
 
 public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
     var compoundKey: String { get set }
@@ -34,6 +35,8 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     // Feed options.
     /// Whether the content be viewed directly instead of loading the URL.
     var isReaderModeByDefault: Bool { get set }
+    // TODO: rename rssContainsFullContent to be more general.
+    /// Whether `content` contains the full content (not just for RSS).
     var rssContainsFullContent: Bool { get set }
     var meaningfulContentMinLength: Int { get set }
     var injectEntryImageIntoHeader: Bool { get set }
@@ -221,7 +224,7 @@ public extension ReaderContentModel {
         guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
             return false
         }
-        try! realm.write {
+        safeWrite(bookmark) { _, bookmark in
             bookmark.isDeleted = true
         }
         return true
@@ -243,27 +246,41 @@ public extension ReaderContentModel {
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
             try! realm.write {
                 record.title = title
-                record.imageUrl = imageUrl
+                record.imageUrl = imageURLToDisplay
                 record.isFromClipboard = isFromClipboard
-                record.content = content
+                record.rssContainsFullContent = rssContainsFullContent
+                if rssContainsFullContent {
+                    record.content = content
+                }
+                record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
+                record.displayPublicationDate = displayPublicationDate
                 record.lastVisitedAt = Date()
                 record.isDeleted = false
-                configureBookmark(record)
+                if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
+                    record.configureBookmark(bookmark)
+                }
             }
             return record
         } else {
             let record = HistoryRecord()
             record.url = pageURL
             record.title = title
-            record.imageUrl = imageUrl
-            record.content = content
+            record.imageUrl = imageURLToDisplay
+            record.rssContainsFullContent = rssContainsFullContent
+            if rssContainsFullContent {
+                record.content = content
+            }
             record.publicationDate = publicationDate
+            record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
             record.isReaderModeByDefault = isReaderModeByDefault
-            configureBookmark(record)
+            record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
             record.lastVisitedAt = Date()
+            if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
+                record.configureBookmark(bookmark)
+            }
             record.updateCompoundKey()
             try! realm.write {
                 realm.add(record, update: .modified)

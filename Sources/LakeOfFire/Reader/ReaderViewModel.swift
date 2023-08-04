@@ -92,7 +92,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationCommitted(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        print("## nav committed ... \(newState.pageURL)")
 //
 //        if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
 //

@@ -129,7 +129,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
 //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
     
     public var isFromClipboard = false
-
+    
     public var htmlToDisplay: String? {
         if rssContainsFullContent {
             return Self.contentToHTML(legacyHTMLContent: htmlContent, content: content)
@@ -222,6 +222,9 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     public func configureBookmark(_ bookmark: Bookmark) {
         // Feed options.
         bookmark.rssContainsFullContent = feed?.rssContainsFullContent ?? bookmark.rssContainsFullContent
+        if bookmark.rssContainsFullContent {
+            bookmark.content = content
+        }
         bookmark.meaningfulContentMinLength = feed?.meaningfulContentMinLength ?? bookmark.meaningfulContentMinLength
         bookmark.injectEntryImageIntoHeader = feed?.injectEntryImageIntoHeader ?? bookmark.injectEntryImageIntoHeader
 //        bookmark.rawEntryThumbnailContentMode = feed?.contentmode

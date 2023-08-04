@@ -114,7 +114,7 @@ public struct Reader: View {
                     guard readerViewModel.content.url == result.pageURL else { return }
                     guard !result.content.isEmpty else {
                         safeWrite(readerViewModel.content) { _, content in
-                            readerViewModel.content.isReaderModeAvailable = false
+                            content.isReaderModeAvailable = false
                         }
                         return
                     }
@@ -127,8 +127,12 @@ public struct Reader: View {
                             readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
                         }
                         safeWrite(readerViewModel.content) { _, content in
-                            readerViewModel.content.isReaderModeAvailable = true
+                            content.isReaderModeAvailable = true
                             #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
+                            if !content.rssContainsFullContent {
+                                content.html = result.content
+                                content.rssContainsFullContent = true
+                            }
                         }
                     }
                 },
@@ -238,7 +242,7 @@ fileprivate extension Reader {
             return
         }
         let title = readerViewModel.content.title
-        let imageURL = readerViewModel.content.imageUrl
+        let imageURL = readerViewModel.content.imageURLToDisplay
         let renderToSelector = url.isEPUBURL ? "#viewer" : nil
         Task.detached(priority: .userInitiated) {
             do {
@@ -250,9 +254,8 @@ fileprivate extension Reader {
     /// Content before it has been treated with Reader-specific processing.
     private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?) async throws {
         return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
-            safeWrite(readerViewModel.content) { _, content in
-                content.isReaderModeAvailable = true
-                content.isReaderModeByDefault = true
+            safeWrite(readerViewModel.content) { _, readerContent in
+                readerContent.isReaderModeByDefault = true
             }
             
             let injectEntryImageIntoHeader = readerViewModel.content.injectEntryImageIntoHeader
