@@ -180,16 +180,20 @@ public struct Reader: View {
                 }
             ].merging(messageHandlers) { (current, _) in current },
             onNavigationCommitted: { state in
-                readerViewModel.onNavigationCommitted(newState: state) { newState in
-                    if let onNavigationCommitted = onNavigationCommitted {
-                        onNavigationCommitted(newState)
+                Task { @MainActor in
+                    readerViewModel.onNavigationCommitted(newState: state) { newState in
+                        if let onNavigationCommitted = onNavigationCommitted {
+                            onNavigationCommitted(newState)
+                        }
                     }
                 }
             },
             onNavigationFinished: { state in
-                readerViewModel.onNavigationFinished(newState: state) { newState in
-                    if let onNavigationFinished = onNavigationFinished {
-                        onNavigationFinished(newState)
+                Task { @MainActor in
+                    readerViewModel.onNavigationFinished(newState: state) { newState in
+                        if let onNavigationFinished = onNavigationFinished {
+                            onNavigationFinished(newState)
+                        }
                     }
                 }
             })

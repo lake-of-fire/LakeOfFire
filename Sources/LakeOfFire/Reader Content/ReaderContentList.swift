@@ -179,7 +179,7 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
                     }
                     return
                 }
-                if entrySelection == nil, oldState?.pageURL != state.pageURL {
+                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
                     try Task.checkCancellation()
                     Task { @MainActor in
                         self.entrySelection = content.compoundKey
