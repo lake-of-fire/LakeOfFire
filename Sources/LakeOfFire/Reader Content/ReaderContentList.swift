@@ -20,16 +20,17 @@ class ReaderContentListViewModel<ReaderContentType: ReaderContentModel>: Observa
     var refreshSelectionTask: Task<Void, Never>?
     
     func load(contents: AnyRealmCollection<ReaderContentType>, contentFilter: @escaping ((ReaderContentType) -> Bool), sortOrder: [KeyPathComparator<ReaderContentType>]) {
-        Task.detached {
+//        Task.detached {
             let filtered: LazyFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
                 contentFilter($0)
             })
             let sorted = filtered.sorted(using: sortOrder)
             let toSet = Array(sorted.prefix(30))
-            Task { @MainActor [weak self] in
-                self?.filteredContents = toSet
-            }
-        }
+//            Task { @MainActor [weak self] in
+//                self?.filteredContents = toSet
+                filteredContents = toSet
+//            }
+//        }
     }
 }
 
@@ -63,7 +64,7 @@ fileprivate struct ReaderContentInnerList<ReaderContentType: ReaderContentModel>
                     })
                     .toggleStyle(ListItemToggleStyle())
                     //                    .buttonStyle(.borderless)
-                    .id(feedEntry.compoundKey)
+//                    .id(feedEntry.compoundKey)
                 }
                 .headerProminence(.increased)
             }
@@ -78,7 +79,7 @@ fileprivate struct ReaderContentInnerList<ReaderContentType: ReaderContentModel>
                 } label: {
                     cellView(content)
                         .multilineTextAlignment(.leading)
-                        .id(content.compoundKey)
+//                        .id(content.compoundKey)
                 }
                 .buttonStyle(.borderless)
                 .tint(.primary)

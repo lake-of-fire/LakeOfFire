@@ -375,7 +375,7 @@ public extension Feed {
             return feedEntry
         }
         
-        try! realm.write {
+        realm.writeAsync {
             realm.add(feedEntries, update: .modified)
         }
     }
@@ -445,7 +445,7 @@ public extension Feed {
             return feedEntry
         }
         
-        try! realm.write {
+        realm.writeAsync {
             realm.add(feedEntries, update: .modified)
         }
     }

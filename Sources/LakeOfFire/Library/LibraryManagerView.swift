@@ -280,7 +280,8 @@ struct LibraryScriptForm: View {
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryScriptsListView: View {
     @Binding var selectedScript: UserScript?
-    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
+    
+    @ObservedRealmObject private var libraryConfiguration: LibraryConfiguration = .shared
     
 #if os(iOS)
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 50
@@ -620,8 +621,9 @@ struct LibraryCategoryView: View {
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoriesView: View {
-    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
     @StateObject var viewModel = LibraryManagerViewModel.shared
+    
+    @ObservedRealmObject private var libraryConfiguration: LibraryConfiguration = .shared
     
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
@@ -705,7 +707,7 @@ struct LibraryCategoriesView: View {
                 }
                 Section("Library") {
                     ForEach(libraryConfiguration.categories) { category in
-                        NavigationLink(value: LibraryRoute.category(category)) {
+                        NavigationLink(value: category) {
                             FeedCategoryButtonLabel(category: category, font: .headline, isCompact: true)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
@@ -728,7 +730,7 @@ struct LibraryCategoriesView: View {
                 }
                 Section("Archive") {
                     ForEach(archivedCategories) { category in
-                        NavigationLink(value: LibraryRoute.category(category)) {
+                        NavigationLink(value: category) {
                             FeedCategoryButtonLabel(category: category, font: .headline, isCompact: true)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 .saturation(0)
@@ -852,8 +854,10 @@ struct LibraryCategoriesView: View {
 @available(iOS 16.0, macOS 13.0, *)
 public struct LibraryManagerView: View {
     @Binding var isPresented: Bool
-    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
+//    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
     @ObservedObject var viewModel: LibraryManagerViewModel
+    
+    @ObservedRealmObject private var libraryConfiguration = LibraryConfiguration.shared
     
     @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
     @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var feeds
@@ -867,10 +871,24 @@ public struct LibraryManagerView: View {
     
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
-            NavigationStack(path: $viewModel.presentedCategories) {
-                LibraryCategoriesView(libraryConfiguration: libraryConfiguration, viewModel: viewModel)
-                    .navigationDestination(for: LibraryRoute.self) { (route: LibraryRoute) in
-                        sidebarNavigationDestination(route: route)
+            NavigationStack(path: $viewModel.navigationPath) {
+                LibraryCategoriesView(viewModel: viewModel)
+                    .navigationDestination(for: FeedCategory.self) { category in
+                        LibraryCategoryView(category: category, selectedFeed: $viewModel.selectedFeed)
+                            .task {
+                                if let feed = viewModel.selectedFeed, feed.category != category {
+                                    viewModel.selectedFeed = nil
+                                }
+                                //                        let feedsToDeselect = viewModel.selectedFeed.filter { $0.category != category }
+                                //                        feedsToDeselect.forEach {
+                                //                            viewModel.selectedFeed.remove($0)
+                                //                        }
+                            }
+                    }
+                    .navigationDestination(for: LibraryRoute.self) { route in
+                        // If we have more routes, gotta differentiate them here as a possible TODO.
+                        LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
+                            .navigationTitle("User Scripts")
                     }
             }
 #if os(macOS)
@@ -898,22 +916,22 @@ public struct LibraryManagerView: View {
                         #if os(macOS)
                         ScrollView {
                             LibraryFeedView(feed: feed)
-                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
+//                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
                         }
                         #else
                         LibraryFeedView(feed: feed)
-                            .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
+//                            .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
                         #endif
                     }
                     if let script = viewModel.selectedScript {
                         #if os(macOS)
                         ScrollView {
                             LibraryScriptForm(script: script)
-                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
+//                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
                         }
                         #else
                         LibraryScriptForm(script: script)
-                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
+//                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
                         #endif
                     }
                     if viewModel.selectedFeed == nil && viewModel.selectedScript == nil {
@@ -962,31 +980,8 @@ public struct LibraryManagerView: View {
         }
     }
     
-    public init(isPresented: Binding<Bool>, libraryConfiguration: LibraryConfiguration, viewModel: LibraryManagerViewModel = LibraryManagerViewModel.shared) {
+    public init(isPresented: Binding<Bool>, viewModel: LibraryManagerViewModel = LibraryManagerViewModel.shared) {
         _isPresented = isPresented
-        self.libraryConfiguration = libraryConfiguration
         self.viewModel = viewModel
-    }
-    
-    func sidebarNavigationDestination(route: LibraryRoute) -> some View {
-        Group {
-            if case .userScripts = route {
-                LibraryScriptsListView(selectedScript: $viewModel.selectedScript, libraryConfiguration: libraryConfiguration)
-                    .navigationTitle("User Scripts")
-            }
-            if case .category(let category) = route {
-                LibraryCategoryView(category: category, selectedFeed: $viewModel.selectedFeed)
-                    .id("library-category-view-category-\(category.id.uuidString)")
-                    .task {
-                        if let feed = viewModel.selectedFeed, feed.category != category {
-                            viewModel.selectedFeed = nil
-                        }
-//                        let feedsToDeselect = viewModel.selectedFeed.filter { $0.category != category }
-//                        feedsToDeselect.forEach {
-//                            viewModel.selectedFeed.remove($0)
-//                        }
-                    }
-            }
-        }
     }
 }

@@ -62,7 +62,8 @@ public struct WebFeedButton: View {
         Menu {
             if let feed = feed, !feed.isDeleted, let category = feed.category {
                 Button("Edit Feed in Library") {
-                    libraryViewModel.presentedCategories = [LibraryRoute.category(category)]
+                    libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
+                    libraryViewModel.navigationPath.append(category)
                     libraryViewModel.selectedFeed = feed
                     isLibraryPresented = true
                 }
@@ -79,7 +80,7 @@ public struct WebFeedButton: View {
                 }
                 Divider()
                 Button("Manage Library Categories") {
-                    libraryViewModel.presentedCategories = []
+                    libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
                     isLibraryPresented = true
                 }
             }
@@ -89,7 +90,7 @@ public struct WebFeedButton: View {
         .disabled(isDisabled)
         .fixedSize()
         .sheet(isPresented: $isLibraryPresented) {
-            LibraryManagerView(isPresented: $isLibraryPresented, libraryConfiguration: LibraryConfiguration.shared, viewModel: libraryViewModel)
+            LibraryManagerView(isPresented: $isLibraryPresented, viewModel: libraryViewModel)
 #if os(macOS)
                 .frame(minWidth: 500, minHeight: 400)
 #endif

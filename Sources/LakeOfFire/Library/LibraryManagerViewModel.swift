@@ -42,30 +42,30 @@ extension OPML: Transferable {
 
 public enum LibraryRoute: Hashable, Codable {
     case userScripts
-    case category(FeedCategory)
 }
 
-extension Array<LibraryRoute>: RawRepresentable {
-//extension LibraryRoute: RawRepresentable {
-//public extension Array<LibraryRoute> {
-    public init?(rawValue: String) {
-        guard let data = rawValue.data(using: .utf8),
-              let result = try? JSONDecoder().decode([Element].self, from: data)
-        else {
-            return nil
-        }
-        self = result
-    }
-
-    public var rawValue: String {
-        guard let data = try? JSONEncoder().encode(self),
-              let result = String(data: data, encoding: .utf8)
-        else {
-            return "[]"
-        }
-        return result
-    }
-}
+//
+//extension Array<LibraryRoute>: RawRepresentable {
+////extension LibraryRoute: RawRepresentable {
+////public extension Array<LibraryRoute> {
+//    public init?(rawValue: String) {
+//        guard let data = rawValue.data(using: .utf8),
+//              let result = try? JSONDecoder().decode([Element].self, from: data)
+//        else {
+//            return nil
+//        }
+//        self = result
+//    }
+//
+//    public var rawValue: String {
+//        guard let data = try? JSONEncoder().encode(self),
+//              let result = String(data: data, encoding: .utf8)
+//        else {
+//            return "[]"
+//        }
+//        return result
+//    }
+//}
 
 @available(iOS 16.0, macOS 13.0, *)
 public class LibraryManagerViewModel: NSObject, ObservableObject {
@@ -74,13 +74,15 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published var exportedOPML: OPML?
     @Published var exportedOPMLFileURL: URL?
     
-    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
+//    @AppStorage("LibraryManagerViewModel.presentedCategories") var presentedCategories = [LibraryRoute]()
     @Published var selectedFeed: Feed?
     
     @Published private var exportOPMLTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     
     @Published var selectedScript: UserScript?
+    
+    @Published var navigationPath = NavigationPath()
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
@@ -182,14 +184,16 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 feed.title = title
             }
         }
-        presentedCategories = [LibraryRoute.category(category)]
+        navigationPath.removeLast(navigationPath.count)
+        navigationPath.append(category)
     }
     
     func duplicate(feed: Feed, inCategory category: FeedCategory, overwriteExisting: Bool) {
         do {
             let newFeed = try LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true)
             Task { @MainActor in
-                presentedCategories = [LibraryRoute.category(category)]
+                navigationPath.removeLast(navigationPath.count)
+                navigationPath.append(category)
                 selectedFeed = newFeed
             }
         } catch { }

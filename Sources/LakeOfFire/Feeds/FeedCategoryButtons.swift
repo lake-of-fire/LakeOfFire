@@ -6,7 +6,8 @@ public struct FeedCategoryButtons: View {
     var font = Font.title3
     var isCompact = false
     
-    @StateRealmObject private var libraryConfiguration = LibraryConfiguration.shared
+    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration = LibraryConfiguration.shared
+    
     @ObservedResults(FeedCategory.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false && $0.isArchived == false }) private var categories
     
 #if os(iOS)

@@ -83,14 +83,9 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return scripts
     }
     
-    static var cachedShared: LibraryConfiguration? = nil
     public static var shared: LibraryConfiguration {
-        if let configuration = cachedShared?.thaw() {
-            return configuration
-        }
         let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
         if let configuration = realm.objects(LibraryConfiguration.self).first(where: { $0.isDeleted == false }) {
-            cachedShared = configuration.freeze()
             return configuration
         }
         
@@ -98,7 +93,6 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         safeWrite(configuration: LibraryDataManager.realmConfiguration) { realm in
             realm.add(configuration, update: .modified)
         }
-        cachedShared = configuration.freeze()
         return configuration
     }
     
@@ -131,7 +125,7 @@ public class LibraryDataManager: NSObject {
     public override init() {
         super.init()
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
-        Task { @MainActor in
+//        Task { @MainActor in
             DownloadController.shared.$finishedDownloads
                 .removeDuplicates()
                 .sink(receiveValue: { [weak self] feedDownloads in
@@ -146,7 +140,7 @@ public class LibraryDataManager: NSObject {
                     }
                 })
                 .store(in: &cancellables)
-        }
+//        }
 
 //        DownloadController.shared.finishedDownloads.publisher
 //            .print("FOOBAR ")
@@ -178,7 +172,7 @@ public class LibraryDataManager: NSObject {
 //            })
 //            .store(in: &cancellables)
         
-        Task { @MainActor in
+//        Task { @MainActor in
             let realm = try! Realm(configuration: Self.realmConfiguration)
             realm.objects(UserScript.self)
                 .changesetPublisher
@@ -195,7 +189,7 @@ public class LibraryDataManager: NSObject {
                     }
                 }
                 .store(in: &cancellables)
-        }
+//        }
     }
     
     private func refreshScripts() {
