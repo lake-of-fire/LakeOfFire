@@ -360,27 +360,27 @@ public class LibraryDataManager: NSObject {
                 }
             }
         }
-        
+       
         // Add new categories
-        for category in allImportedCategories {
-            if !configuration.categories.contains(category) {
-                var lastNeighborIdx = configuration.categories.count - 1
-                if let downloadURL = download?.url {
-                    lastNeighborIdx = configuration.categories.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
-                }
-                safeWrite(configuration) { _, configuration in
+        safeWrite(configuration) { _, configuration in
+            for category in allImportedCategories {
+                if !configuration.categories.map({ $0.id }).contains(category.id) {
+                    var lastNeighborIdx = configuration.categories.count - 1
+                    if let downloadURL = download?.url {
+                        lastNeighborIdx = configuration.categories.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
+                    }
                     configuration.categories.insert(category, at: lastNeighborIdx + 1)
                 }
             }
         }
         
         // Move categories
-        var desiredCategories = allImportedCategories
-        for (idx, category) in configuration.categories.enumerated() {
-            if let downloadURL = download?.url, category.opmlURL == downloadURL, !desiredCategories.isEmpty {
-                let desiredCategory = desiredCategories.removeFirst()
-                if let fromIdx = configuration.categories.firstIndex(of: desiredCategory), fromIdx != idx {
-                    safeWrite(configuration) { _, configuration in
+        safeWrite(configuration) { _, configuration in
+            var desiredCategories = allImportedCategories
+            for (idx, category) in configuration.categories.enumerated() {
+                if allImportedCategories.map({ $0.id }).contains(category.id), !desiredCategories.isEmpty {
+                    let desiredCategory = desiredCategories.removeFirst()
+                    if let fromIdx = configuration.categories.map({ $0.id }).firstIndex(of: desiredCategory.id), fromIdx != idx {
                         configuration.categories.move(from: fromIdx, to: idx)
                     }
                 }
@@ -443,14 +443,14 @@ public class LibraryDataManager: NSObject {
             }
         } else if !(opmlEntry.children?.isEmpty ?? true) {
             let opmlTitle = opmlEntry.title ?? opmlEntry.text
-            if category == nil {
+            if category == nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
                 safeWrite(configuration: LibraryDataManager.realmConfiguration) { realm in
                     if let uuid = uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
                         category = existingCategory
-                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
+//                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
                             Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: existingCategory)
                             importedCategories.append(existingCategory)
-                        }
+//                        }
                     } else if let uuid = uuid {
                         category = FeedCategory()
                         if let category = category {
