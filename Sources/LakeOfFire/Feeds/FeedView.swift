@@ -7,16 +7,29 @@ public struct FeedView: View {
     
     @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
     
-    @ObservedResults(FeedEntry.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false }) var entries
+    @ObservedResults(FeedEntry.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false }) var allEntries
+    
+    @State private var entries: Results<FeedEntry>? = nil
     
     public var body: some View {
-        let entries = entries.where { $0.feed == feed }
         AsyncView(operation: {
             try await feed.fetch()
-        }, showInitialContent: !entries.isEmpty) { _ in
-            ReaderContentList(contents: AnyRealmCollection<FeedEntry>(entries), entrySelection: $feedEntrySelection, sortOrder: [KeyPathComparator(\.publicationDate, order: .reverse)])
+        }, showInitialContent: !(entries?.isEmpty ?? true)) { _ in
+            if let entries = entries {
+                ReaderContentList(contents: AnyRealmCollection<FeedEntry>(entries), entrySelection: $feedEntrySelection, sortOrder: [KeyPathComparator(\.publicationDate, order: .reverse)])
+            }
         }
 //        .id(feed.id)
+        .task {
+            Task { @MainActor in
+                entries = allEntries.where { $0.feed == feed }
+            }
+        }
+        .onChange(of: feed) { feed in
+            Task { @MainActor in
+                entries = allEntries.where { $0.feed == feed }
+            }
+        }
     }
     
     public init(feed: Feed) {

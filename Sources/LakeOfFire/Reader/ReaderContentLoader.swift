@@ -189,7 +189,7 @@ public struct ReaderContentLoader {
                 } else {
                     match = load(html: html)
                 }
-                match = load(html: html)
+//                match = load(html: html)
             } else {
                 match = load(html: textToHTML(html))
             }
@@ -200,6 +200,7 @@ public struct ReaderContentLoader {
             let url = snippetURL(key: match.compoundKey) ?? match.url
             safeWrite(match) { _, match in
                 match.isFromClipboard = true
+                match.rssContainsFullContent = true
                 match.url = url
             }
         }

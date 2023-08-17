@@ -114,6 +114,7 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
     @EnvironmentObject private var navigator: WebViewNavigator
     
     public var body: some View {
+        let _ = Self._printChanges()
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerList(entrySelection: $entrySelection, viewModel: viewModel)
             .onChange(of: entrySelection) { itemSelection in
@@ -130,6 +131,10 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
             }
             .task {
+                viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+                refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
+            }
+            .onChange(of: contents) { contents in
                 viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
             }
