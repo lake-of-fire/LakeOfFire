@@ -22,12 +22,12 @@ public struct FeedView: View {
 //        .id(feed.id)
         .task {
             Task { @MainActor in
-                entries = allEntries.where { $0.feed == feed }
+                entries = allEntries.where { $0.feed.id == feed.id }
             }
         }
         .onChange(of: feed) { feed in
             Task { @MainActor in
-                entries = allEntries.where { $0.feed == feed }
+                entries = allEntries.where { $0.feed.id == feed.id }
             }
         }
     }

@@ -114,7 +114,7 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
     @EnvironmentObject private var navigator: WebViewNavigator
     
     public var body: some View {
-        let _ = Self._printChanges()
+//        let _ = Self._printChanges()
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerList(entrySelection: $entrySelection, viewModel: viewModel)
             .onChange(of: entrySelection) { itemSelection in
