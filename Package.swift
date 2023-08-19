@@ -33,7 +33,6 @@ let package = Package(
         .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
-        .package(url: "https://github.com/witekbobrowski/EPUBKit.git", branch: "main"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -56,7 +55,6 @@ let package = Package(
                 .product(name: "FeedKit", package: "FeedKit"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
                 .product(name: "FaviconFinder", package: "FaviconFinder"),
-                .product(name: "EPUBKit", package: "EPUBKit"),
                 .product(name: "DebouncedOnChange", package: "DebouncedOnChange"),
                 .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "GRDB", package: "GRDB.swift"),

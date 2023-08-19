@@ -88,142 +88,154 @@ public struct Reader: View {
     public var body: some View {
         // TODO: Capture segment identifier and use it for unique word tracking instead of element ID
         // TODO: capture reading progress via sentence identifiers from a read section
-        WebView(
-            config: WebViewConfig(
-                contentRules: readerViewModel.contentRules,
-                userScripts: readerViewModel.allScripts),
-            navigator: readerViewModel.navigator,
-            state: $readerViewModel.state,
-            scriptCaller: readerViewModel.scriptCaller,
-            blockedHosts: Set([
-                "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
-                "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
-                "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
-                "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
-                "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
-                "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
-            ]),
-            obscuredInsets: obscuredInsets ?? EdgeInsets(),
-            bounces: bounces,
-            persistentWebViewID: persistentWebViewID,
-            messageHandlers: [
-                "readabilityParsed": { message in
-                    guard let result = ReadabilityParsedMessage(fromMessage: message) else {
-                        return
-                    }
-                    guard readerViewModel.content.url == result.pageURL else { return }
-                    guard !result.content.isEmpty else {
-                        safeWrite(readerViewModel.content) { _, content in
-                            content.isReaderModeAvailable = false
+        GeometryReader { geometry in
+            WebView(
+                config: WebViewConfig(
+                    contentRules: readerViewModel.contentRules,
+                    userScripts: readerViewModel.allScripts),
+                navigator: readerViewModel.navigator,
+                state: $readerViewModel.state,
+                scriptCaller: readerViewModel.scriptCaller,
+                blockedHosts: Set([
+                    "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
+                    "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
+                    "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
+                    "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
+                    "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
+                    "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
+                ]),
+                obscuredInsets: totalObscuredInsets(additionalInsets: geometry.safeAreaInsets),
+                bounces: bounces,
+                persistentWebViewID: persistentWebViewID,
+                messageHandlers: [
+                    "readabilityParsed": { message in
+                        guard let result = ReadabilityParsedMessage(fromMessage: message) else {
+                            return
                         }
-                        return
-                    }
-                    Task { @MainActor in
-                        guard !url.isNativeReaderView else { return }
-                        readerViewModel.readabilityContent = result.outputHTML
-                        if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                            showReaderView()
-                        } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
-                            readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
-                        }
-                        safeWrite(readerViewModel.content) { _, content in
-                            content.isReaderModeAvailable = true
-                            #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
-                            if !content.rssContainsFullContent {
-                                content.html = result.content
-                                content.rssContainsFullContent = true
-                            }
-                        }
-                    }
-                },
-                "showReaderView": { _ in
-                    Task { @MainActor in showReaderView() }
-                },
-                "showOriginal": { _ in
-                    Task { @MainActor in showOriginal() }
-                },
-                //            .onMessageReceived(forName: "youtubeCaptions") { message in
-                //                Task { @MainActor in
-                //                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
-                //                }
-                //            }
-                "rssURLs": { message in
-                    Task { @MainActor in
-                        guard !url.isNativeReaderView else { return }
-                        guard let result = RSSURLsMessage(fromMessage: message) else { return }
-                        let pairs = result.rssURLs.prefix(10)
-                        let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
-                        let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                        safeWrite(readerViewModel.content) { _, content in
-                            content.rssURLs.removeAll()
-                            content.rssTitles.removeAll()
-                            content.rssURLs.append(objectsIn: urls)
-                            content.rssTitles.append(objectsIn: titles)
-                            content.isRSSAvailable = !content.rssURLs.isEmpty
-                        }
-                    }
-                },
-                "titleUpdated": { message in
-                    Task { @MainActor in
-                        guard !url.isNativeReaderView else { return }
-                        guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
-                        guard result.url == readerViewModel.state.pageURL && result.url == readerViewModel.content.url else { return }
-                        let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
-                        // Only update if empty... sometimes annoying titles load later.
-                        if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
+                        guard readerViewModel.content.url == result.pageURL else { return }
+                        guard !result.content.isEmpty else {
                             safeWrite(readerViewModel.content) { _, content in
-                                content.title = newTitle
+                                content.isReaderModeAvailable = false
                             }
-                            readerViewModel.refreshTitleInWebView()
+                            return
+                        }
+                        Task { @MainActor in
+                            guard !url.isNativeReaderView else { return }
+                            readerViewModel.readabilityContent = result.outputHTML
+                            if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
+                                showReaderView()
+                            } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
+                                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
+                            }
+                            safeWrite(readerViewModel.content) { _, content in
+                                content.isReaderModeAvailable = true
+#warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
+                                if !content.rssContainsFullContent {
+                                    content.html = result.content
+                                    content.rssContainsFullContent = true
+                                }
+                            }
+                        }
+                    },
+                    "showReaderView": { _ in
+                        Task { @MainActor in showReaderView() }
+                    },
+                    "showOriginal": { _ in
+                        Task { @MainActor in showOriginal() }
+                    },
+                    //            .onMessageReceived(forName: "youtubeCaptions") { message in
+                    //                Task { @MainActor in
+                    //                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
+                    //                }
+                    //            }
+                    "rssURLs": { message in
+                        Task { @MainActor in
+                            guard !url.isNativeReaderView else { return }
+                            guard let result = RSSURLsMessage(fromMessage: message) else { return }
+                            let pairs = result.rssURLs.prefix(10)
+                            let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
+                            let titles = pairs.map { $0.last ?? $0.first ?? "" }
+                            safeWrite(readerViewModel.content) { _, content in
+                                content.rssURLs.removeAll()
+                                content.rssTitles.removeAll()
+                                content.rssURLs.append(objectsIn: urls)
+                                content.rssTitles.append(objectsIn: titles)
+                                content.isRSSAvailable = !content.rssURLs.isEmpty
+                            }
+                        }
+                    },
+                    "titleUpdated": { message in
+                        Task { @MainActor in
+                            guard !url.isNativeReaderView else { return }
+                            guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
+                            guard result.url == readerViewModel.state.pageURL && result.url == readerViewModel.content.url else { return }
+                            let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
+                            // Only update if empty... sometimes annoying titles load later.
+                            if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
+                                safeWrite(readerViewModel.content) { _, content in
+                                    content.title = newTitle
+                                }
+                                readerViewModel.refreshTitleInWebView()
+                            }
                         }
                     }
-                }
-            ].merging(messageHandlers) { (current, _) in current },
-            onNavigationCommitted: { state in
+                ].merging(messageHandlers) { (current, _) in current },
+                onNavigationCommitted: { state in
+                    Task { @MainActor in
+                        readerViewModel.onNavigationCommitted(newState: state) { newState in
+                            if let onNavigationCommitted = onNavigationCommitted {
+                                onNavigationCommitted(newState)
+                            }
+                        }
+                    }
+                },
+                onNavigationFinished: { state in
+                    Task { @MainActor in
+                        readerViewModel.onNavigationFinished(newState: state) { newState in
+                            if let onNavigationFinished = onNavigationFinished {
+                                onNavigationFinished(newState)
+                            }
+                        }
+                    }
+                })
+#if os(iOS)
+            .edgesIgnoringSafeArea(.all)
+#endif
+            .onChange(of: readerFontSize) { newFontSize in
+                guard let newFontSize = newFontSize else { return }
                 Task { @MainActor in
-                    readerViewModel.onNavigationCommitted(newState: state) { newState in
-                        if let onNavigationCommitted = onNavigationCommitted {
-                            onNavigationCommitted(newState)
-                        }
-                    }
+                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(newFontSize)px';")
                 }
-            },
-            onNavigationFinished: { state in
+            }
+            .onChange(of: lightModeTheme) { lightModeTheme in
                 Task { @MainActor in
-                    readerViewModel.onNavigationFinished(newState: state) { newState in
-                        if let onNavigationFinished = onNavigationFinished {
-                            onNavigationFinished(newState)
-                        }
-                    }
+                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
                 }
-            })
-        .edgesIgnoringSafeArea(.all)
-        .onChange(of: readerFontSize) { newFontSize in
-            guard let newFontSize = newFontSize else { return }
-            Task { @MainActor in
-                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(newFontSize)px';")
+            }
+            .onChange(of: darkModeTheme) { darkModeTheme in
+                Task { @MainActor in
+                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
+                }
+            }
+            .onChange(of: readerViewModel.audioURLs) { audioURLs in
+                Task { @MainActor in
+                    readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if readerViewModel.content.isReaderModeAvailable && !readerViewModel.content.isReaderModeByDefault {
+                    ReaderModeButtonBar(showReaderView: showReaderView)
+                }
             }
         }
-        .onChange(of: lightModeTheme) { lightModeTheme in
-            Task { @MainActor in
-                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
-            }
-        }
-        .onChange(of: darkModeTheme) { darkModeTheme in
-            Task { @MainActor in
-                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
-            }
-        }
-        .onChange(of: readerViewModel.audioURLs) { audioURLs in
-            Task { @MainActor in
-                readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
-            }
-        }
-        .safeAreaInset(edge: .bottom) {
-            if readerViewModel.content.isReaderModeAvailable && !readerViewModel.content.isReaderModeByDefault {
-                ReaderModeButtonBar(showReaderView: showReaderView)
-            }
-        }
+    }
+    
+    private func totalObscuredInsets(additionalInsets: EdgeInsets) -> EdgeInsets {
+#if os(iOS)
+        EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
+#else
+        EdgeInsets()
+#endif
     }
 }
 
@@ -247,7 +259,7 @@ fileprivate extension Reader {
         }
         let title = readerViewModel.content.title
         let imageURL = readerViewModel.content.imageURLToDisplay
-        let renderToSelector = url.isEPUBURL ? "#viewer" : nil
+        let renderToSelector = url.isEBookURL ? "#viewer" : nil
         Task.detached(priority: .userInitiated) {
             do {
                 try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: renderToSelector)

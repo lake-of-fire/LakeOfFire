@@ -44,8 +44,8 @@ public struct ReaderContentLoader {
         }
         
         var url = url
-        if url.isEPUBURL, url.isFileURL {
-            url = URL(string: "epub://" + url.path) ?? url
+        if url.isEBookURL, url.isFileURL {
+            url = URL(string: "ebook://" + url.path) ?? url
         }
         
         guard let bookmarkRealm = try? Realm(configuration: bookmarkRealmConfiguration), let historyRealm = try? Realm(configuration: historyRealmConfiguration), let feedRealm = try? Realm(configuration: feedEntryRealmConfiguration) else { return nil }
