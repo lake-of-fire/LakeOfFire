@@ -112,6 +112,8 @@ public struct Reader: View {
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                             return
                         }
+                        print("## READABILITY parsed")
+                        print(result.content.prefix(30))
                         guard readerViewModel.content.url == result.pageURL else { return }
                         guard !result.content.isEmpty else {
                             safeWrite(readerViewModel.content) { _, content in

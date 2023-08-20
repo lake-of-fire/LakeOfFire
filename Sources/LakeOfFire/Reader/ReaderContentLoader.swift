@@ -78,7 +78,7 @@ public struct ReaderContentLoader {
         })
         
         if !url.isFileURL, let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
-            return nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
+            match = nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
         } else if match == nil {
             let historyRecord = HistoryRecord()
             historyRecord.url = url
@@ -94,6 +94,11 @@ public struct ReaderContentLoader {
         if persist, let match = match, url.isFileURL, url.contains(.plainText), let contents = try? String(contentsOf: url), let data = textToHTML(contents, forceRaw: true).readerContentData {
             safeWrite(match) { _, match in
                 match.content = data
+            }
+        }
+        if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault {
+            safeWrite(match) { _, match in
+                match.isReaderModeByDefault = true
             }
         }
         return match
