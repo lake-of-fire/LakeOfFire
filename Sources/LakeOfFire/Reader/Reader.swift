@@ -113,8 +113,10 @@ public struct Reader: View {
                             return
                         }
                         print("## READABILITY parsed")
-                        print(result.content.prefix(30))
-                        guard readerViewModel.content.url == result.pageURL else { return }
+                        print(result.pageURL)
+                        print(result.windowURL)
+                        print(result.content.prefix(500))
+                        guard readerViewModel.content.url == result.windowURL else { return }
                         guard !result.content.isEmpty else {
                             safeWrite(readerViewModel.content) { _, content in
                                 content.isReaderModeAvailable = false
@@ -262,7 +264,7 @@ fileprivate extension Reader {
         let title = readerViewModel.content.title
         let imageURL = readerViewModel.content.imageURLToDisplay
         let renderToSelector = url.isEBookURL ? "#viewer" : nil
-        Task.detached(priority: .userInitiated) {
+        Task.detached {
             do {
                 try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: renderToSelector)
             } catch { }
