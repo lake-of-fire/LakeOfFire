@@ -123,7 +123,7 @@ public struct Reader: View {
                             guard !url.isNativeReaderView else { return }
                             readerViewModel.readabilityContent = result.outputHTML
                             readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
-                            readerViewModel.readabilityContainerRootSelector = result.readabilityContainerRootSelector
+                            readerViewModel.readabilityContainerFrameInfo = message.frameInfo
                             if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                                 showReaderView()
                             } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
@@ -263,13 +263,13 @@ fileprivate extension Reader {
         let imageURL = readerViewModel.content.imageURLToDisplay
         Task.detached {
             do {
-                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderTo: readerViewModel.readabilityContainerSelector, insideRoot: readerViewModel.readabilityContainerRootSelector)
+                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: readerViewModel.readabilityContainerSelector, in: readerViewModel.readabilityContainerFrameInfo)
             } catch { }
         }
     }
     
     /// Content before it has been treated with Reader-specific processing.
-    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderTo: String?, insideRoot: NestedDOMRootSelector?) async throws {
+    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
         return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
             safeWrite(readerViewModel.content) { _, readerContent in
                 readerContent.isReaderModeByDefault = true
@@ -333,35 +333,32 @@ fileprivate extension Reader {
                 let docToSet = doc
                 Task { @MainActor in
                     do {
-                        if let renderTo = renderTo, let body = docToSet.body() {
+                        if let frameInfo = frameInfo, !frameInfo.isMainFrame, let body = docToSet.body() {
                             let transformedContent: String
                             transformedContent = try body.html()
+                            print(frameInfo)
+                            print(renderToSelector)
+                            print(transformedContent)
                             await readerViewModel.scriptCaller.evaluateJavaScript(
                                 """
-var root = document.documentElement
-if (layer0ShadowRootSelector) {
-    root = root.querySelector(layer0ShadowRootSelector)
-    if (root && root.shadowRoot) {
-        root = root.shadowRoot
-    } else {
-        return
-    }
-}
-if (layer1FrameSelector) {
-    root = root.querySelector(layer1FrameSelector)
-    
-}
-if (root) {
-    root.innerHTML = html
-}
-""",
+                                var root = document.body
+                                console.log(root)
+                                if (renderToSelector) {
+                                    root = root.querySelector(renderToSelector)
+                                console.log(root)
+                                }
+                                console.log(html)
+                                if (root) {
+                                    root.innerHTML = html
+                                }
+                                """,
                                 arguments: [
-                                    "layer0ShadowRootSelector": renderTo.layer0ShadowRootSelector ?? "",
-                                    "layer1FrameSelector": renderTo.layer1FrameSelector ?? "",
+                                    "renderToSelector": renderToSelector ?? "",
                                     "html": transformedContent,
-                                ])
+                                ], in: frameInfo)
                             continuation.resume()
                         } else {
+                            return;
                             let transformedContent: String
                             transformedContent = try docToSet.outerHtml()
                             readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)

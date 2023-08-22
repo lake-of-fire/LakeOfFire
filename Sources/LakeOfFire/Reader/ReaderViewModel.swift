@@ -25,7 +25,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
-    @Published var readabilityContainerRootSelector: NestedDOMRootSelector? = nil
+    @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
     
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts =  LibraryConfiguration.shared.activeWebViewUserScripts
