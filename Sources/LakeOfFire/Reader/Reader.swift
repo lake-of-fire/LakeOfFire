@@ -112,10 +112,6 @@ public struct Reader: View {
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                             return
                         }
-                        print("## READABILITY parsed")
-                        print(result.pageURL)
-                        print(result.windowURL)
-                        print(result.content.prefix(500))
                         guard readerViewModel.content.url == result.windowURL else { return }
                         guard !result.content.isEmpty else {
                             safeWrite(readerViewModel.content) { _, content in
@@ -126,6 +122,8 @@ public struct Reader: View {
                         Task { @MainActor in
                             guard !url.isNativeReaderView else { return }
                             readerViewModel.readabilityContent = result.outputHTML
+                            readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
+                            readerViewModel.readabilityContainerRootSelector = result.readabilityContainerRootSelector
                             if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                                 showReaderView()
                             } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
@@ -263,16 +261,15 @@ fileprivate extension Reader {
         }
         let title = readerViewModel.content.title
         let imageURL = readerViewModel.content.imageURLToDisplay
-        let renderToSelector = url.isEBookURL ? "#viewer" : nil
         Task.detached {
             do {
-                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: renderToSelector)
+                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderTo: readerViewModel.readabilityContainerSelector, insideRoot: readerViewModel.readabilityContainerRootSelector)
             } catch { }
         }
     }
     
     /// Content before it has been treated with Reader-specific processing.
-    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?) async throws {
+    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderTo: String?, insideRoot: NestedDOMRootSelector?) async throws {
         return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
             safeWrite(readerViewModel.content) { _, readerContent in
                 readerContent.isReaderModeByDefault = true
@@ -336,12 +333,33 @@ fileprivate extension Reader {
                 let docToSet = doc
                 Task { @MainActor in
                     do {
-                        if let renderToSelector = renderToSelector, let body = docToSet.body() {
+                        if let renderTo = renderTo, let body = docToSet.body() {
                             let transformedContent: String
                             transformedContent = try body.html()
                             await readerViewModel.scriptCaller.evaluateJavaScript(
-                                "document.querySelector(${renderToSelector}.innerHTML = ${html}",
-                                arguments: ["renderToSelector": renderToSelector, "html": transformedContent])
+                                """
+var root = document.documentElement
+if (layer0ShadowRootSelector) {
+    root = root.querySelector(layer0ShadowRootSelector)
+    if (root && root.shadowRoot) {
+        root = root.shadowRoot
+    } else {
+        return
+    }
+}
+if (layer1FrameSelector) {
+    root = root.querySelector(layer1FrameSelector)
+    
+}
+if (root) {
+    root.innerHTML = html
+}
+""",
+                                arguments: [
+                                    "layer0ShadowRootSelector": renderTo.layer0ShadowRootSelector ?? "",
+                                    "layer1FrameSelector": renderTo.layer1FrameSelector ?? "",
+                                    "html": transformedContent,
+                                ])
                             continuation.resume()
                         } else {
                             let transformedContent: String
