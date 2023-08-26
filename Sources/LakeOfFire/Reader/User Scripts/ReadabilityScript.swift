@@ -11,8 +11,9 @@ public struct Readability {
     public static let shared = Readability()
     
     public let userScriptSource: String
+    public let css: String
     
-    public init(meaningfulContentMinChars: Int = 1, additionalCSS: String = "", additionalJS: String = "") {
+    public init(meaningfulContentMinChars: Int = 1) {
         var readabilityJS: String
         var readabilityInitializationJS: String
         var domPurifyJS: String
@@ -33,14 +34,16 @@ public struct Readability {
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }
-        let scripts = readabilityImagesJS + additionalJS
+        let scripts = readabilityImagesJS
 //        let regex = try! NSRegularExpression(pattern: "(\\|`|[$])", options: [])
 //        let range = NSRange(location: 0, length: scripts.utf16.count)
 //        let escapedScripts = regex.stringByReplacingMatches(in: scripts, options: [], range: range, withTemplate: "\\$1")
 
+        css = mozillaCSS + swiftReadabilityCSS
+        
         readabilityInitializationJS = readabilityInitializationJS
             .replacingOccurrences(of: "##CHAR_THRESHOLD##", with: String(meaningfulContentMinChars))
-            .replacingOccurrences(of: "##CSS##", with: mozillaCSS + swiftReadabilityCSS + additionalCSS)
+            .replacingOccurrences(of: "##CSS##", with: css)
 //            .replacingOccurrences(of: "##SCRIPT##", with: escapedScripts)
             .replacingOccurrences(of: "##SCRIPT##", with: scripts)
         

@@ -113,7 +113,7 @@ public struct Reader: View {
                             return
                         }
                         guard readerViewModel.content.url == result.windowURL else { return }
-                        guard !result.content.isEmpty else {
+                        guard !result.outputHTML.isEmpty else {
                             safeWrite(readerViewModel.content) { _, content in
                                 content.isReaderModeAvailable = false
                             }
@@ -132,7 +132,7 @@ public struct Reader: View {
                             safeWrite(readerViewModel.content) { _, content in
                                 content.isReaderModeAvailable = true
 #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
-                                if !content.rssContainsFullContent {
+                                if !content.url.isEBookURL && !content.url.isFileURL && !content.rssContainsFullContent {
                                     content.html = result.content
                                     content.rssContainsFullContent = true
                                 }
@@ -333,32 +333,44 @@ fileprivate extension Reader {
                 let docToSet = doc
                 Task { @MainActor in
                     do {
-                        if let frameInfo = frameInfo, !frameInfo.isMainFrame, let body = docToSet.body() {
-                            let transformedContent: String
-                            transformedContent = try body.html()
-                            print(frameInfo)
-                            print(renderToSelector)
-                            print(transformedContent)
+                        if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                            let transformedContent = try docToSet.outerHtml()
                             await readerViewModel.scriptCaller.evaluateJavaScript(
                                 """
                                 var root = document.body
-                                console.log(root)
                                 if (renderToSelector) {
-                                    root = root.querySelector(renderToSelector)
-                                console.log(root)
+                                    root = document.querySelector(renderToSelector)
                                 }
-                                console.log(html)
-                                if (root) {
-                                    root.innerHTML = html
+                                var serialized = html
+                                
+                                let xmlns = document.documentElement.getAttribute('xmlns')
+                                if (xmlns) {
+                                    let parser = new DOMParser()
+                                    let doc = parser.parseFromString(serialized, 'text/html')
+                                    let readabilityNode = doc.body
+                                    let replacementNode = root.cloneNode()
+                                    replacementNode.innerHTML = ''
+                                    for (let innerNode of readabilityNode.childNodes) {
+                                        serialized = new XMLSerializer().serializeToString(innerNode)
+                                        replacementNode.innerHTML += serialized
+                                    }
+                                    root.innerHTML = replacementNode.innerHTML
+                                } else if (root) {
+                                    root.outerHTML = serialized
                                 }
+                                
+                                let style = document.createElement('style')
+                                style.textContent = css
+                                document.head.appendChild(style)
+                                document.documentElement.classList.add('readability-mode')
                                 """,
                                 arguments: [
                                     "renderToSelector": renderToSelector ?? "",
                                     "html": transformedContent,
+                                    "css": Readability.shared.css,
                                 ], in: frameInfo)
                             continuation.resume()
                         } else {
-                            return;
                             let transformedContent: String
                             transformedContent = try docToSet.outerHtml()
                             readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
