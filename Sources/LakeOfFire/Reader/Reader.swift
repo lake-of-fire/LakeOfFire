@@ -182,6 +182,20 @@ public struct Reader: View {
                         }
                     }
                 ].merging(messageHandlers) { (current, _) in current },
+                ebookTextProcessor: { content in
+                    do {
+                        let doc = try processForReaderMode(content: content, url: nil, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
+                        if let processReadabilityContent = processReadabilityContent {
+                            return try processReadabilityContent(doc).outerHtml()
+                        } else {
+                            return try doc.outerHtml()
+                        }
+                    } catch {
+                        print("Error processing readability content")
+                    }
+                    
+                    return content
+                },
                 onNavigationCommitted: { state in
                     Task { @MainActor in
                         readerViewModel.onNavigationCommitted(newState: state) { newState in
@@ -282,46 +296,11 @@ fileprivate extension Reader {
             Task.detached {
                 var doc: SwiftSoup.Document
                 do {
-                    if let url = url {
-                        doc = try SwiftSoup.parse(content, url.absoluteString)
-                    } else {
-                        doc = try SwiftSoup.parse(content)
-                    }
+                    doc = try processForReaderMode(content: content, url: url, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
                 } catch {
                     print(error.localizedDescription)
                     continuation.resume()
                     return
-                }
-                doc.outputSettings().prettyPrint(pretty: false)
-                
-                if let htmlTag = try? doc.select("html") {
-                    var htmlStyle = "font-size: \(readerFontSize ?? defaultFontSize)px"
-                    if let existingHtmlStyle = try? htmlTag.attr("style"), !existingHtmlStyle.isEmpty {
-                        htmlStyle = "\(htmlStyle); \(existingHtmlStyle)"
-                    }
-                    _ = try? htmlTag.attr("style", htmlStyle)
-                }
-                
-                if let defaultTitle = defaultTitle, let existing = try? doc.select("#reader-title"), !existing.hasText() {
-                    let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
-                    do {
-                        try doc.body()?.select("#reader-title").html(escapedTitle)
-                    } catch { }
-                }
-                do {
-                    try fixAnnoyingTitlesWithPipes(doc: doc)
-                } catch { }
-                
-                if injectEntryImageIntoHeader, let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
-                    do {
-                        try doc.body()?.select("#reader-header").prepend("<img src='\(imageURL.absoluteString)'>")
-                    } catch { }
-                }
-                if let url = url {
-                    transformContentSpecificToFeed(doc: doc, url: url)
-                    do {
-                        try wireViewOriginalLinks(doc: doc, url: url)
-                    } catch { }
                 }
                 
                 if let processReadabilityContent = processReadabilityContent {
@@ -384,4 +363,45 @@ fileprivate extension Reader {
             }
         })
     }
+}
+
+fileprivate func processForReaderMode(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
+    var doc: SwiftSoup.Document
+    if let url = url {
+        doc = try SwiftSoup.parse(content, url.absoluteString)
+    } else {
+        doc = try SwiftSoup.parse(content)
+    }
+    doc.outputSettings().prettyPrint(pretty: false)
+    
+    if let htmlTag = try? doc.select("html") {
+        var htmlStyle = "font-size: \(fontSize)px"
+        if let existingHtmlStyle = try? htmlTag.attr("style"), !existingHtmlStyle.isEmpty {
+            htmlStyle = "\(htmlStyle); \(existingHtmlStyle)"
+        }
+        _ = try? htmlTag.attr("style", htmlStyle)
+    }
+    
+    if let defaultTitle = defaultTitle, let existing = try? doc.select("#reader-title"), !existing.hasText() {
+        let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
+        do {
+            try doc.body()?.select("#reader-title").html(escapedTitle)
+        } catch { }
+    }
+    do {
+        try fixAnnoyingTitlesWithPipes(doc: doc)
+    } catch { }
+    
+    if injectEntryImageIntoHeader, let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+        do {
+            try doc.body()?.select("#reader-header").prepend("<img src='\(imageURL.absoluteString)'>")
+        } catch { }
+    }
+    if let url = url {
+        transformContentSpecificToFeed(doc: doc, url: url)
+        do {
+            try wireViewOriginalLinks(doc: doc, url: url)
+        } catch { }
+    }
+    return doc
 }
