@@ -366,12 +366,8 @@ fileprivate extension Reader {
 }
 
 fileprivate func processForReaderMode(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
-    var doc: SwiftSoup.Document
-    if let url = url {
-        doc = try SwiftSoup.parse(content, url.absoluteString)
-    } else {
-        doc = try SwiftSoup.parse(content)
-    }
+    let parser = (content.hasPrefix("<?xml")) ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
+    let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
     doc.outputSettings().prettyPrint(pretty: false)
     
     if let htmlTag = try? doc.select("html") {
