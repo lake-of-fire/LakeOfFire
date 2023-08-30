@@ -34,7 +34,7 @@ private func matchaTravel(doc: Document) throws {
     try articleTitle.text(articleTitle.text().replace(pattern: "　", template: ""))
     
     // Collapse spaces. /*Remove (※) which reference Matcha vocab definitions that we remove.*/
-    guard let articleDiv = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let articleDiv = try doc.getElementsByClass("reader-content").first()?.getElementsByClass("page").first() else { return }
     guard let elements = try? articleDiv.getAllElements() else { return }
     for element in elements {
         for textNode in element.textNodes() {
@@ -58,7 +58,7 @@ private func matchaTravel(doc: Document) throws {
 }
 
 private func wataNoC(doc: Document) throws {
-    guard let readerContentElement = try doc.getElementById("reader-content"), let articleDiv = try readerContentElement.getElementsByTag("article").first() else { return }
+    guard let readerContentElement = try doc.getElementsByClass("reader-content").first(), let articleDiv = try readerContentElement.getElementsByTag("article").first() else { return }
     
     // Remove the " –freeweb manage ..." title suffix.
     guard let titleElement = try doc.getElementById("reader-title") else { return }
@@ -219,7 +219,7 @@ private func hukumusume(doc: Document) throws {
 }
 
 private func hiraganaTimes(doc: Document) throws {
-    try doc.getElementById("reader-content")?.getElementsByTag("p").first()?.remove()
+    try doc.getElementsByClass("reader-content").first()?.getElementsByTag("p").first()?.remove()
 }
 
 private func cnn(doc: Document) throws {
@@ -231,7 +231,7 @@ private func cnn(doc: Document) throws {
 }
 
 private func slowCommunication(doc: Document) throws {
-    guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let pageElement = try doc.getElementsByClass("reader-content").first()?.getElementsByClass("page").first() else { return }
     
     // Remove date and tag which get interpreted as an article paragraph.
     guard let dateAndTagElement = try pageElement.getElementsByTag("p").first() else { return }
@@ -257,7 +257,7 @@ private func slowCommunication(doc: Document) throws {
 }
 
 private func nhk(doc: Document) throws {
-    guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let pageElement = try doc.getElementsByClass("reader-content").first()?.getElementsByClass("page").first() else { return }
     
     // Un-link words that have NHK popup dictionaries.
     for wordLink in try pageElement.select("a.dicWin") {
@@ -269,7 +269,7 @@ private func nhk(doc: Document) throws {
 }
 
 private func hypebeast(doc: Document) throws {
-    guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
+    guard let pageElement = try doc.getElementsByClass("reader-content").first()?.getElementsByClass("page").first() else { return }
     
     // Remove the "『HYPEBEAST』がお届けするその他最新のファッション情報もお見逃しなく。" footer from articles.
     for p in try pageElement.getElementsByTag("p") {

@@ -27,6 +27,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
     
+    @Published var readabilityFrames = Set<WKFrameInfo>()
+    
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts =  LibraryConfiguration.shared.activeWebViewUserScripts
     @Published var webViewSystemScripts = LibraryConfiguration.shared.systemScripts
@@ -117,7 +119,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             
             if var html = content.htmlToDisplay {
 //                if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
-                if content.isReaderModeByDefault && !html.contains("<html class=.readability-mode.>") {
+                if content.isReaderModeByDefault && !html.contains("<body.* class=.readability-mode.>") {
                     if let _ = html.range(of: "<html", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
                     } else {
@@ -321,6 +323,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     func refreshTitleInWebView(newState: WebViewState? = nil) {
+        // TODO: consolidate code duplication
         let state = newState ?? state
         if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading {
             scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
@@ -329,8 +332,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     func refreshSettingsInWebView(newState: WebViewState) {
-        scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
-        scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
-        refreshTitleInWebView(newState: newState)
+        // TODO: consolidate code duplication
+        Task { @MainActor in
+            await scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
+            await scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
+            refreshTitleInWebView(newState: newState)
+        }
     }
 }

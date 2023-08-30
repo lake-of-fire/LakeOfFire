@@ -108,6 +108,12 @@ public struct Reader: View {
                 bounces: bounces,
                 persistentWebViewID: persistentWebViewID,
                 messageHandlers: [
+                    "readabilityFramePing": { message in
+                        Task { @MainActor in
+                            readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo)
+                            refreshSettingsInWebView(in: message.frameInfo)
+                        }
+                    },
                     "readabilityParsed": { message in
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                             return
@@ -181,7 +187,12 @@ public struct Reader: View {
                             }
                         }
                     }
-                ].merging(messageHandlers) { (current, _) in current },
+                ].merging(messageHandlers) { (current, new) in
+                    return { message in
+                        await current(message)
+                        await new(message)
+                    }
+                },
                 ebookTextProcessor: { content in
                     do {
                         let doc = try processForReaderMode(content: content, url: nil, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
@@ -217,20 +228,20 @@ public struct Reader: View {
 #if os(iOS)
             .edgesIgnoringSafeArea(.all)
 #endif
-            .onChange(of: readerFontSize) { newFontSize in
-                guard let newFontSize = newFontSize else { return }
+            .onChange(of: readerFontSize) { readerFontSize in
+                guard let readerFontSize = readerFontSize else { return }
                 Task { @MainActor in
-                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(newFontSize)px';")
+                    await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
                 }
             }
             .onChange(of: lightModeTheme) { lightModeTheme in
                 Task { @MainActor in
-                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')")
+                    await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
                 }
             }
             .onChange(of: darkModeTheme) { darkModeTheme in
                 Task { @MainActor in
-                    readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')")
+                    await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
                 }
             }
             .onChange(of: readerViewModel.audioURLs) { audioURLs in
@@ -252,6 +263,24 @@ public struct Reader: View {
 #else
         EdgeInsets()
 #endif
+    }
+}
+
+fileprivate extension Reader {
+    // MARK: Reader settings in web view
+    
+    func refreshSettingsInWebView(in frame: WKFrameInfo? = nil) {
+        Task { @MainActor in
+            await readerViewModel.scriptCaller.evaluateJavaScript(
+                """
+                if (\(readerFontSize ?? -1) > -1) {
+                    document.documentElement.style.fontSize = '\(readerFontSize ?? -1)px'
+                }
+                document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')
+                document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')
+                """,
+                in: frame, duplicateInMultiTargetFrames: true, in: .page)
+        }
     }
 }
 
@@ -341,7 +370,7 @@ fileprivate extension Reader {
                                 let style = document.createElement('style')
                                 style.textContent = css
                                 document.head.appendChild(style)
-                                document.documentElement.classList.add('readability-mode')
+                                document.body.classList.add('readability-mode')
                                 """,
                                 arguments: [
                                     "renderToSelector": renderToSelector ?? "",
