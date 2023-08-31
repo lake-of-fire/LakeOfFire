@@ -52,7 +52,7 @@ public struct Reader: View {
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
     var bounces = true
-    var processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil
+    var processReadabilityContent: ((SwiftSoup.Document) -> String)? = nil
     var obscuredInsets: EdgeInsets? = nil
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     var onNavigationCommitted: ((WebViewState) -> Void)?
@@ -73,7 +73,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> SwiftSoup.Document)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
+    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> String)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.readerViewModel = readerViewModel
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -197,7 +197,7 @@ public struct Reader: View {
                     do {
                         let doc = try processForReaderMode(content: content, url: nil, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
                         if let processReadabilityContent = processReadabilityContent {
-                            return try processReadabilityContent(doc).outerHtml()
+                            return processReadabilityContent(doc)
                         } else {
                             return try doc.outerHtml()
                         }
@@ -332,18 +332,17 @@ fileprivate extension Reader {
                     return
                 }
                 
+                var html: String
                 if let processReadabilityContent = processReadabilityContent {
-                    doc = processReadabilityContent(doc)
+                    html = processReadabilityContent(doc)
+                } else {
+                    html = try doc.outerHtml()
                 }
-                
-                #warning("SwiftUIDrag menu")
-                
-                let docToSet = doc
+                #warning("SwiftUIDrag menu (?)")
+                let transformedContent = html
                 Task { @MainActor in
-                    do {
-                        if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-                            let transformedContent = try docToSet.outerHtml()
-                            await readerViewModel.scriptCaller.evaluateJavaScript(
+                    if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                        await readerViewModel.scriptCaller.evaluateJavaScript(
                                 """
                                 var root = document.body
                                 if (renderToSelector) {
@@ -377,16 +376,10 @@ fileprivate extension Reader {
                                     "html": transformedContent,
                                     "css": Readability.shared.css,
                                 ], in: frameInfo)
-                            continuation.resume()
-                        } else {
-                            let transformedContent: String
-                            transformedContent = try docToSet.outerHtml()
-                            readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
-                            continuation.resume()
-                        }
-                    } catch {
                         continuation.resume()
-                        return
+                    } else {
+                        readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
+                        continuation.resume()
                     }
                 }
             }
@@ -395,9 +388,10 @@ fileprivate extension Reader {
 }
 
 fileprivate func processForReaderMode(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
-    let parser = (content.hasPrefix("<?xml")) ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
+    let isXML = content.hasPrefix("<?xml")
+    let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
-    doc.outputSettings().prettyPrint(pretty: false)
+    doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
     
     if let htmlTag = try? doc.select("html") {
         var htmlStyle = "font-size: \(fontSize)px"
