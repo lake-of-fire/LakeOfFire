@@ -52,7 +52,7 @@ public struct Reader: View {
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
     var bounces = true
-    var processReadabilityContent: ((SwiftSoup.Document) -> String)? = nil
+    var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
     var obscuredInsets: EdgeInsets? = nil
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     var onNavigationCommitted: ((WebViewState) -> Void)?
@@ -73,7 +73,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) -> String)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
+    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.readerViewModel = readerViewModel
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -197,7 +197,7 @@ public struct Reader: View {
                     do {
                         let doc = try processForReaderMode(content: content, url: nil, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
                         if let processReadabilityContent = processReadabilityContent {
-                            return processReadabilityContent(doc)
+                            return await processReadabilityContent(doc)
                         } else {
                             return try doc.outerHtml()
                         }
@@ -334,7 +334,7 @@ fileprivate extension Reader {
                 
                 var html: String
                 if let processReadabilityContent = processReadabilityContent {
-                    html = processReadabilityContent(doc)
+                    html = await processReadabilityContent(doc)
                 } else {
                     html = try doc.outerHtml()
                 }
