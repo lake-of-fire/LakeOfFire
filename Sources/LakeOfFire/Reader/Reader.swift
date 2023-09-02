@@ -109,8 +109,9 @@ public struct Reader: View {
                 persistentWebViewID: persistentWebViewID,
                 messageHandlers: [
                     "readabilityFramePing": { message in
+                        guard let uuid = (message.body as? [String: String])?["uuid"] else { return }
                         Task { @MainActor in
-                            if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo) {
+                            if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                                 readerViewModel.refreshSettingsInWebView()
                             }
                         }
@@ -196,8 +197,7 @@ public struct Reader: View {
                 },
                 ebookTextProcessor: { content in
                     do {
-                        let doc = try processForReaderMode(content: content, url: nil, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
-                        try doc.attr("data-is-ebook", true)
+                        let doc = try processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
                         doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
                         if let processReadabilityContent = processReadabilityContent {
                             return await processReadabilityContent(doc)
@@ -390,11 +390,15 @@ fileprivate extension Reader {
     }
 }
 
-fileprivate func processForReaderMode(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
+fileprivate func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
     let isXML = content.hasPrefix("<?xml")
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
     doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
+    
+    if isEBook {
+        try doc.attr("data-is-ebook", true)
+    }
     
     if let htmlTag = try? doc.select("html") {
         var htmlStyle = "font-size: \(fontSize)px"
