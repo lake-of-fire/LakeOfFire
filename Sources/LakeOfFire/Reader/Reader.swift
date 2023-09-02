@@ -110,8 +110,9 @@ public struct Reader: View {
                 messageHandlers: [
                     "readabilityFramePing": { message in
                         Task { @MainActor in
-                            readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo)
-                            refreshSettingsInWebView(in: message.frameInfo)
+                            if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo) {
+                                readerViewModel.refreshSettingsInWebView()
+                            }
                         }
                     },
                     "readabilityParsed": { message in
@@ -196,6 +197,8 @@ public struct Reader: View {
                 ebookTextProcessor: { content in
                     do {
                         let doc = try processForReaderMode(content: content, url: nil, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
+                        try doc.attr("data-is-ebook", true)
+                        doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
                         if let processReadabilityContent = processReadabilityContent {
                             return await processReadabilityContent(doc)
                         } else {
@@ -266,23 +269,23 @@ public struct Reader: View {
     }
 }
 
-fileprivate extension Reader {
-    // MARK: Reader settings in web view
-    
-    func refreshSettingsInWebView(in frame: WKFrameInfo? = nil) {
-        Task { @MainActor in
-            await readerViewModel.scriptCaller.evaluateJavaScript(
-                """
-                if (\(readerFontSize ?? -1) > -1) {
-                    document.documentElement.style.fontSize = '\(readerFontSize ?? -1)px'
-                }
-                document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')
-                document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')
-                """,
-                in: frame, duplicateInMultiTargetFrames: true, in: .page)
-        }
-    }
-}
+//fileprivate extension Reader {
+//    // MARK: Reader settings in web view
+//
+//    func refreshSettingsInWebView(in frame: WKFrameInfo? = nil) {
+//        Task { @MainActor in
+//            await readerViewModel.scriptCaller.evaluateJavaScript(
+//                """
+//                if (\(readerFontSize ?? -1) > -1) {
+//                    document.documentElement.style.fontSize = '\(readerFontSize ?? -1)px'
+//                }
+//                document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')
+//                document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')
+//                """,
+//                in: frame, duplicateInMultiTargetFrames: true, in: .page)
+//        }
+//    }
+//}
 
 fileprivate extension Reader {
     // MARK: Readability
