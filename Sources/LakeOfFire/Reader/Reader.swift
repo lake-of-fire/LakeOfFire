@@ -328,7 +328,7 @@ fileprivate extension Reader {
             Task.detached {
                 var doc: SwiftSoup.Document
                 do {
-                    doc = try processForReaderMode(content: content, url: url, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
+                    doc = try processForReaderMode(content: content, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
                 } catch {
                     print(error.localizedDescription)
                     continuation.resume()
