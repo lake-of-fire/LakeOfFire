@@ -10,7 +10,9 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
     
     init() { }
     
+    @MainActor
     func load(item: C) {
+        guard let readingProgressLoader = ReaderContentReadingProgressLoader.readingProgressLoader else { return }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         //        let url = item.url
@@ -18,7 +20,7 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
         Task.detached {
             let realm = try! Realm(configuration: config)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
-                if let (progress, finished) = item.loadReadingProgress() {
+                if let (progress, finished) = readingProgressLoader(item) {
                     Task { @MainActor in
                         self.readingProgress = progress
                         self.isFullArticleFinished = finished
@@ -32,7 +34,7 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
         }
     }
 }
-    
+
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 140
@@ -117,9 +119,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
             forceShowBookmark = hovered
         }
         .task {
-            Task { @MainActor in
-                viewModel.load(item: item)
-            }
+            viewModel.load(item: item)
         }
     }
     

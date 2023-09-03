@@ -4,6 +4,11 @@ import SwiftUIWebView
 import SwiftUtilities
 import RealmSwiftGaps
 
+public struct ReaderContentReadingProgressLoader {
+    /// Float is progress, Bool is whether article is "finished".
+    public static var readingProgressLoader: ((any ReaderContentModel) -> (Float, Bool)?)?
+}
+
 public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
     var compoundKey: String { get set }
     var keyPrefix: String? { get }
@@ -46,8 +51,6 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     var isDeleted: Bool { get }
     
     func configureBookmark(_ bookmark: Bookmark)
-    /// Float is progress, Bool is whether article is "finished".
-    func loadReadingProgress() -> (Float, Bool)?
 }
 
 public extension ReaderContentModel {
@@ -61,10 +64,6 @@ public extension ReaderContentModel {
             return nil
         }
         set { }
-    }
-    
-    func loadReadingProgress() -> (Float, Bool)? {
-        return nil
     }
 }
 

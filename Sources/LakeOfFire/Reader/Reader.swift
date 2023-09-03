@@ -188,6 +188,16 @@ public struct Reader: View {
                                 readerViewModel.refreshTitleInWebView()
                             }
                         }
+                    },
+                    "imageUpdated": { message in
+                        Task { @MainActor in
+                            guard !url.isNativeReaderView else { return }
+                            guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
+                            guard result.mainDocumentURL == readerViewModel.state.pageURL && result.mainDocumentURL == readerViewModel.content.url, readerViewModel.content.imageUrl != result.newImageURL else { return }
+                            safeWrite(readerViewModel.content) { _, content in
+                                content.imageUrl = result.newImageURL
+                            }
+                        }
                     }
                 ].merging(messageHandlers) { (current, new) in
                     return { message in
@@ -207,7 +217,6 @@ public struct Reader: View {
                     } catch {
                         print("Error processing readability content")
                     }
-                    
                     return content
                 },
                 onNavigationCommitted: { state in

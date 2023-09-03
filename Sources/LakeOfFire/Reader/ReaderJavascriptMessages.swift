@@ -58,6 +58,21 @@ public struct TitleUpdatedMessage {
     }
 }
 
+public struct ImageUpdatedMessage {
+    public var newImageURL: URL? = nil
+    public var mainDocumentURL: URL?
+    
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        if let raw = body["newImageURL"] as? String, let url = URL(string: raw) {
+            newImageURL = url
+        }
+        if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
+            mainDocumentURL = pageURL
+        }
+    }
+}
+
 public struct YoutubeCaptionsMessage {
     public enum Status: String {
         case idle = "idle"
@@ -71,6 +86,21 @@ public struct YoutubeCaptionsMessage {
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any] else { return nil }
 //        rssURLs = body["rssURLs"] as! [[String]]
+    }
+}
+
+public struct FractionalCompletionMessage {
+    public var fractionalCompletion: Float
+    public var cfi: String
+    public var mainDocumentURL: URL?
+    
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String else { return nil }
+        fractionalCompletion = Float(completion)
+        self.cfi = cfi
+        if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
+            mainDocumentURL = pageURL
+        }
     }
 }
 
