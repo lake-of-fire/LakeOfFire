@@ -18,6 +18,7 @@ public struct Readability {
         var readabilityInitializationJS: String
         var domPurifyJS: String
         var readabilityImagesJS: String
+        var readabilityOriginalJS: String
         
         var mozillaCSS: String
         var swiftReadabilityCSS: String
@@ -30,11 +31,11 @@ public struct Readability {
             domPurifyJS = try loadFile(name: "dompurify.min", type: "js")
             readabilityInitializationJS = try loadFile(name: "readability_initialization.template", type: "js")
             readabilityImagesJS = try loadFile(name: "readability_images", type: "js")
-            readabilityImagesJS = try loadFile(name: "readability_view_original", type: "js")
+            readabilityOriginalJS = try loadFile(name: "readability_view_original", type: "js")
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }
-        let scripts = readabilityImagesJS
+        let scripts = readabilityImagesJS + readabilityOriginalJS
 //        let regex = try! NSRegularExpression(pattern: "(\\|`|[$])", options: [])
 //        let range = NSRange(location: 0, length: scripts.utf16.count)
 //        let escapedScripts = regex.stringByReplacingMatches(in: scripts, options: [], range: range, withTemplate: "\\$1")
