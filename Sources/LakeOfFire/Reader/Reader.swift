@@ -104,7 +104,7 @@ public struct Reader: View {
                     "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
                     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
                 ]),
-                obscuredInsets: totalObscuredInsets(additionalInsets: geometry.safeAreaInsets),
+                obscuredInsets: totalObscuredInsets(),
                 bounces: bounces,
                 persistentWebViewID: persistentWebViewID,
                 messageHandlers: [
@@ -269,8 +269,9 @@ public struct Reader: View {
         }
     }
     
-    private func totalObscuredInsets(additionalInsets: EdgeInsets) -> EdgeInsets {
+    private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
+//        EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
 #else
         EdgeInsets()
