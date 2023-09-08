@@ -8,6 +8,7 @@ import AppKit
 import UIKit
 #endif
 import RealmSwiftGaps
+import UniformTypeIdentifiers
 
 fileprivate extension URL {
     func settingScheme(_ value: String) -> URL {
@@ -44,7 +45,7 @@ public struct ReaderContentLoader {
         }
         
         var url = url
-        if url.isEBookURL, url.isFileURL {
+        if url.isFileURL, url.isEBookURL {
             url = URL(string: "ebook://ebook/load" + url.path) ?? url
         }
         
@@ -260,4 +261,10 @@ open class PasteboardHTMLGenerator: HtmlGenerator {
 //            return super.generate(textFragment: fragment)
 //        }
 //    }
+}
+
+fileprivate extension URL {
+    var contentType: UTType {
+        return UTType(filenameExtension: self.pathExtension) ?? .data
+    }
 }
