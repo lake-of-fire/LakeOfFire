@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftUIWebView
 
 public struct TeamChatLink: View {
     public let url: URL
