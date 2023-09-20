@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 import RealmSwift
 import MarkdownKit
 import SwiftSoup
@@ -229,7 +229,7 @@ public struct ReaderContentLoader {
 
 /// Forked from: https://github.com/objecthub/swift-markdownkit/issues/6
 open class PasteboardHTMLGenerator: HtmlGenerator {
-    override open func generate(text: Text) -> String {
+    override open func generate(text: MarkdownKit.Text) -> String {
         var res = ""
         for (idx, fragment) in text.enumerated() {
             if (idx + 1) < text.count {
