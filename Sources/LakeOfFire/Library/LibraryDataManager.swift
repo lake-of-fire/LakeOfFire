@@ -73,7 +73,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     @available(macOS 13.0, iOS 16.1, *)
     public func pendingBackgroundAssetDownloads() -> Set<BADownload> {
         Task { @MainActor in
-            DownloadController.shared.ensureDownloaded(downloadables)
+            await DownloadController.shared.ensureDownloaded(downloadables)
         }
         return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
     }
@@ -265,7 +265,7 @@ public class LibraryDataManager: NSObject {
     public func syncFromServers(isWaiting: Bool) {
         let downloadables = LibraryConfiguration.shared.downloadables
         Task { @MainActor in
-            DownloadController.shared.ensureDownloaded(downloadables)
+            await DownloadController.shared.ensureDownloaded(downloadables)
         }
     }
     

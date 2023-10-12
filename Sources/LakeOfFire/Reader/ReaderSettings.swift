@@ -59,7 +59,9 @@ public struct DataSettingsForm: View {
                 GroupBox("Downloads") {
                     ForEach(Array(DownloadController.shared.assuredDownloads)) { downloadable in
                         DownloadProgress(download: downloadable, retryAction: {
-                            DownloadController.shared.ensureDownloaded([downloadable])
+                            Task { @MainActor in
+                                await DownloadController.shared.ensureDownloaded([downloadable])
+                            }
                         }, redownloadAction: {
                             DownloadController.shared.download(downloadable)
                         })
