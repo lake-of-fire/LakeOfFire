@@ -20,7 +20,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/JapaneseLanguageTools.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftUtilities.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
-        .package(url: "https://github.com/RomanEsin/RealmBinary.git", branch: "release/v10.43.1"),
+        .package(url: "https://github.com/lake-of-fire/RealmBinary", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
 //        .package(url: "https://github.com/techprimate/TPPDF.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/GRDB.swift.git", branch: "master"), // FTS5 fork
