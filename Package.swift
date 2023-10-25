@@ -29,7 +29,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/opml", branch: "master"),
         .package(url: "https://github.com/nmdias/FeedKit.git", branch: "master"),
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", branch: "main"),
-        .package(url: "https://github.com/will-lumley/FaviconFinder.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/FaviconFinder.git", branch: "main"),
 //        .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/objecthub/swift-markdownkit", branch: "master"),
