@@ -73,7 +73,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let realm = try! Realm(configuration: realmConfiguration)
         realm.objects(UserScript.self)
             .changesetPublisher
-            .debounce(for: .seconds(1), scheduler: DispatchQueue.main, options: .init(qos: .userInitiated))
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] changes in
                 switch changes {
