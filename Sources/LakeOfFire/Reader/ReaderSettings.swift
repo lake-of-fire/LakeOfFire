@@ -63,7 +63,9 @@ public struct DataSettingsForm: View {
                                 await DownloadController.shared.ensureDownloaded([downloadable])
                             }
                         }, redownloadAction: {
-                            DownloadController.shared.download(downloadable)
+                            Task { @MainActor in
+                                await DownloadController.shared.download(downloadable)
+                            }
                         })
                         .padding(.vertical, 4)
                         Divider()
