@@ -20,7 +20,8 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/JapaneseLanguageTools.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftUtilities.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
+//        .package(url: "https://github.com/lake-of-fire/RealmBinary.git", branch: "main"),
+        .package(url: "https://github.com/realm/realm-swift.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
 //        .package(url: "https://github.com/techprimate/TPPDF.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/GRDB.swift.git", branch: "master"), // FTS5 fork
@@ -44,8 +45,10 @@ let package = Package(
             name: "LakeOfFire",
             dependencies: [
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
-                .product(name: "Realm", package: "RealmBinary"),
-                .product(name: "RealmSwift", package: "RealmBinary"),
+//                .product(name: "Realm", package: "RealmBinary"),
+//                .product(name: "RealmSwift", package: "RealmBinary"),
+                .product(name: "Realm", package: "realm-swift"),
+                .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "AsyncView", package: "AsyncView"),
                 .product(name: "Collections", package: "swift-collections"),
