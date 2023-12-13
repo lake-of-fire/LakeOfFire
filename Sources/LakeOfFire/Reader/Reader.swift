@@ -31,7 +31,7 @@ public extension EnvironmentValues {
 
 public extension URL {
     var isNativeReaderView: Bool {
-        return scheme == "about" && (["about:blank"].contains(absoluteString) || absoluteString.hasPrefix("about:load"))
+        return absoluteString == "about:blank" || (scheme == "internal" && host == "local")
     }
 }
 
@@ -39,7 +39,7 @@ public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     func load(content: any ReaderContentModel) {
         if content.isReaderModeByDefault && content.htmlToDisplay != nil {
-            guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "about:load/reader?reader-url=\(encodedURL)") else { return }
+            guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
             load(URLRequest(url: historyURL))
         } else {
             load(URLRequest(url: content.url))
@@ -64,6 +64,8 @@ public struct Reader: View {
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    
+    @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     
     var url: URL {
         return readerViewModel.content.url
@@ -107,6 +109,7 @@ public struct Reader: View {
                 obscuredInsets: totalObscuredInsets(),
                 bounces: bounces,
                 persistentWebViewID: persistentWebViewID,
+                schemeHandlers: [(internalURLSchemeHandler, "internal")],
                 messageHandlers: [
                     "readabilityFramePing": { message in
                         guard let uuid = (message.body as? [String: String])?["uuid"] else { return }

@@ -1,11 +1,13 @@
 import Foundation
 import RealmSwift
+import RealmSwiftGaps
 
 public class HistoryRecord: Bookmark {
     @Persisted public var lastVisitedAt = Date()
     
     @Persisted public var bookmark: Bookmark?
     
+    @RealmBackgroundActor
     public override func configureBookmark(_ bookmark: Bookmark) {
         super.configureBookmark(bookmark)
     }

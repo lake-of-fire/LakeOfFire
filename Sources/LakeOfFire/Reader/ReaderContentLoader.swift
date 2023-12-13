@@ -25,19 +25,23 @@ public struct ReaderContentLoader {
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
     
     public static var unsavedHome: (any ReaderContentModel) {
-        return Self.load(url: URL(string: "about:blank")!, persist: false)!
+        get async throws {
+            return try await Self.load(url: URL(string: "about:blank")!, persist: false)!
+        }
     }
     public static var home: (any ReaderContentModel) {
-        return Self.load(url: URL(string: "about:blank")!, persist: true)!
+        get async throws {
+            return try await Self.load(url: URL(string: "about:blank")!, persist: true)!
+        }
     }
     
-    public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) -> (any ReaderContentModel)? {
-        let lowerURL = url.absoluteString.lowercased()
-        if url.scheme == "about" && lowerURL.starts(with: "about:load") {
+    @RealmBackgroundActor
+    public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentModel)? {
+        if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
             // Don't persist about:load
             // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
             return nil
-        } else if url.scheme == "about" && lowerURL.starts(with: "about:blank") && !persist {
+        } else if url.absoluteString == "about:blank" && !persist {
             let historyRecord = HistoryRecord()
             historyRecord.url = url
             historyRecord.updateCompoundKey()
@@ -49,7 +53,9 @@ public struct ReaderContentLoader {
             url = URL(string: "ebook://ebook/load" + url.path) ?? url
         }
         
-        guard let bookmarkRealm = try? Realm(configuration: bookmarkRealmConfiguration), let historyRealm = try? Realm(configuration: historyRealmConfiguration), let feedRealm = try? Realm(configuration: feedEntryRealmConfiguration) else { return nil }
+        let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
         
         var match: (any ReaderContentModel)?
         let history = historyRealm.objects(HistoryRecord.self)
@@ -79,39 +85,43 @@ public struct ReaderContentLoader {
         })
         
         if !url.isFileURL, let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
-            match = nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
+            match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
         } else if match == nil {
             let historyRecord = HistoryRecord()
             historyRecord.url = url
             //        historyRecord.isReaderModeByDefault
             historyRecord.updateCompoundKey()
             if persist {
-                try! historyRealm.write {
+                try await historyRealm.asyncWrite {
                     historyRealm.add(historyRecord, update: .modified)
                 }
             }
             match = historyRecord
         }
-        if persist, let match = match, url.isFileURL, url.contains(.plainText), let contents = try? String(contentsOf: url), let data = textToHTML(contents, forceRaw: true).readerContentData {
-            safeWrite(match) { _, match in
+        if persist, let match = match, url.isFileURL, url.contains(.plainText), let contents = try? String(contentsOf: url), let data = textToHTML(contents, forceRaw: true).readerContentData, let realm = match.realm {
+            try await realm.asyncWrite {
                 match.content = data
             }
         }
-        if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault {
-            safeWrite(match) { _, match in
+        if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
+            try await realm.asyncWrite {
                 match.isReaderModeByDefault = true
             }
         }
         return match
     }
     
-    public static func load(urlString: String) -> (any ReaderContentModel)? {
+    @RealmBackgroundActor
+    public static func load(urlString: String) async throws -> (any ReaderContentModel)? {
         guard let url = URL(string: urlString) else { return nil }
-        return load(url: url)
+        return try await load(url: url)
     }
     
-    public static func load(html: String) -> (any ReaderContentModel)? {
-        guard let bookmarkRealm = try? Realm(configuration: bookmarkRealmConfiguration), let historyRealm = try? Realm(configuration: historyRealmConfiguration), let feedRealm = try? Realm(configuration: feedEntryRealmConfiguration) else { return nil }
+    @RealmBackgroundActor
+    public static func load(html: String) async throws -> (any ReaderContentModel)? {
+        let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
         
         let data = html.readerContentData
         
@@ -141,7 +151,7 @@ public struct ReaderContentLoader {
         historyRecord.isReaderModeByDefault = true
         historyRecord.updateCompoundKey()
         historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
-        try! historyRealm.write {
+        try await historyRealm.asyncWrite {
             historyRealm.add(historyRecord, update: .modified)
         }
         return historyRecord
@@ -170,41 +180,43 @@ public struct ReaderContentLoader {
     }
     
     public static func snippetURL(key: String) -> URL? {
-        return URL(string: "about:snippet?key=\(key)")
+        return URL(string: "internal://local/snippet?key=\(key)")
     }
     
-    public static func load(text: String) -> (any ReaderContentModel)? {
-        return load(html: textToHTML(text, forceRaw: true))
+    @RealmBackgroundActor
+    public static func load(text: String) async throws -> (any ReaderContentModel)? {
+        return try await load(html: textToHTML(text, forceRaw: true))
     }
     
-    public static func loadPasteboard(bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) -> (any ReaderContentModel)? {
+    @RealmBackgroundActor
+    public static func loadPasteboard(bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) async throws -> (any ReaderContentModel)? {
         var match: (any ReaderContentModel)?
         
-        #if os(macOS)
+#if os(macOS)
         let html = NSPasteboard.general.string(forType: .html)
         let text = NSPasteboard.general.string(forType: .string)
-        #else
+#else
         let html = UIPasteboard.general.string
         let text: String? = html
-        #endif
+#endif
         
         if let html = html {
             if let doc = try? SwiftSoup.parse(html) {
                 if docIsPlainText(doc: doc), let text = text {
-                    match = load(html: textToHTML(text))
+                    match = try await load(html: textToHTML(text))
                 } else {
-                    match = load(html: html)
+                    match = try await load(html: html)
                 }
 //                match = load(html: html)
             } else {
-                match = load(html: textToHTML(html))
+                match = try await load(html: textToHTML(html))
             }
         } else if let text = text {
-            match = load(html: textToHTML(text))
+            match = try await load(html: textToHTML(text))
         }
-        if let match = match {
+        if let match = match, let realm = match.realm {
             let url = snippetURL(key: match.compoundKey) ?? match.url
-            safeWrite(match) { _, match in
+            try await realm.asyncWrite {
                 match.isFromClipboard = true
                 match.rssContainsFullContent = true
                 match.url = url
@@ -213,17 +225,19 @@ public struct ReaderContentLoader {
         return match
     }
     
-    public static func saveBookmark(text: String?, title: String?, url: URL, isFromClipboard: Bool, isReaderModeByDefault: Bool) {
+    @RealmBackgroundActor
+    public static func saveBookmark(text: String?, title: String?, url: URL, isFromClipboard: Bool, isReaderModeByDefault: Bool) async throws {
         if let text = text {
-            _ = Bookmark.add(url: url, title: title ?? "", html: textToHTML(text), isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
+            try await _ = Bookmark.add(url: url, title: title ?? "", html: textToHTML(text), isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
         } else {
-            _ = Bookmark.add(url: url, title: title ?? "", isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
+            try await _ = Bookmark.add(url: url, title: title ?? "", isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
         }
     }
     
-    public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool) {
+    @RealmBackgroundActor
+    public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool) async throws {
         let html = Self.textToHTML(text)
-        _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
+        try await _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: bookmarkRealmConfiguration)
     }
 }
 
@@ -236,7 +250,7 @@ open class PasteboardHTMLGenerator: HtmlGenerator {
                 let next = text[idx + 1]
                 switch (fragment as TextFragment, next as TextFragment) {
                 case (.softLineBreak, .text(let text)):
-                    if text.starts(with: "　") || text.starts(with: "    ") {
+                    if text.hasPrefix("　") || text.hasPrefix("    ") {
                         res += "<br/><br/>" // TODO: Morph to paragraph
                         continue
                     }

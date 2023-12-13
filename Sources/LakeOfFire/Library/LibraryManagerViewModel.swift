@@ -46,8 +46,10 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     @Published var selectedScript: UserScript?
-    
     @Published var navigationPath = NavigationPath()
+    @Published var libraryConfiguration: LibraryConfiguration?
+    
+    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
@@ -98,6 +100,30 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        
+        Task { @RealmBackgroundActor [weak self] in
+            guard let self = self else { return }
+            let libraryConfiguration = try await LibraryConfiguration.shared
+            objectNotificationToken = libraryConfiguration
+                .observe { [weak self] change in
+                    guard let self = self else { return }
+                    switch change {
+                    case .change(_, _):
+                        objectWillChange.send()
+                    case .error(let error):
+                        print("An error occurred: \(error)")
+                    case .deleted:
+                        print("The object was deleted.")
+                    }
+                }
+            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
+                self.libraryConfiguration = libraryConfiguration
+            }
+        }
     }
     
     func refreshOPMLExport() {
@@ -107,7 +133,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         exportOPMLTask = Task.detached {
             do {
                 try Task.checkCancellation()
-                let opml = try LibraryDataManager.shared.exportUserOPML()
+                let opml = try await LibraryDataManager.shared.exportUserOPML()
                 Task { @MainActor [weak self] in
                     try Task.checkCancellation()
                     self?.exportedOPML = opml
@@ -130,32 +156,41 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
     }
     
-    func add(rssURL: URL, title: String?, toCategory category: FeedCategory? = nil) {
-        var category = category?.thaw()
+    @RealmBackgroundActor
+    func add(rssURL: URL, title: String?, toCategory categoryRef: ThreadSafeReference<FeedCategory>? = nil) async throws {
+        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+        var category: FeedCategory?
+        if let categoryRef = categoryRef {
+            category = realm.resolve(categoryRef)
+        }
         if category == nil {
-            category = LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-            if let category = category {
-                safeWrite(category, configuration: LibraryDataManager.realmConfiguration) { (_, category: FeedCategory) in
-                    category.title = "User Library"
-                }
-            }
+            category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
         }
         guard let category = category else { return }
-        
-        let feed = LibraryDataManager.shared.createEmptyFeed(inCategory: category)
-        safeWrite(feed, configuration: LibraryDataManager.realmConfiguration) { (_, feed: Feed) in
+        try await realm.asyncWrite {
+            category.title = "User Library"
+        }
+        let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: category)
+        try await realm.asyncWrite {
             feed.rssUrl = rssURL
             if let title = title {
                 feed.title = title
             }
         }
-        navigationPath.removeLast(navigationPath.count)
-        navigationPath.append(category)
+        let assignRef = ThreadSafeReference(to: category)
+        try await Task { @MainActor in
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+            if let category = realm.resolve(assignRef) {
+                navigationPath.removeLast(navigationPath.count)
+                navigationPath.append(category)
+            }
+        }.value
     }
     
-    func duplicate(feed: Feed, inCategory category: FeedCategory, overwriteExisting: Bool) {
+    @RealmBackgroundActor
+    func duplicate(feed: Feed, inCategory category: FeedCategory, overwriteExisting: Bool) async throws {
         do {
-            let newFeed = try LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true)
+            let newFeed = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true)
             Task { @MainActor in
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)

@@ -9,7 +9,7 @@ struct WebFeedMenuAddButtons: View {
     let url: URL
     let title: String
     @Binding var isLibraryPresented: Bool
-    @ObservedObject var libraryViewModel = LibraryManagerViewModel()
+    @StateObject var libraryViewModel = LibraryManagerViewModel()
     
     @Environment(\.openWindow) var openWindow
     
@@ -17,22 +17,26 @@ struct WebFeedMenuAddButtons: View {
         let userCategories = libraryConfiguration.userCategories
         if userCategories.isEmpty {
             Button("Add Feed to User Library") {
-                libraryViewModel.add(rssURL: url, title: title)
-#if os(macOS)
-                openWindow(id: "user-library")
-#else
-                isLibraryPresented = true
-#endif
-            }
-        } else {
-            ForEach(userCategories) { category in
-                Button("Add Feed to \(category.title)") {
-                    libraryViewModel.add(rssURL: url, title: title, toCategory: category.freeze())
+                Task { @MainActor in
+                    try await libraryViewModel.add(rssURL: url, title: title)
 #if os(macOS)
                     openWindow(id: "user-library")
 #else
                     isLibraryPresented = true
 #endif
+                }
+            }
+        } else {
+            ForEach(userCategories) { category in
+                Button("Add Feed to \(category.title)") {
+                    Task { @MainActor in
+                        try await libraryViewModel.add(rssURL: url, title: title, toCategory: ThreadSafeReference(to: category))
+#if os(macOS)
+                        openWindow(id: "user-library")
+#else
+                        isLibraryPresented = true
+#endif
+                    }
                 }
             }
         }

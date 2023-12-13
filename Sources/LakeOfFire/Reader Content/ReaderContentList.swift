@@ -169,7 +169,7 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
                 }
                 
                 guard !state.pageURL.isNativeReaderView, filteredContentURLs.contains(state.pageURL) else {
-                    if !state.pageURL.absoluteString.starts(with: "about:load"), entrySelection != nil {
+                    if !state.pageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
                         try Task.checkCancellation()
                         Task { @MainActor in
                             self.entrySelection = nil

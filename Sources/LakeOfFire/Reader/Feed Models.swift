@@ -141,13 +141,12 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
         if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
             let legacyHTMLContent = htmlContent
             let ref = ThreadSafeReference(to: self)
-            Task.detached {
+            Task.detached { @RealmBackgroundActor in
                 if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html) {
-                    Task { @MainActor in
-                        safeWrite(configuration: configuration) { realm in
-                            let entry = realm.resolve(ref)
-                            entry?.imageUrl = url
-                        }
+                    let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                    guard let entry = realm.resolve(ref) else { return }
+                    try await realm.asyncWrite {
+                        entry.imageUrl = url
                     }
                 }
             }
@@ -219,6 +218,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
     
+    @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         // Feed options.
         bookmark.rssContainsFullContent = feed?.rssContainsFullContent ?? bookmark.rssContainsFullContent
@@ -294,7 +294,7 @@ fileprivate extension FeedEntry {
             // Match YouTube links for thumbnails.
             if imageUrlOptional == nil {
                 imageUrlOptional = try doc.select("iframe").compactMap({ iframeTag -> String? in
-                    if let src = try? iframeTag.attr("src"), src.starts(with: "https://www.youtube.com"), let youtubeId = src.split(separator: "/").last {
+                    if let src = try? iframeTag.attr("src"), src.hasPrefix("https://www.youtube.com"), let youtubeId = src.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }
                     return nil
@@ -391,7 +391,7 @@ public extension Feed {
                 
                 if (link.attributes?.rel ?? "alternate") == "alternate" {
                     url = URL(string: linkHref)
-                } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.starts(with: "image/") {
+                } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
                     imageUrl = URL(string: linkHref)
                 }
             }

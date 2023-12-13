@@ -7,14 +7,25 @@ import WebKit
 
 public class ReaderViewModel: NSObject, ObservableObject {
     public let navigator = WebViewNavigator()
-    @Published public var state: WebViewState = .empty {
+    @Published public var state: WebViewState = .empty 
+    {
 //    public var action: WebViewAction = .idle
 //    public var state: WebViewState = .empty {
         didSet {
             if let imageURL = state.pageImageURL, content.imageUrl == nil {
-                Task { @MainActor in
-                    safeWrite(content) { _, content in
-                        content.imageUrl = imageURL
+                if let content = content as? Bookmark {
+                    let contentRef = ThreadSafeReference(to: content)
+                    Task {
+                        try await Realm.asyncWrite(contentRef) { _, content in
+                            content.imageUrl = imageURL
+                        }
+                    }
+                } else if let content = content as? HistoryRecord {
+                    let contentRef = ThreadSafeReference(to: content)
+                    Task {
+                        try await Realm.asyncWrite(contentRef) { _, content in
+                            content.imageUrl = imageURL
+                        }
                     }
                 }
             }
@@ -30,8 +41,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published var readabilityFrames = Set<WKFrameInfo>()
     
     public var scriptCaller = WebViewScriptCaller()
-    @Published var webViewUserScripts =  LibraryConfiguration.shared.activeWebViewUserScripts
-    @Published var webViewSystemScripts = LibraryConfiguration.shared.systemScripts
+    @Published var webViewUserScripts: [WebViewUserScript]? = nil
+    @Published var webViewSystemScripts: [WebViewUserScript]? = nil
     
     @Published var contentRules: String? = nil
     @Published public var isMediaPlayerPresented = false
@@ -44,7 +55,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     public var allScripts: [WebViewUserScript] {
-        return webViewSystemScripts + webViewUserScripts
+        return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
     
     public var contentRulesForReadabilityLoading = """
@@ -67,30 +78,31 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         super.init()
         
-        webViewSystemScripts = systemScripts + LibraryConfiguration.shared.systemScripts
-        webViewUserScripts = webViewUserScripts
-        
-        let realm = try! Realm(configuration: realmConfiguration)
-        realm.objects(UserScript.self)
-            .changesetPublisher
-            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] changes in
-                switch changes {
-                case .initial(_):
-                    self?.updateScripts()
-                case .update(_, deletions: _, insertions: _, modifications: _):
-                    self?.updateScripts()
-                case .error(let error):
-                    print(error.localizedDescription)
-                }
-            }
-            .store(in: &cancellables)
+        Task { @RealmBackgroundActor [weak self] in
+            guard let self = self else { return }
+            let configuration = try await LibraryConfiguration.shared
+            webViewSystemScripts = systemScripts + configuration.systemScripts
+            webViewUserScripts = configuration.activeWebViewUserScripts
+            
+            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            realm.objects(UserScript.self)
+                .collectionPublisher
+                .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+                .receive(on: DispatchQueue.main)
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    Task { [weak self] in
+                        try await self?.updateScripts()
+                    }
+                })
+                .store(in: &cancellables)
+        }
     }
     
-    private func updateScripts() {
-        Task { @MainActor in
-            let scripts = LibraryConfiguration.shared.activeWebViewUserScripts
+    @RealmBackgroundActor
+    private func updateScripts() async throws {
+        let scripts = try await LibraryConfiguration.shared.activeWebViewUserScripts
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
             if webViewUserScripts != scripts {
                 webViewUserScripts = scripts
             }
@@ -110,7 +122,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
 //        let existingTitle = content.title
 //        let contentURL = content.url
         
-        if newState.pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
+        if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
             //                newContent = content
             //                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
             //                let contentKey = content.compoundKey

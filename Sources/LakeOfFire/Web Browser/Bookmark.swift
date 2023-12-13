@@ -44,6 +44,7 @@ public class Bookmark: Object, ReaderContentModel {
     }
     public var imageURLToDisplay: URL? { imageUrl }
     
+    @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         safeWrite { realm in
@@ -55,11 +56,12 @@ public class Bookmark: Object, ReaderContentModel {
 }
 
 public extension Bookmark {
-    static func add(url: URL? = nil, title: String = "", imageUrl: URL? = nil, html: String? = nil, content: Data? = nil, publicationDate: Date? = nil, isFromClipboard: Bool, isReaderModeByDefault: Bool, realmConfiguration: Realm.Configuration) -> Bookmark {
-        let realm = try! Realm(configuration: realmConfiguration)
+    @RealmBackgroundActor
+    static func add(url: URL? = nil, title: String = "", imageUrl: URL? = nil, html: String? = nil, content: Data? = nil, publicationDate: Date? = nil, isFromClipboard: Bool, isReaderModeByDefault: Bool, realmConfiguration: Realm.Configuration) async throws -> Bookmark {
+        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
-            try! realm.write {
+            try await realm.asyncWrite {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
                 if let html = html {
@@ -92,7 +94,7 @@ public extension Bookmark {
             bookmark.publicationDate = publicationDate
             bookmark.isFromClipboard = isFromClipboard
             bookmark.isReaderModeByDefault = isReaderModeByDefault
-            try! realm.write {
+            try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)
             }
             return bookmark
@@ -108,9 +110,10 @@ public extension Bookmark {
 //        return limitedRecords
 //    }
     
-    static func removeAll() {
-        let realm = try! Realm()
-        try! realm.write {
+    @RealmBackgroundActor
+    static func removeAll(realmConfiguration: Realm.Configuration) async throws {
+        let realm = try Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+        try await realm.asyncWrite {
             realm.objects(self).setValue(true, forKey: "isDeleted")
         }
     }

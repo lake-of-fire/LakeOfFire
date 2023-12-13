@@ -244,7 +244,7 @@ private func slowCommunication(doc: Document) throws {
     
     // Remove the audio credit, which is confusing in our UI.
     for p in try doc.getElementsByTag("p") {
-        if try p.text().starts(with: "(音声：") {
+        if try p.text().hasPrefix("(音声：") {
             try p.remove()
             break
         }

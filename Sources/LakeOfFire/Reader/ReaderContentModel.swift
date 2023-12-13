@@ -70,7 +70,7 @@ public extension ReaderContentModel {
 public extension URL {
     func matchesReaderURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }
-        if url.absoluteString.starts(with: "about:load/reader?reader-url="), let range = url.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(url.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
+        if url.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = url.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(url.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
             return contentURL == self
         }
         return url == self
@@ -202,28 +202,42 @@ public extension ReaderContentModel {
 
 public extension ReaderContentModel {
     /// Returns whether the result is having a bookmark or not.
-    func toggleBookmark(realmConfiguration: Realm.Configuration) -> Bool {
-        if removeBookmark(realmConfiguration: realmConfiguration) {
+    func toggleBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
+        if try await removeBookmark(realmConfiguration: realmConfiguration) {
             return false
         }
-        addBookmark(realmConfiguration: realmConfiguration)
+        try await addBookmark(realmConfiguration: realmConfiguration)
         return true
     }
     
-    func addBookmark(realmConfiguration: Realm.Configuration) {
-        let bookmark = Bookmark.add(url: url, title: title, imageUrl: imageUrl, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
-        try? bookmark.realm?.write {
-            configureBookmark(bookmark)
-        }
+    @MainActor
+    func addBookmark(realmConfiguration: Realm.Configuration) async throws {
+        let url = url
+        let title = title
+        let html = html
+        let content = content
+        let publicationDate = publicationDate
+        let imageURL = imageUrl
+        let isFromClipboard = isFromClipboard
+        let isReaderModeByDefault = isReaderModeByDefault
+        try await Task.detached { @RealmBackgroundActor [weak self] in
+            guard let self = self else { return }
+            let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
+            try await bookmark.realm?.asyncWrite { [weak self] in
+                guard let self = self else { return }
+                configureBookmark(bookmark)
+            }
+        }.value
     }
     
     /// Returns whether a matching bookmark was found and deleted.
-    func removeBookmark(realmConfiguration: Realm.Configuration) -> Bool {
-        let realm = try! Realm(configuration: realmConfiguration)
+    @RealmBackgroundActor
+    func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
+        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
             return false
         }
-        safeWrite(bookmark) { _, bookmark in
+        try await realm.asyncWrite {
             bookmark.isDeleted = true
         }
         return true
@@ -240,10 +254,11 @@ public extension ReaderContentModel {
         return Array(realm.objects(Bookmark.self).where({ $0.isDeleted == false }).sorted(by: \.createdAt)).reversed()
     }
 
-    func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) -> HistoryRecord {
-        let realm = try! Realm(configuration: realmConfiguration)
+    @RealmBackgroundActor
+    func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
+        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
-            try! realm.write {
+            try await realm.asyncWrite {
                 record.title = title
                 record.imageUrl = imageURLToDisplay
                 record.isFromClipboard = isFromClipboard
@@ -281,7 +296,7 @@ public extension ReaderContentModel {
                 record.configureBookmark(bookmark)
             }
             record.updateCompoundKey()
-            try! realm.write {
+            try await realm.asyncWrite {
                 realm.add(record, update: .modified)
             }
             return record
@@ -298,7 +313,7 @@ public func makeReaderContentCompoundKey(keyPrefix: String?, url: URL?, html: St
     if let keyPrefix = keyPrefix {
         key.append(keyPrefix + "-")
     }
-    if let url = url, !url.absoluteString.starts(with: "about:") || html == nil {
+    if let url = url, !(url.absoluteString.hasPrefix("about:") || url.absoluteString.hasPrefix("internal://local")) || html == nil {
         key.append(String(format: "%02X", stableHash(url.absoluteString)))
     } else if let html = html {
         key.append((String(format: "%02X", stableHash(html))))

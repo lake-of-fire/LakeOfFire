@@ -1,12 +1,53 @@
 import SwiftUI
+import BigSyncKit
+import RealmSwiftGaps
 import RealmSwift
+
+@MainActor
+fileprivate class FeedCategoryButtonsViewModel: ObservableObject {
+    @Published var libraryConfiguration: LibraryConfiguration?
+    
+    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+
+    init() {
+        Task { @RealmBackgroundActor [weak self] in
+            guard let self = self else { return }
+            let libraryConfiguration = try await LibraryConfiguration.shared
+            objectNotificationToken = libraryConfiguration
+                .observe { [weak self] change in
+                    guard let self = self else { return }
+                    switch change {
+                    case .change(let object, let properties):
+                        objectWillChange.send()
+                    case .error(let error):
+                        print("An error occurred: \(error)")
+                    case .deleted:
+                        print("The object was deleted.")
+                    }
+                }
+            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
+                self.libraryConfiguration = libraryConfiguration
+            }
+        }
+    }
+    
+    deinit {
+        Task { @RealmBackgroundActor [weak self] in
+            self?.objectNotificationToken?.invalidate()
+        }
+    }
+}
 
 public struct FeedCategoryButtons: View {
     @Binding var categorySelection: String?
     var font = Font.title3
     var isCompact = false
     
-    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration = LibraryConfiguration.shared
+    @StateObject private var viewModel = FeedCategoryButtonsViewModel()
     
     @ObservedResults(FeedCategory.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false && $0.isArchived == false }) private var categories
     
@@ -27,14 +68,18 @@ public struct FeedCategoryButtons: View {
     public var body: some View {
         if isCompact {
             VStack(spacing: 5) {
-                ForEach(libraryConfiguration.categories) { category in
-                    FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
+                if let categories = viewModel.libraryConfiguration?.categories {
+                    ForEach(categories) { category in
+                        FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
+                    }
                 }
             }
         } else {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
-                ForEach(libraryConfiguration.categories) { category in
-                    FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
+                if let categories = viewModel.libraryConfiguration?.categories {
+                    ForEach(categories) { category in
+                        FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
+                    }
                 }
             }
         }
