@@ -22,7 +22,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                         guard let self = self else { return }
                         switch change {
                         case .change(_, _), .deleted:
-                            objectWillChange.send()
+                            Task { @MainActor [weak self] in
+                                self?.objectWillChange.send()
+                            }
                         case .error(let error):
                             print("An error occurred: \(error)")
                         }
