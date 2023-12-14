@@ -11,26 +11,30 @@ import SwiftUtilities
 
 @MainActor
 fileprivate class LibraryCategoriesViewModel: ObservableObject {
-    @Published var libraryConfiguration: LibraryConfiguration?
+    @Published var libraryConfiguration: LibraryConfiguration? {
+        didSet {
+            Task { @RealmBackgroundActor [weak self] in
+                guard let self = self else { return }
+                let libraryConfiguration = try await LibraryConfiguration.shared
+                objectNotificationToken?.invalidate()
+                objectNotificationToken = libraryConfiguration
+                    .observe { [weak self] change in
+                        guard let self = self else { return }
+                        switch change {
+                        case .change(_, _), .deleted:
+                            objectWillChange.send()
+                        case .error(let error):
+                            print("An error occurred: \(error)")
+                        }
+                    }
+            }
+        }
+    }
     
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
-            let libraryConfiguration = try await LibraryConfiguration.shared
-            objectNotificationToken = libraryConfiguration
-                .observe { [weak self] change in
-                    guard let self = self else { return }
-                    switch change {
-                    case .change(_, _):
-                        objectWillChange.send()
-                    case .error(let error):
-                        print("An error occurred: \(error)")
-                    case .deleted:
-                        print("The object was deleted.")
-                    }
-                }
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
