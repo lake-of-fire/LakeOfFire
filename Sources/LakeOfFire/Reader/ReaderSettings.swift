@@ -3,6 +3,7 @@ import RealmSwift
 import SwiftUIDownloads
 import SwiftUtilities
 import SwiftUIBackports
+import RealmSwiftGaps
 
 public enum LightModeTheme: String, CaseIterable, Identifiable {
     case white
