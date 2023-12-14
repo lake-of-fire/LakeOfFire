@@ -25,17 +25,107 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
                             print("An error occurred: \(error)")
                         }
                     }
+                await refresh()
             }
         }
     }
     
-    @State private var scriptTitle = ""
-    @State private var scriptText = ""
-    @State private var scriptEnabled = false
+    @Published var scriptTitle = ""
+    @Published var scriptText = ""
+    @Published var scriptEnabled = false
+    @Published var scriptInjectAtStart = false
+    @Published var scriptMainFrameOnly = true
+    @Published var scriptSandboxed = false
+    @Published var scriptPreviewURL = ""
     
+    var cancellables = Set<AnyCancellable>()
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
+        $scriptTitle
+            .removeDuplicates()
+            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .sink { [weak self] scriptTitle in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        script.title = scriptTitle
+                    }
+                }
+            }
+            .store(in: &cancellables)
+        $scriptText
+            .removeDuplicates()
+            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .sink { [weak self] scriptText in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        script.script = scriptText
+                    }
+                }
+            }
+            .store(in: &cancellables)
+        $scriptEnabled
+            .removeDuplicates()
+            .sink { [weak self] scriptEnabled in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        script.isArchived = !scriptEnabled
+                    }
+                }
+            }
+            .store(in: &cancellables)
+        $scriptInjectAtStart
+            .removeDuplicates()
+            .sink { [weak self] scriptInjectAtStart in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        script.injectAtStart = scriptInjectAtStart
+                    }
+                }
+            }
+            .store(in: &cancellables)
+        $scriptMainFrameOnly
+            .removeDuplicates()
+            .sink { [weak self] scriptMainFrameOnly in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        script.mainFrameOnly = scriptMainFrameOnly
+                    }
+                }
+            }
+            .store(in: &cancellables)
+        $scriptSandboxed
+            .removeDuplicates()
+            .sink { [weak self] scriptSandboxed in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        script.sandboxed = scriptSandboxed
+                    }
+                }
+            }
+            .store(in: &cancellables)
+        $scriptPreviewURL
+            .removeDuplicates()
+            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .sink { [weak self] scriptPreviewURL in
+                Task { [weak self] in
+                    guard let self = self, let script = script else { return }
+                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                        if scriptPreviewURL.isEmpty {
+                            script.previewURL = nil
+                        } else {
+                            script.previewURL = URL(string: scriptPreviewURL)
+                        }
+                    }
+                }
+            }
+            .store(in: &cancellables)
     }
     
     deinit {
@@ -49,6 +139,38 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         scriptTitle = script?.title ?? ""
         scriptText = script?.script ?? ""
         scriptEnabled = !(script?.isArchived ?? true || script?.isDeleted ?? true)
+        scriptInjectAtStart = script?.injectAtStart ?? false
+        scriptMainFrameOnly = script?.mainFrameOnly ?? true
+        scriptSandboxed = script?.sandboxed ?? false
+        scriptPreviewURL = script?.previewURL?.absoluteString ?? ""
+    }
+    
+    @MainActor
+    func onDeleteOfAllowedDomains(at offsets: IndexSet) {
+        Task { @MainActor [weak self] in
+            guard let self = self, let script = script else { return }
+            try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                script.allowedDomains.remove(atOffsets: offsets)
+            }
+        }
+    }
+    
+    func addEmptyDomain() {
+        Task { @MainActor [weak self] in
+            guard let self = self, let script = script else { return }
+            try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                script.allowedDomains.append(UserScriptAllowedDomain())
+            }
+        }
+    }
+    
+    func pastePreviewURL(strings: [String]) {
+        Task { @MainActor [weak self] in
+            guard let self = self, let script = script else { return }
+            try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                script.previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
+            }
+        }
     }
 }
 
@@ -95,6 +217,11 @@ struct LibraryScriptFormSections: View {
         return readerPreviewHeight
     }
     
+    func userScriptSection(script: UserScript) -> some View {
+        Group {
+        }
+    }
+    
     var body: some View {
         if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL)  {
             Section("Synchronized") {
@@ -105,31 +232,22 @@ struct LibraryScriptFormSections: View {
         
         Section("User Script") {
             Toggle("Enabled", isOn: $viewModel.scriptEnabled)
-                .task { @MainActor in
-                    scriptEnabled = !script.isArchived
-                }
-                .onChange(of: scriptEnabled) { scriptEnabled in
-                    Task {
-                        try await Realm.asyncWrite(script) { _, script in
-                            script.isArchived = !scriptEnabled
-                        }
-                    }
-                }
             
-            TextField("Script Title", text: $scriptTitle, prompt: Text("Enter user script title"))
+            TextField("Script Title", text: $viewModel.scriptTitle, prompt: Text("Enter user script title"))
 #if os(macOS)
             LabeledContent("Execution Options") {
-                Toggle("Inject At Document Start", isOn: $script.injectAtStart)
-                Toggle("Main Frame Only", isOn: $script.mainFrameOnly)
-                Toggle("Sandboxed", isOn: $script.sandboxed)
+                Toggle("Inject At Document Start", isOn: $viewModel.scriptInjectAtStart)
+                Toggle("Main Frame Only", isOn: $viewModel.scriptMainFrameOnly)
+                Toggle("Sandboxed", isOn: $viewModel.scriptSandboxed)
             }
 #else
-            Toggle("Inject At Document Start", isOn: $script.injectAtStart)
-            Toggle("Main Frame Only", isOn: $script.mainFrameOnly)
-            Toggle("Sandboxed", isOn: $script.sandboxed)
+            Toggle("Inject At Document Start", isOn: $viewModel.scriptInjectAtStart)
+            Toggle("Main Frame Only", isOn: $viewModel.scriptMainFrameOnly)
+            Toggle("Sandboxed", isOn: $viewModel.scriptSandboxed)
 #endif
         }
         .disabled(!script.isUserEditable)
+        
         if let opmlURL = script.opmlURL {
             Section("Synchronization") {
                 if LibraryConfiguration.opmlURLs.contains(opmlURL) {
@@ -150,9 +268,11 @@ struct LibraryScriptFormSections: View {
                     .contextMenu {
                         if script.isUserEditable {
                             Button(role: .destructive) {
-                                safeWrite(script) { _, script in
-                                    if let idx = script.allowedDomains.index(of: domain) {
-                                        script.allowedDomains.remove(at: idx)
+                                Task { @MainActor in
+                                    try await Realm.asyncWrite(ThreadSafeReference(to:  script)) { _, script in
+                                        if let idx = script.allowedDomains.index(of: domain) {
+                                            script.allowedDomains.remove(at: idx)
+                                        }
                                     }
                                 }
                             } label: {
@@ -162,10 +282,12 @@ struct LibraryScriptFormSections: View {
                         }
                     }
             }
-            .onDelete(perform: $script.allowedDomains.remove)
+            .onDelete { offsets in
+                viewModel.onDeleteOfAllowedDomains(at: offsets)
+            }
             
             Button {
-                $script.allowedDomains.append(UserScriptAllowedDomain())
+                viewModel.addEmptyDomain()
             } label: {
                 Label("Add Domain", systemImage: "plus.circle")
                     .fixedSize(horizontal: false, vertical: true)
@@ -176,29 +298,11 @@ struct LibraryScriptFormSections: View {
         }
         
         Section(header: Text("JavaScript"), footer: Text("This JavaScript will run on every page load. It has access to the DOM and runs in a sandbox independent of other user and system scripts. User Script execution order is not guaranteed. Use Safari Developer Tools to inspect.").font(.footnote).foregroundColor(.secondary)) {
-            CodeEditor(text: $scriptText, isWordWrapping: isWordWrapping)
+            CodeEditor(text: $viewModel.scriptText, isWordWrapping: isWordWrapping)
                 .frame(idealHeight: textEditorHeight)
             //            Toggle("Word Wrap", isOn: $isWordWrapping)
         }
-        .task { @MainActor in
-                scriptTitle = script.title
-                scriptText = script.script
-        }
-        .onChange(of: scriptTitle, debounceTime: 0.1) { text in
-            Task.detached {
-                await safeWrite(script) { _, script in
-                    script.title = text
-                }
-            }
-        }
-        .onChange(of: scriptText, debounceTime: 0.75) { scriptText in
-            Task.detached {
-                await safeWrite(script) { _, script in
-                    script.script = scriptText
-                }
-            }
-        }
-        .onChange(of: script.script, debounceTime: 1.5) { _ in
+        .onChange(of: script.script, debounceTime: 2) { _ in
             Task { @MainActor in
                 refresh(forceRefresh: true)
             }
@@ -206,21 +310,10 @@ struct LibraryScriptFormSections: View {
         
         Section {
             HStack {
-                TextField("Preview URL", text: Binding(
-                    get: { script.previewURL?.absoluteString ?? "" },
-                    set: { url in
-                        guard script.previewURL?.absoluteString != url else { return }
-                        safeWrite(script) { _, script in
-                            script.previewURL = URL(string: url)
-                        }
-                    }), axis: .vertical)
+                TextField("Preview URL", text: $viewModel.scriptPreviewURL, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 PasteButton(payloadType: String.self) { strings in
-                    Task { @MainActor in
-                        safeWrite(script) { _, script in
-                            script.previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
-                        }
-                    }
+                    viewModel.pastePreviewURL(strings: strings)
                 }
                 Button {
                     refresh(forceRefresh: true)

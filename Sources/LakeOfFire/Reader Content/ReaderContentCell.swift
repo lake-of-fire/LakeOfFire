@@ -69,7 +69,9 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
 #if os(macOS)
                     Spacer(minLength: 0)
                     Button {
-                        forceShowBookmark = item.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+                        Task { @MainActor in
+                            forceShowBookmark = try await item.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+                        }
                     } label: {
                         Image(systemName: viewModel.bookmarkExists ? "bookmark.fill" : "bookmark")
                     }

@@ -170,7 +170,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         try await realm.asyncWrite {
             category.title = "User Library"
         }
-        let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: category)
+        guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
         try await realm.asyncWrite {
             feed.rssUrl = rssURL
             if let title = title {
@@ -188,10 +188,13 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     }
     
     @RealmBackgroundActor
-    func duplicate(feed: Feed, inCategory category: FeedCategory, overwriteExisting: Bool) async throws {
+    func duplicate(feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws {
         do {
-            let newFeed = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true)
+            guard let newFeed = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true) else { return }
+            let feedRef = ThreadSafeReference(to: newFeed)
             Task { @MainActor in
+                let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+                guard let category = realm.resolve(category), let newFeed = realm.resolve(feedRef) else { return }
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)
                 selectedFeed = newFeed

@@ -47,9 +47,12 @@ public class Bookmark: Object, ReaderContentModel {
     @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
-        safeWrite { realm in
-            for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter({ $0.url == url }) {
-                historyRecord.bookmark = bookmark
+        Task { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
+            try await realm.asyncWrite {
+                for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter({ $0.url == url }) {
+                    historyRecord.bookmark = bookmark
+                }
             }
         }
     }
@@ -112,7 +115,7 @@ public extension Bookmark {
     
     @RealmBackgroundActor
     static func removeAll(realmConfiguration: Realm.Configuration) async throws {
-        let realm = try Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         try await realm.asyncWrite {
             realm.objects(self).setValue(true, forKey: "isDeleted")
         }

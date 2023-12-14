@@ -65,6 +65,19 @@ public extension ReaderContentModel {
         }
         set { }
     }
+    
+    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentModel) -> Void)) async throws {
+        let config = realm?.configuration ?? .defaultConfiguration
+        let compoundKey = compoundKey
+        let cls = type(of: self)// objectSchema.objectClass
+        try await Task.detached { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: config, actor: RealmBackgroundActor.shared)
+            guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
+            try await realm.asyncWrite {
+                block(realm, content)
+            }
+        }.value
+    }
 }
 
 public extension URL {

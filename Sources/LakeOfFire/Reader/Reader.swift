@@ -10,19 +10,19 @@ import SwiftUIDownloads
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
-struct ReaderContentKey: EnvironmentKey {
-    static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-}
+//struct ReaderContentKey: EnvironmentKey {
+//    static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
+//}
 
 public extension EnvironmentValues {
 //    var readerContentURL: URL {
 //        get { self[ReaderContentURLKey.self] }
 //        set { self[ReaderContentURLKey.self] = newValue }
 //    }
-    var readerContent: (any ReaderContentModel) {
-        get { self[ReaderContentKey.self] }
-        set { self[ReaderContentKey.self] = newValue }
-    }
+//    var readerContent: (any ReaderContentModel) {
+//        get { self[ReaderContentKey.self] }
+//        set { self[ReaderContentKey.self] = newValue }
+//    }
     var readerWebViewState: WebViewState {
         get { self[ReaderWebViewStateKey.self] }
         set { self[ReaderWebViewStateKey.self] = newValue }
@@ -113,11 +113,11 @@ public struct Reader: View {
                 messageHandlers: [
                     "readabilityFramePing": { message in
                         guard let uuid = (message.body as? [String: String])?["uuid"] else { return }
-                        Task { @MainActor in
+                        await Task { @MainActor in
                             if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                                 readerViewModel.refreshSettingsInWebView()
                             }
-                        }
+                        }.value
                     },
                     "readabilityParsed": { message in
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
@@ -125,12 +125,12 @@ public struct Reader: View {
                         }
                         guard readerViewModel.content.url == result.windowURL else { return }
                         guard !result.outputHTML.isEmpty else {
-                            safeWrite(readerViewModel.content) { _, content in
+                            try? await readerViewModel.content.asyncWrite { _, content in
                                 content.isReaderModeAvailable = false
                             }
                             return
                         }
-                        Task { @MainActor in
+                        try? await Task { @MainActor in
                             guard !url.isNativeReaderView else { return }
                             readerViewModel.readabilityContent = result.outputHTML
                             readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
@@ -138,9 +138,10 @@ public struct Reader: View {
                             if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                                 showReaderView()
                             } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
-                                readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
+                                await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
                             }
-                            safeWrite(readerViewModel.content) { _, content in
+                            
+                            try await readerViewModel.content.asyncWrite { _, content in
                                 content.isReaderModeAvailable = true
 #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
                                 if !content.url.isEBookURL && !content.url.isFileURL && !content.rssContainsFullContent {
@@ -148,13 +149,15 @@ public struct Reader: View {
                                     content.rssContainsFullContent = true
                                 }
                             }
-                        }
+                        }.value
                     },
                     "showReaderView": { _ in
                         Task { @MainActor in showReaderView() }
                     },
                     "showOriginal": { _ in
-                        Task { @MainActor in showOriginal() }
+                        Task { @MainActor in
+                            try await showOriginal()
+                        }
                     },
                     //            .onMessageReceived(forName: "youtubeCaptions") { message in
                     //                Task { @MainActor in
@@ -168,7 +171,7 @@ public struct Reader: View {
                             let pairs = result.rssURLs.prefix(10)
                             let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                             let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                            safeWrite(readerViewModel.content) { _, content in
+                            try await readerViewModel.content.asyncWrite { _, content in
                                 content.rssURLs.removeAll()
                                 content.rssTitles.removeAll()
                                 content.rssURLs.append(objectsIn: urls)
@@ -185,7 +188,7 @@ public struct Reader: View {
                             let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
                             // Only update if empty... sometimes annoying titles load later.
                             if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
-                                safeWrite(readerViewModel.content) { _, content in
+                                try await readerViewModel.content.asyncWrite { _, content in
                                     content.title = newTitle
                                 }
                                 readerViewModel.refreshTitleInWebView()
@@ -197,7 +200,7 @@ public struct Reader: View {
                             guard !url.isNativeReaderView else { return }
                             guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
                             guard result.mainDocumentURL == readerViewModel.state.pageURL && result.mainDocumentURL == readerViewModel.content.url, readerViewModel.content.imageUrl != result.newImageURL else { return }
-                            safeWrite(readerViewModel.content) { _, content in
+                            try await readerViewModel.content.asyncWrite { _, content in
                                 content.imageUrl = result.newImageURL
                             }
                         }
@@ -304,9 +307,9 @@ fileprivate extension Reader {
     // MARK: Readability
    
     @MainActor
-    func showOriginal() {
+    func showOriginal() async throws {
 //        if !(readerViewModel.content is FeedEntry) {
-        safeWrite(readerViewModel.content) { _, content in
+        try await readerViewModel.content.asyncWrite { _, content in
             content.isReaderModeByDefault = false
         }
 //        }
@@ -329,36 +332,34 @@ fileprivate extension Reader {
     
     /// Content before it has been treated with Reader-specific processing.
     private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
-        return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
-            safeWrite(readerViewModel.content) { _, readerContent in
-                readerContent.isReaderModeByDefault = true
+        try await readerViewModel.content.asyncWrite { _, content in
+            content.isReaderModeByDefault = true
+        }
+        
+        let injectEntryImageIntoHeader = readerViewModel.content.injectEntryImageIntoHeader
+        let readerFontSize = readerFontSize
+        let defaultFontSize = defaultFontSize
+        let processReadabilityContent = processReadabilityContent
+        try await Task.detached {
+            var doc: SwiftSoup.Document
+            do {
+                doc = try processForReaderMode(content: content, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
+            } catch {
+                print(error.localizedDescription)
+                return
             }
             
-            let injectEntryImageIntoHeader = readerViewModel.content.injectEntryImageIntoHeader
-            let readerFontSize = readerFontSize
-            let defaultFontSize = defaultFontSize
-            let processReadabilityContent = processReadabilityContent
-            Task.detached {
-                var doc: SwiftSoup.Document
-                do {
-                    doc = try processForReaderMode(content: content, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
-                } catch {
-                    print(error.localizedDescription)
-                    continuation.resume()
-                    return
-                }
-                
-                var html: String
-                if let processReadabilityContent = processReadabilityContent {
-                    html = await processReadabilityContent(doc)
-                } else {
-                    html = try doc.outerHtml()
-                }
-                #warning("SwiftUIDrag menu (?)")
-                let transformedContent = html
-                Task { @MainActor in
-                    if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-                        await readerViewModel.scriptCaller.evaluateJavaScript(
+            var html: String
+            if let processReadabilityContent = processReadabilityContent {
+                html = await processReadabilityContent(doc)
+            } else {
+                html = try doc.outerHtml()
+            }
+#warning("SwiftUIDrag menu (?)")
+            let transformedContent = html
+            await Task { @MainActor in
+                if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                    await readerViewModel.scriptCaller.evaluateJavaScript(
                                 """
                                 var root = document.body
                                 if (renderToSelector) {
@@ -392,14 +393,11 @@ fileprivate extension Reader {
                                     "html": transformedContent,
                                     "css": Readability.shared.css,
                                 ], in: frameInfo)
-                        continuation.resume()
-                    } else {
-                        readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
-                        continuation.resume()
-                    }
+                } else {
+                    readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
                 }
-            }
-        })
+            }.value
+        }.value
     }
 }
 

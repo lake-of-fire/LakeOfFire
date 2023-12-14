@@ -226,8 +226,9 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func createEmptyFeed(inCategory category: FeedCategory) async throws -> Feed {
-        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> Feed? {
+        let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+        guard let category = realm.resolve(category) else { return nil }
         let feed = Feed()
         feed.category = category
         feed.meaningfulContentMinLength = 0
@@ -238,8 +239,9 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func duplicateFeed(_ feed: Feed, inCategory category: FeedCategory, overwriteExisting: Bool) async throws -> Feed {
-        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> Feed? {
+        let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+        guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
         let existing = category.feeds.filter { $0.isDeleted == false && $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()

@@ -25,10 +25,13 @@ public struct ReaderContentLoader {
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
     
     public static var unsavedHome: (any ReaderContentModel) {
-        get async throws {
-            return try await Self.load(url: URL(string: "about:blank")!, persist: false)!
-        }
+//        return try await Self.load(url: URL(string: "about:blank")!, persist: false)!
+        let historyRecord = HistoryRecord()
+        historyRecord.url = URL(string: "about:blank")!
+        historyRecord.updateCompoundKey()
+        return historyRecord
     }
+    
     public static var home: (any ReaderContentModel) {
         get async throws {
             return try await Self.load(url: URL(string: "about:blank")!, persist: true)!
