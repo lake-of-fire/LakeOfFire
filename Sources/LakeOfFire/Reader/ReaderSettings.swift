@@ -97,7 +97,7 @@ public struct DataSettingsForm: View {
                 }
                 .confirmationDialog("Clear Unsaved RSS Feed Entries?", isPresented: $isPresentingUnsavedRSSFeedEntryDeletionAlert) {
                     Button("Clear Unsaved RSS Feed Entries", role: .destructive) {
-                        Task.detached {
+                        Task.detached { @RealmBackgroundActor in
                             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
                             try await realm.asyncWrite {
                                 for entry in realm.objects(FeedEntry.self).where({ $0.isDeleted == false }) {
