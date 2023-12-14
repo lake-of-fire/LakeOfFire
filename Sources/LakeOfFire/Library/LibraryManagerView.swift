@@ -88,7 +88,7 @@ public struct LibraryManagerView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
             NavigationStack(path: $viewModel.navigationPath) {
-                LibraryCategoriesView(viewModel: viewModel)
+                LibraryCategoriesView(libraryManagerViewModel: viewModel)
                     .navigationDestination(for: FeedCategory.self) { category in
                         if let libraryConfiguration = viewModel.libraryConfiguration {
                             LibraryCategoryViewContainer(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $viewModel.selectedFeed)

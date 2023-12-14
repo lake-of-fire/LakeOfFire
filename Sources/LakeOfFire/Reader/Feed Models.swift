@@ -338,9 +338,9 @@ fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderConte
 }
 
 public extension Feed {
-    @MainActor
-    private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration) throws {
-        let realm = try! Realm(configuration: realmConfiguration)
+    @RealmBackgroundActor
+    private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration) async throws {
+        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
             guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed), let url = URL(string: link) else { return nil }
             var imageUrl: URL? = nil
@@ -374,15 +374,14 @@ public extension Feed {
             feedEntry.updateCompoundKey()
             return feedEntry
         }
-        
-        realm.writeAsync {
+        try await realm.asyncWrite {
             realm.add(feedEntries, update: .modified)
         }
     }
     
-    @MainActor
-    private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration) throws {
-        let realm = try! Realm(configuration: realmConfiguration)
+    @RealmBackgroundActor
+    private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration) async throws {
+        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
             var url: URL?
             var imageUrl: URL?
@@ -444,8 +443,7 @@ public extension Feed {
             feedEntry.updateCompoundKey()
             return feedEntry
         }
-        
-        realm.writeAsync {
+        try await realm.asyncWrite {
             realm.add(feedEntries, update: .modified)
         }
     }
@@ -470,7 +468,7 @@ public extension Feed {
                         }
                         Task { @MainActor in
                             do {
-                                try self.persist(rssItems: items, realmConfiguration: realmConfiguration)
+                                try await self.persist(rssItems: items, realmConfiguration: realmConfiguration)
                                 continuation.resume(returning: ())
                             } catch {
                                 continuation.resume(throwing: error)
@@ -484,7 +482,7 @@ public extension Feed {
                         }
                         Task { @MainActor in
                             do {
-                                try self.persist(atomItems: items, realmConfiguration: realmConfiguration)
+                                try await self.persist(atomItems: items, realmConfiguration: realmConfiguration)
                                 continuation.resume(returning: ())
                             } catch {
                                 continuation.resume(throwing: error)

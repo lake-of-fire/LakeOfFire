@@ -76,16 +76,14 @@ public struct DataSettingsForm: View {
                 }
                 .confirmationDialog("Clear Unsaved Web History?", isPresented: $isPresentingUnsavedReadingHistoryDeletionAlert) {
                     Button("Clear Unsaved Web History", role: .destructive) {
-                        Task.detached {
-                            autoreleasepool {
-                                let realm = try! Realm()
-                                try! realm.write {
-                                    for record in realm.objects(HistoryRecord.self).where({ $0.isDeleted == false }) {
-                                        record.isDeleted = true
-                                    }
+                        Task.detached { @RealmBackgroundActor in
+                            let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+                            try await realm.asyncWrite {
+                                for record in realm.objects(HistoryRecord.self).where({ $0.isDeleted == false }) {
+                                    record.isDeleted = true
                                 }
-                                realm.refresh()
                             }
+                            realm.refresh() // ?
                         }
                     }
                     Button("Cancel", role: .cancel) { }
@@ -99,15 +97,13 @@ public struct DataSettingsForm: View {
                 .confirmationDialog("Clear Unsaved RSS Feed Entries?", isPresented: $isPresentingUnsavedRSSFeedEntryDeletionAlert) {
                     Button("Clear Unsaved RSS Feed Entries", role: .destructive) {
                         Task.detached {
-                            autoreleasepool {
-                                let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
-                                try! realm.write {
-                                    for entry in realm.objects(FeedEntry.self).where({ $0.isDeleted == false }) {
-                                        entry.isDeleted = true
-                                    }
+                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+                            try await realm.asyncWrite {
+                                for entry in realm.objects(FeedEntry.self).where({ $0.isDeleted == false }) {
+                                    entry.isDeleted = true
                                 }
-                                realm.refresh()
                             }
+                            realm.refresh() // ?
                         }
                     }
                     Button("Cancel", role: .cancel) { }
