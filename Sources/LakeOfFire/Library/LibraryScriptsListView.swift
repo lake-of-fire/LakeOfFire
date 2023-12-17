@@ -36,7 +36,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [weak self] in
+        Task.detached { @RealmBackgroundActor [weak self] in
             self?.objectNotificationToken?.invalidate()
         }
     }

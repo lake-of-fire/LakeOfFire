@@ -101,7 +101,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             }
             .store(in: &cancellables)
         
-        Task { @RealmBackgroundActor [weak self] in
+        Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let libraryConfiguration = try await LibraryConfiguration.shared
             objectNotificationToken = libraryConfiguration

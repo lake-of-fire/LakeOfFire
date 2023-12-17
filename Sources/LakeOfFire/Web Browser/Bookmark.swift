@@ -47,7 +47,7 @@ public class Bookmark: Object, ReaderContentModel {
     @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
-        Task { @RealmBackgroundActor in
+        Task.detached { @RealmBackgroundActor in
             let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             try await realm.asyncWrite {
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter({ $0.url == url }) {

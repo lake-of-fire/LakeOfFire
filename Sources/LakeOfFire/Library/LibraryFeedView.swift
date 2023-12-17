@@ -60,7 +60,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     init(feed: Feed) {
         self.feed = feed
         let feedRef = ThreadSafeReference(to: feed)
-        Task { @RealmBackgroundActor [weak self] in
+        Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
             guard let feed = realm.resolve(feedRef) else { return }
@@ -203,7 +203,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [weak self] in
+        Task.detached { @RealmBackgroundActor [weak self] in
             self?.objectNotificationToken?.invalidate()
         }
     }

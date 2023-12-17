@@ -32,6 +32,7 @@ public struct ReaderContentLoader {
         return historyRecord
     }
     
+    @RealmBackgroundActor
     public static var home: (any ReaderContentModel) {
         get async throws {
             return try await Self.load(url: URL(string: "about:blank")!, persist: true)!

@@ -13,7 +13,7 @@ import SwiftUtilities
 fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
-            Task { @RealmBackgroundActor [weak self] in
+            Task.detached { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
                 let libraryConfiguration = try await LibraryConfiguration.shared
                 objectNotificationToken?.invalidate()
@@ -36,7 +36,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
-        Task { @RealmBackgroundActor [weak self] in
+        Task.detached { @RealmBackgroundActor [weak self] in
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -48,7 +48,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [weak self] in
+        Task.detached { @RealmBackgroundActor [weak self] in
             self?.objectNotificationToken?.invalidate()
         }
     }
