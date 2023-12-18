@@ -193,8 +193,8 @@ struct LibraryScriptFormSections: View {
     
     @StateObject private var viewModel = LibraryScriptFormSectionsViewModel()
     
-    //    @State var webViewUserScripts =  LibraryConfiguration.shared.activeWebViewUserScripts
-    //    @State var webViewSystemScripts = LibraryConfiguration.shared.systemScripts
+    //    @State var webViewUserScripts =  LibraryConfiguration.getOrCreate().activeWebViewUserScripts
+    //    @State var webViewSystemScripts = LibraryConfiguration.getOrCreate().systemScripts
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass

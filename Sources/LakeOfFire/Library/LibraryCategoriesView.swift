@@ -15,7 +15,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
         didSet {
             Task.detached { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
-                let libraryConfiguration = try await LibraryConfiguration.shared
+                let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
                 objectNotificationToken?.invalidate()
                 objectNotificationToken = libraryConfiguration
                     .observe { [weak self] change in
@@ -37,7 +37,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     
     init() {
         Task.detached { @RealmBackgroundActor [weak self] in
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
+            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)

@@ -83,20 +83,26 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return scripts
     }
     
-    @RealmBackgroundActor
-    public static var shared: LibraryConfiguration {
-        get async throws {
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
-            if let configuration = realm.objects(LibraryConfiguration.self).first(where: { !$0.isDeleted }) {
-                return configuration
-            }
-            
-            let configuration = LibraryConfiguration()
-            try await realm.asyncWrite {
-                realm.add(configuration, update: .modified)
-            }
+    public static func get() throws -> LibraryConfiguration? {
+        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
+        if let configuration = realm.objects(LibraryConfiguration.self).first(where: { !$0.isDeleted }) {
             return configuration
         }
+        return nil
+    }
+    
+    @RealmBackgroundActor
+    public static func getOrCreate() async throws -> LibraryConfiguration {
+        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+        if let configuration = realm.objects(LibraryConfiguration.self).first(where: { !$0.isDeleted }) {
+            return configuration
+        }
+        
+        let configuration = LibraryConfiguration()
+        try await realm.asyncWrite {
+            realm.add(configuration, update: .modified)
+        }
+        return configuration
     }
     
     public override init() {
@@ -151,11 +157,11 @@ public class LibraryDataManager: NSObject {
 //            .removeDuplicates()
 //            .combineLatest(DownloadController.shared.failedDownloads.publisher.collect().removeDuplicates())
 //            .compactMap { (finishedDownloads: [Downloadable], failedDownloads: [Downloadable]) -> [Downloadable]? in
-//                if LibraryConfiguration.shared.downloadables.allSatisfy({
+//                if LibraryConfiguration.getOrCreate().downloadables.allSatisfy({
 //                    finishedDownloads.contains($0) || failedDownloads.contains($0)
 //                }) {
 //                    return finishedDownloads.filter {
-//                        LibraryConfiguration.shared.downloadables.contains($0)
+//                        LibraryConfiguration.getOrCreate().downloadables.contains($0)
 //                    }
 //                }
 //                return nil
@@ -194,7 +200,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     private func refreshScripts() async throws {
-        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.shared)) { realm, configuration in
+        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getOrCreate())) { realm, configuration in
             for script in realm.objects(UserScript.self) {
                 if script.isDeleted {
                     for (idx, candidate) in Array(configuration.userScripts).enumerated() {
@@ -217,7 +223,7 @@ public class LibraryDataManager: NSObject {
             realm.add(category, update: .modified)
         }
         if addToLibrary {
-            let configuration = try await LibraryConfiguration.shared
+            let configuration = try await LibraryConfiguration.getOrCreate()
             try await realm.asyncWrite {
                 configuration.categories.append(category)
             }
@@ -265,7 +271,7 @@ public class LibraryDataManager: NSObject {
             try await realm.asyncWrite {
                 realm.add(script, update: .modified)
             }
-            let configuration = try await LibraryConfiguration.shared
+            let configuration = try await LibraryConfiguration.getOrCreate()
             try await realm.asyncWrite {
                 configuration.userScripts.append(script)
             }
@@ -275,7 +281,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
-        let downloadables = try await LibraryConfiguration.shared.downloadables
+        let downloadables = try await LibraryConfiguration.getOrCreate().downloadables
         Task { @MainActor in
             await DownloadController.shared.ensureDownloaded(downloadables)
         }
@@ -298,7 +304,7 @@ public class LibraryDataManager: NSObject {
         var allImportedCategories = OrderedSet<FeedCategory>()
         var allImportedFeeds = OrderedSet<Feed>()
         var allImportedScripts = OrderedSet<UserScript>()
-        let configuration = try await LibraryConfiguration.shared
+        let configuration = try await LibraryConfiguration.getOrCreate()
         
         for entry in opml.entries {
             let (importedCategories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download)
@@ -414,7 +420,7 @@ public class LibraryDataManager: NSObject {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
-        let configuration = try await LibraryConfiguration.shared
+        let configuration = try await LibraryConfiguration.getOrCreate()
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
         
         if opmlEntry.feedURL != nil {
@@ -583,7 +589,7 @@ public class LibraryDataManager: NSObject {
     }
     
     public func exportUserOPML() async throws -> OPML {
-        let configuration = try await LibraryConfiguration.shared
+        let configuration = try await LibraryConfiguration.getOrCreate()
         let userCategories = configuration.categories.filter { $0.opmlOwnerName == nil && $0.opmlURL == nil && $0.isDeleted == false }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [

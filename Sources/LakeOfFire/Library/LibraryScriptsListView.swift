@@ -12,7 +12,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     init() {
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let libraryConfiguration = try await LibraryConfiguration.shared
+            let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
             objectNotificationToken = libraryConfiguration
                 .observe { [weak self] change in
                     guard let self = self else { return }

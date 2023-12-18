@@ -103,7 +103,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let libraryConfiguration = try await LibraryConfiguration.shared
+            let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
             objectNotificationToken = libraryConfiguration
                 .observe { [weak self] change in
                     guard let self = self else { return }
@@ -118,7 +118,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         print("The object was deleted.")
                     }
                 }
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
+            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)

@@ -80,7 +80,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let configuration = try await LibraryConfiguration.shared
+            let configuration = try await LibraryConfiguration.getOrCreate()
             webViewSystemScripts = systemScripts + configuration.systemScripts
             webViewUserScripts = configuration.activeWebViewUserScripts
             
@@ -100,7 +100,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     private func updateScripts() async throws {
-        let scripts = try await LibraryConfiguration.shared.activeWebViewUserScripts
+        let scripts = try await LibraryConfiguration.getOrCreate().activeWebViewUserScripts
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             if webViewUserScripts != scripts {
