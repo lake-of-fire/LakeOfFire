@@ -10,19 +10,15 @@ import SwiftUIDownloads
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
-//struct ReaderContentKey: EnvironmentKey {
-//    static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-//}
+struct ReaderContentKey: EnvironmentKey {
+    static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
+}
 
 public extension EnvironmentValues {
-//    var readerContentURL: URL {
-//        get { self[ReaderContentURLKey.self] }
-//        set { self[ReaderContentURLKey.self] = newValue }
-//    }
-//    var readerContent: (any ReaderContentModel) {
-//        get { self[ReaderContentKey.self] }
-//        set { self[ReaderContentKey.self] = newValue }
-//    }
+    var readerContent: (any ReaderContentModel) {
+        get { self[ReaderContentKey.self] }
+        set { self[ReaderContentKey.self] = newValue }
+    }
     var readerWebViewState: WebViewState {
         get { self[ReaderWebViewStateKey.self] }
         set { self[ReaderWebViewStateKey.self] = newValue }
@@ -40,9 +36,14 @@ public extension WebViewNavigator {
     func load(content: any ReaderContentModel) {
         if content.isReaderModeByDefault && content.htmlToDisplay != nil {
             guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
-            load(URLRequest(url: historyURL))
+            Task { @MainActor in
+                load(URLRequest(url: historyURL))
+            }
         } else {
-            load(URLRequest(url: content.url))
+            let url = content.url
+            Task { @MainActor in
+                load(URLRequest(url: url))
+            }
         }
     }
 }

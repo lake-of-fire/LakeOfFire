@@ -1,32 +1,67 @@
 import SwiftUI
 import RealmSwift
 import SwiftUIWebView
+import RealmSwiftGaps
+import RealmSwift
 import SwiftUtilities
+
+@MainActor
+class WebFeedButtonViewModel: ObservableObject {
+    @Published var libraryConfiguration: LibraryConfiguration? {
+        didSet {
+            Task.detached { @RealmBackgroundActor [weak self] in
+                guard let self = self else { return }
+                let libraryConfiguration = try await LibraryConfiguration.shared
+                objectNotificationToken?.invalidate()
+                objectNotificationToken = libraryConfiguration
+                    .observe { [weak self] change in
+                        guard let self = self else { return }
+                        switch change {
+                        case .change(_, _), .deleted:
+                            Task { @MainActor [weak self] in
+                                self?.objectWillChange.send()
+                            }
+                        case .error(let error):
+                            print("An error occurred: \(error)")
+                        }
+                    }
+            }
+        }
+    }
+    
+    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    
+    init() {
+        Task.detached { @RealmBackgroundActor [weak self] in
+            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.shared)
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
+                self.libraryConfiguration = libraryConfiguration
+            }
+        }
+    }
+    
+    deinit {
+        Task.detached { @RealmBackgroundActor [weak self] in
+            self?.objectNotificationToken?.invalidate()
+        }
+    }
+}
 
 @available(iOS 16.0, macOS 13.0, *)
 struct WebFeedMenuAddButtons: View {
-    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
+    @ObservedObject private var viewModel: WebFeedButtonViewModel
     let url: URL
     let title: String
     @Binding var isLibraryPresented: Bool
-    @StateObject var libraryViewModel = LibraryManagerViewModel()
+    @ObservedObject var libraryViewModel: LibraryManagerViewModel
     
     @Environment(\.openWindow) var openWindow
     
     var body: some View {
-        let userCategories = libraryConfiguration.userCategories
-        if userCategories.isEmpty {
-            Button("Add Feed to User Library") {
-                Task { @MainActor in
-                    try await libraryViewModel.add(rssURL: url, title: title)
-#if os(macOS)
-                    openWindow(id: "user-library")
-#else
-                    isLibraryPresented = true
-#endif
-                }
-            }
-        } else {
+        if let userCategories = viewModel.libraryConfiguration?.userCategories {
             ForEach(userCategories) { category in
                 Button("Add Feed to \(category.title)") {
                     Task { @MainActor in
@@ -39,13 +74,31 @@ struct WebFeedMenuAddButtons: View {
                     }
                 }
             }
+        } else {
+            Button("Add Feed to User Library") {
+                Task { @MainActor in
+                    try await libraryViewModel.add(rssURL: url, title: title)
+#if os(macOS)
+                    openWindow(id: "user-library")
+#else
+                    isLibraryPresented = true
+#endif
+                }
+            }
         }
+    }
+    
+    init(viewModel: WebFeedButtonViewModel, url: URL, title: String, isLibraryPresented: Binding<Bool>, libraryViewModel: LibraryManagerViewModel) {
+        self.viewModel = viewModel
+        self.url = url
+        self.title = title
+        _isLibraryPresented = isLibraryPresented
+        self.libraryViewModel = libraryViewModel
     }
 }
 
 @available(iOS 16.0, macOS 13.0, *)
 public struct WebFeedButton: View {
-    @ObservedRealmObject var libraryConfiguration: LibraryConfiguration
     @Binding var readerContent: any ReaderContentModel
     
     @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
@@ -56,13 +109,14 @@ public struct WebFeedButton: View {
     
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     
+    @StateObject private var viewModel = WebFeedButtonViewModel()
     @StateObject private var libraryViewModel = LibraryManagerViewModel()
     
     private var isDisabled: Bool {
         return readerContent.rssURLs.isEmpty
     }
     
-    public  var body: some View {
+    public var body: some View {
         Menu {
             if let feed = feed, !feed.isDeleted, let category = feed.category {
                 Button("Edit Feed in Library") {
@@ -75,10 +129,10 @@ public struct WebFeedButton: View {
                 ForEach(Array(readerContent.rssURLs.map ({ $0 }).enumerated()), id: \.element) { (idx, url) in
                     let title = readerContent.rssTitles[idx]
                     if readerContent.rssURLs.count == 1 {
-                        WebFeedMenuAddButtons(libraryConfiguration: libraryConfiguration, url: url, title: title, isLibraryPresented: $isLibraryPresented, libraryViewModel: libraryViewModel)
+                        WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title, isLibraryPresented: $isLibraryPresented, libraryViewModel: libraryViewModel)
                     } else {
                         Menu("Add Feed \"\(title)\"") {
-                            WebFeedMenuAddButtons(libraryConfiguration: libraryConfiguration, url: url, title: title, isLibraryPresented: $isLibraryPresented, libraryViewModel: libraryViewModel)
+                            WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title, isLibraryPresented: $isLibraryPresented, libraryViewModel: libraryViewModel)
                         }
                     }
                 }
@@ -110,8 +164,7 @@ public struct WebFeedButton: View {
         }
     }
     
-    public init(libraryConfiguration: LibraryConfiguration, readerContent: Binding<any ReaderContentModel>) {
-        self.libraryConfiguration = libraryConfiguration
+    public init(readerContent: Binding<any ReaderContentModel>) {
         _readerContent = readerContent
     }
     

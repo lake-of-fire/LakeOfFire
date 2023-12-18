@@ -6,7 +6,8 @@ import RealmSwiftGaps
 
 public struct ReaderContentReadingProgressLoader {
     /// Float is progress, Bool is whether article is "finished".
-    public static var readingProgressLoader: ((any ReaderContentModel) -> (Float, Bool)?)?
+    @RealmBackgroundActor
+    public static var readingProgressLoader: ((any ReaderContentModel) async throws -> (Float, Bool)?)?
 }
 
 public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {

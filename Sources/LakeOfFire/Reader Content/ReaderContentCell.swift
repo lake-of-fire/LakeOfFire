@@ -1,6 +1,6 @@
-import Foundation
 import SwiftUI
 import RealmSwift
+import RealmSwiftGaps
 import LakeImage
 
 class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>: ObservableObject {
@@ -12,15 +12,15 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
     
     @MainActor
     func load(item: C) {
-        guard let readingProgressLoader = ReaderContentReadingProgressLoader.readingProgressLoader else { return }
+//        guard let readingProgressLoader = ReaderContentReadingProgressLoader.readingProgressLoader else { return }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         //        let url = item.url
         //        let item = item.freeze()
-        Task.detached {
-            let realm = try! Realm(configuration: config)
+        Task.detached { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: config, actor: RealmBackgroundActor.shared)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
-                if let (progress, finished) = readingProgressLoader(item) {
+                if let (progress, finished) = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item) {
                     Task { @MainActor in
                         self.readingProgress = progress
                         self.isFullArticleFinished = finished
