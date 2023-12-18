@@ -282,9 +282,9 @@ public class LibraryDataManager: NSObject {
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
         let downloadables = try await LibraryConfiguration.getOrCreate().downloadables
-        Task { @MainActor in
+        await Task { @MainActor in
             await DownloadController.shared.ensureDownloaded(downloadables)
-        }
+        }.value
     }
     
     public func importOPML(fileURLs: [URL]) async {
