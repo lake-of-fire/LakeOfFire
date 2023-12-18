@@ -60,7 +60,7 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             guard let readerContent = readerContent else { return }
-            let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
+            let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration)
             let bookmark = realm.objects(Bookmark.self).where({
                 $0.compoundKey == Bookmark.makePrimaryKey(url: readerContent.url, html: readerContent.html) ?? "" }).first
             self.bookmark = bookmark

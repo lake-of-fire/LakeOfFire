@@ -15,15 +15,17 @@ public class ReaderViewModel: NSObject, ObservableObject {
             if let imageURL = state.pageImageURL, content.imageUrl == nil {
                 if let content = content as? Bookmark {
                     let contentRef = ThreadSafeReference(to: content)
-                    Task {
-                        try await Realm.asyncWrite(contentRef) { _, content in
+                    guard let config = content.realm?.configuration else { return }
+                    Task.detached {
+                        try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
                             content.imageUrl = imageURL
                         }
                     }
                 } else if let content = content as? HistoryRecord {
                     let contentRef = ThreadSafeReference(to: content)
-                    Task {
-                        try await Realm.asyncWrite(contentRef) { _, content in
+                    guard let config = content.realm?.configuration else { return }
+                    Task.detached {
+                        try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
                             content.imageUrl = imageURL
                         }
                     }
@@ -81,9 +83,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let configuration = try await LibraryConfiguration.getOrCreate()
-            
-            await Task { @MainActor [weak self] in
-                guard let self = self else { return }
+            let ref = ThreadSafeReference(to: configuration)
+            try await Task { @MainActor [weak self] in
+                let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
+                guard let self = self, let configuration = realm.resolve(ref) else { return }
                 webViewSystemScripts = systemScripts + configuration.systemScripts
                 webViewUserScripts = configuration.activeWebViewUserScripts
             }.value

@@ -200,7 +200,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     private func refreshScripts() async throws {
-        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getOrCreate())) { realm, configuration in
+        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getOrCreate()), configuration: LibraryDataManager.realmConfiguration) { realm, configuration in
             for script in realm.objects(UserScript.self) {
                 if script.isDeleted {
                     for (idx, candidate) in Array(configuration.userScripts).enumerated() {
@@ -411,6 +411,7 @@ public class LibraryDataManager: NSObject {
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
     }
     
+    @RealmBackgroundActor
     func importOPMLEntry(_ opmlEntry: OPMLEntry, opml: OPML, download: Downloadable?, category: FeedCategory? = nil, importedCategories: OrderedSet<FeedCategory> = OrderedSet(), importedFeeds: OrderedSet<Feed> = OrderedSet(), importedScripts: OrderedSet<UserScript> = OrderedSet()) async throws -> (OrderedSet<FeedCategory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
         var category = category
         var importedCategories = importedCategories
@@ -420,7 +421,6 @@ public class LibraryDataManager: NSObject {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
-        let configuration = try await LibraryConfiguration.getOrCreate()
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
         
         if opmlEntry.feedURL != nil {
@@ -588,6 +588,7 @@ public class LibraryDataManager: NSObject {
         feed.modifiedAt = Date()
     }
     
+    @RealmBackgroundActor
     public func exportUserOPML() async throws -> OPML {
         let configuration = try await LibraryConfiguration.getOrCreate()
         let userCategories = configuration.categories.filter { $0.opmlOwnerName == nil && $0.opmlURL == nil && $0.isDeleted == false }

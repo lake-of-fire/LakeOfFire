@@ -61,14 +61,14 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
         }
         
         let categoryID = category.id
-        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration)) { realm, libraryConfiguration in
+        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
             guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
             if let idx = libraryConfiguration.categories.firstIndex(of: category) {
                 libraryConfiguration.categories.remove(at: idx)
             }
         }
         
-        try await Realm.asyncWrite(ThreadSafeReference(to: category)) { realm, category in
+        try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { realm, category in
             if category.isArchived && !LibraryConfiguration.opmlURLs.map({ $0 }).contains(category.opmlURL) {
                 category.isDeleted = true
             } else if !category.isArchived {
@@ -93,11 +93,11 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     func restoreCategory(_ category: FeedCategory) async throws {
         guard let libraryConfiguration = libraryConfiguration else { return }
         guard category.isUserEditable else { return }
-        try await Realm.asyncWrite(ThreadSafeReference(to: category)) { realm, category in
+        try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { realm, category in
             category.isArchived = false
         }
         let categoryID = category.id
-        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration)) { realm, libraryConfiguration in
+        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
             guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
             if !libraryConfiguration.categories.contains(category) {
                 libraryConfiguration.categories.append(category)
@@ -109,7 +109,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     func moveCategories(fromOffsets: IndexSet, toOffset: Int) {
         Task { @MainActor in
             guard let libraryConfiguration = libraryConfiguration else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration)) { _, libraryConfiguration in
+            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
                 libraryConfiguration.categories.move(fromOffsets: fromOffsets, toOffset: toOffset)
             }
         }

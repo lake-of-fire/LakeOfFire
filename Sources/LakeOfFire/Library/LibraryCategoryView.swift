@@ -53,7 +53,7 @@ class LibraryCategoryViewModel: ObservableObject {
             .sink { [weak self] categoryTitle in
                 Task { [weak self] in
                     guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: category)) { _, category in
+                    try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
                         category.title = categoryTitle
                     }
                 }
@@ -65,7 +65,7 @@ class LibraryCategoryViewModel: ObservableObject {
             .sink { [weak self] categoryBackgroundImageURL in
                 Task { [weak self] in
                     guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: category)) { _, category in
+                    try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
                         if categoryBackgroundImageURL.isEmpty {
                             category.backgroundImageUrl = URL(string: "about:blank")!
                         } else if let url = URL(string: categoryBackgroundImageURL) {

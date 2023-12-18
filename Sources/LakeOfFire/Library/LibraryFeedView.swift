@@ -81,10 +81,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         $feedTitle
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] feedTitle in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedTitle in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.title = feedTitle
                     }
                 }
@@ -93,10 +92,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         $feedDescription
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] feedDescription in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedDescription in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.markdownDescription = feedDescription
                     }
                 }
@@ -104,10 +102,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $feedEnabled
             .removeDuplicates()
-            .sink { [weak self] feedEnabled in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedEnabled in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.isArchived = !feedEnabled
                     }
                 }
@@ -116,10 +113,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         $feedURL
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] feedURL in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedURL in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         if feedURL.isEmpty {
                             feed.rssUrl = URL(string: "about:blank")!
                         } else if let url = URL(string: feedURL) {
@@ -132,10 +128,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         $feedIconURL
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] feedIconURL in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedIconURL in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         if feedIconURL.isEmpty {
                             feed.iconUrl = URL(string: "about:blank")!
                         } else if let url = URL(string: feedIconURL) {
@@ -147,10 +142,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $feedIsReaderModeByDefault
             .removeDuplicates()
-            .sink { [weak self] feedIsReaderModeByDefault in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedIsReaderModeByDefault in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.isReaderModeByDefault = feedIsReaderModeByDefault
                     }
                 }
@@ -158,10 +152,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $feedInjectEntryImageIntoHeader
             .removeDuplicates()
-            .sink { [weak self] feedInjectEntryImageIntoHeader in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedInjectEntryImageIntoHeader in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
                     }
                 }
@@ -169,10 +162,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $feedExtractImageFromContent
             .removeDuplicates()
-            .sink { [weak self] feedExtractImageFromContent in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedExtractImageFromContent in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.extractImageFromContent = feedExtractImageFromContent
                     }
                 }
@@ -180,10 +172,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $feedRssContainsFullContent
             .removeDuplicates()
-            .sink { [weak self] feedRssContainsFullContent in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedRssContainsFullContent in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.rssContainsFullContent = feedRssContainsFullContent
                     }
                 }
@@ -191,10 +182,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $feedDisplayPublicationDate
             .removeDuplicates()
-            .sink { [weak self] feedDisplayPublicationDate in
-                Task { [weak self] in
-                    guard let self = self else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            .sink { feedDisplayPublicationDate in
+                Task.detached {
+                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
                         feed.displayPublicationDate = feedDisplayPublicationDate
                     }
                 }
@@ -225,7 +215,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     func pasteRSSURL(strings: [String]) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: feed)) { _, feed in
+            try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: LibraryDataManager.realmConfiguration) { _, feed in
                 feed.rssUrl = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
             }
         }

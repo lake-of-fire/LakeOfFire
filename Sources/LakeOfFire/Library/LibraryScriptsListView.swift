@@ -98,7 +98,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     func moveScripts(fromOffsets: IndexSet, toOffset: Int) {
         Task { @MainActor in
             guard let libraryConfiguration = libraryConfiguration else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration)) { _, libraryConfiguration in
+            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
                 libraryConfiguration.userScripts.move(fromOffsets: fromOffsets, toOffset: toOffset)
             }
         }

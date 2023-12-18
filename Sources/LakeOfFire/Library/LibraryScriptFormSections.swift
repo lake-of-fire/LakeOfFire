@@ -42,13 +42,15 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
+        
         $scriptTitle
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { [weak self] scriptTitle in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.title = scriptTitle
                     }
                 }
@@ -58,9 +60,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { [weak self] scriptText in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.script = scriptText
                     }
                 }
@@ -69,9 +72,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptEnabled
             .removeDuplicates()
             .sink { [weak self] scriptEnabled in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.isArchived = !scriptEnabled
                     }
                 }
@@ -80,9 +84,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptInjectAtStart
             .removeDuplicates()
             .sink { [weak self] scriptInjectAtStart in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.injectAtStart = scriptInjectAtStart
                     }
                 }
@@ -91,9 +96,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptMainFrameOnly
             .removeDuplicates()
             .sink { [weak self] scriptMainFrameOnly in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.mainFrameOnly = scriptMainFrameOnly
                     }
                 }
@@ -102,9 +108,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptSandboxed
             .removeDuplicates()
             .sink { [weak self] scriptSandboxed in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         script.sandboxed = scriptSandboxed
                     }
                 }
@@ -114,9 +121,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { [weak self] scriptPreviewURL in
-                Task { [weak self] in
-                    guard let self = self, let script = script else { return }
-                    try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+                guard let self = self, let script = script else { return }
+                let scriptRef = ThreadSafeReference(to: script)
+                Task.detached {
+                    try await Realm.asyncWrite(scriptRef, configuration: LibraryDataManager.realmConfiguration) { _, script in
                         if scriptPreviewURL.isEmpty {
                             script.previewURL = nil
                         } else {
@@ -149,7 +157,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     func onDeleteOfAllowedDomains(at offsets: IndexSet) {
         Task { @MainActor [weak self] in
             guard let self = self, let script = script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                 script.allowedDomains.remove(atOffsets: offsets)
             }
         }
@@ -158,7 +166,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     func addEmptyDomain() {
         Task { @MainActor [weak self] in
             guard let self = self, let script = script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                 script.allowedDomains.append(UserScriptAllowedDomain())
             }
         }
@@ -167,7 +175,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     func pastePreviewURL(strings: [String]) {
         Task { @MainActor [weak self] in
             guard let self = self, let script = script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script)) { _, script in
+            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                 script.previewURL = URL(string: (strings.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? URL(string: "about:blank")!
             }
         }
@@ -269,7 +277,7 @@ struct LibraryScriptFormSections: View {
                         if script.isUserEditable {
                             Button(role: .destructive) {
                                 Task { @MainActor in
-                                    try await Realm.asyncWrite(ThreadSafeReference(to:  script)) { _, script in
+                                    try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                                         if let idx = script.allowedDomains.index(of: domain) {
                                             script.allowedDomains.remove(at: idx)
                                         }
