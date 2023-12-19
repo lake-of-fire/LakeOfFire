@@ -67,6 +67,7 @@ public extension ReaderContentModel {
         set { }
     }
     
+    @MainActor
     func asyncWrite(_ block: @escaping ((Realm, any ReaderContentModel) -> Void)) async throws {
         let config = realm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey

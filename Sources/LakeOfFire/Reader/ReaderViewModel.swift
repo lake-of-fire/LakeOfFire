@@ -5,6 +5,7 @@ import Combine
 import RealmSwiftGaps
 import WebKit
 
+@MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
     public let navigator = WebViewNavigator()
     @Published public var state: WebViewState = .empty 
@@ -91,24 +92,30 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 webViewUserScripts = configuration.activeWebViewUserScripts
             }.value
             
-            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-            realm.objects(UserScript.self)
-                .collectionPublisher
-                .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
-                .receive(on: DispatchQueue.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { [weak self] in
-                        try await self?.updateScripts()
-                    }
-                })
-                .store(in: &cancellables)
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let realm = try await Realm(configuration: realmConfiguration)
+                realm.objects(UserScript.self)
+                    .collectionPublisher
+                    .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+                    .receive(on: DispatchQueue.main)
+                    .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                        Task { [weak self] in
+                            try await self?.updateScripts()
+                        }
+                    })
+                    .store(in: &cancellables)
+            }
         }
     }
     
     @RealmBackgroundActor
     private func updateScripts() async throws {
-        let scripts = try await LibraryConfiguration.getOrCreate().activeWebViewUserScripts
+        let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
+        let ref = ThreadSafeReference(to: libraryConfiguration)
         Task { @MainActor [weak self] in
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+            guard let scripts = realm.resolve(ref)?.activeWebViewUserScripts else { return }
             guard let self = self else { return }
             if webViewUserScripts != scripts {
                 webViewUserScripts = scripts
@@ -117,7 +124,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationCommitted(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        Task {
+        Task { @MainActor in
             //
             //        if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             //

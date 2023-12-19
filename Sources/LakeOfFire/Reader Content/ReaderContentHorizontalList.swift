@@ -1,10 +1,11 @@
 import SwiftUI
 import SwiftUIWebView
 import RealmSwift
+import RealmSwiftGaps
 import SwiftUtilities
 
-fileprivate struct ReaderContentInnerHorizontalList<ReaderContentType: ReaderContentModel>: View where ReaderContentType: RealmCollectionValue {
-    var filteredContents: [ReaderContentType]
+fileprivate struct ReaderContentInnerHorizontalList: View {
+    var filteredContents: [any ReaderContentModel]
     
     @EnvironmentObject private var navigator: WebViewNavigator
     @Environment(\.readerWebViewState) private var readerState
@@ -13,14 +14,22 @@ fileprivate struct ReaderContentInnerHorizontalList<ReaderContentType: ReaderCon
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 330
     @State private var viewWidth: CGFloat = 0
     
-    private var cellView: ((_ content: ReaderContentType) -> ReaderContentCell) = { content in
-        ReaderContentCell(item: content)
+    private func cellView(_ content: any ReaderContentModel) -> some View {
+        Group {
+            if let content = content as? Bookmark {
+                ReaderContentCell(item: content)
+            } else if let content = content as? HistoryRecord {
+                ReaderContentCell(item: content)
+            } else if let content = content as? FeedEntry {
+                ReaderContentCell(item: content)
+            }
+        }
     }
 
     var body: some View {
         ScrollView(.horizontal) {
             LazyHStack {
-                ForEach(filteredContents, id: \.compoundKey)  { (content: ReaderContentType) in
+                ForEach(filteredContents, id: \.compoundKey) { (content: (any ReaderContentModel)) in
                     Button {
                         guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
                         Task { @MainActor in
@@ -54,31 +63,35 @@ fileprivate struct ReaderContentInnerHorizontalList<ReaderContentType: ReaderCon
         }
     }
     
-    init(filteredContents: [ReaderContentType]) {
+    init(filteredContents: [any ReaderContentModel]) {
         self.filteredContents = filteredContents
     }
 }
 
-public struct ReaderContentHorizontalList<ReaderContentType: ReaderContentModel>: View where ReaderContentType: RealmCollectionValue {
-    let contents: AnyRealmCollection<ReaderContentType>
+public struct ReaderContentHorizontalList: View {
+//    let contents: AnyRealmCollection<ReaderContentType>
+    let contents: [any ReaderContentModel]
     
-    @StateObject var viewModel = ReaderContentListViewModel<ReaderContentType>()
+    @StateObject var viewModel = ReaderContentListViewModel()
     
     @Environment(\.readerWebViewState) private var readerState
 
     let contentSortAscending = false
-    var contentFilter: ((ReaderContentType) -> Bool) = { _ in return true }
+    var contentFilter: (@RealmBackgroundActor (any ReaderContentModel) async throws -> Bool) = { @RealmBackgroundActor _ in return true }
 //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-    var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+//    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+    var sortOrder = ReaderContentListViewModel.SortOrder.publicationDate
     
     public var body: some View {
         ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
             .task {
-                viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+                await Task { @RealmBackgroundActor in
+                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents), contentFilter: contentFilter, sortOrder: sortOrder)
+                }.value
             }
     }
     
-    public init(contents: AnyRealmCollection<ReaderContentType>, contentFilter: ((ReaderContentType) -> Bool)? = nil, sortOrder: [KeyPathComparator<ReaderContentType>]? = nil) {
+    public init(contents: [any ReaderContentModel], contentFilter: ((any ReaderContentModel) async throws -> Bool)? = nil, sortOrder: ReaderContentListViewModel.SortOrder? = nil) {
         self.contents = contents
         if let contentFilter = contentFilter {
             self.contentFilter = contentFilter

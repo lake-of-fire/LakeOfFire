@@ -35,6 +35,7 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
     }
 }
 
+//struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 140

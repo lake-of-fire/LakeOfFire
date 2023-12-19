@@ -16,7 +16,7 @@ public struct FeedView: View {
             try await feed.fetch()
         }, showInitialContent: !(entries?.isEmpty ?? true)) { _ in
             if let entries = entries {
-                ReaderContentList(contents: AnyRealmCollection<FeedEntry>(entries), entrySelection: $feedEntrySelection, sortOrder: [KeyPathComparator(\.publicationDate, order: .reverse)])
+                ReaderContentList(contents: Array(entries), entrySelection: $feedEntrySelection, sortOrder: .publicationDate)
             }
         }
 //        .id(feed.id)

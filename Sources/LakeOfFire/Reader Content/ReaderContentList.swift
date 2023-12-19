@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftUIWebView
 import RealmSwift
+import RealmSwiftGaps
 import SwiftUtilities
 
 struct ListItemToggleStyle: ToggleStyle {
@@ -15,43 +16,65 @@ struct ListItemToggleStyle: ToggleStyle {
     }
 }
 
-class ReaderContentListViewModel<ReaderContentType: ReaderContentModel>: ObservableObject where ReaderContentType: RealmCollectionValue {
-    @Published var filteredContents: [ReaderContentType] = []
+public class ReaderContentListViewModel: ObservableObject {
+//    @Published var filteredContents: [ReaderContentType] = []
+    @Published var filteredContents: [any ReaderContentModel] = []
     var refreshSelectionTask: Task<Void, Never>?
     
-    func load(contents: AnyRealmCollection<ReaderContentType>, contentFilter: @escaping ((ReaderContentType) -> Bool), sortOrder: [KeyPathComparator<ReaderContentType>]) {
-        Task.detached {
-            let filtered: LazyFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
-                contentFilter($0)
-            })
-            
-            let sorted = filtered.sorted(using: sortOrder)
-            let toSet = Array(sorted.prefix(2000))
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-//                self?.filteredContents = toSet
-                filteredContents = toSet
+    public enum SortOrder {
+        case publicationDate
+    }
+    
+    @RealmBackgroundActor
+    func load(contents: [any ReaderContentModel], contentFilter: @escaping (@RealmBackgroundActor (any ReaderContentModel) async throws -> Bool), sortOrder: ReaderContentListViewModel.SortOrder) async throws {
+        var filtered: [any ReaderContentModel] = []
+        //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
+        //                try await contentFilter($0)
+        //            })
+        for content in contents {
+            if try await contentFilter(content) {
+                filtered.append(content)
             }
         }
+        
+        let sorted: [any ReaderContentModel]
+        switch sortOrder {
+        case .publicationDate:
+            sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate)])
+        }
+        let toSet = Array(sorted.prefix(2000))
+        try await Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            //                self?.filteredContents = toSet
+            filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet)
+        }.value
     }
 }
 
-fileprivate struct ReaderContentInnerList<ReaderContentType: ReaderContentModel>: View where ReaderContentType: RealmCollectionValue {
+fileprivate struct ReaderContentInnerList: View {
     @Binding var entrySelection: String?
-    @ObservedObject private var viewModel: ReaderContentListViewModel<ReaderContentType>
+    @ObservedObject private var viewModel: ReaderContentListViewModel
     
     @Environment(\.readerWebViewState) private var readerState
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
-    private var cellView: ((_ content: ReaderContentType) -> ReaderContentCell) = { content in
-        ReaderContentCell(item: content)
+    private func cellView(_ content: any ReaderContentModel) -> some View {
+        Group {
+            if let content = content as? Bookmark {
+                ReaderContentCell(item: content)
+            } else if let content = content as? HistoryRecord {
+                ReaderContentCell(item: content)
+            } else if let content = content as? FeedEntry {
+                ReaderContentCell(item: content)
+            }
+        }
     }
     
     var body: some View {
 #if os(macOS)
         ScrollView {
             LazyVStack {
-                ForEach(viewModel.filteredContents, id: \.compoundKey)  { (feedEntry: ReaderContentType) in
+                ForEach(viewModel.filteredContents, id: \.compoundKey)  { (feedEntry: any ReaderContentModel) in
                     Toggle(isOn: Binding<Bool>(
                         get: {
                             //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
@@ -95,20 +118,21 @@ fileprivate struct ReaderContentInnerList<ReaderContentType: ReaderContentModel>
 #endif
     }
     
-    init(entrySelection: Binding<String?>, viewModel: ReaderContentListViewModel<ReaderContentType>) {
+    init(entrySelection: Binding<String?>, viewModel: ReaderContentListViewModel) {
         _entrySelection = entrySelection
         self.viewModel = viewModel
     }
 }
 
-public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View where ReaderContentType: RealmCollectionValue {
-    let contents: AnyRealmCollection<ReaderContentType>
+public struct ReaderContentList: View {
+    let contents: [any ReaderContentModel]
     @Binding var entrySelection: String?
     var contentSortAscending = false
-    var contentFilter: ((ReaderContentType) -> Bool) = { _ in return true }
-    var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+    var contentFilter: ((any ReaderContentModel) async throws -> Bool) = { _ in return true }
+//    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+    var sortOrder = ReaderContentListViewModel.SortOrder.publicationDate
 
-    @StateObject private var viewModel = ReaderContentListViewModel<ReaderContentType>()
+    @StateObject private var viewModel = ReaderContentListViewModel()
     
     @Environment(\.readerWebViewState) private var readerState
     @EnvironmentObject private var navigator: WebViewNavigator
@@ -131,17 +155,19 @@ public struct ReaderContentList<ReaderContentType: ReaderContentModel>: View whe
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
             }
             .task {
-                viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+                try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
             }
-            .onChange(of: contents) { contents in
-                viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
-                refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
-            }
+//            .onChange(of: contents) { contents in
+//                Task { @MainActor in
+//                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+//                    refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
+//                }
+//            }
         }
     }
     
-    public init(contents: AnyRealmCollection<ReaderContentType>, entrySelection: Binding<String?>, contentSortAscending: Bool = false, contentFilter: @escaping ((ReaderContentType) -> Bool) = { _ in return true }, sortOrder: [KeyPathComparator<ReaderContentType>]) {
+    public init(contents: [any ReaderContentModel], entrySelection: Binding<String?>, contentSortAscending: Bool = false, contentFilter: @escaping ((any ReaderContentModel) async throws -> Bool) = { _ in return true }, sortOrder: ReaderContentListViewModel.SortOrder) {
         self.contents = contents
         _entrySelection = entrySelection
         self.contentSortAscending = contentSortAscending
