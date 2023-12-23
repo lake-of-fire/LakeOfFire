@@ -23,6 +23,8 @@ public class ReaderContentListViewModel: ObservableObject {
     
     public enum SortOrder {
         case publicationDate
+        case createdAt
+        case lastVisitedAt
     }
     
     @RealmBackgroundActor
@@ -40,7 +42,16 @@ public class ReaderContentListViewModel: ObservableObject {
         let sorted: [any ReaderContentModel]
         switch sortOrder {
         case .publicationDate:
-            sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate)])
+            sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
+        case .createdAt:
+            sorted = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+        case .lastVisitedAt:
+            if let filtered = filtered as? [HistoryRecord] {
+                sorted = filtered.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)])
+            } else {
+                sorted = filtered
+                print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
+            }
         }
         let toSet = Array(sorted.prefix(2000))
         try await Task { @MainActor [weak self] in

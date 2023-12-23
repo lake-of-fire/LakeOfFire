@@ -218,7 +218,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
     
-    @RealmBackgroundActor
+    @MainActor
     public func configureBookmark(_ bookmark: Bookmark) {
         // Feed options.
         bookmark.rssContainsFullContent = feed?.rssContainsFullContent ?? bookmark.rssContainsFullContent

@@ -91,6 +91,7 @@ public struct Reader: View {
     public var body: some View {
         // TODO: Capture segment identifier and use it for unique word tracking instead of element ID
         // TODO: capture reading progress via sentence identifiers from a read section
+        let _ = Self._printChanges()
         GeometryReader { geometry in
             WebView(
                 config: WebViewConfig(

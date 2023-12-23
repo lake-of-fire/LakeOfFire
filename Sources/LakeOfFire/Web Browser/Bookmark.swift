@@ -44,7 +44,6 @@ public class Bookmark: Object, ReaderContentModel {
     }
     public var imageURLToDisplay: URL? { imageUrl }
     
-    @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         Task.detached { @RealmBackgroundActor in

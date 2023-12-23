@@ -7,7 +7,6 @@ public class HistoryRecord: Bookmark {
     
     @Persisted public var bookmark: Bookmark?
     
-    @RealmBackgroundActor
     public override func configureBookmark(_ bookmark: Bookmark) {
         super.configureBookmark(bookmark)
     }

@@ -352,7 +352,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     func refreshTitleInWebView(newState: WebViewState? = nil) {
         // TODO: consolidate code duplication
         let state = newState ?? state
-        if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading {
+        if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
             scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
         }
     }

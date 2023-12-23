@@ -6,7 +6,7 @@ import LakeImage
 class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
-    @Published var bookmarkExists = false
+    @Published var forceShowBookmark = false
     
     init() { }
     
@@ -26,10 +26,6 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
                         self.isFullArticleFinished = finished
                     }
                 }
-                let bookmarkExists = item.bookmarkExists(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-                Task { @MainActor in
-                    self.bookmarkExists = bookmarkExists
-                }
             }
         }
     }
@@ -42,7 +38,6 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     @ScaledMetric(relativeTo: .headline) var cellHeight: CGFloat = 90
     
     @StateObject var viewModel = ReaderContentCellViewModel<C>()
-    @State var forceShowBookmark = false
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -69,15 +64,8 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                         .padding(.trailing, 5)
 #if os(macOS)
                     Spacer(minLength: 0)
-                    Button {
-                        Task { @MainActor in
-                            forceShowBookmark = try await item.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-                        }
-                    } label: {
-                        Image(systemName: viewModel.bookmarkExists ? "bookmark.fill" : "bookmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .opacity(viewModel.bookmarkExists || forceShowBookmark ? 1 : 0)
+                    BookmarkButton(readerContent: item, hiddenIfUnbookmarked: !viewModel.forceShowBookmark)
+                        .buttonStyle(.borderless)
 #endif
                 }
                 Spacer(minLength: 0)
@@ -96,11 +84,15 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                         }
                     }
 #if os(iOS)
-                    if viewModel.bookmarkExists {
-                        Spacer(minLength: 0)
-                        Image(systemName: "bookmark.fill")
-                            .padding(.leading, 5)
-                    }
+                    Spacer(minLength: 0)
+                    BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                        .buttonStyle(.borderless)
+                        .padding(.leading, 5)
+//                    if viewModel.bookmarkExists {
+//                        Spacer(minLength: 0)
+//                        Image(systemName: "bookmark.fill")
+//                            .padding(.leading, 5)
+//                    }
 #endif
                 }
             }
@@ -119,7 +111,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
         .padding(.vertical, 4)
 #endif
         .onHover { hovered in
-            forceShowBookmark = hovered
+            viewModel.forceShowBookmark = hovered
         }
         .task {
             viewModel.load(item: item)

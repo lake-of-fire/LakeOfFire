@@ -14,29 +14,35 @@ import Combine
 
 @MainActor
 fileprivate class BookmarkButtonViewModel: ObservableObject {
+    @Published var reloadTrigger = ""
+//    var readerContentHTML: String?
     var readerContent: (any ReaderContentModel)? {
         didSet {
             refresh()
         }
     }
+//    
+//    @Published var bookmarkToggle = false {
+//        didSet {
+//            let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
+//            Task { @MainActor [weak self] in
+//                guard let self = self else { return }
+//                if bookmarkToggle {
+//                    try await readerContent.addBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+//                } else {
+//                    try await _ = readerContent.removeBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+//                }
+//            }
+//        }
+//    }
+//    @Published var bookmark: Bookmark? {
+//        didSet {
+//            refresh()
+//        }
+//    }
     
-    @Published var bookmarkToggle = false {
-        didSet {
-            guard let readerContent = readerContent else { return }
-            Task {
-                if bookmarkToggle {
-                    try await readerContent.addBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-                } else {
-                    try await _ = readerContent.removeBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-                }
-            }
-        }
-    }
-    @Published var bookmark: Bookmark? {
-        didSet {
-            refresh()
-        }
-    }
+    @Published var bookmarkExists = false
+    @Published var forceShowBookmark = false
     
     @RealmBackgroundActor var cancellables = Set<AnyCancellable>()
     
@@ -46,10 +52,9 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
             let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             realm.objects(Bookmark.self)
                 .collectionPublisher(keyPaths: ["isDeleted", "compoundKey"])
-                .removeDuplicates()
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { [weak self] in
-                        await self?.refresh()
+                    Task { @MainActor [weak self] in
+                        self?.refresh()
                     }
                 })
                 .store(in: &cancellables)
@@ -57,56 +62,96 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
     }
     
     private func refresh() {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            guard let readerContent = readerContent else { return }
-            let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration)
-            let bookmark = realm.objects(Bookmark.self).where({
-                $0.compoundKey == Bookmark.makePrimaryKey(url: readerContent.url, html: readerContent.html) ?? "" }).first
-            self.bookmark = bookmark
-            
-            bookmarkToggle = bookmark?.isDeleted ?? true
+        guard let readerContent = readerContent else {
+            Task { @MainActor in
+                self.bookmarkExists = false
+            }
+            return
         }
+        let bookmarkExists = readerContent.bookmarkExists(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+        Task { @MainActor in
+            self.bookmarkExists = bookmarkExists
+            self.forceShowBookmark = false
+        }
+//
+//        Task { @MainActor [weak self] in
+//            guard let self = self else { return }
+//            guard let readerContent = readerContent, !readerContent.url.isNativeReaderView else {
+//                if bookmark != nil {
+//                    bookmark = nil
+//                }
+//                return
+//            }
+//            let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration)
+//            let bookmark = realm.objects(Bookmark.self).where({
+//                $0.compoundKey == Bookmark.makePrimaryKey(url: readerContent.url, html: readerContent.html) ?? "" }).first
+//            if self.bookmark?.compoundKey != bookmark?.compoundKey {
+//                self.bookmark = bookmark
+//            }
+//            
+//            bookmarkToggle = !(bookmark?.isDeleted ?? true)
+//        }
     }
 }
 
 public struct BookmarkButton: View {
     var readerContent: (any ReaderContentModel)
-    @Binding var readerWebViewState: WebViewState
+    var hiddenIfUnbookmarked = false
+    
+    @Environment(\.isEnabled) private var isEnabled
+
     @ObservedResults(Bookmark.self, keyPaths: ["isDeleted", "compoundKey"]) var bookmarks
     
     @StateObject private var viewModel = BookmarkButtonViewModel()
     
+    private var showBookmarkExists: Bool {
+        return isEnabled && (viewModel.bookmarkExists || viewModel.forceShowBookmark)
+    }
+    
     public var body: some View {
-//        BookmarkButtonToggle(bookmark: readerContent?.bookmark ?? Bookmark())
-        Toggle(isOn: $viewModel.bookmarkToggle) {
-            if viewModel.bookmarkToggle {
-                Label("Saved for Later", systemImage: "bookmark.fill")
-            } else {
-                Label("Save for Later", systemImage: "bookmark")
+        Button {
+            Task { @MainActor in
+                viewModel.forceShowBookmark = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
             }
-//            Text(bookmark.url?.absoluteString ?? "...")
-//            Text("\(bookmark.html?.count ?? -1)")
+        } label: {
+            Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark")
+                .padding(.horizontal, 4)
         }
-        .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
-        .toggleStyle(.button)
-        .fixedSize()
-        .task { @MainActor in
+//        .buttonStyle(.borderless)
+//        .buttonStyle(.plain)
+        .labelStyle(.iconOnly)
+        .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
+        .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
+//        .fixedSize()
+        .onChange(of: readerContent.compoundKey) { compoundKey in
+            Task { @MainActor in
+                viewModel.forceShowBookmark = false
+                viewModel.readerContent = nil
+                viewModel.reloadTrigger = compoundKey
+            }
+        }
+        .task(id: viewModel.reloadTrigger) {
             viewModel.readerContent = readerContent
         }
-        .onChange(of: bookmarks) { _ in
-            refreshBookmark()
-        }
-//        .id(readerContent.compoundKey)
+    }
+    
+    public init(readerContent: (any ReaderContentModel), hiddenIfUnbookmarked: Bool = false) {
+        self.readerContent = readerContent
+        self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
+    }
+}
+
+public struct CurrentWebViewBookmarkButton: View {
+    var readerContent: (any ReaderContentModel)
+    @Binding var readerWebViewState: WebViewState
+    
+    public var body: some View {
+        BookmarkButton(readerContent: readerContent)
+        .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
     }
     
     public init(readerContent: (any ReaderContentModel), readerState: Binding<WebViewState>) {
         self.readerContent = readerContent
         _readerWebViewState = readerState
-    }
-    
-    private func refreshBookmark() {
-        Task { @MainActor in
-        }
     }
 }

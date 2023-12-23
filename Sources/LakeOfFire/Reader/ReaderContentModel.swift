@@ -238,24 +238,28 @@ public extension ReaderContentModel {
         try await Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
-            try await bookmark.realm?.asyncWrite { [weak self] in
+            await Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 configureBookmark(bookmark)
-            }
+            }.value
         }.value
     }
     
     /// Returns whether a matching bookmark was found and deleted.
-    @RealmBackgroundActor
+    @MainActor
     func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
-        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-        guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
-            return false
-        }
-        try await realm.asyncWrite {
-            bookmark.isDeleted = true
-        }
-        return true
+        let url = url
+        let html = html
+        return try await Task.detached { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
+                return false
+            }
+            try await realm.asyncWrite {
+                bookmark.isDeleted = true
+            }
+            return true
+        }.value
     }
     
     func bookmarkExists(realmConfiguration: Realm.Configuration) -> Bool {
@@ -308,7 +312,7 @@ public extension ReaderContentModel {
             record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
             record.lastVisitedAt = Date()
             if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
-                record.configureBookmark(bookmark)
+                await record.configureBookmark(bookmark)
             }
             record.updateCompoundKey()
             try await realm.asyncWrite {
