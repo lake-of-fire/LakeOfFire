@@ -285,6 +285,12 @@ public extension ReaderContentModel {
                 if rssContainsFullContent {
                     record.content = content
                 }
+                record.voiceFrameUrl = voiceFrameUrl
+                for audioURL in voiceAudioURLs {
+                    if !record.voiceAudioURLs.contains(audioURL) {
+                        record.voiceAudioURLs.append(audioURL)
+                    }
+                }
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
@@ -305,6 +311,8 @@ public extension ReaderContentModel {
             if rssContainsFullContent {
                 record.content = content
             }
+            record.voiceFrameUrl = voiceFrameUrl
+            record.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
