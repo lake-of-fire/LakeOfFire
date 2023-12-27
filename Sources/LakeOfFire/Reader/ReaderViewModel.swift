@@ -14,10 +14,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
 //    public var state: WebViewState = .empty {
         didSet {
             if let imageURL = state.pageImageURL, content.imageUrl == nil {
+                // TODO: Replace with fromMainActor instead of the if / else if
                 if let content = content as? Bookmark {
                     let contentRef = ThreadSafeReference(to: content)
                     guard let config = content.realm?.configuration else { return }
-                    Task.detached {
+                    Task.detached { @RealmBackgroundActor in
                         try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
                             content.imageUrl = imageURL
                         }
@@ -25,7 +26,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 } else if let content = content as? HistoryRecord {
                     let contentRef = ThreadSafeReference(to: content)
                     guard let config = content.realm?.configuration else { return }
-                    Task.detached {
+                    Task.detached { @RealmBackgroundActor in
                         try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
                             content.imageUrl = imageURL
                         }
