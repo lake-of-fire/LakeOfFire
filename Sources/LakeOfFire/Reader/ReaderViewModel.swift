@@ -173,7 +173,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
                         if voiceAudioURLs != audioURLs {
                             audioURLs = voiceAudioURLs
-                        } else if !voiceAudioURLs.isEmpty {
+                        }
+                        if !voiceAudioURLs.isEmpty {
                             isMediaPlayerPresented = true
                         }
                     } else if newState.pageURL.isNativeReaderView {
