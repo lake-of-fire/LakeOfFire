@@ -1,5 +1,6 @@
 import Foundation
 import SwiftCloudDrive
+import SwiftUtilities
 
 public actor ReaderFileManager: ObservableObject {
     var cloudDrive: CloudDrive?
@@ -16,10 +17,25 @@ public actor ReaderFileManager: ObservableObject {
     public func importFile(fileURL: URL) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         let fileName = fileURL.lastPathComponent
-        let relativePath = Self.rootRelativePath(forFileName: fileName)
-        try await drive.createDirectory(at: relativePath)
-        try await drive.upload(from: fileURL, to: relativePath)
-        return try relativePath.fileURL(forRoot: drive.rootDirectory)
+        let targetDirectory = Self.rootRelativePath(forFileName: fileName)
+        var targetFilePath = targetDirectory.appending(fileName)
+        try await drive.createDirectory(at: targetDirectory)
+        let originData = try await FileManager.default.contentsOfFile(coordinatingAccessAt: fileURL)
+        if try await drive.fileExists(at: targetFilePath) {
+            if try await drive.readFile(at: targetFilePath) != originData {
+                var ext = fileURL.pathExtension
+                if !ext.isEmpty {
+                    ext = "." + ext
+                }
+                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
+                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
+                targetFilePath = targetDirectory.appending(newFileName)
+                try await drive.upload(from: fileURL, to: targetFilePath)
+            }
+        } else {
+            try await drive.upload(from: fileURL, to: targetFilePath)
+        }
+        return try targetFilePath.fileURL(forRoot: drive.rootDirectory)
     }
 }
     
@@ -27,7 +43,7 @@ private extension ReaderFileManager {
     static func rootRelativePath(forFileName fileName: String) -> RootRelativePath {
         switch fileName.pathExtension.lowercased() {
         case "epub": return .ebooks
-        default: return RootRelativePath(path: "")
+        default: return .root
         }
     }
     
