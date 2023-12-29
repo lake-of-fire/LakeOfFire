@@ -3,7 +3,7 @@ import RealmSwiftGaps
 import RealmSwift
 
 @MainActor
-fileprivate class FeedCategoryButtonsViewModel: ObservableObject {
+fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
             Task.detached { @RealmBackgroundActor [weak self] in
@@ -47,12 +47,12 @@ fileprivate class FeedCategoryButtonsViewModel: ObservableObject {
     }
 }
 
-public struct FeedCategoryButtons: View {
+public struct ContentCategoryButtons: View {
     @Binding var categorySelection: String?
     var font = Font.title3
     var isCompact = false
     
-    @StateObject private var viewModel = FeedCategoryButtonsViewModel()
+    @StateObject private var viewModel = ContentCategoryButtonsViewModel()
     
     @ObservedResults(FeedCategory.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false && $0.isArchived == false }) private var categories
     

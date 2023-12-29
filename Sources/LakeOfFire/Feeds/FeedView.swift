@@ -22,6 +22,7 @@ public struct FeedView: View {
 //        .id(feed.id)
         .task {
             Task { @MainActor in
+                print("!! \(allEntries.realm?.isFrozen.description ?? "huh")")
                 entries = allEntries.where { $0.feed.id == feed.id }
             }
         }

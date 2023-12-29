@@ -27,37 +27,39 @@ public class ReaderContentListViewModel: ObservableObject {
         case lastVisitedAt
     }
     
-    @RealmBackgroundActor
+    @MainActor
     func load(contents: [any ReaderContentModel], contentFilter: @escaping (@RealmBackgroundActor (any ReaderContentModel) async throws -> Bool), sortOrder: ReaderContentListViewModel.SortOrder) async throws {
-        var filtered: [any ReaderContentModel] = []
-        //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
-        //                try await contentFilter($0)
-        //            })
-        for content in contents {
-            if try await contentFilter(content) {
-                filtered.append(content)
+        try await Task { @RealmBackgroundActor in
+            var filtered: [any ReaderContentModel] = []
+            //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
+            //                try await contentFilter($0)
+            //            })
+            for content in contents {
+                if try await contentFilter(content) {
+                    filtered.append(content)
+                }
             }
-        }
-        
-        let sorted: [any ReaderContentModel]
-        switch sortOrder {
-        case .publicationDate:
-            sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
-        case .createdAt:
-            sorted = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
-        case .lastVisitedAt:
-            if let filtered = filtered as? [HistoryRecord] {
-                sorted = filtered.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)])
-            } else {
-                sorted = filtered
-                print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
+            
+            let sorted: [any ReaderContentModel]
+            switch sortOrder {
+            case .publicationDate:
+                sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
+            case .createdAt:
+                sorted = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+            case .lastVisitedAt:
+                if let filtered = filtered as? [HistoryRecord] {
+                    sorted = filtered.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)])
+                } else {
+                    sorted = filtered
+                    print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
+                }
             }
-        }
-        let toSet = Array(sorted.prefix(2000))
-        try await Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            //                self?.filteredContents = toSet
-            filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet)
+            let toSet = Array(sorted.prefix(2000))
+            try await Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                //                self?.filteredContents = toSet
+                filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet)
+            }.value
         }.value
     }
 }
@@ -165,7 +167,7 @@ public struct ReaderContentList: View {
             .onChange(of: readerState) { [oldState = readerState] state in
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
             }
-            .task {
+            .task { @MainActor in
                 try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
             }
