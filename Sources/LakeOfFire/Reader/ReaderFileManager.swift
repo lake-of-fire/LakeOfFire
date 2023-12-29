@@ -10,7 +10,7 @@ public actor ReaderFileManager: ObservableObject {
     
     private let readerContentMimeTypes: [UTType] = [.plainText, .html]
     @MainActor public var readerContentFiles: [ContentFile]? {
-        return files?.filter { readerContentMimeTypes.map { $0.identifier } .contains($0.mimeType) }
+        return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) }
     }
     
     private var cloudDrive: CloudDrive?
@@ -30,7 +30,7 @@ public actor ReaderFileManager: ObservableObject {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         if restrictToReaderContentMimeTypes {
             let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            guard readerContentMimeTypes.map({ $0.identifier }).contains(mimeType) else { return nil }
+            guard readerContentMimeTypes.compactMap({ $0.preferredMIMEType }).contains(mimeType) else { return nil }
         }
 
         let fileName = fileURL.lastPathComponent
