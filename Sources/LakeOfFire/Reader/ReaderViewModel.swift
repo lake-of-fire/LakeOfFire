@@ -40,7 +40,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @Published public var content: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-    
+    @Published var isPendingContentUpdateFromNavigation = false
+ 
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -116,7 +117,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func showReaderView() {
+    func showReaderView(content: (any ReaderContentModel)? = nil) {
+        let content = content ?? self.content
         guard let readabilityContent = readabilityContent else {
             return
         }
@@ -220,8 +222,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func onNavigationCommitted(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
         print("!! nav committed \(newState.pageURL)")
         readabilityContent = nil
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
             print("!! nav committed, task enter...")
+            guard let content = try await getContent(forURL: newState.pageURL) else {
+                print("WARNING No content matched for \(newState.pageURL)")
+                return
+            }
+            self.content = content
             //
             //        if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             //
@@ -234,13 +242,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
             //        let existingTitle = content.title
             //        let contentURL = content.url
             
-            // FIXME: so what happens is readabiliyty parsed happens BEFORE this stuff finishes, so if we mark reader mdoe on by default AFTER it's arleady parsed (which we can see by checking content's is reader mdoe avaiilable), then immediately show it from here
-            if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
+            if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
                 print("!! nav committed, reader url")
                 //                newContent = content
                 //                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
                 //                let contentKey = content.compoundKey
-                self.content = content
                 //                    let htmlToDisplay = content.htmlToDisplay
                 
                 if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
@@ -253,38 +259,37 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         }
                         contentRules = contentRulesForReadabilityLoading
                     }
-                    navigator.loadHTML(html, baseURL: contentURL)
+                    navigator.loadHTML(html, baseURL: content.url)
                 } else {
                     // Shouldn't come here... results in duplicate history. Here for safety though.
-                    navigator.load(URLRequest(url: contentURL))
+                    navigator.load(URLRequest(url: content.url))
                 }
-            } else if let content = try await ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
-                self.content = content
+            } else {
+                print("!! nav committed, update content from \(self.content.url) to \(content.url)...")
                 if content.isReaderModeByDefault {
+                    // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                     contentRules = contentRulesForReadabilityLoading
-                    if content.isReaderModeByDefault {
-                        showReaderView()
+                    if content.isReaderModeAvailable {
+                        showReaderView(content: content)
                     }
                 } else {
                     contentRules = nil
                 }
                 
                 let voiceAudioURLs = Array(content.voiceAudioURLs)
-                Task { @MainActor in
-                    if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
-                        if voiceAudioURLs != audioURLs {
-                            audioURLs = voiceAudioURLs
-                        }
-                        if !voiceAudioURLs.isEmpty {
-                            isMediaPlayerPresented = true
-                        }
-                    } else if newState.pageURL.isNativeReaderView {
-                        Task { @MainActor [weak self] in
-                            try Task.checkCancellation()
-                            guard let self = self else { return }
-                            if isMediaPlayerPresented {
-                                isMediaPlayerPresented = false
-                            }
+                if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
+                    if voiceAudioURLs != audioURLs {
+                        audioURLs = voiceAudioURLs
+                    }
+                    if !voiceAudioURLs.isEmpty {
+                        isMediaPlayerPresented = true
+                    }
+                } else if newState.pageURL.isNativeReaderView {
+                    Task { @MainActor [weak self] in
+                        try Task.checkCancellation()
+                        guard let self = self else { return }
+                        if isMediaPlayerPresented {
+                            isMediaPlayerPresented = false
                         }
                     }
                 }
@@ -446,6 +451,17 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
+    @MainActor
+    func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
+        if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
+            return content
+        } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
+//            print("!! nav committed, update content from \(self.content.url) to \(content.url)...")
+            return content
+        }
+        return nil
+    }
+    
     private func getContent(configuration: Realm.Configuration, type: RealmSwift.Object.Type, key: String) -> (any ReaderContentModel)? {
         guard let content = try! Realm(configuration: configuration).object(ofType: type, forPrimaryKey: key) as? any ReaderContentModel else { return nil }
         return content
@@ -471,7 +487,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
 }
 
-fileprivate func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
+func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
     let isXML = content.hasPrefix("<?xml")
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)

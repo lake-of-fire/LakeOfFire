@@ -134,27 +134,31 @@ public struct Reader: View {
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                             return
                         }
-                        guard readerViewModel.content.url == result.windowURL else { return }
-                        guard !result.outputHTML.isEmpty else {
-                            try? await readerViewModel.content.asyncWrite { _, content in
-                                content.isReaderModeAvailable = false
-                            }
-                            return
-                        }
                         try? await Task { @MainActor in
-                            print("!! reader mode? \(readerViewModel.content.isReaderModeByDefault.description)")
+                            guard let url = result.windowURL, let content = try await readerViewModel.getContent(forURL: url) else { return }
+                            print("!! readParsed, readerViewModel.content.url \(content.url) \(result.windowURL)")
+                            print("!! readPra, result.outputHTML \(result.outputHTML)")
+                            guard !result.outputHTML.isEmpty else {
+                                try? await content.asyncWrite { _, content in
+                                    content.isReaderModeAvailable = false
+                                }
+                                return
+                            }
+ 
+                            print("!! reader mode? \(content.isReaderModeByDefault.description)")
                             
                             guard !url.isNativeReaderView else { return }
                             readerViewModel.readabilityContent = result.outputHTML
                             readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                             readerViewModel.readabilityContainerFrameInfo = message.frameInfo
-                            if readerViewModel.content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                                readerViewModel.showReaderView()
+                            print("!! reader mode, by default? \(content.isReaderModeByDefault)")
+                            if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
+                                readerViewModel.showReaderView(content: content)
                             } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
                                 await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
                             }
                             
-                            try await readerViewModel.content.asyncWrite { _, content in
+                            try await content.asyncWrite { _, content in
                                 content.isReaderModeAvailable = true
 #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
                                 if !content.url.isEBookURL && !content.url.isFileURL && !content.rssContainsFullContent {
@@ -226,7 +230,7 @@ public struct Reader: View {
                 },
                 ebookTextProcessor: { content in
                     do {
-                        let doc = try readerViewModel.processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
+                        let doc = try processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
                         doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
                         if let processReadabilityContent = readerViewModel.processReadabilityContent {
                             return await processReadabilityContent(doc)
@@ -282,7 +286,9 @@ public struct Reader: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if readerViewModel.content.isReaderModeAvailable && !readerViewModel.content.isReaderModeByDefault {
-                    ReaderModeButtonBar(showReaderView: readerViewModel.showReaderView)
+                    ReaderModeButtonBar(showReaderView: {
+                       readerViewModel.showReaderView()
+                    })
                 }
             }
             .task { @MainActor in
