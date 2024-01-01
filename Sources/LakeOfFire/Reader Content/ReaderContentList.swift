@@ -149,6 +149,7 @@ public struct ReaderContentList: View {
     
     @Environment(\.readerWebViewState) private var readerState
     @EnvironmentObject private var navigator: WebViewNavigator
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     public var body: some View {
 //        let _ = Self._printChanges()
@@ -157,7 +158,7 @@ public struct ReaderContentList: View {
             .onChange(of: entrySelection) { itemSelection in
                 guard let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerState.pageURL) else { return }
                 Task { @MainActor in
-                    navigator.load(content: content)
+                    await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
 //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
 //                        scrollViewProxy.scrollTo(entrySelection)

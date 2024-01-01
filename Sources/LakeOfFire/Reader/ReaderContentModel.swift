@@ -20,8 +20,6 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     var content: Data? { get set }
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
-    
-    var htmlToDisplay: String? { get }
     var imageURLToDisplay: URL? { get }
     
     // Caches.
@@ -52,6 +50,7 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     var isDeleted: Bool { get }
     
     func configureBookmark(_ bookmark: Bookmark)
+    func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String?
 }
 
 public extension ReaderContentModel {

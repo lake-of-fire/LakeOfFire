@@ -94,6 +94,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentModel)? {
+        print("!! load \(url)")
         let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentModel)? in
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
@@ -116,15 +117,20 @@ public struct ReaderContentLoader {
             let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
             
             var match: (any ReaderContentModel)?
+            let contentFile = historyRealm.objects(ContentFile.self)
+                .where { !$0.isDeleted }
+                .sorted(by: \.createdAt, ascending: false)
+                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
+                .first
             let history = historyRealm.objects(HistoryRecord.self)
                 .where { !$0.isDeleted }
                 .sorted(by: \.createdAt, ascending: false)
-                .filter("url == %@", url.absoluteString)
+                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
                 .first
             let bookmark = bookmarkRealm.objects(Bookmark.self)
                 .where { !$0.isDeleted }
                 .sorted(by: \.createdAt, ascending: false)
-                .filter("url == %@", url.absoluteString)
+                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
                 .first
             let feeds = feedRealm.objects(FeedEntry.self)
                 .where { !$0.isDeleted }
@@ -133,18 +139,21 @@ public struct ReaderContentLoader {
             var feed: FeedEntry?
             if url.scheme == "https" {
                 feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
-            } else {
-                feed = feeds.filter("url == %@", url.absoluteString).first
+                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
+            } else if !url.isReaderFileURL {
+                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
             }
             
-            let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
+            let candidates: [any ReaderContentModel] = [contentFile, bookmark, history, feed].compactMap { $0 }
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
             
-            if !url.isFileURL, let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
+            if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
+                print("!! make history rec for \(url) from non hist \(nonHistoryMatch.url) \(nonHistoryMatch.className)")
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
             } else if match == nil {
+                print("!! make history rec for \(url) no match...")
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 //        historyRecord.isReaderModeByDefault
@@ -156,12 +165,14 @@ public struct ReaderContentLoader {
                 }
                 match = historyRecord
             }
-            if persist, let match = match, url.isFileURL, url.contains(.plainText), let contents = try? String(contentsOf: url), let data = textToHTML(contents, forceRaw: true).readerContentData, let realm = match.realm {
+            print("!! load found match \(match?.className) \(match?.url)")
+            print("!! load match \(url.isReaderFileURL) \(url.contains(.plainText)) \(try? String(contentsOf: url))")
+            if persist, let match = match, url.isReaderFileURL, url.contains(.plainText),  let realm = match.realm {
+                print("!! load match is file, plain text")
                 try await realm.asyncWrite {
-                    match.content = data
+                    match.isReaderModeByDefault = true
                 }
-            }
-            if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
+            } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
                 }
@@ -232,20 +243,19 @@ public struct ReaderContentLoader {
             || ((doc.body()?.children().first()?.tagNameNormal() ?? "") == "pre" && doc.body()?.children().count == 1) )
     }
     
-    private static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
+    static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
+        var convertedText = text
         if forceRaw {
-            return "<html><body>\(text.escapeHtml())</body></html>"
+            convertedText = convertedText.escapeHtml()
         } else if let doc = try? SwiftSoup.parse(text) {
             if docIsPlainText(doc: doc) {
                 return "<html><body>\(text)</body></html>"
             } else {
                 return text // HTML content
             }
-        } else {
-            let markdown = MarkdownParser.standard.parse(text.trimmingCharacters(in: .whitespacesAndNewlines))
-            let html = PasteboardHTMLGenerator().generate(doc: markdown)
-            return "<html><body>\(html)</body></html>"
         }
+        convertedText = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>")
+        return convertedText
     }
     
     public static func snippetURL(key: String) -> URL? {

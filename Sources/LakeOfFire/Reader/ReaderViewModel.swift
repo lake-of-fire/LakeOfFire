@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftUIWebView
+import SwiftSoup
 import RealmSwift
 import Combine
 import RealmSwiftGaps
@@ -7,6 +8,8 @@ import WebKit
 
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
+    public var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
+    public var readerFileManager: ReaderFileManager?
     public let navigator = WebViewNavigator()
     @Published public var state: WebViewState = .empty 
     {
@@ -52,6 +55,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published public var isMediaPlayerPresented = false
     @Published public var audioURLs = [URL]()
     
+    public var defaultFontSize: Double?
+    @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
@@ -79,7 +84,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     ]
     """
     
-    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
+    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript], processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil) {
         super.init()
         
         Task.detached { @RealmBackgroundActor [weak self] in
@@ -110,6 +115,94 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
+    @MainActor
+    func showReaderView() {
+        guard let readabilityContent = readabilityContent else {
+            return
+        }
+        let title = content.title
+        let imageURL = content.imageURLToDisplay
+        let url = content.url
+        let readabilityContainerSelector = readabilityContainerSelector
+        let readabilityContainerFrameInfo = readabilityContainerFrameInfo
+        Task.detached { [weak self] in
+            guard let self = self else { return }
+            do {
+                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
+            } catch { }
+        }
+    }
+   
+    /// Content before it has been treated with Reader-specific processing.
+    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+        try await self.content.asyncWrite { _, content in
+            content.isReaderModeByDefault = true
+        }
+        
+        let injectEntryImageIntoHeader = self.content.injectEntryImageIntoHeader
+        let readerFontSize = readerFontSize
+        let defaultFontSize = defaultFontSize ?? 15
+        let processReadabilityContent = processReadabilityContent
+        try await Task.detached { [weak self] in
+            var doc: SwiftSoup.Document
+            do {
+                doc = try processForReaderMode(content: content, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
+            } catch {
+                print(error.localizedDescription)
+                return
+            }
+            
+            var html: String
+            if let processReadabilityContent = processReadabilityContent {
+                html = await processReadabilityContent(doc)
+            } else {
+                html = try doc.outerHtml()
+            }
+#warning("SwiftUIDrag menu (?)")
+            let transformedContent = html
+            await Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                    await scriptCaller.evaluateJavaScript(
+                                """
+                                var root = document.body
+                                if (renderToSelector) {
+                                    root = document.querySelector(renderToSelector)
+                                }
+                                var serialized = html
+                                
+                                let xmlns = document.documentElement.getAttribute('xmlns')
+                                if (xmlns) {
+                                    let parser = new DOMParser()
+                                    let doc = parser.parseFromString(serialized, 'text/html')
+                                    let readabilityNode = doc.body
+                                    let replacementNode = root.cloneNode()
+                                    replacementNode.innerHTML = ''
+                                    for (let innerNode of readabilityNode.childNodes) {
+                                        serialized = new XMLSerializer().serializeToString(innerNode)
+                                        replacementNode.innerHTML += serialized
+                                    }
+                                    root.innerHTML = replacementNode.innerHTML
+                                } else if (root) {
+                                    root.outerHTML = serialized
+                                }
+                                
+                                let style = document.createElement('style')
+                                style.textContent = css
+                                document.head.appendChild(style)
+                                document.body.classList.add('readability-mode')
+                                """,
+                                arguments: [
+                                    "renderToSelector": renderToSelector ?? "",
+                                    "html": transformedContent,
+                                    "css": Readability.shared.css,
+                                ], in: frameInfo)
+                } else {
+                    navigator.loadHTML(transformedContent, baseURL: url)
+                }
+            }.value
+        }.value
+    }
     @RealmBackgroundActor
     private func updateScripts() async throws {
         let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
@@ -125,7 +218,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationCommitted(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+        print("!! nav committed \(newState.pageURL)")
+        readabilityContent = nil
         Task { @MainActor in
+            print("!! nav committed, task enter...")
             //
             //        if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             //
@@ -138,14 +234,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
             //        let existingTitle = content.title
             //        let contentURL = content.url
             
+            // FIXME: so what happens is readabiliyty parsed happens BEFORE this stuff finishes, so if we mark reader mdoe on by default AFTER it's arleady parsed (which we can see by checking content's is reader mdoe avaiilable), then immediately show it from here
             if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
+                print("!! nav committed, reader url")
                 //                newContent = content
                 //                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
                 //                let contentKey = content.compoundKey
                 self.content = content
                 //                    let htmlToDisplay = content.htmlToDisplay
                 
-                if var html = content.htmlToDisplay {
+                if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                     //                if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
                     if content.isReaderModeByDefault && !html.contains("<body.* class=.readability-mode.>") {
                         if let _ = html.range(of: "<html", options: .caseInsensitive) {
@@ -164,6 +262,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 self.content = content
                 if content.isReaderModeByDefault {
                     contentRules = contentRulesForReadabilityLoading
+                    if content.isReaderModeByDefault {
+                        showReaderView()
+                    }
                 } else {
                     contentRules = nil
                 }
@@ -368,4 +469,46 @@ public class ReaderViewModel: NSObject, ObservableObject {
             refreshTitleInWebView(newState: newState)
         }
     }
+}
+
+fileprivate func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
+    let isXML = content.hasPrefix("<?xml")
+    let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
+    let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
+    doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
+    
+    if isEBook {
+        try doc.attr("data-is-ebook", true)
+    }
+    
+    if let htmlTag = try? doc.select("html") {
+        var htmlStyle = "font-size: \(fontSize)px"
+        if let existingHtmlStyle = try? htmlTag.attr("style"), !existingHtmlStyle.isEmpty {
+            htmlStyle = "\(htmlStyle); \(existingHtmlStyle)"
+        }
+        _ = try? htmlTag.attr("style", htmlStyle)
+    }
+    
+    if let defaultTitle = defaultTitle, let existing = try? doc.select("#reader-title"), !existing.hasText() {
+        let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
+        do {
+            try doc.body()?.select("#reader-title").html(escapedTitle)
+        } catch { }
+    }
+    do {
+        try fixAnnoyingTitlesWithPipes(doc: doc)
+    } catch { }
+    
+    if injectEntryImageIntoHeader, let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+        do {
+            try doc.body()?.select("#reader-header").prepend("<img src='\(imageURL.absoluteString)'>")
+        } catch { }
+    }
+    if let url = url {
+        transformContentSpecificToFeed(doc: doc, url: url)
+        do {
+            try wireViewOriginalLinks(doc: doc, url: url)
+        } catch { }
+    }
+    return doc
 }

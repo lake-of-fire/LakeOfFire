@@ -5,6 +5,10 @@ import SwiftUtilities
 import RealmSwift
 import RealmSwiftGaps
 
+public enum ReaderFileManagerError: Swift.Error {
+    case invalidFileURL
+}
+
 public actor ReaderFileManager: ObservableObject {
     @MainActor @Published public var files: [ContentFile]?
     
@@ -15,15 +19,44 @@ public actor ReaderFileManager: ObservableObject {
     
     private var cloudDrive: CloudDrive?
     private var localDrive: CloudDrive?
+    @MainActor public var ubiquityContainerIdentifier: String? = nil
     
     public init() { }
     
     public init(ubiquityContainerIdentifier: String) async throws {
+        self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
         Task.detached { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
+    }
+    
+    @MainActor
+    public static func get(fileURL: URL) async throws -> ContentFile? {
+        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+        guard fileURL.scheme == "reader-file" else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND url == %@", fileURL.absoluteString as CVarArg)).first
+        return existing
+    }
+    
+    public func read(fileURL: URL) async throws -> Data? {
+        guard fileURL.scheme == "reader-file" else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        let relativePath = RootRelativePath(path: String(fileURL.path.dropFirst()))
+        var data: Data?
+        switch fileURL.host {
+        case "local":
+            data = try await localDrive?.readFile(at: relativePath)
+        case "icloud":
+            data = try await cloudDrive?.readFile(at: relativePath)
+        default:
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        return data
     }
     
     public func importFile(fileURL: URL, restrictToReaderContentMimeTypes: Bool) async throws -> URL? {
@@ -52,10 +85,14 @@ public actor ReaderFileManager: ObservableObject {
         } else {
             try await drive.upload(from: fileURL, to: targetFilePath)
         }
-        return try targetFilePath.fileURL(forRoot: drive.rootDirectory)
+        let contentRef = try await refreshFileMetadata(drive: drive, relativePath: targetFilePath)
+        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: self)
+        guard let content = realm.resolve(contentRef) else { return nil }
+        return content.url
     }
     
     public func refreshAllFilesMetadata() async throws {
+        guard localDrive != nil || cloudDrive != nil else { return }
         var files = [ThreadSafeReference<ContentFile>]()
         for drive in [cloudDrive, localDrive].compactMap({ $0 }) {
             let discovered = try await refreshFilesMetadata(drive: drive)
@@ -63,7 +100,7 @@ public actor ReaderFileManager: ObservableObject {
         }
         
         let discoveredFiles = files
-        Task { @MainActor [weak self] in
+        try await Task { @MainActor [weak self] in
             guard let self = self else { return }
             let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
             let files = discoveredFiles.compactMap { realm.resolve($0) }
@@ -73,14 +110,15 @@ public actor ReaderFileManager: ObservableObject {
             // Delete orphans
             try await Task.detached { @RealmBackgroundActor in
                 let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
-                let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "url in %@", discoveredURLs.map { $0.absoluteString }))
+                let existingURLs = discoveredURLs.map { $0.absoluteString }
+                let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND NOT (url IN %@)", existingURLs))
                 try await realm.asyncWrite {
                     for orphan in orphans {
                         orphan.isDeleted = true
                     }
                 }
             }.value
-        }
+        }.value
     }
     
     func refreshFilesMetadata(drive: CloudDrive, relativePath: RootRelativePath? = nil) async throws -> [ThreadSafeReference<ContentFile>] {
@@ -104,17 +142,19 @@ public actor ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     private func refreshFileMetadata(drive: CloudDrive, relativePath: RootRelativePath) async throws -> ThreadSafeReference<ContentFile> {
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
-        let fileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
+        guard let fileURL = URL(string: "reader-file://\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(relativePath.path)") else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
         let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", fileURL.absoluteString as CVarArg)).first
         
         if let existing = existing {
             try await realm.asyncWrite {
-                setMetadata(fileURL: fileURL, contentFile: existing)
+                setMetadata(fileURL: fileURL, contentFile: existing, drive: drive)
             }
             return ThreadSafeReference(to: existing)
         } else {
             let contentFile = ContentFile()
-            setMetadata(fileURL: fileURL, contentFile: contentFile)
+            setMetadata(fileURL: fileURL, contentFile: contentFile, drive: drive)
             contentFile.updateCompoundKey()
             try await realm.asyncWrite {
                 realm.add(contentFile, update: .modified)
@@ -124,18 +164,21 @@ public actor ReaderFileManager: ObservableObject {
     }
     
     @RealmBackgroundActor
-    private func setMetadata(fileURL: URL, contentFile: ContentFile) {
+    private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) {
         contentFile.url = fileURL
         contentFile.title = fileURL.lastPathComponent
         contentFile.isDeleted = false
         contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        contentFile.publicationDate = fileModificationDate(url: fileURL) ?? Date()
+        contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain"
+        contentFile.publicationDate = fileModificationDate(url: fileURL, drive: drive) ?? Date()
     }
 }
 
-fileprivate func fileModificationDate(url: URL) -> Date? {
+fileprivate func fileModificationDate(url: URL, drive: CloudDrive) -> Date? {
+    let relativePath = RootRelativePath(path: String(url.path.dropFirst()))
+    guard let localURL = try? relativePath.fileURL(forRoot: drive.rootDirectory) else { return nil }
     do {
-        let attr = try FileManager.default.attributesOfItem(atPath: url.path)
+        let attr = try FileManager.default.attributesOfItem(atPath: localURL.path)
         return attr[FileAttributeKey.modificationDate] as? Date
     } catch {
         print(error)

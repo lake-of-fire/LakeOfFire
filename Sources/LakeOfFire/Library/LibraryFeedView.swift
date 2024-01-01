@@ -237,6 +237,7 @@ struct LibraryFeedFormSections: View {
     
     @State private var readerFeedEntry: FeedEntry?
     
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.openURL) private var openURL
 
     private var synchronizationSection: some View {
@@ -491,7 +492,7 @@ struct LibraryFeedFormSections: View {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
                     if readerViewModel.content != entry {
-                        readerViewModel.navigator.load(content: entry)
+                        await readerViewModel.navigator.load(content: entry, readerFileManager: readerFileManager)
                     }
                 }
             } else {

@@ -10,6 +10,7 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
     @EnvironmentObject private var navigator: WebViewNavigator
     @Environment(\.readerWebViewState) private var readerState
     @AppStorage("appTint") private var appTint: Color = Color.accentColor
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 330
     @State private var viewWidth: CGFloat = 0
@@ -33,7 +34,7 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
                     Button {
                         guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
                         Task { @MainActor in
-                            navigator.load(content: content)
+                            await navigator.load(content: content, readerFileManager: readerFileManager)
                         }
                     } label: {
                         cellView(content)

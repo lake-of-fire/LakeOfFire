@@ -1,11 +1,12 @@
 import Foundation
 import RealmSwift
 import RealmSwiftGaps
+import SwiftCloudDrive
 
 public class Bookmark: Object, ReaderContentModel {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
-    @Persisted public var url = URL(string: "about:blank")!
+    @Persisted(indexed: true) public var url = URL(string: "about:blank")!
     @Persisted public var title = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var publicationDate: Date?
@@ -36,12 +37,17 @@ public class Bookmark: Object, ReaderContentModel {
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
     
-    public var htmlToDisplay: String? {
+    @MainActor
+    public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
         if rssContainsFullContent {
             return html
+        } else if url.isReaderFileURL {
+            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
+            return String(decoding: data, as: UTF8.self)
         }
         return nil
     }
+    
     public var imageURLToDisplay: URL? { imageUrl }
     
     public func configureBookmark(_ bookmark: Bookmark) {
