@@ -94,7 +94,6 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentModel)? {
-        print("!! load \(url)")
         let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentModel)? in
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
@@ -150,10 +149,8 @@ public struct ReaderContentLoader {
             })
             
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
-                print("!! make history rec for \(url) from non hist \(nonHistoryMatch.url) \(nonHistoryMatch.className)")
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
             } else if match == nil {
-                print("!! make history rec for \(url) no match...")
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 //        historyRecord.isReaderModeByDefault
@@ -165,10 +162,7 @@ public struct ReaderContentLoader {
                 }
                 match = historyRecord
             }
-            print("!! load found match \(match?.className) \(match?.url)")
-            print("!! load match \(url.isReaderFileURL) \(url.contains(.plainText)) \(try? String(contentsOf: url))")
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText),  let realm = match.realm {
-                print("!! load match is file, plain text")
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
                 }

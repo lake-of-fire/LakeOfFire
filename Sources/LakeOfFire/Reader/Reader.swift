@@ -35,16 +35,13 @@ public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
     func load(content: any ReaderContentModel, readerFileManager: ReaderFileManager) async {
-        print("!! load content \(content.url) \(content.isReaderModeByDefault.description) <reader by default?")
         if !content.url.isReaderFileURL, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
             guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
             Task { @MainActor in
-                print("!! load content, history URL \(historyURL)")
                 load(URLRequest(url: historyURL))
             }
         } else {
             let url = content.url
-                print("!! load content, URL \(url)")
             Task { @MainActor in
                 load(URLRequest(url: url))
             }
@@ -129,14 +126,11 @@ public struct Reader: View {
                         }
                     },
                     "readabilityParsed": { message in
-                        print("!! readabilityParsed")
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                             return
                         }
                         try? await Task { @MainActor in
                             guard let url = result.windowURL, let content = try await readerViewModel.getContent(forURL: url) else { return }
-                            print("!! readParsed, readerViewModel.content.url \(content.url) \(result.windowURL)")
-                            print("!! readPra, result.outputHTML \(result.outputHTML)")
                             guard !result.outputHTML.isEmpty else {
                                 try? await content.asyncWrite { _, content in
                                     content.isReaderModeAvailable = false
@@ -144,13 +138,10 @@ public struct Reader: View {
                                 return
                             }
  
-                            print("!! reader mode? \(content.isReaderModeByDefault.description)")
-                            
                             guard !url.isNativeReaderView else { return }
                             readerViewModel.readabilityContent = result.outputHTML
                             readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                             readerViewModel.readabilityContainerFrameInfo = message.frameInfo
-                            print("!! reader mode, by default? \(content.isReaderModeByDefault)")
                             if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                                 readerViewModel.showReaderView(content: content)
                             } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {

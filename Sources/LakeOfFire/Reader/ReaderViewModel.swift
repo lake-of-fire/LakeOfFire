@@ -227,11 +227,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationCommitted(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        print("!! nav committed \(newState.pageURL)")
         readabilityContent = nil
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            print("!! nav committed, task enter...")
             guard let content = try await getContent(forURL: newState.pageURL) else {
                 print("WARNING No content matched for \(newState.pageURL)")
                 return
@@ -250,7 +248,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
             //        let contentURL = content.url
             
             if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
-                print("!! nav committed, reader url")
                 //                newContent = content
                 //                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
                 //                let contentKey = content.compoundKey
@@ -272,7 +269,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     navigator.load(URLRequest(url: content.url))
                 }
             } else {
-                print("!! nav committed, update content from \(self.content.url) to \(content.url)...")
                 if content.isReaderModeByDefault {
                     // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                     contentRules = contentRulesForReadabilityLoading
@@ -464,7 +460,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
-//            print("!! nav committed, update content from \(self.content.url) to \(content.url)...")
             return content
         }
         return nil
