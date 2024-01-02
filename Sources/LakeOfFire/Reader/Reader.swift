@@ -74,9 +74,9 @@ public struct Reader: View {
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
-    var url: URL {
-        return readerViewModel.content.url
-    }
+//    var url: URL {
+//        return readerViewModel.content.url
+//    }
     private var navigationTitle: String? {
         guard !readerViewModel.content.isInvalidated else { return nil }
         return readerViewModel.content.titleForDisplay
@@ -121,13 +121,12 @@ public struct Reader: View {
                     (readerFileURLSchemeHandler, "reader-file"),
                 ],
                 messageHandlers: [
-                    "readabilityFramePing": { message in
-                        guard let uuid = (message.body as? [String: String])?["uuid"] else { return }
-                        await Task { @MainActor in
-                            if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
-                                readerViewModel.refreshSettingsInWebView()
-                            }
-                        }.value
+                    "readabilityFramePing": { @MainActor message in
+                        guard let uuid = (message.body as? [String: String])?["uuid"], let windowURL = (message.body as? [String: String])?["windowURL"] as? URL else { return }
+                        guard !windowURL.isNativeReaderView, let content = try? await readerViewModel.getContent(forURL: windowURL) else { return }
+                        if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
+                            readerViewModel.refreshSettingsInWebView(content: content)
+                        }
                     },
                     "readabilityParsed": { message in
                         print("!! readabilityParsed")
@@ -183,12 +182,12 @@ public struct Reader: View {
                     //            }
                     "rssURLs": { message in
                         Task { @MainActor in
-                            guard !url.isNativeReaderView else { return }
                             guard let result = RSSURLsMessage(fromMessage: message) else { return }
+                            guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let content = try await readerViewModel.getContent(forURL: windowURL) else { return }
                             let pairs = result.rssURLs.prefix(10)
                             let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                             let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                            try await readerViewModel.content.asyncWrite { _, content in
+                            try await content.asyncWrite { _, content in
                                 content.rssURLs.removeAll()
                                 content.rssTitles.removeAll()
                                 content.rssURLs.append(objectsIn: urls)
@@ -199,25 +198,25 @@ public struct Reader: View {
                     },
                     "titleUpdated": { message in
                         Task { @MainActor in
-                            guard !url.isNativeReaderView else { return }
                             guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
-                            guard result.url == readerViewModel.state.pageURL && result.url == readerViewModel.content.url else { return }
+                            guard let url = result.url, !url.isNativeReaderView, let content = try await readerViewModel.getContent(forURL: url) else { return }
+                            guard result.url == readerViewModel.state.pageURL && result.url == content.url else { return }
                             let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
                             // Only update if empty... sometimes annoying titles load later.
-                            if readerViewModel.content.titleForDisplay.isEmpty && readerViewModel.content.title.isEmpty, !newTitle.isEmpty {
-                                try await readerViewModel.content.asyncWrite { _, content in
+                            if content.titleForDisplay.isEmpty && content.title.isEmpty, !newTitle.isEmpty {
+                                try await content.asyncWrite { _, content in
                                     content.title = newTitle
                                 }
-                                readerViewModel.refreshTitleInWebView()
+                                readerViewModel.refreshTitleInWebView(content: content)
                             }
                         }
                     },
                     "imageUpdated": { message in
                         Task { @MainActor in
-                            guard !url.isNativeReaderView else { return }
                             guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                            guard result.mainDocumentURL == readerViewModel.state.pageURL && result.mainDocumentURL == readerViewModel.content.url, readerViewModel.content.imageUrl != result.newImageURL else { return }
-                            try await readerViewModel.content.asyncWrite { _, content in
+                            guard let url = result.mainDocumentURL, !url.isNativeReaderView, let content = try await readerViewModel.getContent(forURL: url) else { return }
+                            guard result.mainDocumentURL == readerViewModel.state.pageURL && result.mainDocumentURL == content.url, content.imageUrl != result.newImageURL else { return }
+                            try await content.asyncWrite { _, content in
                                 content.imageUrl = result.newImageURL
                             }
                         }

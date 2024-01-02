@@ -106,9 +106,11 @@ public struct FractionalCompletionMessage {
 
 public struct RSSURLsMessage {
     public let rssURLs: [[String]]
+    public var windowURL: URL?
     
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any] else { return nil }
         rssURLs = body["rssURLs"] as? [[String]] ?? []
+        windowURL = body["windowURL"] as? URL
     }
 }

@@ -88,6 +88,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript], processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil) {
         super.init()
         
+        self.processReadabilityContent = processReadabilityContent
+        
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let configuration = try await LibraryConfiguration.getOrCreate()
@@ -127,17 +129,22 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let url = content.url
         let readabilityContainerSelector = readabilityContainerSelector
         let readabilityContainerFrameInfo = readabilityContainerFrameInfo
-        Task.detached { [weak self] in
+        let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type
+        let contentKey = content.compoundKey
+        guard let contentConfig = content.realm?.configuration else { return }
+        Task.detached { @MainActor [weak self] in
             guard let self = self else { return }
+            let realm = try await Realm(configuration: contentConfig, actor: MainActor.shared)
+            guard let contentType = contentType, let content = realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentModel else { return }
             do {
-                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
+                try await showReadabilityContent(content: content, readabilityContent: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
             } catch { }
         }
     }
-   
+    
     /// Content before it has been treated with Reader-specific processing.
-    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
-        try await self.content.asyncWrite { _, content in
+    private func showReadabilityContent(content: (any ReaderContentModel), readabilityContent: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+        try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
         }
         
@@ -148,7 +155,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         try await Task.detached { [weak self] in
             var doc: SwiftSoup.Document
             do {
-                doc = try processForReaderMode(content: content, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
+                doc = try processForReaderMode(content: readabilityContent, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
             } catch {
                 print(error.localizedDescription)
                 return
@@ -441,9 +448,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
 //            }
         
         Task { @MainActor [weak self] in
+            guard let self = self else { return }
             try Task.checkCancellation()
-            self?.refreshSettingsInWebView(newState: newState)
-            self?.refreshTitleInWebView(newState: newState)
+            refreshSettingsInWebView(content: content, newState: newState)
+            refreshTitleInWebView(content: content, newState: newState)
             
             if let completion = completion {
                 completion(newState)
@@ -452,7 +460,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
+    public func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
@@ -468,7 +476,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func refreshTitleInWebView(newState: WebViewState? = nil) {
+    func refreshTitleInWebView(content: (any ReaderContentModel), newState: WebViewState? = nil) {
         // TODO: consolidate code duplication
         let state = newState ?? state
         if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
@@ -477,12 +485,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func refreshSettingsInWebView(newState: WebViewState? = nil) {
+    func refreshSettingsInWebView(content: (any ReaderContentModel), newState: WebViewState? = nil) {
         // TODO: consolidate code duplication
         Task { @MainActor in
             await scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
             await scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
-            refreshTitleInWebView(newState: newState)
+            refreshTitleInWebView(content: content, newState: newState)
         }
     }
 }
