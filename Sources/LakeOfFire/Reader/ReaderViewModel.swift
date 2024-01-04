@@ -40,7 +40,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @Published public var content: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-    @Published var isPendingContentUpdateFromNavigation = false
  
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil

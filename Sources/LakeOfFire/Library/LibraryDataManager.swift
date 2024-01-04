@@ -72,7 +72,8 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     
     @available(macOS 13.0, iOS 16.1, *)
     public func pendingBackgroundAssetDownloads() -> Set<BADownload> {
-        Task { @MainActor in
+        let downloadables = downloadables
+        Task.detached { @MainActor in
             await DownloadController.shared.ensureDownloaded(downloadables)
         }
         return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
@@ -281,10 +282,10 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
-        let downloadables = try await LibraryConfiguration.getOrCreate().downloadables
-        await Task { @MainActor in
+        Task.detached { @MainActor in
+            let downloadables = try await LibraryConfiguration.getOrCreate().downloadables
             await DownloadController.shared.ensureDownloaded(downloadables)
-        }.value
+        }
     }
     
     public func importOPML(fileURLs: [URL]) async {

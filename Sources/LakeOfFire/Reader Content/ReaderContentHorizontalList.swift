@@ -15,18 +15,9 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 330
     @State private var viewWidth: CGFloat = 0
     
-    private func cellView(_ content: any ReaderContentModel) -> some View {
-        Group {
-            if let content = content as? Bookmark {
-                ReaderContentCell(item: content)
-            } else if let content = content as? HistoryRecord {
-                ReaderContentCell(item: content)
-            } else if let content = content as? FeedEntry {
-                ReaderContentCell(item: content)
-            }
-        }
-    }
-
+    @State private var confirmDelete: Bool = false
+    @State private var confirmDeletionOf: (any DeletableReaderContent)?
+    
     var body: some View {
         ScrollView(.horizontal) {
             LazyHStack {
@@ -37,7 +28,7 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
                             await navigator.load(content: content, readerFileManager: readerFileManager)
                         }
                     } label: {
-                        cellView(content)
+                        AnyView(content.readerContentCellView(showThumbnails: true))
                             .background(Color.white.opacity(0.00000001)) // Clickability
                             .frame(maxWidth: max(155, min(maxWidth, viewWidth - 50)))
                     }
@@ -48,6 +39,16 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
 #endif
                     .tint(.secondary)
                     //                    .id(feedEntry.compoundKey)
+                    .contextMenu {
+                        if let entry = content as? (any DeletableReaderContent) {
+                            Button(role: .destructive) {
+                                confirmDeletionOf = entry
+                                confirmDelete = true
+                            } label: {
+                                Label(entry.deleteActionTitle, image: "trash")
+                            }
+                        }
+                    }
                     Divider()
                 }
                 .headerProminence(.increased)
@@ -61,6 +62,18 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
                     viewWidth = geometry.size.width
                 }
             }
+        }
+        .confirmationDialog("Do you really want to delete \(confirmDeletionOf?.title.truncate(20) ?? "")?", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) {
+                Task { @MainActor in
+                    try await confirmDeletionOf?.delete(readerFileManager: readerFileManager)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                confirmDeletionOf = nil
+            }
+        } message: {
+            Text("Deletion cannot be undone.")
         }
     }
     
@@ -85,7 +98,7 @@ public struct ReaderContentHorizontalList: View {
     
     public var body: some View {
         ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
-            .task {
+            .task(id: contents.map { $0.compoundKey }.joined(separator: ":")) { @MainActor in
                 await Task { @RealmBackgroundActor in
                     try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents), contentFilter: contentFilter, sortOrder: sortOrder)
                 }.value

@@ -98,8 +98,8 @@ struct WebFeedMenuAddButtons: View {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-public struct WebFeedButton: View {
-    @Binding var readerContent: any ReaderContentModel
+public struct WebFeedButton<C: ReaderContentModel>: View {
+    var readerContent: C
     
     @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
     @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) var feeds
@@ -164,8 +164,8 @@ public struct WebFeedButton: View {
         }
     }
     
-    public init(readerContent: Binding<any ReaderContentModel>) {
-        _readerContent = readerContent
+    public init(readerContent: C) {
+        self.readerContent = readerContent
     }
     
     private func refresh() {
@@ -178,5 +178,12 @@ public struct WebFeedButton: View {
                 self.feed = feed
             }
         }
+    }
+}
+
+@available(iOS 16, macOS 13.0, *)
+public extension ReaderContentModel {
+    var webFeedButtonView: some View {
+        WebFeedButton(readerContent: self)
     }
 }

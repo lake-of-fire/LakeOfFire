@@ -94,8 +94,8 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
     }
 }
 
-public struct BookmarkButton: View {
-    var readerContent: (any ReaderContentModel)
+public struct BookmarkButton<C: ReaderContentModel>: View {
+    var readerContent: C
     var hiddenIfUnbookmarked = false
     
     @Environment(\.isEnabled) private var isEnabled
@@ -123,35 +123,40 @@ public struct BookmarkButton: View {
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
 //        .fixedSize()
-        .onChange(of: readerContent.compoundKey) { compoundKey in
+        .onChange(of: readerContent) { readerContent in
             Task { @MainActor in
                 viewModel.forceShowBookmark = false
                 viewModel.readerContent = nil
-                viewModel.reloadTrigger = compoundKey
             }
         }
-        .task(id: viewModel.reloadTrigger) {
+        .task(id: readerContent) {
             viewModel.readerContent = readerContent
         }
     }
     
-    public init(readerContent: (any ReaderContentModel), hiddenIfUnbookmarked: Bool = false) {
+    public init(readerContent: C, hiddenIfUnbookmarked: Bool = false) {
         self.readerContent = readerContent
         self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
     }
 }
 
+public extension ReaderContentModel {
+    var bookmarkButtonView: some View {
+        BookmarkButton(readerContent: self)
+    }
+}
+
 public struct CurrentWebViewBookmarkButton: View {
     var readerContent: (any ReaderContentModel)
-    @Binding var readerWebViewState: WebViewState
+    var readerWebViewState: WebViewState
     
     public var body: some View {
-        BookmarkButton(readerContent: readerContent)
-        .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
+        AnyView(readerContent.bookmarkButtonView)
+            .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
     }
     
-    public init(readerContent: (any ReaderContentModel), readerState: Binding<WebViewState>) {
+    public init(readerContent: (any ReaderContentModel), readerState: WebViewState) {
         self.readerContent = readerContent
-        _readerWebViewState = readerState
+        self.readerWebViewState = readerState
     }
 }

@@ -9,3 +9,14 @@ public class ContentFile: Bookmark {
         super.configureBookmark(bookmark)
     }
 }
+
+extension ContentFile: DeletableReaderContent {
+    public var deleteActionTitle: String {
+        "Delete File"
+    }
+    
+    @MainActor
+    public func delete(readerFileManager: ReaderFileManager) async throws {
+        try await readerFileManager.delete(readerFileURL: url)
+    }
+}

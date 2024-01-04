@@ -31,9 +31,15 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
     }
 }
 
-//struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
+extension ReaderContentModel {
+    @ViewBuilder func readerContentCellView(showThumbnails: Bool = true) -> some View {
+        ReaderContentCell(item: self, showThumbnails: showThumbnails)
+    }
+}
+
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
+    var showThumbnails = true
     @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 140
     @ScaledMetric(relativeTo: .headline) var cellHeight: CGFloat = 90
     
@@ -41,7 +47,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            if let imageUrl = item.imageURLToDisplay {
+            if showThumbnails, let imageUrl = item.imageURLToDisplay {
                 VStack(spacing: 0) {
                     LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
 //                        .frame(maxWidth: scaledImageWidth)
@@ -96,6 +102,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
 #endif
                 }
             }
+            .frame(minWidth: cellHeight, idealHeight: showThumbnails ? cellHeight : nil)
 //                    .frame(maxHeight: .infinity)
             
 //#if os(macOS)

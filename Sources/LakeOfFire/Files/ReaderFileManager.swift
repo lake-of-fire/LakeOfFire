@@ -9,17 +9,18 @@ public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
 }
 
-public actor ReaderFileManager: ObservableObject {
-    @MainActor @Published public var files: [ContentFile]?
+@MainActor
+public class ReaderFileManager: ObservableObject {
+    @Published public var files: [ContentFile]?
     
     private let readerContentMimeTypes: [UTType] = [.plainText, .html]
-    @MainActor public var readerContentFiles: [ContentFile]? {
+    public var readerContentFiles: [ContentFile]? {
         return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) }
     }
     
     private var cloudDrive: CloudDrive?
     private var localDrive: CloudDrive?
-    @MainActor public var ubiquityContainerIdentifier: String? = nil
+    public var ubiquityContainerIdentifier: String? = nil
     
     public init() { }
     
@@ -27,6 +28,31 @@ public actor ReaderFileManager: ObservableObject {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
+        Task.detached { [weak self] in
+            try await self?.refreshAllFilesMetadata()
+        }
+    }
+    
+    @RealmBackgroundActor
+    public func delete(readerFileURL: URL) async throws {
+        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        guard readerFileURL.scheme == "reader-file" else {
+            throw ReaderFileManagerError.invalidFileURL
+        }
+        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND url == %@", readerFileURL.absoluteString as CVarArg)).first {
+            try await realm.asyncWrite {
+                existing.isDeleted = true
+            }
+        }
+        let relativePath = RootRelativePath(path: String(readerFileURL.path.dropFirst()))
+        switch readerFileURL.host {
+        case "local":
+            try await localDrive?.removeFile(at: relativePath)
+        case "icloud":
+            try await cloudDrive?.removeFile(at: relativePath)
+        default:
+            throw ReaderFileManagerError.invalidFileURL
+        }
         Task.detached { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
@@ -86,8 +112,11 @@ public actor ReaderFileManager: ObservableObject {
             try await drive.upload(from: fileURL, to: targetFilePath)
         }
         let contentRef = try await refreshFileMetadata(drive: drive, relativePath: targetFilePath)
-        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: self)
+        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
         guard let content = realm.resolve(contentRef) else { return nil }
+        Task.detached { [weak self] in
+            try await self?.refreshAllFilesMetadata()
+        }
         return content.url
     }
     
@@ -105,6 +134,7 @@ public actor ReaderFileManager: ObservableObject {
             let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
             let files = discoveredFiles.compactMap { realm.resolve($0) }
             self.files = files.map { $0.freeze() }
+            objectWillChange.send()
             let discoveredURLs = files.map { $0.url }
             
             // Delete orphans

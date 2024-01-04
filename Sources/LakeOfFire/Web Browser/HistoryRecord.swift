@@ -12,6 +12,20 @@ public class HistoryRecord: Bookmark {
     }
 }
 
+extension HistoryRecord: DeletableReaderContent {
+    public var deleteActionTitle: String {
+        "Remove from History"
+    }
+    
+    @RealmBackgroundActor
+    public func delete(readerFileManager: ReaderFileManager) async throws {
+        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? HistoryRecord, let realm = content.realm else { return }
+        try await realm.asyncWrite {
+            content.isDeleted = true
+        }
+    }
+}
+
 //public extension HistoryRecord {
 //  /// A way to compare `Bool`s.
 //  ///

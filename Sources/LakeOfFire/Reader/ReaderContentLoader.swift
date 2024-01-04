@@ -54,6 +54,9 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func fromBackgroundActor(content: any ReaderContentModel) async throws -> (any ReaderContentModel)? {
+        if content.realm == nil {
+            return content
+        }
         guard let ref = await Task(operation: { @RealmBackgroundActor in
             return ContentReference(content: content)
         }).value else { return nil }
@@ -63,6 +66,9 @@ public struct ReaderContentLoader {
     
     @RealmBackgroundActor
     public static func fromMainActor(content: any ReaderContentModel) async throws -> (any ReaderContentModel)? {
+        if content.realm == nil {
+            return content
+        }
         guard let ref = await Task(operation: { @MainActor in
             return ContentReference(content: content)
         }).value else { return nil }
@@ -72,6 +78,9 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func fromBackgroundActor(contents: [any ReaderContentModel]) async throws -> [any ReaderContentModel] {
+        if contents.allSatisfy({ $0.realm == nil }) {
+            return contents
+        }
         var mapped: [any ReaderContentModel] = []
         for content in contents {
             if let newMapped = try await fromBackgroundActor(content: content) {
@@ -83,6 +92,9 @@ public struct ReaderContentLoader {
     
     @RealmBackgroundActor
     public static func fromMainActor(contents: [any ReaderContentModel]) async throws -> [any ReaderContentModel] {
+        if contents.allSatisfy({ $0.realm == nil }) {
+            return contents
+        }
         var mapped: [any ReaderContentModel] = []
         for content in contents {
             if let newMapped = try await fromMainActor(content: content) {

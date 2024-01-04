@@ -81,6 +81,11 @@ public extension ReaderContentModel {
     }
 }
 
+public protocol DeletableReaderContent: ReaderContentModel {
+    var deleteActionTitle: String { get }
+    func delete(readerFileManager: ReaderFileManager) async throws
+}
+
 public extension URL {
     func matchesReaderURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }

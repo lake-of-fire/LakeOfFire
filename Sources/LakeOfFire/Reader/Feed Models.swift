@@ -130,6 +130,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     
     public var isFromClipboard = false
     
+    @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
         if rssContainsFullContent {
             return Self.contentToHTML(legacyHTMLContent: htmlContent, content: content)
