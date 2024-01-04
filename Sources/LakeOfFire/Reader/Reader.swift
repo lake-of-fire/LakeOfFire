@@ -119,7 +119,7 @@ public struct Reader: View {
                 ],
                 messageHandlers: [
                     "readabilityFramePing": { @MainActor message in
-                        guard let uuid = (message.body as? [String: String])?["uuid"], let windowURL = (message.body as? [String: String])?["windowURL"] as? URL else { return }
+                        guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else { return }
                         guard !windowURL.isNativeReaderView, let content = try? await readerViewModel.getContent(forURL: windowURL) else { return }
                         if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                             readerViewModel.refreshSettingsInWebView(content: content)

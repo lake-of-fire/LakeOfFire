@@ -111,6 +111,8 @@ public struct RSSURLsMessage {
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any] else { return nil }
         rssURLs = body["rssURLs"] as? [[String]] ?? []
-        windowURL = body["windowURL"] as? URL
+        if let windowURLRaw = body["windowURL"] as? String {
+            windowURL = URL(string: windowURLRaw)
+        }
     }
 }
