@@ -49,7 +49,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published var navigationPath = NavigationPath()
     @Published var libraryConfiguration: LibraryConfiguration?
     
-    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    private var objectNotificationToken: NotificationToken?
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
@@ -70,7 +70,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                     self?.exportedOPMLFileURL = nil
                     self?.exportOPMLTask?.cancel()
                 })
-                .debounce(for: .seconds(0.05), scheduler: DispatchQueue.main, options: .init(qos: .userInitiated))
+                .debounce(for: .seconds(0.05), scheduler: DispatchQueue.main)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] changes in
                     switch changes {
@@ -87,7 +87,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         
         realm.objects(UserScript.self)
             .changesetPublisher
-            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main, options: .init(qos: .userInitiated))
+            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] changes in
                 switch changes {
@@ -103,26 +103,25 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-            objectNotificationToken = libraryConfiguration
-                .observe { [weak self] change in
-                    guard let self = self else { return }
-                    switch change {
-                    case .change(_, _):
-                        Task { @MainActor [weak self] in
-                            self?.objectWillChange.send()
-                        }
-                    case .error(let error):
-                        print("An error occurred: \(error)")
-                    case .deleted:
-                        print("The object was deleted.")
-                    }
-                }
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
                 guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
+                objectNotificationToken = libraryConfiguration
+                    .observe { [weak self] change in
+                        guard let self = self else { return }
+                        switch change {
+                        case .change(_, _):
+                            Task { @MainActor [weak self] in
+                                self?.objectWillChange.send()
+                            }
+                        case .error(let error):
+                            print("An error occurred: \(error)")
+                        case .deleted:
+                            print("The object was deleted.")
+                        }
+                    }
                 self.libraryConfiguration = libraryConfiguration
             }
         }

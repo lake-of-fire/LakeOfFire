@@ -78,9 +78,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
              "action": {
                  "type": "block"
              }
-         },
+         }
         """
-    })
+    } .joined(separator: ", "))
     ]
     """
     
@@ -216,7 +216,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
         let ref = ThreadSafeReference(to: libraryConfiguration)
         Task { @MainActor [weak self] in
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
             guard let scripts = realm.resolve(ref)?.activeWebViewUserScripts else { return }
             guard let self = self else { return }
             if webViewUserScripts != scripts {
@@ -245,6 +245,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
             //        let isReaderModeByDefault = content.isReaderModeByDefault
             //        let existingTitle = content.title
             //        let contentURL = content.url
+            
+            if let historyRecord = content as? HistoryRecord {
+                Task.detached { @RealmBackgroundActor in
+                    guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
+                    try await realm.asyncWrite {
+                        content.lastVisitedAt = Date()
+                    }
+                }
+            }
             
             if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
                 //                newContent = content

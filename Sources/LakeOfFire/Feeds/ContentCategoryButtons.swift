@@ -8,25 +8,30 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
         didSet {
             Task.detached { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
-                let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-                objectNotificationToken?.invalidate()
-                objectNotificationToken = libraryConfiguration
-                    .observe { [weak self] change in
-                        guard let self = self else { return }
-                        switch change {
-                        case .change(_, _), .deleted:
-                            Task { @MainActor [weak self] in
-                                self?.objectWillChange.send()
+            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                    guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
+                    objectNotificationToken?.invalidate()
+                    objectNotificationToken = libraryConfiguration
+                        .observe { [weak self] change in
+                            guard let self = self else { return }
+                            switch change {
+                            case .change(_, _), .deleted:
+                                Task { @MainActor [weak self] in
+                                    self?.objectWillChange.send()
+                                }
+                            case .error(let error):
+                                print("An error occurred: \(error)")
                             }
-                        case .error(let error):
-                            print("An error occurred: \(error)")
                         }
-                    }
+                }
             }
         }
     }
     
-    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    private var objectNotificationToken: NotificationToken?
 
     init() {
         Task.detached { @RealmBackgroundActor [weak self] in
@@ -41,9 +46,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [weak self] in
-            self?.objectNotificationToken?.invalidate()
-        }
+        objectNotificationToken?.invalidate()
     }
 }
 
@@ -54,13 +57,20 @@ public struct ContentCategoryButtons: View {
     
     @StateObject private var viewModel = ContentCategoryButtonsViewModel()
     
-    @ObservedResults(FeedCategory.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { $0.isDeleted == false && $0.isArchived == false }) private var categories
+    @ObservedResults(FeedCategory.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { !$0.isDeleted && !$0.isArchived }) private var categories
+    
+    @ScaledMetric(relativeTo: .headline) private var minWidth: CGFloat = 190
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 #endif
     
-    private var gridColumns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+//    private var gridColumns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+    private var gridColumns: [GridItem] {
+        get {
+            [GridItem(.adaptive(minimum: minWidth))] //, maximum: maxWidth))]
+        }
+    }
 
     private var isConsideredCompact: Bool {
 #if os(iOS)
@@ -71,20 +81,10 @@ public struct ContentCategoryButtons: View {
     }
     
     public var body: some View {
-        if isCompact {
-            VStack(spacing: 5) {
-                if let categories = viewModel.libraryConfiguration?.categories {
-                    ForEach(categories) { category in
-                        FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
-                    }
-                }
-            }
-        } else {
+        if let categories = viewModel.libraryConfiguration?.categories {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
-                if let categories = viewModel.libraryConfiguration?.categories {
-                    ForEach(categories) { category in
-                        FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
-                    }
+                ForEach(categories) { category in
+                    FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
                 }
             }
         }
@@ -151,7 +151,7 @@ public struct FeedCategoryButtonLabel: View {
 #if os(iOS)
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 40
 #else
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 20
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 30
 #endif
     
 #if os(iOS)
@@ -182,9 +182,9 @@ public struct FeedCategoryButtonLabel: View {
         //            .frame(maxWidth: isInSidebar || horizontalSizeClass == .compact ? .infinity : 190)
         .frame(maxWidth: .infinity)
 #if os(iOS)
-        .frame(idealHeight: isCompact || horizontalSizeClass == .compact ? scaledCategoryHeight : scaledCategoryHeight * 2.3)
+        .frame(idealHeight: isCompact || horizontalSizeClass == .compact ? scaledCategoryHeight : scaledCategoryHeight * 2.4)
 #else
-        .frame(idealHeight: isCompact ? nil : scaledCategoryHeight * 2.3)
+        .frame(idealHeight: isCompact ? nil : scaledCategoryHeight * 2.4)
 #endif
         //            .padding(.horizontal, scaledCategoryHeight * 0.36)
         .overlay(Color.white.opacity(0.0000001)) // Weird macOS hack...

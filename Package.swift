@@ -37,6 +37,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/drewmccormack/SwiftCloudDrive.git", branch: "main"),
+//        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -68,7 +69,8 @@ let package = Package(
                 .product(name: "LakeImage", package: "LakeImage"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "MarkdownKit", package: "swift-markdownkit"),
-            ]),
+//                .product(name: "WrappingHStack", package: "WrappingHStack"),
+                ]),
 //        .testTarget(
 //            name: "LakeOfFireTests",
 //            dependencies: ["LakeOfFire"]),

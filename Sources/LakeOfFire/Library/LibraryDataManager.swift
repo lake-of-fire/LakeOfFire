@@ -84,9 +84,10 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return scripts
     }
     
-    public static func get() throws -> LibraryConfiguration? {
-        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
-        if let configuration = realm.objects(LibraryConfiguration.self).first(where: { !$0.isDeleted }) {
+    @RealmBackgroundActor
+    public static func get() async throws -> LibraryConfiguration? {
+        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
             return configuration
         }
         return nil
@@ -95,7 +96,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     @RealmBackgroundActor
     public static func getOrCreate() async throws -> LibraryConfiguration {
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
-        if let configuration = realm.objects(LibraryConfiguration.self).first(where: { !$0.isDeleted }) {
+        if let configuration = try await get() {
             return configuration
         }
         
@@ -306,6 +307,7 @@ public class LibraryDataManager: NSObject {
         var allImportedFeeds = OrderedSet<Feed>()
         var allImportedScripts = OrderedSet<UserScript>()
         let configuration = try await LibraryConfiguration.getOrCreate()
+        guard let realm = configuration.realm else { return }
         
         for entry in opml.entries {
             let (importedCategories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download)
@@ -317,7 +319,6 @@ public class LibraryDataManager: NSObject {
         let allImportedCategoryIDs = allImportedCategories.map { $0.id }
         let allImportedFeedIDs = allImportedFeeds.map { $0.id }
         let allImportedScriptIDs = allImportedScripts.map { $0.id }
-        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
         
         // Delete orphan scripts
         if let downloadURL = download?.url {
@@ -333,7 +334,7 @@ public class LibraryDataManager: NSObject {
         
         // Add new scripts
         for script in allImportedScripts {
-            if !configuration.userScripts.contains(script) {
+            if !configuration.userScripts.contains(where: { $0.id != script.id }) {
                 var lastNeighborIdx = configuration.userScripts.count - 1
                 if let downloadURL = download?.url {
                     lastNeighborIdx = configuration.userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
@@ -349,7 +350,7 @@ public class LibraryDataManager: NSObject {
         for (idx, script) in configuration.userScripts.enumerated() {
             if let downloadURL = download?.url, script.opmlURL == downloadURL, !desiredScripts.isEmpty {
                 let desiredScript = desiredScripts.removeFirst()
-                if let fromIdx = configuration.userScripts.firstIndex(of: desiredScript), fromIdx != idx {
+                if let fromIdx = configuration.userScripts.firstIndex(where: { $0.id == desiredScript.id }), fromIdx != idx {
                     try await realm.asyncWrite {
                         configuration.userScripts.move(from: fromIdx, to: idx)
                     }
@@ -406,8 +407,25 @@ public class LibraryDataManager: NSObject {
                 }
             }
         }
+        
+        // De-dupe categories from library configuration (due to some bug...)
+        var idsSeen = Set<UUID>()
+        var toRemove = IndexSet()
+        for (idx, category) in configuration.categories.enumerated() {
+            if idsSeen.contains(category.id) {
+                toRemove.insert(idx)
+            } else {
+                idsSeen.insert(category.id)
+            }
+        }
+        if !toRemove.isEmpty {
+            try await realm.asyncWrite {
+                configuration.categories.remove(atOffsets: toRemove)
+            }
+        }
     }
     
+    @RealmBackgroundActor
     public func importOPML(download: Downloadable) async throws {
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
     }

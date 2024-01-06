@@ -15,22 +15,22 @@ struct ListItemToggleStyle: ToggleStyle {
         .background(configuration.isOn ? Color.accentColor : Color.clear)
     }
 }
+    
+public enum ReaderContentSortOrder {
+    case publicationDate
+    case createdAt
+    case lastVisitedAt
+}
 
-public class ReaderContentListViewModel: ObservableObject {
+public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject {
 //    @Published var filteredContents: [ReaderContentType] = []
-    @Published var filteredContents: [any ReaderContentModel] = []
+    @Published var filteredContents: [C] = []
     var refreshSelectionTask: Task<Void, Never>?
     
-    public enum SortOrder {
-        case publicationDate
-        case createdAt
-        case lastVisitedAt
-    }
-    
     @MainActor
-    func load(contents: [any ReaderContentModel], contentFilter: @escaping (@RealmBackgroundActor (any ReaderContentModel) async throws -> Bool), sortOrder: ReaderContentListViewModel.SortOrder) async throws {
+    func load(contents: [C], contentFilter: @escaping (@RealmBackgroundActor (C) async throws -> Bool), sortOrder: ReaderContentSortOrder) async throws {
         try await Task { @RealmBackgroundActor in
-            var filtered: [any ReaderContentModel] = []
+            var filtered: [C] = []
             //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
             //                try await contentFilter($0)
             //            })
@@ -40,7 +40,7 @@ public class ReaderContentListViewModel: ObservableObject {
                 }
             }
             
-            let sorted: [any ReaderContentModel]
+            let sorted: [C]
             switch sortOrder {
             case .publicationDate:
                 sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
@@ -48,7 +48,7 @@ public class ReaderContentListViewModel: ObservableObject {
                 sorted = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
             case .lastVisitedAt:
                 if let filtered = filtered as? [HistoryRecord] {
-                    sorted = filtered.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)])
+                    sorted = filtered.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)]) as? [C] ?? []
                 } else {
                     sorted = filtered
                     print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
@@ -59,16 +59,16 @@ public class ReaderContentListViewModel: ObservableObject {
             try await Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 //                self?.filteredContents = toSet
-                filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet)
+                filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet as [any ReaderContentModel]) as? [C] ?? filteredContents
             }.value
         }.value
     }
 }
 
-fileprivate struct ReaderContentInnerList: View {
+fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
     @Binding var entrySelection: String?
     var showThumbnails = true
-    @ObservedObject private var viewModel: ReaderContentListViewModel
+    @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     
     @Environment(\.readerWebViewState) private var readerState
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
@@ -82,7 +82,7 @@ fileprivate struct ReaderContentInnerList: View {
 #if os(macOS)
             ScrollView {
                 LazyVStack {
-                    ForEach(viewModel.filteredContents, id: \.compoundKey)  { (feedEntry: any ReaderContentModel) in
+                    ForEach(viewModel.filteredContents, id: \.compoundKey)  { (feedEntry: C) in
                         Toggle(isOn: Binding<Bool>(
                             get: {
                                 //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
@@ -158,23 +158,23 @@ fileprivate struct ReaderContentInnerList: View {
         }
     }
     
-    init(entrySelection: Binding<String?>, showThumbnails: Bool = true, viewModel: ReaderContentListViewModel) {
+    init(entrySelection: Binding<String?>, showThumbnails: Bool = true, viewModel: ReaderContentListViewModel<C>) {
         _entrySelection = entrySelection
         self.showThumbnails = showThumbnails
         self.viewModel = viewModel
     }
 }
 
-public struct ReaderContentList: View {
-    let contents: [any ReaderContentModel]
+public struct ReaderContentList<C: ReaderContentModel>: View {
+    let contents: [C]
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var showThumbnails = true
-    var contentFilter: ((any ReaderContentModel) async throws -> Bool) = { _ in return true }
+    var contentFilter: ((C) async throws -> Bool)? = nil
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-    var sortOrder = ReaderContentListViewModel.SortOrder.publicationDate
-
-    @StateObject private var viewModel = ReaderContentListViewModel()
+    var sortOrder = ReaderContentSortOrder.publicationDate
+    
+    @StateObject private var viewModel = ReaderContentListViewModel<C>()
     
     @Environment(\.readerWebViewState) private var readerState
     @EnvironmentObject private var navigator: WebViewNavigator
@@ -196,8 +196,14 @@ public struct ReaderContentList: View {
             .onChange(of: readerState) { [oldState = readerState] state in
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
             }
-            .task(id: contents.map { $0.compoundKey }.joined(separator: ":")) { @MainActor in
-                try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+            .onChange(of: contents, debounceTime: 0.1) { contents in
+                Task { @MainActor in
+                    try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
+                    refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
+                }
+            }
+            .task { @MainActor in
+                try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
                 refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
             }
 //            .onChange(of: contents) { contents in
@@ -209,7 +215,7 @@ public struct ReaderContentList: View {
         }
     }
     
-    public init(contents: [any ReaderContentModel], entrySelection: Binding<String?>, contentSortAscending: Bool = false, showThumbnails: Bool = true, contentFilter: @escaping ((any ReaderContentModel) async throws -> Bool) = { _ in return true }, sortOrder: ReaderContentListViewModel.SortOrder) {
+    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, showThumbnails: Bool = true, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder) {
         self.contents = contents
         _entrySelection = entrySelection
         self.showThumbnails = showThumbnails
@@ -254,5 +260,11 @@ public struct ReaderContentList: View {
 //                }
             } catch { }
         }
+    }
+}
+
+public extension ReaderContentModel {
+    static func readerContentListView(contents: [Self], entrySelection: Binding<String?>, sortOrder: ReaderContentSortOrder, contentFilter: ((Self) async throws -> Bool)? = nil) -> some View {
+        return ReaderContentList(contents: contents, entrySelection: entrySelection, contentFilter: contentFilter, sortOrder: sortOrder)
     }
 }

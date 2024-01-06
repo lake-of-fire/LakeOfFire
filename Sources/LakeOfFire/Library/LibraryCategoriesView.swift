@@ -40,7 +40,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
                 guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
                 self.libraryConfiguration = libraryConfiguration
             }

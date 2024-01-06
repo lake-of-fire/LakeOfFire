@@ -4,8 +4,8 @@ import RealmSwift
 import RealmSwiftGaps
 import SwiftUtilities
 
-fileprivate struct ReaderContentInnerHorizontalList: View {
-    var filteredContents: [any ReaderContentModel]
+fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View {
+    var filteredContents: [C]
     
     @EnvironmentObject private var navigator: WebViewNavigator
     @Environment(\.readerWebViewState) private var readerState
@@ -21,7 +21,7 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
     var body: some View {
         ScrollView(.horizontal) {
             LazyHStack {
-                ForEach(filteredContents, id: \.compoundKey) { (content: (any ReaderContentModel)) in
+                ForEach(filteredContents, id: \.compoundKey) { (content: C) in
                     Button {
                         guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
                         Task { @MainActor in
@@ -77,35 +77,41 @@ fileprivate struct ReaderContentInnerHorizontalList: View {
         }
     }
     
-    init(filteredContents: [any ReaderContentModel]) {
+    init(filteredContents: [C]) {
         self.filteredContents = filteredContents
     }
 }
 
-public struct ReaderContentHorizontalList: View {
-//    let contents: AnyRealmCollection<ReaderContentType>
-    let contents: [any ReaderContentModel]
+public struct ReaderContentHorizontalList<C: ReaderContentModel>: View {
+    let contents: [C]
     
-    @StateObject var viewModel = ReaderContentListViewModel()
+    @StateObject var viewModel = ReaderContentListViewModel<C>()
     
     @Environment(\.readerWebViewState) private var readerState
 
     let contentSortAscending = false
-    var contentFilter: (@RealmBackgroundActor (any ReaderContentModel) async throws -> Bool) = { @RealmBackgroundActor _ in return true }
+    var contentFilter: (@RealmBackgroundActor (C) async throws -> Bool) = { @RealmBackgroundActor _ in return true }
 //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-    var sortOrder = ReaderContentListViewModel.SortOrder.publicationDate
+    var sortOrder = ReaderContentSortOrder.publicationDate
     
     public var body: some View {
         ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
-            .task(id: contents.map { $0.compoundKey }.joined(separator: ":")) { @MainActor in
-                await Task { @RealmBackgroundActor in
-                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents), contentFilter: contentFilter, sortOrder: sortOrder)
-                }.value
+            .task { @MainActor in
+//                await Task { @RealmBackgroundActor in
+//                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
+                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+//                }.value
+            }
+            .onChange(of: contents, debounceTime: 0.1) { contents in
+                Task { @MainActor in
+                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+//                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
+                }
             }
     }
     
-    public init(contents: [any ReaderContentModel], contentFilter: ((any ReaderContentModel) async throws -> Bool)? = nil, sortOrder: ReaderContentListViewModel.SortOrder? = nil) {
+    public init(contents: [C], contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder? = nil) {
         self.contents = contents
         if let contentFilter = contentFilter {
             self.contentFilter = contentFilter
