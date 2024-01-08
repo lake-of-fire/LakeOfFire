@@ -23,7 +23,6 @@ public enum ReaderContentSortOrder {
 }
 
 public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject {
-//    @Published var filteredContents: [ReaderContentType] = []
     @Published var filteredContents: [C] = []
     var refreshSelectionTask: Task<Void, Never>?
     
