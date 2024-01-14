@@ -129,6 +129,7 @@ public class LibraryDataManager: NSObject {
     public static var realmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var currentUsername: String? = nil
 
+    private var importOPMLTask: Task<(), Error>?
     var cancellables = Set<AnyCancellable>()
     
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
@@ -140,7 +141,9 @@ public class LibraryDataManager: NSObject {
             DownloadController.shared.$finishedDownloads
                 .removeDuplicates()
                 .sink(receiveValue: { [weak self] feedDownloads in
-                    Task.detached { [weak self] in
+                    guard let self = self else { return }
+                    importOPMLTask?.cancel()
+                    importOPMLTask = Task.detached { [weak self] in
                         for download in feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") }) {
                             do {
                                 try await self?.importOPML(download: download)
@@ -321,6 +324,7 @@ public class LibraryDataManager: NSObject {
         let allImportedScriptIDs = allImportedScripts.map { $0.id }
         
         // Delete orphan scripts
+        try Task.checkCancellation()
         if let downloadURL = download?.url {
             let filteredScripts = realm.objects(UserScript.self).filter({ $0.isDeleted == false && $0.opmlURL == downloadURL })
             for script in filteredScripts {
@@ -329,10 +333,12 @@ public class LibraryDataManager: NSObject {
                         script.isDeleted = true
                     }
                 }
+                try Task.checkCancellation()
             }
         }
         
         // Add new scripts
+        try Task.checkCancellation()
         for script in allImportedScripts {
             if !configuration.userScripts.contains(where: { $0.id != script.id }) {
                 var lastNeighborIdx = configuration.userScripts.count - 1
@@ -343,9 +349,11 @@ public class LibraryDataManager: NSObject {
                     configuration.userScripts.insert(script, at: lastNeighborIdx + 1)
                 }
             }
+            try Task.checkCancellation()
         }
         
         // Move scripts
+        try Task.checkCancellation()
         var desiredScripts = allImportedScripts
         for (idx, script) in configuration.userScripts.enumerated() {
             if let downloadURL = download?.url, script.opmlURL == downloadURL, !desiredScripts.isEmpty {
@@ -356,9 +364,11 @@ public class LibraryDataManager: NSObject {
                     }
                 }
             }
+            try Task.checkCancellation()
         }
         
         // Delete orphan categories
+        try Task.checkCancellation()
         if let downloadURL = download?.url {
             let filteredCategories = realm.objects(FeedCategory.self).filter({ $0.isDeleted == false && $0.opmlURL == downloadURL })
             for category in filteredCategories {
@@ -368,9 +378,11 @@ public class LibraryDataManager: NSObject {
                     }
                 }
             }
+            try Task.checkCancellation()
         }
         
         // Delete orphan feeds
+        try Task.checkCancellation()
         if let downloadURL = download?.url {
             let filteredFeeds = realm.objects(Feed.self).filter({ $0.isDeleted == false && $0.category?.opmlURL == downloadURL })
             for feed in filteredFeeds {
@@ -380,9 +392,11 @@ public class LibraryDataManager: NSObject {
                     }
                 }
             }
+            try Task.checkCancellation()
         }
        
         // Add new categories
+        try Task.checkCancellation()
         for category in allImportedCategories {
             if !configuration.categories.map({ $0.id }).contains(category.id) {
                 var lastNeighborIdx = configuration.categories.count - 1
@@ -393,11 +407,13 @@ public class LibraryDataManager: NSObject {
                     configuration.categories.insert(category, at: lastNeighborIdx + 1)
                 }
             }
+            try Task.checkCancellation()
         }
         
         // Move categories
+        try Task.checkCancellation()
         var desiredCategories = allImportedCategories
-        for (idx, category) in configuration.categories.enumerated() {
+        for (idx, category) in Array(configuration.categories).enumerated() {
             if allImportedCategories.map({ $0.id }).contains(category.id), !desiredCategories.isEmpty {
                 let desiredCategory = desiredCategories.removeFirst()
                 if let fromIdx = configuration.categories.map({ $0.id }).firstIndex(of: desiredCategory.id), fromIdx != idx {
@@ -406,9 +422,11 @@ public class LibraryDataManager: NSObject {
                     }
                 }
             }
+            try Task.checkCancellation()
         }
         
         // De-dupe categories from library configuration (due to some bug...)
+        try Task.checkCancellation()
         var idsSeen = Set<UUID>()
         var toRemove = IndexSet()
         for (idx, category) in configuration.categories.enumerated() {
@@ -427,6 +445,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func importOPML(download: Downloadable) async throws {
+        try Task.checkCancellation()
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
     }
     
