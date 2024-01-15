@@ -48,7 +48,7 @@ struct LibraryCategoryViewContainer: View {
     @State private var viewModel: LibraryCategoryViewModel?
     
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if let viewModel = viewModel {
                 LibraryCategoryView(viewModel: viewModel)
                     .task {

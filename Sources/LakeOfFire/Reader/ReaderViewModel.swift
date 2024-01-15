@@ -503,7 +503,6 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
     doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
-    
     if isEBook {
         try doc.attr("data-is-ebook", true)
     }
@@ -531,6 +530,7 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
             try doc.body()?.select("#reader-header").prepend("<img src='\(imageURL.absoluteString)'>")
         } catch { }
     }
+    
     if let url = url {
         transformContentSpecificToFeed(doc: doc, url: url)
         do {

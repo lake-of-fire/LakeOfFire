@@ -144,7 +144,11 @@ public class LibraryDataManager: NSObject {
                     guard let self = self else { return }
                     importOPMLTask?.cancel()
                     importOPMLTask = Task.detached { [weak self] in
-                        for download in feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") }) {
+                        let newOPMLDownloads = feedDownloads.filter({
+                            $0.url.lastPathComponent.hasSuffix(".opml")
+                            && $0.finishedDownloadingAt != nil
+                        })
+                        for download in newOPMLDownloads {
                             do {
                                 try await self?.importOPML(download: download)
                             } catch {
@@ -465,7 +469,7 @@ public class LibraryDataManager: NSObject {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
                 if feed.category?.opmlURL == download?.url || feed.isDeleted {
                     try await realm.asyncWrite {
-                        Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, feed: feed, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, feed: feed, category: category)
                         importedFeeds.append(feed)
                     }
                 }
@@ -474,7 +478,7 @@ public class LibraryDataManager: NSObject {
                 if let uuid = uuid, feed.realm == nil {
                     feed.id = uuid
                     try await realm.asyncWrite {
-                        Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, feed: feed, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, feed: feed, category: category)
                         realm.add(feed, update: .modified)
                     }
                     importedFeeds.append(feed)
@@ -484,8 +488,8 @@ public class LibraryDataManager: NSObject {
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
                 if script.opmlURL == download?.url || script.isDeleted {
                     try await realm.asyncWrite {
-                        Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
-                        Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
+                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
                     importedScripts.append(script)
                 }
@@ -497,9 +501,9 @@ public class LibraryDataManager: NSObject {
                         script.opmlURL = downloadURL
                     }
                     try await realm.asyncWrite {
-                        Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
                         realm.add(script, update: .modified)
-                        Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
+                        try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
                     importedScripts.append(script)
                 }
@@ -511,7 +515,7 @@ public class LibraryDataManager: NSObject {
                     category = existingCategory
                     //                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
                     try await realm.asyncWrite {
-                        Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: existingCategory)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: existingCategory)
                     }
                     importedCategories.append(existingCategory)
                     //                        }
@@ -522,7 +526,7 @@ public class LibraryDataManager: NSObject {
                         if let downloadURL = download?.url {
                             category.opmlURL = downloadURL
                         }
-                        Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: category)
                         try await realm.asyncWrite {
                             realm.add(category, update: .modified)
                         }
@@ -543,7 +547,8 @@ public class LibraryDataManager: NSObject {
         return (importedCategories, importedFeeds, importedScripts)
     }
     
-    static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) {
+    static func applyScriptDomains(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
+        try Task.checkCancellation()
         guard let realm = script.realm else { return }
         let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
 //        script.allowedDomains.removeAll()
@@ -566,7 +571,8 @@ public class LibraryDataManager: NSObject {
         }
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, script: UserScript) {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, script: UserScript) throws {
+        try Task.checkCancellation()
         script.title = opmlEntry.text
         script.script = opmlEntry.attributeStringValue("script")?.removingPercentEncoding ?? ""
         script.injectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
@@ -581,7 +587,8 @@ public class LibraryDataManager: NSObject {
         script.modifiedAt = Date()
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, category: FeedCategory) {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, category: FeedCategory) throws {
+        try Task.checkCancellation()
         let backgroundImageURL = opmlEntry.attributeStringValue("backgroundImageUrl")
         
         let opmlTitle = opmlEntry.title ?? opmlEntry.text
@@ -595,7 +602,8 @@ public class LibraryDataManager: NSObject {
         category.modifiedAt = Date()
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, feed: Feed, category: FeedCategory?) {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, feed: Feed, category: FeedCategory?) throws {
+        try Task.checkCancellation()
         guard let feedURL = opmlEntry.feedURL else { return }
         
         var iconURL: URL?

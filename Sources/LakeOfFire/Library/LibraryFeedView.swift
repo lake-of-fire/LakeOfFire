@@ -59,6 +59,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     
     init(feed: Feed) {
         self.feed = feed
+        // TODO: only resolve this once instead of repeatedly below...
         let feedRef = ThreadSafeReference(to: feed)
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }

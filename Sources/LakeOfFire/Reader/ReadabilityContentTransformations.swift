@@ -234,8 +234,8 @@ private func slowCommunication(doc: Document) throws {
     guard let pageElement = try doc.getElementsByClass("reader-content").first()?.getElementsByClass("page").first() else { return }
     
     // Remove date and tag which get interpreted as an article paragraph.
-    guard let dateAndTagElement = try pageElement.getElementsByTag("p").first() else { return }
-    try dateAndTagElement.remove()
+//    guard let dateAndTagElement = try pageElement.getElementsByTag("p").first() else { return }
+//    try dateAndTagElement.remove()
     
     // Remove the inline audio.
     if let inlineAudioElement = try pageElement.getElementsByTag("article").first()?.getElementsByTag("audio").first() {
@@ -244,7 +244,7 @@ private func slowCommunication(doc: Document) throws {
     
     // Remove the audio credit, which is confusing in our UI.
     for p in try doc.getElementsByTag("p") {
-        if try p.text().hasPrefix("(音声：") {
+        if try p.text().hasPrefix("(音声") {
             try p.remove()
             break
         }
