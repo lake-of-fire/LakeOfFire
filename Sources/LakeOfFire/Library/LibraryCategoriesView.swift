@@ -124,9 +124,13 @@ struct LibraryCategoriesView: View {
     
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
-    @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
+    @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { !$0.isDeleted && !$0.isArchived }) private var categories
     private var archivedCategories: [FeedCategory] {
-        Array(categories.filter({ $0.isArchived || !(viewModel.libraryConfiguration?.categories.contains($0) ?? false) }))
+        Array(categories.filter({ category in
+            category.isArchived
+            || !(viewModel.libraryConfiguration?.categories.contains(where: { installedCategory in
+                installedCategory.id == category.id
+            }) ?? false) }))
     }
     
 #if os(macOS)

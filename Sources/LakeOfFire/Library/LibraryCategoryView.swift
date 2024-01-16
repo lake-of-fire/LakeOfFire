@@ -216,10 +216,12 @@ struct LibraryCategoryView: View {
                 if let opmlURL = viewModel.category.opmlURL {
                     Section("Synchronized") {
                         if LibraryConfiguration.opmlURLs.contains(opmlURL) {
-                            Text("Manabi Reader manages and actively improves this category for you.")
+                            Text("This category is not user-editable. Manabi Reader manages and actively improves this category for you.")
+                                .lineLimit(9001)
                                 .fixedSize(horizontal: false, vertical: true)
                         } else {
                             Text("Synchronized with: \(opmlURL.absoluteString)")
+                                .lineLimit(9001)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }

@@ -259,10 +259,12 @@ struct LibraryScriptFormSections: View {
         if let opmlURL = script.opmlURL {
             Section("Synchronization") {
                 if LibraryConfiguration.opmlURLs.contains(opmlURL) {
-                    Text("Manabi Reader manages and actively improves this user script for you.")
+                    Text("This script is not user-editable. Manabi Reader manages and actively improves this user script for you.")
+                        .lineLimit(9001)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text("Synchronized with: \(opmlURL.absoluteString)")
+                        .lineLimit(9001)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

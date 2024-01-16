@@ -60,11 +60,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     init(feed: Feed) {
         self.feed = feed
         // TODO: only resolve this once instead of repeatedly below...
-        let feedRef = ThreadSafeReference(to: feed)
+        let feedID = feed.id
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
-            guard let feed = realm.resolve(feedRef) else { return }
+            guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             objectNotificationToken = feed
                 .observe { [weak self] change in
                     switch change {
@@ -79,14 +79,19 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             await refresh()
         }
         
+        func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
+            Task.detached { @RealmBackgroundActor in
+                guard let realm = try? await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared), let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                block(feed)
+            }
+        }
+        
         $feedTitle
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedTitle in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.title = feedTitle
-                    }
+                writeFeedAsync { feed in
+                    feed.title = feedTitle
                 }
             }
             .store(in: &cancellables)
@@ -94,20 +99,16 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedDescription in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.markdownDescription = feedDescription
-                    }
+                writeFeedAsync { feed in
+                    feed.markdownDescription = feedDescription
                 }
             }
             .store(in: &cancellables)
         $feedEnabled
             .removeDuplicates()
             .sink { feedEnabled in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.isArchived = !feedEnabled
-                    }
+                writeFeedAsync { feed in
+                    feed.isArchived = !feedEnabled
                 }
             }
             .store(in: &cancellables)
@@ -115,13 +116,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedURL in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        if feedURL.isEmpty {
-                            feed.rssUrl = URL(string: "about:blank")!
-                        } else if let url = URL(string: feedURL) {
-                            feed.rssUrl = url
-                        }
+                writeFeedAsync { feed in
+                    if feedURL.isEmpty {
+                        feed.rssUrl = URL(string: "about:blank")!
+                    } else if let url = URL(string: feedURL) {
+                        feed.rssUrl = url
                     }
                 }
             }
@@ -130,13 +129,11 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedIconURL in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        if feedIconURL.isEmpty {
-                            feed.iconUrl = URL(string: "about:blank")!
-                        } else if let url = URL(string: feedIconURL) {
-                            feed.iconUrl = url
-                        }
+                writeFeedAsync { feed in
+                    if feedIconURL.isEmpty {
+                        feed.iconUrl = URL(string: "about:blank")!
+                    } else if let url = URL(string: feedIconURL) {
+                        feed.iconUrl = url
                     }
                 }
             }
@@ -144,50 +141,40 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         $feedIsReaderModeByDefault
             .removeDuplicates()
             .sink { feedIsReaderModeByDefault in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.isReaderModeByDefault = feedIsReaderModeByDefault
-                    }
+                writeFeedAsync { feed in
+                    feed.isReaderModeByDefault = feedIsReaderModeByDefault
                 }
             }
             .store(in: &cancellables)
         $feedInjectEntryImageIntoHeader
             .removeDuplicates()
             .sink { feedInjectEntryImageIntoHeader in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
-                    }
+                writeFeedAsync { feed in
+                    feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
                 }
             }
             .store(in: &cancellables)
         $feedExtractImageFromContent
             .removeDuplicates()
             .sink { feedExtractImageFromContent in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.extractImageFromContent = feedExtractImageFromContent
-                    }
+                writeFeedAsync { feed in
+                    feed.extractImageFromContent = feedExtractImageFromContent
                 }
             }
             .store(in: &cancellables)
         $feedRssContainsFullContent
             .removeDuplicates()
             .sink { feedRssContainsFullContent in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.rssContainsFullContent = feedRssContainsFullContent
-                    }
+                writeFeedAsync { feed in
+                    feed.rssContainsFullContent = feedRssContainsFullContent
                 }
             }
             .store(in: &cancellables)
         $feedDisplayPublicationDate
             .removeDuplicates()
             .sink { feedDisplayPublicationDate in
-                Task.detached {
-                    try await Realm.asyncWrite(feedRef, configuration: LibraryDataManager.realmConfiguration) { _, feed in
-                        feed.displayPublicationDate = feedDisplayPublicationDate
-                    }
+                writeFeedAsync { feed in
+                    feed.displayPublicationDate = feedDisplayPublicationDate
                 }
             }
             .store(in: &cancellables)

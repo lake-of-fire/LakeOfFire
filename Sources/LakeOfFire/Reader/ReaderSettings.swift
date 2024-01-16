@@ -29,17 +29,15 @@ struct ReaderSettingsForm: View {
     var body: some View {
         Form {
             Section("Display") {
-                Group {
-                    Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
-                    Picker("Light Mode Theme", selection: $lightModeTheme) {
-                        ForEach(LightModeTheme.allCases) { theme in
-                            Text(theme.rawValue.capitalized).tag(theme)
-                        }
+                Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
+                Picker("Light Mode Theme", selection: $lightModeTheme) {
+                    ForEach(LightModeTheme.allCases) { theme in
+                        Text(theme.rawValue.capitalized).tag(theme)
                     }
-                    Picker("Dark Mode Theme", selection: $darkModeTheme) {
-                        ForEach(DarkModeTheme.allCases) { theme in
-                            Text(theme.rawValue.capitalized).tag(theme)
-                        }
+                }
+                Picker("Dark Mode Theme", selection: $darkModeTheme) {
+                    ForEach(DarkModeTheme.allCases) { theme in
+                        Text(theme.rawValue.capitalized).tag(theme)
                     }
                 }
             }
@@ -68,7 +66,7 @@ public struct DataSettingsForm: View {
                                 await DownloadController.shared.download(downloadable)
                             }
                         })
-                        .padding(.vertical, 4)
+                        .padding(5)
                         Divider()
                     }
                 }
