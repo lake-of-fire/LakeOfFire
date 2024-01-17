@@ -84,6 +84,14 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return scripts
     }
     
+    public static func get() throws -> LibraryConfiguration? {
+        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
+        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
+            return configuration
+        }
+        return nil
+    }
+    
     @RealmBackgroundActor
     public static func get() async throws -> LibraryConfiguration? {
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
