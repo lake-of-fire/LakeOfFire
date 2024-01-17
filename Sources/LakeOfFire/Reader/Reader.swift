@@ -10,15 +10,8 @@ import SwiftUIDownloads
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
-struct ReaderContentKey: EnvironmentKey {
-    static let defaultValue: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
-}
 
 public extension EnvironmentValues {
-    var readerContent: (any ReaderContentModel) {
-        get { self[ReaderContentKey.self] }
-        set { self[ReaderContentKey.self] = newValue }
-    }
     var readerWebViewState: WebViewState {
         get { self[ReaderWebViewStateKey.self] }
         set { self[ReaderWebViewStateKey.self] = newValue }

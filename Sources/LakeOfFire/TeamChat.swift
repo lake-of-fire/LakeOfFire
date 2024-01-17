@@ -5,8 +5,17 @@ public struct TeamChatLink: View {
     public let url: URL
     public var teamName = ""
     
+    @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
+    @Environment(\.openURL) private var openURL
+    
     public var body: some View {
-        Link(destination: url) { Label("Chat With Team\(teamName.isEmpty ? "" : " \(teamName)")", systemImage: "message") }
+//        Link(destination: url) { Label("Chat With Team\(teamName.isEmpty ? "" : " \(teamName)")", systemImage: "message") }
+        Button {
+            openURL(url)
+        } label: {
+            Label("Chat With Team\(teamName.isEmpty ? "" : " \(teamName)")", systemImage: "message")
+        }
+        .buttonStyle(.borderless)
     }
     
     public init(url: URL, teamName: String = "") {
@@ -27,6 +36,7 @@ public struct TeamChatButton: View {
         } label: {
             Label("Chat With Team\(teamName.isEmpty ? "" : " \(teamName)")", systemImage: "message")
         }
+        .buttonStyle(.borderless)
     }
     
     public init(teamName: String = "") {
