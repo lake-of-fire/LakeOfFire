@@ -147,16 +147,13 @@ public extension ReaderContentModel {
 }
 
 public struct CurrentWebViewBookmarkButton: View {
-    var readerContent: (any ReaderContentModel)
-    var readerWebViewState: WebViewState
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @Environment(\.readerWebViewState) private var readerWebViewState
     
     public var body: some View {
-        AnyView(readerContent.bookmarkButtonView)
+        AnyView(readerViewModel.content.bookmarkButtonView)
             .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
     }
     
-    public init(readerContent: (any ReaderContentModel), readerState: WebViewState) {
-        self.readerContent = readerContent
-        self.readerWebViewState = readerState
-    }
+    public init() { }
 }

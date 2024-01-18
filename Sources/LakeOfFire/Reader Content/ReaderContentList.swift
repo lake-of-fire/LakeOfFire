@@ -81,29 +81,29 @@ fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
 #if os(macOS)
             ScrollView {
                 LazyVStack {
-                    ForEach(viewModel.filteredContents, id: \.compoundKey)  { (feedEntry: C) in
+                    ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
                         Toggle(isOn: Binding<Bool>(
                             get: {
                                 //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                                readerState.matches(content: feedEntry)
+                                readerState.matches(content: content)
                             },
                             set: {
-                                entrySelection = $0 ? feedEntry.compoundKey : nil
+                                entrySelection = $0 ? content.compoundKey : nil
                             }
                         ), label: {
-                            AnyView(feedEntry.readerContentCellView(showThumbnails: showThumbnails))
+                            ReaderContentCell(item: content, showThumbnails: showThumbnails)
                                 .background(Color.white.opacity(0.00000001)) // Clickability
                         })
                         .toggleStyle(ListItemToggleStyle())
                         //                    .buttonStyle(.borderless)
                         //                    .id(feedEntry.compoundKey)
                         .contextMenu {
-                            if let entry = feedEntry as? (any DeletableReaderContent) {
+                            if let content = content as? (any DeletableReaderContent) {
                                 Button(role: .destructive) {
-                                    confirmDeletionOf = entry
+                                    confirmDeletionOf = content
                                     confirmDelete = true
                                 } label: {
-                                    Label(entry.deleteActionTitle, image: "trash")
+                                    Label(content.deleteActionTitle, image: "trash")
                                 }
                             }
                         }
@@ -112,30 +112,39 @@ fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
                 }
             }
 #else
-            List(viewModel.filteredContents, id: \.compoundKey, selection: $entrySelection) { content in
-                Group {
-                    if #available(iOS 16.0, *) {
-                        cellView(content)
-                    } else {
-                        Button {
-                            entrySelection = content.compoundKey
-                        } label: {
-                            AnyView(content.readerContentCellView(showThumbnails: showThumbnails))
-                                .multilineTextAlignment(.leading)
-                            //                        .id(content.compoundKey)
+            List(selection: $entrySelection) {
+                ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
+                    Group {
+                        if #available(iOS 16.0, *) {
+                            ReaderContentCell(item: content, showThumbnails: showThumbnails)
+                        } else {
+                            Button {
+                                entrySelection = content.compoundKey
+                            } label: {
+                                ReaderContentCell(item: content, showThumbnails: showThumbnails)
+                                    .multilineTextAlignment(.leading)
+                                //                        .id(content.compoundKey)
+                            }
+                            .buttonStyle(.borderless)
+                            .tint(.primary)
+                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderless)
-                        .tint(.primary)
-                        .frame(maxWidth: .infinity)
+                        //                .headerProminence(.increased)
                     }
-                    //                .headerProminence(.increased)
-                }
-                .deleteDisabled((content as? any DeletableReaderContent) == nil)
-                .onDelete {
-                    confirmDeletionOf = content as? any DeletableReaderContent
-                    if confirmDeletionOf != nil {
-                        confirmDelete = true
+                    .deleteDisabled((content as? any DeletableReaderContent) == nil)
+                    .swipeActions {
+                        if let content = content as? any DeletableReaderContent {
+                            Button {
+                                confirmDeletionOf = content
+                                if confirmDeletionOf != nil {
+                                    confirmDelete = true
+                                }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
+                    .tint(.red)
                 }
             }
             .listStyle(.plain)

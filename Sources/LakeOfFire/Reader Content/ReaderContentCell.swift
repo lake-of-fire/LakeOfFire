@@ -40,10 +40,11 @@ extension ReaderContentModel {
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     var showThumbnails = true
-    @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 140
-    @ScaledMetric(relativeTo: .headline) var cellHeight: CGFloat = 90
     
-    @StateObject var viewModel = ReaderContentCellViewModel<C>()
+    @ScaledMetric(relativeTo: .headline) private var scaledImageWidth: CGFloat = 140
+    @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 90
+    
+    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
