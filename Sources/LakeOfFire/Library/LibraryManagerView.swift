@@ -103,22 +103,6 @@ public struct LibraryManagerView: View {
 #if os(macOS)
             .navigationSplitViewColumnWidth(min: 200, ideal: 210, max: 300)
 #endif
-#if os(iOS)
-            .toolbar {
-                if horizontalSizeClass == .compact {
-                    ToolbarItem(placement: .confirmationAction) {
-                        HStack(spacing: 12) {
-                            Button {
-                                isPresented = false
-                            } label: {
-                                Text("Done")
-                                    .bold()
-                            }
-                        }
-                    }
-                }
-            }
-#endif
         }, detail: {
             Group {
                 if let feed = viewModel.selectedFeed {

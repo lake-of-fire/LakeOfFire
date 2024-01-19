@@ -62,11 +62,15 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     public var downloadables: Set<Downloadable> {
         guard !Self.securityApplicationGroupIdentifier.isEmpty else { fatalError("securityApplicationGroupIdentifier unset") }
         return Set(Self.opmlURLs.compactMap { url in
-            Downloadable(
-                name: "App Data (\(url.lastPathComponent))",
-                groupIdentifier: Self.securityApplicationGroupIdentifier,
-                parentDirectoryName: Self.downloadstDirectoryName,
-                downloadMirrors: [url])
+            if let downloadable = DownloadController.shared.assuredDownloads.first(where: { $0.url == url }) {
+                return downloadable
+            } else {
+                return Downloadable(
+                    name: "App Data (\(url.lastPathComponent))",
+                    groupIdentifier: Self.securityApplicationGroupIdentifier,
+                    parentDirectoryName: Self.downloadstDirectoryName,
+                    downloadMirrors: [url])
+            }
         })
     }
     
@@ -145,28 +149,25 @@ public class LibraryDataManager: NSObject {
     public override init() {
         super.init()
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
-//        Task { @MainActor in
-            DownloadController.shared.$finishedDownloads
-                .removeDuplicates()
-                .sink(receiveValue: { [weak self] feedDownloads in
-                    guard let self = self else { return }
-                    importOPMLTask?.cancel()
-                    importOPMLTask = Task.detached { [weak self] in
-                        let newOPMLDownloads = feedDownloads.filter({
-                            $0.url.lastPathComponent.hasSuffix(".opml")
-                            && $0.finishedDownloadingAt != nil
-                        })
-                        for download in newOPMLDownloads {
-                            do {
-                                try await self?.importOPML(download: download)
-                            } catch {
-                                print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
-                            }
+        DownloadController.shared.$finishedDownloads
+            .sink(receiveValue: { [weak self] feedDownloads in
+                guard let self = self else { return }
+                importOPMLTask?.cancel()
+                importOPMLTask = Task.detached { [weak self] in
+                    let newOPMLDownloads = feedDownloads.filter({
+                        $0.url.lastPathComponent.hasSuffix(".opml")
+                        && $0.finishedDownloadingDuringCurrentLaunchAt != nil
+                    })
+                    for download in newOPMLDownloads {
+                        do {
+                            try await self?.importOPML(download: download)
+                        } catch {
+                            print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
                         }
                     }
-                })
-                .store(in: &cancellables)
-//        }
+                }
+            })
+            .store(in: &cancellables)
 
 //        DownloadController.shared.finishedDownloads.publisher
 //            .print("FOOBAR ")
