@@ -37,7 +37,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/drewmccormack/SwiftCloudDrive.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/DSFStepperView.git", branch: "main"),
+        .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
     ],
     targets: [
