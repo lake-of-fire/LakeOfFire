@@ -535,7 +535,7 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
         try doc.attr("data-is-ebook", true)
     }
     
-    if let htmlTag = try? doc.select("html") {
+    if let htmlTag = try? doc.getElementsByTag("html").first() {
         var htmlStyle = "font-size: \(fontSize)px"
         if let existingHtmlStyle = try? htmlTag.attr("style"), !existingHtmlStyle.isEmpty {
             htmlStyle = "\(htmlStyle); \(existingHtmlStyle)"
@@ -543,10 +543,10 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
         _ = try? htmlTag.attr("style", htmlStyle)
     }
     
-    if let defaultTitle = defaultTitle, let existing = try? doc.select("#reader-title"), !existing.hasText() {
+    if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
         let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
         do {
-            try doc.body()?.select("#reader-title").html(escapedTitle)
+            try existing.html(escapedTitle)
         } catch { }
     }
     do {
@@ -555,7 +555,7 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
     
     if injectEntryImageIntoHeader, let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
         do {
-            try doc.body()?.select("#reader-header").prepend("<img src='\(imageURL.absoluteString)'>")
+            try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
         } catch { }
     }
     

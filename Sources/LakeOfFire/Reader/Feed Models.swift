@@ -256,7 +256,7 @@ fileprivate extension FeedEntry {
         do {
             let threshold: Float = 0.3
             
-            let imageElements: [Element] = try Array(doc.select("img"))
+            let imageElements: [Element] = try Array(doc.getElementsByTag("img"))
             let filteredImageElements: [Element] = imageElements.filter({ (imageTag: Element) -> Bool in
                 if let src: String = try? imageTag.attr("src"), src.contains("doubleclick.net") {
                     return false
