@@ -114,6 +114,9 @@ public extension String {
 extension String {
     // From: https://stackoverflow.com/a/50798549/89373
     public func removingHTMLTags() -> String? {
+        if !contains("<") {
+            return self
+        }
         return replacingOccurrences(of: "<[^>]+>", with: "", options: String.CompareOptions.regularExpression, range: nil)
     }
 }
@@ -167,23 +170,14 @@ public extension ReaderContentModel {
     @MainActor
     var titleForDisplay: String {
         get {
-            if !title.isEmpty {
-                return title.removingHTMLTags() ?? title
+            var title = title.removingHTMLTags() ?? title
+            if title.isEmpty {
+                title = "Untitled"
             }
-            
-            guard let htmlData = html?.data(using: .utf8) else { return "" }
-            let attributedStringContent: NSAttributedString
-            do {
-                attributedStringContent = try NSAttributedString(data: htmlData, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil)
-            } catch {
-                print("Unexpected error:", error)
-                return ""
-            }
-            var titleForDisplay = "\((attributedStringContent.string.components(separatedBy: "\n").first ?? attributedStringContent.string).truncate(36, trailing: "…"))"
             if isFromClipboard {
-                titleForDisplay = "📎 " + titleForDisplay
+                return "📎 " + title
             }
-            return titleForDisplay
+            return title
         }
     }
     

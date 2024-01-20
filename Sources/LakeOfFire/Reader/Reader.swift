@@ -28,7 +28,7 @@ public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
     func load(content: any ReaderContentModel, readerFileManager: ReaderFileManager) async {
-        if !content.url.isReaderFileURL, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
+        if !content.url.isReaderFileURL, content.isReaderModeByDefault, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
             guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
             Task { @MainActor in
                 load(URLRequest(url: historyURL))
@@ -141,12 +141,9 @@ public struct Reader: View {
                                 await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
                             }
                             
-                            try await content.asyncWrite { _, content in
-                                content.isReaderModeAvailable = true
-#warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
-                                if !content.url.isEBookURL && !content.url.isFileURL && !content.rssContainsFullContent {
-                                    content.html = result.content
-                                    content.rssContainsFullContent = true
+                            if !content.isReaderModeAvailable {
+                                try await content.asyncWrite { _, content in
+                                    content.isReaderModeAvailable = true
                                 }
                             }
                         }.value
@@ -183,16 +180,8 @@ public struct Reader: View {
                     "titleUpdated": { message in
                         Task { @MainActor in
                             guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
-                            guard let url = result.url, !url.isNativeReaderView, let content = try await readerViewModel.getContent(forURL: url) else { return }
-                            guard result.url == readerViewModel.state.pageURL && result.url == content.url else { return }
-                            let newTitle = fixAnnoyingTitlesWithPipes(title: result.newTitle)
-                            // Only update if empty... sometimes annoying titles load later.
-                            if content.titleForDisplay.isEmpty && content.title.isEmpty, !newTitle.isEmpty {
-                                try await content.asyncWrite { _, content in
-                                    content.title = newTitle
-                                }
-                                readerViewModel.refreshTitleInWebView(content: content)
-                            }
+                            guard result.url == readerViewModel.state.pageURL else { return }
+                            try await readerViewModel.pageTitleUpdated(title: result.newTitle)
                         }
                     },
                     "imageUpdated": { message in
@@ -246,6 +235,11 @@ public struct Reader: View {
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
+            .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
+                Task { @MainActor in
+                    try await readerViewModel.pageTitleUpdated(title: pageTitle)
+                }
+            }
             .onChange(of: readerFontSize) { readerFontSize in
                 guard let readerFontSize = readerFontSize else { return }
                 Task { @MainActor in

@@ -142,9 +142,20 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     /// Content before it has been treated with Reader-specific processing.
+    @MainActor
     private func showReadabilityContent(content: (any ReaderContentModel), readabilityContent: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
+            if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
+#warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
+                if !content.url.isReaderFileURL && (content.content?.isEmpty ?? true) {
+                    content.html = readabilityContent
+                }
+                if content.title.isEmpty {
+                    content.title = content.html?.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first?.truncate(36) ?? ""
+                }
+                content.rssContainsFullContent = true
+            }
         }
         
         let injectEntryImageIntoHeader = self.content.injectEntryImageIntoHeader
@@ -172,45 +183,46 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 guard let self = self else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     await scriptCaller.evaluateJavaScript(
-                                """
-                                var root = document.body
-                                if (renderToSelector) {
-                                    root = document.querySelector(renderToSelector)
-                                }
-                                var serialized = html
-                                
-                                let xmlns = document.documentElement.getAttribute('xmlns')
-                                if (xmlns) {
-                                    let parser = new DOMParser()
-                                    let doc = parser.parseFromString(serialized, 'text/html')
-                                    let readabilityNode = doc.body
-                                    let replacementNode = root.cloneNode()
-                                    replacementNode.innerHTML = ''
-                                    for (let innerNode of readabilityNode.childNodes) {
-                                        serialized = new XMLSerializer().serializeToString(innerNode)
-                                        replacementNode.innerHTML += serialized
-                                    }
-                                    root.innerHTML = replacementNode.innerHTML
-                                } else if (root) {
-                                    root.outerHTML = serialized
-                                }
-                                
-                                let style = document.createElement('style')
-                                style.textContent = css
-                                document.head.appendChild(style)
-                                document.body.classList.add('readability-mode')
-                                """,
-                                arguments: [
-                                    "renderToSelector": renderToSelector ?? "",
-                                    "html": transformedContent,
-                                    "css": Readability.shared.css,
-                                ], in: frameInfo)
+                        """
+                        var root = document.body
+                        if (renderToSelector) {
+                            root = document.querySelector(renderToSelector)
+                        }
+                        var serialized = html
+                        
+                        let xmlns = document.documentElement.getAttribute('xmlns')
+                        if (xmlns) {
+                            let parser = new DOMParser()
+                            let doc = parser.parseFromString(serialized, 'text/html')
+                            let readabilityNode = doc.body
+                            let replacementNode = root.cloneNode()
+                            replacementNode.innerHTML = ''
+                            for (let innerNode of readabilityNode.childNodes) {
+                                serialized = new XMLSerializer().serializeToString(innerNode)
+                                replacementNode.innerHTML += serialized
+                            }
+                            root.innerHTML = replacementNode.innerHTML
+                        } else if (root) {
+                            root.outerHTML = serialized
+                        }
+                        
+                        let style = document.createElement('style')
+                        style.textContent = css
+                        document.head.appendChild(style)
+                        document.documentElement.classList.add('readability-mode')
+                        """,
+                        arguments: [
+                            "renderToSelector": renderToSelector ?? "",
+                            "html": transformedContent,
+                            "css": Readability.shared.css,
+                        ], in: frameInfo)
                 } else {
                     navigator.loadHTML(transformedContent, baseURL: url)
                 }
             }.value
         }.value
     }
+    
     @RealmBackgroundActor
     private func updateScripts() async throws {
         let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
@@ -482,9 +494,25 @@ public class ReaderViewModel: NSObject, ObservableObject {
     func refreshTitleInWebView(content: (any ReaderContentModel), newState: WebViewState? = nil) {
         // TODO: consolidate code duplication
         let state = newState ?? state
-        if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
-            scriptCaller.evaluateJavaScript("(function() { let title = DOMPurify.sanitize(`\(content.titleForDisplay)`); if (document.title != title) { document.title = title } })()")
+        if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
+                scriptCaller.evaluateJavaScript("(function() { if (document.documentElement.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
+            }
         }
+    }
+    
+    @MainActor
+    func pageTitleUpdated(title: String?) async throws {
+        guard !state.pageURL.isNativeReaderView, !state.pageURL.isEBookURL, let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty, let content = try await getContent(forURL: state.pageURL) else { return }
+        let newTitle = fixAnnoyingTitlesWithPipes(title: title)
+        // Only update if empty... sometimes annoying titles load later after first page load. Could be smarter though.
+        if content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !newTitle.isEmpty {
+            try await content.asyncWrite { _, content in
+                content.title = newTitle
+            }
+            refreshTitleInWebView(content: content)
+        }
+
     }
     
     @MainActor

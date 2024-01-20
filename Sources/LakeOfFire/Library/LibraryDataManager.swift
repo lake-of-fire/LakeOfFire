@@ -45,8 +45,8 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return [
             Readability().userScript,
 //            ManabiReaderUserScript().userScript,
-            YoutubeAdBlockUserScript.userScript,
-            YoutubeAdSkipUserScript.userScript,
+//            YoutubeAdBlockUserScript.userScript,
+//            YoutubeAdSkipUserScript.userScript,
             //            YoutubeCaptionsUserScript.userScript,
         ]
     }()
@@ -578,6 +578,7 @@ public class LibraryDataManager: NSObject {
                 script.allowedDomains.append(newDomain)
             }
         }
+        // TODO: Clean up orphan domain objects that appear due to some bug...
     }
     
     static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, script: UserScript) throws {
