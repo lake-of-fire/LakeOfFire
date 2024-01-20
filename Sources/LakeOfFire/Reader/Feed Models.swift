@@ -278,7 +278,7 @@ fileprivate extension FeedEntry {
             
             // Match images without width or height specified if we can't find an ideal image before.
             if imageUrlOptional == nil {
-                imageUrlOptional = try doc.select("img").filter({ imageTag -> Bool in
+                imageUrlOptional = try doc.getElementsByTag("img").filter({ imageTag -> Bool in
                     if let src = try? imageTag.attr("src"), src.contains("doubleclick.net") {
                         return false
                     }
@@ -294,7 +294,7 @@ fileprivate extension FeedEntry {
             
             // Match YouTube links for thumbnails.
             if imageUrlOptional == nil {
-                imageUrlOptional = try doc.select("iframe").compactMap({ iframeTag -> String? in
+                imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
                     if let src = try? iframeTag.attr("src"), src.hasPrefix("https://www.youtube.com"), let youtubeId = src.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }

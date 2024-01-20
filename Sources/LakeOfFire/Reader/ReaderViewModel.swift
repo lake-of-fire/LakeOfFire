@@ -503,10 +503,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     func pageTitleUpdated(title: String?) async throws {
-        guard !state.pageURL.isNativeReaderView, !state.pageURL.isEBookURL, let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty, let content = try await getContent(forURL: state.pageURL) else { return }
+        guard !state.pageURL.isNativeReaderView, !state.pageURL.isEBookURL, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty, let content = try await getContent(forURL: state.pageURL) else { return }
         let newTitle = fixAnnoyingTitlesWithPipes(title: title)
         // Only update if empty... sometimes annoying titles load later after first page load. Could be smarter though.
-        if content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !newTitle.isEmpty {
+        if content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !newTitle.isEmpty {
             try await content.asyncWrite { _, content in
                 content.title = newTitle
             }
