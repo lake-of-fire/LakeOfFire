@@ -131,8 +131,8 @@ class LibraryCategoryViewModel: ObservableObject {
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoryView: View {
-    @ObservedObject var viewModel: LibraryCategoryViewModel
-    @StateObject var libraryManagerViewModel = LibraryManagerViewModel.shared
+    @EnvironmentObject private var viewModel: LibraryCategoryViewModel
+    @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
     
 #if os(iOS)
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 50

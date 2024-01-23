@@ -21,7 +21,6 @@ struct UserScriptAllowedDomainCell: View {
     }
 }
 
-
 @available(iOS 16.0, macOS 13, *)
 struct LibraryScriptForm: View {
     let script: UserScript
@@ -45,15 +44,16 @@ struct LibraryCategoryViewContainer: View {
     let libraryConfiguration: LibraryConfiguration
     @Binding var selectedFeed: Feed?
     
-    @State private var viewModel: LibraryCategoryViewModel?
+    @State private var libraryCategoryViewModel: LibraryCategoryViewModel?
     
     var body: some View {
         VStack(spacing: 0) {
-            if let viewModel = viewModel {
-                LibraryCategoryView(viewModel: viewModel)
+            if let libraryCategoryViewModel = libraryCategoryViewModel {
+                LibraryCategoryView()
+                    .environmentObject(libraryCategoryViewModel)
                     .task {
-                        if let feed = viewModel.selectedFeed, feed.category != category {
-                            viewModel.selectedFeed = nil
+                        if let feed = libraryCategoryViewModel.selectedFeed, feed.category != category {
+                            libraryCategoryViewModel.selectedFeed = nil
                         }
                         //                        let feedsToDeselect = viewModel.selectedFeed.filter { $0.category != category }
                         //                        feedsToDeselect.forEach {
@@ -63,15 +63,14 @@ struct LibraryCategoryViewContainer: View {
             }
         }
         .task { @MainActor in
-            viewModel = LibraryCategoryViewModel(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $selectedFeed)
+            libraryCategoryViewModel = LibraryCategoryViewModel(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $selectedFeed)
         }
     }
 }
 
 @available(iOS 16.0, macOS 13.0, *)
 public struct LibraryManagerView: View {
-    @Binding var isPresented: Bool
-    @ObservedObject var viewModel: LibraryManagerViewModel
+    @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
     @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
     @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var feeds
@@ -88,7 +87,7 @@ public struct LibraryManagerView: View {
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
             NavigationStack(path: $viewModel.navigationPath) {
-                LibraryCategoriesView(libraryManagerViewModel: viewModel)
+                LibraryCategoriesView()
                     .navigationDestination(for: FeedCategory.self) { category in
                         if let libraryConfiguration = viewModel.libraryConfiguration {
                             LibraryCategoryViewContainer(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $viewModel.selectedFeed)
@@ -146,7 +145,7 @@ public struct LibraryManagerView: View {
 #if os(iOS)
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
-                        isPresented = false
+                        viewModel.isLibraryPresented = false
                     } label: {
                         Text("Done")
                             .bold()
@@ -156,7 +155,6 @@ public struct LibraryManagerView: View {
             }
         })
         .navigationSplitViewStyle(.balanced)
-        .environmentObject(viewModel)
         .onChange(of: viewModel.selectedFeed) { feed in
             Task { @MainActor in
                 if feed != nil {
@@ -173,8 +171,6 @@ public struct LibraryManagerView: View {
         }
     }
     
-    public init(isPresented: Binding<Bool>, viewModel: LibraryManagerViewModel = LibraryManagerViewModel.shared) {
-        _isPresented = isPresented
-        self.viewModel = viewModel
+    public init() {
     }
 }

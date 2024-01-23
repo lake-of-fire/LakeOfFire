@@ -31,10 +31,38 @@ public enum LibraryRoute: Hashable, Codable {
 //        return result
 //    }
 //}
+struct LibraryManagerViewModelEnvironmentModifier: ViewModifier {
+    @available(iOS 16, macOS 13, *)
+    struct ActiveLibraryManagerViewModelEnvironmentModifier: ViewModifier {
+        @ObservedObject private var libraryViewModel = LibraryManagerViewModel.shared
+        
+        func body(content: Content) -> some View {
+            content
+                .environmentObject(libraryViewModel)
+        }
+    }
+    
+    func body(content: Content) -> some View {
+        if #available(iOS 16, macOS 13, *) {
+            content
+                .modifier(ActiveLibraryManagerViewModelEnvironmentModifier())
+        } else {
+            content
+        }
+    }
+}
+
+public extension View {
+    func libraryManagerViewModelEnvironment() -> some View {
+        modifier(LibraryManagerViewModelEnvironmentModifier())
+    }
+}
 
 @available(iOS 16.0, macOS 13.0, *)
 public class LibraryManagerViewModel: NSObject, ObservableObject {
     public static let shared = LibraryManagerViewModel()
+    
+    @Published public var isLibraryPresented = false
     
     @Published var exportedOPML: OPML?
     @Published var exportedOPMLFileURL: URL?

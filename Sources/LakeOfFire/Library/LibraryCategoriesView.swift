@@ -118,9 +118,8 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoriesView: View {
-    @ObservedObject var libraryManagerViewModel: LibraryManagerViewModel
-    
     @StateObject private var viewModel = LibraryCategoriesViewModel()
+    @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
     
     @AppStorage("appTint") private var appTint: Color = .accentColor
     

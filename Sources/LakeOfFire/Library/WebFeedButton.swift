@@ -55,8 +55,8 @@ struct WebFeedMenuAddButtons: View {
     @ObservedObject private var viewModel: WebFeedButtonViewModel
     let url: URL
     let title: String
-    @Binding var isLibraryPresented: Bool
-    @ObservedObject var libraryViewModel: LibraryManagerViewModel
+    
+    @EnvironmentObject private var libraryViewModel: LibraryManagerViewModel
     
     @Environment(\.openWindow) var openWindow
     
@@ -69,7 +69,7 @@ struct WebFeedMenuAddButtons: View {
 #if os(macOS)
                         openWindow(id: "user-library")
 #else
-                        isLibraryPresented = true
+                        libraryViewModel.isLibraryPresented = true
 #endif
                     }
                 }
@@ -81,25 +81,23 @@ struct WebFeedMenuAddButtons: View {
 #if os(macOS)
                     openWindow(id: "user-library")
 #else
-                    isLibraryPresented = true
+                    libraryViewModel.isLibraryPresented = true
 #endif
                 }
             }
         }
     }
     
-    init(viewModel: WebFeedButtonViewModel, url: URL, title: String, isLibraryPresented: Binding<Bool>, libraryViewModel: LibraryManagerViewModel) {
+    init(viewModel: WebFeedButtonViewModel, url: URL, title: String) {
         self.viewModel = viewModel
         self.url = url
         self.title = title
-        _isLibraryPresented = isLibraryPresented
-        self.libraryViewModel = libraryViewModel
     }
 }
 
 @available(iOS 16.0, macOS 13.0, *)
 public struct WebFeedButton<C: ReaderContentModel>: View {
-    var readerContent: C
+    @ObservedObject var readerContent: C
     
     @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
     @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) var feeds
@@ -107,10 +105,10 @@ public struct WebFeedButton<C: ReaderContentModel>: View {
     @State private var feed: Feed?
     @State private var isLibraryPresented = false
     
+    @EnvironmentObject private var libraryViewModel: LibraryManagerViewModel
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     
     @StateObject private var viewModel = WebFeedButtonViewModel()
-    @StateObject private var libraryViewModel = LibraryManagerViewModel()
     
     private var isDisabled: Bool {
         return readerContent.rssURLs.isEmpty
@@ -129,10 +127,10 @@ public struct WebFeedButton<C: ReaderContentModel>: View {
                 ForEach(Array(readerContent.rssURLs.map ({ $0 }).enumerated()), id: \.element) { (idx, url) in
                     let title = readerContent.rssTitles[idx]
                     if readerContent.rssURLs.count == 1 {
-                        WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title, isLibraryPresented: $isLibraryPresented, libraryViewModel: libraryViewModel)
+                        WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title)
                     } else {
                         Menu("Add Feed \"\(title)\"") {
-                            WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title, isLibraryPresented: $isLibraryPresented, libraryViewModel: libraryViewModel)
+                            WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title)
                         }
                     }
                 }
@@ -147,12 +145,6 @@ public struct WebFeedButton<C: ReaderContentModel>: View {
         }
         .disabled(isDisabled)
         .fixedSize()
-        .sheet(isPresented: $isLibraryPresented) {
-            LibraryManagerView(isPresented: $isLibraryPresented, viewModel: libraryViewModel)
-#if os(macOS)
-                .frame(minWidth: 500, minHeight: 400)
-#endif
-        }
         .task {
             refresh()
         }

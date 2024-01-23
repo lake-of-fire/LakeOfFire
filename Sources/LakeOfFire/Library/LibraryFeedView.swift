@@ -24,7 +24,7 @@ struct LibraryFeedView: View {
     }
     
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if let libraryFeedFormSectionsViewModel = libraryFeedFormSectionsViewModel {
                 Form {
                     LibraryFeedFormSections(viewModel: libraryFeedFormSectionsViewModel)
