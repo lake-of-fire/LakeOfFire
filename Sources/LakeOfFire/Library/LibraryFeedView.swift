@@ -82,7 +82,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
             Task.detached { @RealmBackgroundActor in
                 guard let realm = try? await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared), let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
-                block(feed)
+                try await realm.asyncWrite {
+                    block(feed)
+                }
             }
         }
         

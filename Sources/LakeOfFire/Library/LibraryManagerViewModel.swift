@@ -58,6 +58,40 @@ public extension View {
     }
 }
 
+struct LibraryManagerSheetModifier: ViewModifier {
+    @available(iOS 16, macOS 13, *)
+    struct ActiveLibrarySheetModifier: ViewModifier {
+        @ObservedObject private var libraryViewModel = LibraryManagerViewModel.shared
+        
+        func body(content: Content) -> some View {
+            content
+                .sheet(isPresented: $libraryViewModel.isLibraryPresented) {
+                    if #available(iOS 16.4, macOS 13.1, *) {
+                        LibraryManagerView()
+#if os(macOS)
+                            .frame(minWidth: 500, minHeight: 400)
+#endif
+                    }
+                }
+        }
+    }
+    
+    func body(content: Content) -> some View {
+        if #available(iOS 16, macOS 13, *) {
+            content
+                .modifier(ActiveLibrarySheetModifier())
+        } else {
+            content
+        }
+    }
+}
+
+public extension View {
+    func libraryManagerSheet() -> some View {
+        modifier(LibraryManagerSheetModifier())
+    }
+}
+
 @available(iOS 16.0, macOS 13.0, *)
 public class LibraryManagerViewModel: NSObject, ObservableObject {
     public static let shared = LibraryManagerViewModel()

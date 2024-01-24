@@ -19,8 +19,12 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                     switch change {
                     case .change(_, _):
                         let userScripts = Array(libraryConfiguration.userScripts)
+                        let refs = userScripts.map { ThreadSafeReference(to: $0) }
                         Task { @MainActor [weak self] in
-                            self?.userScripts = userScripts
+                            guard let self = self else { return }
+                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            let userScripts = refs.compactMap { realm.resolve($0) }
+                            self.userScripts = userScripts
                         }
                     case .error(let error):
                         print("An error occurred: \(error)")
@@ -29,7 +33,12 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                     }
                 }
             
-            await Task { @MainActor in
+            let refs = Array(libraryConfiguration.userScripts).map { ThreadSafeReference(to: $0) }
+            try await Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                let userScripts = refs.compactMap { realm.resolve($0) }
+                self.userScripts = userScripts
                 self.libraryConfiguration = libraryConfiguration
             }.value
         }
@@ -51,7 +60,6 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         
         let scriptID = script.id
         try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
-            guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID) else { return }
             if let idx = libraryConfiguration.userScripts.firstIndex(where: { $0.id == scriptID }) {
                 libraryConfiguration.userScripts.remove(at: idx)
             }
@@ -85,7 +93,6 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     @MainActor
     func deleteScript(at offsets: IndexSet) {
         Task { @MainActor in
-            guard let libraryConfiguration = libraryConfiguration else { return }
             for offset in offsets {
                 guard let script = userScripts?[offset] else { return }
                 guard script.isUserEditable else { continue }
@@ -201,6 +208,7 @@ struct LibraryScriptsListView: View {
     }
     
     var body: some View {
+//        Text("Hm \(viewModel.userScripts?.debugDescription ?? "-") \(viewModel.libraryConfiguration?.debugDescription ?? "-")")
         if let libraryConfiguration = viewModel.libraryConfiguration, let userScripts = viewModel.userScripts {
             list(libraryConfiguration: libraryConfiguration, userScripts: userScripts)
         }

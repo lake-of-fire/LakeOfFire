@@ -42,7 +42,6 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
-        
         $scriptTitle
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)

@@ -382,6 +382,23 @@ public class LibraryDataManager: NSObject {
             try Task.checkCancellation()
         }
         
+        // De-dupe scripts from library configuration (due to some bug...)
+        try Task.checkCancellation()
+        var scriptIDsSeen = Set<UUID>()
+        var scriptsToRemove = IndexSet()
+        for (idx, script) in configuration.userScripts.enumerated() {
+            if scriptIDsSeen.contains(script.id) {
+                scriptsToRemove.insert(idx)
+            } else {
+                scriptIDsSeen.insert(script.id)
+            }
+        }
+        if !scriptsToRemove.isEmpty {
+            try await realm.asyncWrite {
+                configuration.userScripts.remove(atOffsets: scriptsToRemove)
+            }
+        }
+        
         // Delete orphan categories
         try Task.checkCancellation()
         if let downloadURL = download?.url {
