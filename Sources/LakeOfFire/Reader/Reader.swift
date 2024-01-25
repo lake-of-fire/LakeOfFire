@@ -28,6 +28,7 @@ public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
     func load(content: any ReaderContentModel, readerFileManager: ReaderFileManager) async {
+        
         if !content.url.isReaderFileURL, content.isReaderModeByDefault, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
             guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
             Task { @MainActor in

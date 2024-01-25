@@ -231,7 +231,9 @@ public struct ReaderContentLoader {
             // isReaderModeByDefault used to be commented out... why?
             historyRecord.isReaderModeByDefault = true
             historyRecord.updateCompoundKey()
+            historyRecord.rssContainsFullContent = true
             historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
+            print("!! make hist \(historyRecord.url) \(historyRecord.compoundKey)")
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
