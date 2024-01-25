@@ -193,7 +193,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(urlString: String) async throws -> (any ReaderContentModel)? {
-        guard let url = URL(string: urlString) else { return nil }
+        guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme ?? "") else { return nil }
         return try await load(url: url)
     }
     
@@ -233,7 +233,6 @@ public struct ReaderContentLoader {
             historyRecord.updateCompoundKey()
             historyRecord.rssContainsFullContent = true
             historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
-            print("!! make hist \(historyRecord.url) \(historyRecord.compoundKey)")
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
@@ -272,7 +271,8 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(text: String) async throws -> (any ReaderContentModel)? {
-        return try await load(html: textToHTML(text, forceRaw: true))
+        let html = textToHTML(text, forceRaw: true)
+        return try await load(html: html)
     }
     
     @MainActor
