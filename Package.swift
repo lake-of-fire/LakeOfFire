@@ -72,7 +72,10 @@ let package = Package(
                 .product(name: "MarkdownKit", package: "swift-markdownkit"),
                 .product(name: "DSFStepperView", package: "DSFStepperView"),
 //                .product(name: "WrappingHStack", package: "WrappingHStack"),
-                ]),
+                ],
+            resources: [
+                .copy("Resources/foliate-js/"), // CodeSign errors with "process"...
+            ]),
 //        .testTarget(
 //            name: "LakeOfFireTests",
 //            dependencies: ["LakeOfFire"]),

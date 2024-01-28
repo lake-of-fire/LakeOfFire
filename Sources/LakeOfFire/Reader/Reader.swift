@@ -28,13 +28,20 @@ public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
     func load(content: any ReaderContentModel, readerFileManager: ReaderFileManager) async {
-        if !content.url.isReaderFileURL, content.isReaderModeByDefault, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
+        var url: URL?
+        if content.url.isEBookURL {
+//            guard let absoluteStringWithoutScheme = content.url.absoluteStringWithoutScheme, let loadURL = URL(string: "ebook://ebook/load" + absoluteStringWithoutScheme) else {
+//                print("Invalid ebook URL \(content.url)")
+//                return
+//            }
+            url = content.url
+        } else if !content.url.isReaderFileURL, content.isReaderModeByDefault, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
             guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
-            Task { @MainActor in
-                load(URLRequest(url: historyURL))
-            }
+            url = historyURL
         } else {
-            let url = content.url
+            url = content.url
+        }
+        if let url = url {
             Task { @MainActor in
                 load(URLRequest(url: url))
             }
@@ -49,7 +56,7 @@ public struct Reader: View {
     var bounces = true
     var obscuredInsets: EdgeInsets? = nil
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
-    var onNavigationCommitted: ((WebViewState) -> Void)?
+    var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     
     @ObservedObject private var downloadController = DownloadController.shared
@@ -60,6 +67,7 @@ public struct Reader: View {
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+    @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -72,7 +80,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
+    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.readerViewModel = readerViewModel
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -109,6 +117,7 @@ public struct Reader: View {
                 schemeHandlers: [
                     (internalURLSchemeHandler, "internal"),
                     (readerFileURLSchemeHandler, "reader-file"),
+                    (ebookURLSchemeHandler, "ebook"),
                 ],
                 messageHandlers: [
                     "readabilityFramePing": { @MainActor message in
@@ -193,33 +202,26 @@ public struct Reader: View {
                                 content.imageUrl = result.newImageURL
                             }
                         }
-                    }
+                    },
+                    "swiftUIWebViewEPUBJSInitialized": { message in
+                        let url = readerViewModel.state.pageURL
+                        if let scheme = url.scheme, scheme == "ebook" || scheme == "ebook-url", url.absoluteString.hasPrefix("\(url.scheme ?? "")://"), url.isEBookURL, let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(url.scheme ?? "")://".count))") {
+                            Task { @MainActor in
+                                await  readerViewModel.scriptCaller.evaluateJavaScript("window.loadEBook({ url })", arguments: ["url": loaderURL.absoluteString])
+                            }
+                        }
+                    },
                 ].merging(messageHandlers) { (current, new) in
                     return { message in
                         await current(message)
                         await new(message)
                     }
                 },
-                ebookTextProcessor: { content in
-                    do {
-                        let doc = try processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
-                        doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
-                        if let processReadabilityContent = readerViewModel.processReadabilityContent {
-                            return await processReadabilityContent(doc)
-                        } else {
-                            return try doc.outerHtml()
-                        }
-                    } catch {
-                        print("Error processing readability content")
-                    }
-                    return content
-                },
                 onNavigationCommitted: { state in
                     Task { @MainActor in
-                        readerViewModel.onNavigationCommitted(newState: state) { newState in
-                            if let onNavigationCommitted = onNavigationCommitted {
-                                onNavigationCommitted(newState)
-                            }
+                        try await readerViewModel.onNavigationCommitted(newState: state)
+                        if let onNavigationCommitted = onNavigationCommitted {
+                            try await onNavigationCommitted(state)
                         }
                     }
                 },
@@ -270,11 +272,28 @@ public struct Reader: View {
             }
             .task { @MainActor in
                 readerViewModel.defaultFontSize = defaultFontSize
+                ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             }
             .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
                 readerFileURLSchemeHandler.readerFileManager = readerFileManager
+                ebookURLSchemeHandler.readerFileManager = readerFileManager
             }
         }
+    }
+    
+    private func ebookTextProcessor(content: String) async throws -> String {
+        do {
+            let doc = try processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
+            doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
+            if let processReadabilityContent = readerViewModel.processReadabilityContent {
+                return await processReadabilityContent(doc)
+            } else {
+                return try doc.outerHtml()
+            }
+        } catch {
+            print("Error processing readability content")
+        }
+        return content
     }
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {

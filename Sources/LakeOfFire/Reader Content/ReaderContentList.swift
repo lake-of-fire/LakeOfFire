@@ -24,7 +24,7 @@ public enum ReaderContentSortOrder {
 
 public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject {
     @Published var filteredContents: [C] = []
-    var refreshSelectionTask: Task<Void, Never>?
+    var refreshSelectionTask: Task<Void, Error>?
     
     @MainActor
     func load(contents: [C], contentFilter: @escaping (@RealmBackgroundActor (C) async throws -> Bool), sortOrder: ReaderContentSortOrder) async throws {
@@ -88,6 +88,7 @@ fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
                                 readerState.matches(content: content)
                             },
                             set: {
+                                print("!! set entrySelection0 \(content.compoundKey) \(content.url)")
                                 entrySelection = $0 ? content.compoundKey : nil
                             }
                         ), label: {
@@ -157,10 +158,10 @@ fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
                 Task { @MainActor in
                     try await confirmDeletionOf?.delete(readerFileManager: readerFileManager)
                 }
-            }
+            }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {
                 confirmDeletionOf = nil
-            }
+            }.keyboardShortcut(.cancelAction)
         } message: {
             Text("Deletion cannot be undone.")
         }
@@ -191,7 +192,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     public var body: some View {
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerList(entrySelection: $entrySelection, showThumbnails: showThumbnails, viewModel: viewModel)
-            .onChange(of: entrySelection) { itemSelection in
+            .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerState.pageURL) else { return }
                 Task { @MainActor in
                     await navigator.load(content: content, readerFileManager: readerFileManager)
@@ -207,7 +208,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
             .onChange(of: contents, debounceTime: 0.1) { contents in
                 Task { @MainActor in
                     try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
-                    refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
+refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
                 }
             }
             .task { @MainActor in
@@ -241,31 +242,32 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
         let filteredContentKeys = viewModel.filteredContents.map { $0.compoundKey }
         let filteredContentURLs = viewModel.filteredContents.map { $0.url }
         viewModel.refreshSelectionTask = Task.detached {
+            try Task.checkCancellation()
             do {
                 if !state.pageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = filteredContentKeys.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(state.pageURL) {
-                    Task { @MainActor in
-                        do {
-                            try Task.checkCancellation()
-                            self.entrySelection = nil
-                        }
-                    }
+                    try await Task { @MainActor in
+                        try Task.checkCancellation()
+                        self.entrySelection = nil
+                    }.value
                 }
                 
                 guard !state.pageURL.isNativeReaderView, filteredContentURLs.contains(state.pageURL) else {
                     if !state.pageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
-                        try Task.checkCancellation()
-                        Task { @MainActor in
+                        try await Task { @MainActor in
+                            try Task.checkCancellation()
                             self.entrySelection = nil
-                        }
+                        }.value
                     }
                     return
                 }
 //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
-//                    try Task.checkCancellation()
-//                    Task { @MainActor in
-//                        self.entrySelection = content.compoundKey
-//                    }
-//                }
+                if entrySelection == nil, oldState?.pageURL != state.pageURL, let idx = filteredContentURLs.firstIndex(of: state.pageURL) {
+                    let contentKey = filteredContentKeys[idx]
+                    try await Task { @MainActor in
+                        try Task.checkCancellation()
+                        self.entrySelection = contentKey
+                    }.value
+                }
             } catch { }
         }
     }

@@ -119,9 +119,9 @@ public struct ReaderContentLoader {
             }
             
             var url = url
-            if url.isFileURL, url.isEBookURL {
-                url = URL(string: "ebook://ebook/load" + url.path) ?? url
-            }
+//            if url.isFileURL, url.isEBookURL {
+//                url = URL(string: "ebook://ebook/load" + url.path) ?? url
+//            }
             
             let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)

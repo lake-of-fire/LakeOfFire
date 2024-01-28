@@ -68,10 +68,10 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
                 Task { @MainActor in
                     try await confirmDeletionOf?.delete(readerFileManager: readerFileManager)
                 }
-            }
+            }.keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {
                 confirmDeletionOf = nil
-            }
+            }.keyboardShortcut(.cancelAction)
         } message: {
             Text("Deletion cannot be undone.")
         }
