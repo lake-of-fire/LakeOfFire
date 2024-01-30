@@ -99,7 +99,7 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
     var hiddenIfUnbookmarked = false
     
     @Environment(\.isEnabled) private var isEnabled
-
+    
     @ObservedResults(Bookmark.self, keyPaths: ["isDeleted", "compoundKey"]) var bookmarks
     
     @StateObject private var viewModel = BookmarkButtonViewModel()
