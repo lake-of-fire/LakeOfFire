@@ -15,7 +15,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                     guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
                     objectNotificationToken?.invalidate()
                     objectNotificationToken = libraryConfiguration
-                        .observe { [weak self] change in
+                        .observe(keyPaths: ["id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
                             guard let self = self else { return }
                             switch change {
                             case .change(_, _), .deleted:
@@ -56,8 +56,6 @@ public struct ContentCategoryButtons: View {
     var isCompact = false
     
     @StateObject private var viewModel = ContentCategoryButtonsViewModel()
-    
-    @ObservedResults(FeedCategory.self, configuration: ReaderContentLoader.feedEntryRealmConfiguration, where: { !$0.isDeleted && !$0.isArchived }) private var categories
     
     @ScaledMetric(relativeTo: .headline) private var minWidth: CGFloat = 190
     

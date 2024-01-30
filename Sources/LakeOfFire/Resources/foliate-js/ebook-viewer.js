@@ -312,6 +312,7 @@ class Reader {
     }
     #onLoad({ detail: { doc } }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
@@ -335,11 +336,43 @@ class Reader {
         
         if (this.hasLoadedLastPosition) {
             this.#postUpdateReadingProgressMessage({ fraction, cfi })
-//        } else {
-//            //  window.loadLastPosition({ cfi: 'epubcfi(/6/6!/4/2[ごんぎつね],,/4/4/1:99)' })
-//            window.webkit.messageHandlers.swiftUIWebViewEBookLoaded.postMessage({})
         }
     }
+}
+
+class CacheWarmer {
+    constructor() {
+        this.view
+    }
+    async open(file) {
+        this.view = await getView(file)
+        this.view.style.display = 'none'
+        this.view.addEventListener('load', this.#onLoad.bind(this))
+        
+        const { book } = this.view
+        //        this.view.renderer.setAttribute('flow', 'scrolled')
+        this.view.renderer.setAttribute('flow', 'paginated')
+        //        this.view.renderer.next()
+        
+        const toc = book.toc
+        if (toc) {
+//            this.#tocView = createTOCView(toc, href => {
+        }
+    }
+    
+    #onLoad({ detail: { doc } }) {
+        window.webkit.messageHandlers.ebookCacheWarmerReadyToLoad.postMessage({
+        })
+    }
+    
+//    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
+//        let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
+//        window.webkit.messageHandlers.updateReadingProgress.postMessage({
+//        fractionalCompletion: fraction,
+//        cfi: cfi,
+//        mainDocumentURL: mainDocumentURL,
+//        })
+//    }, 400)
 }
 
 //const open = async file => {
@@ -357,9 +390,15 @@ class Reader {
 //    .catch(e => console.error(e))
 //else dropTarget.style.visibility = 'visible'
 
-window.loadEBook = function ({ url }) {
+window.loadNextCacheWarmerSection = async () => {
+    await window.cacheWarmer.renderer.nextSection()
+}
+
+window.loadEBook = ({ url }) => {
     window.reader = new Reader()
-    globalThis.reader = reader
+//    globalThis.reader = reader
+    
+    window.cacheWarmer = new CacheWarmer()
     
     if (url) fetch(url, {
         headers: {
@@ -367,9 +406,11 @@ window.loadEBook = function ({ url }) {
         },
     })
         .then(res => res.blob())
-        .then(blob => reader.open(new File([blob], new URL(url).pathname)))
+        .then(blob => {
+            reader.open(new File([blob], new URL(url).pathname))
+            cacheWarmer.open(new File([blob], new URL(url).pathname))
+        })
         .then(() => {
-            window.webkit.messageHandlers.swiftUIWebViewEBookLoaded.postMessage({})
         })
         .catch(e => console.error(e))
 }
@@ -383,4 +424,4 @@ window.loadLastPosition = async ({ cfi }) => {
     window.reader.hasLoadedLastPosition = true
 }
 
-window.webkit.messageHandlers.swiftUIWebViewEPUBJSInitialized.postMessage({})
+window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

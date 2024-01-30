@@ -49,14 +49,11 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 return
             }
         } else if url.pathComponents.starts(with: ["/", "load"]) {
-//            print("!! /load ...")
             // Bundle file.
-//            let loadPath = "/" + url.pathComponents.dropFirst(2).joined(separator: "/") + (url.hasDirectoryPath ? "/" : "")
             let loadPath = "/" + url.pathComponents.dropFirst(2).joined(separator: "/") + (url.hasDirectoryPath ? "/" : "")
             if let fileUrl = bundleURLFromWebURL(url),
                let mimeType = mimeType(ofFileAtUrl: fileUrl),
                let data = try? Data(contentsOf: fileUrl) {
-//                print("!! bundle file")
                 let response = HTTPURLResponse(
                     url: url,
                     mimeType: mimeType,
@@ -67,7 +64,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 return
             } else if urlSchemeTask.request.value(forHTTPHeaderField: "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST")?.lowercased() != "true",
                       let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js"), let mimeType = mimeType(ofFileAtUrl: url) {
-//                print("!! file viewer bundle file")
                 // File viewer bundle file.
                 do {
                     let html = try String(contentsOfFile: viewerHtmlPath)
@@ -76,7 +72,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             url: url,
                             mimeType: mimeType,
                             expectedContentLength: data.count, textEncodingName: nil)
-//                        print("!! foliate viewer data ret.. \(html)")
                         urlSchemeTask.didReceive(response)
                         urlSchemeTask.didReceive(data)
                         urlSchemeTask.didFinish()

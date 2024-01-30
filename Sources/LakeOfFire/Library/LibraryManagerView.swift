@@ -72,9 +72,6 @@ struct LibraryCategoryViewContainer: View {
 public struct LibraryManagerView: View {
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
-    @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
-    @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var feeds
-    
     @State private var columnVisibility = NavigationSplitViewVisibility.doubleColumn
     
 #if os(iOS)

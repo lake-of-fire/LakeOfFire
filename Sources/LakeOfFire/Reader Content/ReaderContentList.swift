@@ -69,12 +69,13 @@ fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
     var showThumbnails = true
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     
-    @Environment(\.readerWebViewState) private var readerState
+//    @Environment(\.readerWebViewState) private var readerState
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
     @State private var confirmDelete: Bool = false
     @State private var confirmDeletionOf: (any DeletableReaderContent)?
     @EnvironmentObject private var readerFileManager: ReaderFileManager
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
     
     var body: some View {
         Group {
@@ -85,10 +86,9 @@ fileprivate struct ReaderContentInnerList<C: ReaderContentModel>: View {
                         Toggle(isOn: Binding<Bool>(
                             get: {
                                 //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                                readerState.matches(content: content)
+                                readerViewModel.state.matches(content: content)
                             },
                             set: {
-                                print("!! set entrySelection0 \(content.compoundKey) \(content.url)")
                                 entrySelection = $0 ? content.compoundKey : nil
                             }
                         ), label: {
@@ -185,7 +185,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     
-    @Environment(\.readerWebViewState) private var readerState
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
@@ -193,7 +193,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerList(entrySelection: $entrySelection, showThumbnails: showThumbnails, viewModel: viewModel)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-                guard let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerState.pageURL) else { return }
+                guard let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
                 Task { @MainActor in
                     await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
@@ -202,18 +202,20 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
 //                    }
                 }
             }
-            .onChange(of: readerState) { [oldState = readerState] state in
-                refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
+            .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
+                if oldState.pageURL != state.pageURL {
+                    refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
+                }
             }
-            .onChange(of: contents, debounceTime: 0.1) { contents in
+            .onChange(of: contents/*, debounceTime: 0.1*/) { contents in
                 Task { @MainActor in
                     try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
-refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
+refreshSelection(scrollViewProxy: scrollViewProxy, state: readerViewModel.state)
                 }
             }
             .task { @MainActor in
                 try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
-                refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
+                refreshSelection(scrollViewProxy: scrollViewProxy, state: readerViewModel.state)
             }
 //            .onChange(of: contents) { contents in
 //                Task { @MainActor in
@@ -234,8 +236,8 @@ refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
     }
     
     private func refreshSelection(scrollViewProxy: ScrollViewProxy, state: WebViewState, oldState: WebViewState? = nil) {
-        guard !state.isProvisionallyNavigating else { return }
         viewModel.refreshSelectionTask?.cancel()
+        guard !state.isProvisionallyNavigating else { return }
         
 //        let readerContentCompoundKey = readerContent.compoundKey
         let entrySelection = entrySelection

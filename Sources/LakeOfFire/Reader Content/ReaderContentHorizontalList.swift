@@ -86,8 +86,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentModel>: View {
     let contents: [C]
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
-    
-    @Environment(\.readerWebViewState) private var readerState
 
     let contentSortAscending = false
     var contentFilter: (@RealmBackgroundActor (C) async throws -> Bool) = { @RealmBackgroundActor _ in return true }

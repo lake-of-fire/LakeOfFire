@@ -8,22 +8,38 @@ import DebouncedOnChange
 import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
+import Combine
 
-@MainActor
 fileprivate class LibraryCategoriesViewModel: ObservableObject {
+    @Published var categories: [FeedCategory]? = nil
+    @Published var archivedCategories: [FeedCategory]? = nil
+    
+    private var cancellables = Set<AnyCancellable>()
+    
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
+            setCategories(from: libraryConfiguration)
             Task.detached { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
                 let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
                 objectNotificationToken?.invalidate()
                 objectNotificationToken = libraryConfiguration
-                    .observe { [weak self] change in
+                    .observe(keyPaths: ["id", "isDeleted", "categories.id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
                         guard let self = self else { return }
                         switch change {
-                        case .change(_, _), .deleted:
+                        case .change(let object, _):
+                            guard let libraryConfiguration = object as? LibraryConfiguration else { return }
+                            let ref = ThreadSafeReference(to: libraryConfiguration)
                             Task { @MainActor [weak self] in
-                                self?.objectWillChange.send()
+                                guard let self = self else { return }
+                                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                                if let libraryConfiguration = realm.resolve(ref) {
+                                    setCategories(from: libraryConfiguration)
+                                }
+                            }
+                        case .deleted:
+                            Task { @MainActor [weak self] in
+                                self?.categories = nil
                             }
                         case .error(let error):
                             print("An error occurred: \(error)")
@@ -36,6 +52,27 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
+        let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
+        realm.objects(FeedCategory.self)
+            .where { !$0.isDeleted }
+            .collectionPublisher
+            .freeze()
+            .removeDuplicates()
+            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] categories in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    let libraryConfiguration = try await LibraryConfiguration.getOnMain()
+                    let activeCategoryIDs = libraryConfiguration?.categories.map { $0.id } ?? []
+                    self.archivedCategories = categories.filter { category in
+                        category.isArchived
+                        || !activeCategoryIDs.contains(category.id)
+                    }
+                }
+            })
+            .store(in: &cancellables)
+        
         Task.detached { @RealmBackgroundActor [weak self] in
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
@@ -48,9 +85,17 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [weak self] in
-            self?.objectNotificationToken?.invalidate()
+        Task.detached { @RealmBackgroundActor [objectNotificationToken] in
+            objectNotificationToken?.invalidate()
         }
+    }
+    
+    private func setCategories(from libraryConfiguration: LibraryConfiguration?) {
+        guard let libraryConfiguration = libraryConfiguration else {
+            categories = nil
+            return
+        }
+        categories = Array(libraryConfiguration.categories).filter { !$0.isArchived && !$0.isDeleted }
     }
     
     @MainActor
@@ -123,15 +168,6 @@ struct LibraryCategoriesView: View {
     
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
-    @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { !$0.isDeleted && !$0.isArchived }) private var categories
-    private var archivedCategories: [FeedCategory] {
-        Array(categories.filter({ category in
-            category.isArchived
-            || !(viewModel.libraryConfiguration?.categories.contains(where: { installedCategory in
-                installedCategory.id == category.id
-            }) ?? false) }))
-    }
-    
 #if os(macOS)
     @State private var savePanel: NSSavePanel?
     @State private var window: NSWindow?
@@ -145,7 +181,7 @@ struct LibraryCategoriesView: View {
 #endif
     }
     
-    func list(libraryConfiguration: LibraryConfiguration) -> some View {
+    var body: some View {
         ScrollViewReader { scrollProxy in
             List {
                 Section(header: Text("Import and Export"), footer: Text("Imports and exports use the OPML file format, which is optimized for RSS reader compatibility. The User Scripts category is supported for importing/exporting. User Library exports exclude Manabi Reader system-provided data.").font(.footnote).foregroundColor(.secondary)) {
@@ -208,7 +244,7 @@ struct LibraryCategoriesView: View {
                 }
                 
                 Section("Library") {
-                    ForEach(libraryConfiguration.categories) { category in
+                    ForEach(viewModel.categories ?? []) { category in
                         NavigationLink(value: category) {
                             FeedCategoryButtonLabel(category: category, font: .headline, isCompact: true)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -238,7 +274,7 @@ struct LibraryCategoriesView: View {
                 }
                 
                 Section("Archive") {
-                    ForEach(archivedCategories) { category in
+                    ForEach(viewModel.archivedCategories ?? []) { category in
                         NavigationLink(value: category) {
                             FeedCategoryButtonLabel(category: category, font: .headline, isCompact: true)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -312,12 +348,6 @@ struct LibraryCategoriesView: View {
                 }
             }
 #endif
-        }
-    }
-    
-    var body: some View {
-        if let libraryConfiguration = viewModel.libraryConfiguration {
-            list(libraryConfiguration: libraryConfiguration)
         }
     }
     

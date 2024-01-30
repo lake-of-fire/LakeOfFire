@@ -35,6 +35,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
     public static var opmlURLs = [URL]()
 
     @Persisted(primaryKey: true) public var id = UUID()
+    @Persisted public var opmlLastImportedAt: Date?
     @Persisted public var modifiedAt: Date
     @Persisted public var isDeleted = false
     
@@ -105,6 +106,15 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return nil
     }
     
+    @MainActor
+    public static func getOnMain() async throws -> LibraryConfiguration? {
+        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
+            return configuration
+        }
+        return nil
+    }
+    
     @RealmBackgroundActor
     public static func getOrCreate() async throws -> LibraryConfiguration {
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
@@ -154,17 +164,17 @@ public class LibraryDataManager: NSObject {
             .sink(receiveValue: { [weak self] feedDownloads in
                 guard let self = self else { return }
                 importOPMLTask?.cancel()
-                importOPMLTask = Task.detached { [weak self] in
-                    let newOPMLDownloads = feedDownloads.filter({
-                        $0.url.lastPathComponent.hasSuffix(".opml")
-                        && $0.finishedDownloadingDuringCurrentLaunchAt != nil
-                        && ($0.finishedDownloadingDuringCurrentLaunchAt ?? Date()) <= ($0.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)
-                    })
-                    for download in newOPMLDownloads {
-                        do {
-                            try await self?.importOPML(download: download)
-                        } catch {
-                            print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                importOPMLTask = Task.detached { @RealmBackgroundActor [weak self] in
+                    let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
+                    let libraryConfiguration = try await LibraryConfiguration.get()
+                    for download in opmlDownloads {
+                        try Task.checkCancellation()
+                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? Date()) >= (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                            do {
+                                try await self?.importOPML(download: download)
+                            } catch {
+                                print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                            }
                         }
                     }
                 }
@@ -480,6 +490,12 @@ public class LibraryDataManager: NSObject {
         try Task.checkCancellation()
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
         download.finishedLoadingDuringCurrentLaunchAt = Date()
+        let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
+        if let realm = libraryConfiguration.realm {
+            try await realm.asyncWrite {
+                libraryConfiguration.opmlLastImportedAt = Date()
+            }
+        }
     }
     
     @RealmBackgroundActor

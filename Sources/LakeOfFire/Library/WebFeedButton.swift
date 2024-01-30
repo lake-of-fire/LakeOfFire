@@ -4,22 +4,34 @@ import SwiftUIWebView
 import RealmSwiftGaps
 import RealmSwift
 import SwiftUtilities
+import Combine
 
 @MainActor
-class WebFeedButtonViewModel: ObservableObject {
+class WebFeedButtonViewModel<C: ReaderContentModel>: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
+            setCategories(from: libraryConfiguration)
             Task.detached { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
                 let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-                objectNotificationToken?.invalidate()
-                objectNotificationToken = libraryConfiguration
-                    .observe { [weak self] change in
+                libraryConfigurationObjectNotificationToken?.invalidate()
+                libraryConfigurationObjectNotificationToken = libraryConfiguration
+                    .observe(keyPaths: ["id", "isDeleted", "categories.id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
                         guard let self = self else { return }
                         switch change {
-                        case .change(_, _), .deleted:
+                        case .change(let object, _):
+                            guard let libraryConfiguration = object as? LibraryConfiguration else { return }
+                            let ref = ThreadSafeReference(to: libraryConfiguration)
                             Task { @MainActor [weak self] in
-                                self?.objectWillChange.send()
+                                guard let self = self else { return }
+                                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                                if let libraryConfiguration = realm.resolve(ref) {
+                                    setCategories(from: libraryConfiguration)
+                                }
+                            }
+                        case .deleted:
+                            Task { @MainActor [weak self] in
+                                self?.userCategories = nil
                             }
                         case .error(let error):
                             print("An error occurred: \(error)")
@@ -29,7 +41,41 @@ class WebFeedButtonViewModel: ObservableObject {
         }
     }
     
-    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    @Published var userCategories: [FeedCategory]? = nil
+    @Published var feed: Feed?
+    @Published var rssTitles: [String]?
+    @Published var rssURLs: [URL]? {
+        didSet {
+            guard let rssURLs = rssURLs else { 
+                feed = nil
+                return
+            }
+            cancellables.forEach { $0.cancel() }
+            let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
+            realm.objects(Feed.self)
+                .where { !$0.isDeleted }
+                .collectionPublisher
+                .freeze()
+                .removeDuplicates()
+                .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
+                .receive(on: DispatchQueue.main)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] feeds in
+                    guard let self = self else { return }
+                    let feed = feeds.first(where: { rssURLs.contains($0.rssUrl) })
+                    self.feed = feed
+                })
+                .store(in: &cancellables)
+        }
+    }
+    
+    @MainActor private var readerContentObjectNotificationToken: NotificationToken?
+    @RealmBackgroundActor private var libraryConfigurationObjectNotificationToken: NotificationToken?
+    
+    var isDisabled: Bool {
+        return rssURLs?.isEmpty ?? true
+    }
+
+    private var cancellables = Set<AnyCancellable>()
     
     init() {
         Task.detached { @RealmBackgroundActor [weak self] in
@@ -44,15 +90,48 @@ class WebFeedButtonViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [weak self] in
-            self?.objectNotificationToken?.invalidate()
+        Task.detached { @RealmBackgroundActor [readerContentObjectNotificationToken, libraryConfigurationObjectNotificationToken] in
+            readerContentObjectNotificationToken?.invalidate()
+            libraryConfigurationObjectNotificationToken?.invalidate()
         }
+    }
+    
+    func initialize(readerContent: C) {
+        readerContentObjectNotificationToken?.invalidate()
+        
+        rssURLs = Array(readerContent.rssURLs)
+        rssTitles = Array(readerContent.rssTitles)
+        
+        readerContentObjectNotificationToken = readerContent
+            .observe(keyPaths: ["rssURLs", "isRSSAvailable", "rssTitles"]) { [weak self] change in
+                guard let self = self else { return }
+                switch change {
+                case .change(let object, _):
+                    guard let readerContent = object as? C else { return }
+                    rssURLs = Array(readerContent.rssURLs)
+                    rssTitles = Array(readerContent.rssTitles)
+                case .deleted:
+                    rssURLs = nil
+                    rssTitles = nil
+                case .error(let error):
+                    print("An error occurred: \(error)")
+                }
+            }
+    }
+    
+    @MainActor
+    private func setCategories(from libraryConfiguration: LibraryConfiguration?) {
+        guard let libraryConfiguration = libraryConfiguration else {
+            userCategories = nil
+            return
+        }
+        userCategories = Array(libraryConfiguration.categories.where { $0.opmlURL == nil && !$0.isArchived && !$0.isDeleted })
     }
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-struct WebFeedMenuAddButtons: View {
-    @ObservedObject private var viewModel: WebFeedButtonViewModel
+struct WebFeedMenuAddButtons<C: ReaderContentModel>: View {
+    @ObservedObject private var viewModel: WebFeedButtonViewModel<C>
     let url: URL
     let title: String
     
@@ -61,16 +140,28 @@ struct WebFeedMenuAddButtons: View {
     @Environment(\.openWindow) var openWindow
     
     var body: some View {
-        if let userCategories = viewModel.libraryConfiguration?.userCategories {
-            ForEach(userCategories) { category in
-                Button("Add Feed to \(category.title)") {
+        if let userCategories = viewModel.userCategories {
+            if userCategories.isEmpty {
+                Text("You must create your own category for RSS feeds.")
+                Button {
+                    LibraryManagerViewModel.shared.isLibraryPresented = true
                     Task { @MainActor in
-                        try await libraryViewModel.add(rssURL: url, title: title, toCategory: ThreadSafeReference(to: category))
+                        try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+                    }
+                } label: {
+                    Label("New Library Category", systemImage: "square.and.pencil")
+                }
+            } else {
+                ForEach(userCategories) { category in
+                    Button("Add Feed to \(category.title)") {
+                        Task { @MainActor in
+                            try await libraryViewModel.add(rssURL: url, title: title, toCategory: ThreadSafeReference(to: category))
 #if os(macOS)
-                        openWindow(id: "user-library")
+                            openWindow(id: "user-library")
 #else
-                        libraryViewModel.isLibraryPresented = true
+                            libraryViewModel.isLibraryPresented = true
 #endif
+                        }
                     }
                 }
             }
@@ -88,7 +179,7 @@ struct WebFeedMenuAddButtons: View {
         }
     }
     
-    init(viewModel: WebFeedButtonViewModel, url: URL, title: String) {
+    init(viewModel: WebFeedButtonViewModel<C>, url: URL, title: String) {
         self.viewModel = viewModel
         self.url = url
         self.title = title
@@ -99,34 +190,24 @@ struct WebFeedMenuAddButtons: View {
 public struct WebFeedButton<C: ReaderContentModel>: View {
     @ObservedObject var readerContent: C
     
-    @ObservedResults(FeedCategory.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) private var categories
-    @ObservedResults(Feed.self, configuration: LibraryDataManager.realmConfiguration, where: { $0.isDeleted == false }) var feeds
-    
-    @State private var feed: Feed?
-    @State private var isLibraryPresented = false
-    
     @EnvironmentObject private var libraryViewModel: LibraryManagerViewModel
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     
-    @StateObject private var viewModel = WebFeedButtonViewModel()
-    
-    private var isDisabled: Bool {
-        return readerContent.rssURLs.isEmpty
-    }
+    @StateObject private var viewModel = WebFeedButtonViewModel<C>()
     
     public var body: some View {
         Menu {
-            if let feed = feed, !feed.isDeleted, let category = feed.category {
+            if let feed = viewModel.feed, !feed.isDeleted, let category = feed.category {
                 Button("Edit Feed in Library") {
                     libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
                     libraryViewModel.navigationPath.append(category)
                     libraryViewModel.selectedFeed = feed
-                    isLibraryPresented = true
+                    LibraryManagerViewModel.shared.isLibraryPresented = true
                 }
-            } else {
-                ForEach(Array(readerContent.rssURLs.map ({ $0 }).enumerated()), id: \.element) { (idx, url) in
-                    let title = readerContent.rssTitles[idx]
-                    if readerContent.rssURLs.count == 1 {
+            } else if let rssURLs = viewModel.rssURLs, let rssTitles = viewModel.rssTitles {
+                ForEach(Array(zip(rssURLs.indices, rssURLs)), id: \.1) { (idx, url) in
+                    let title = rssTitles[idx]
+                    if rssURLs.count == 1 {
                         WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title)
                     } else {
                         Menu("Add Feed \"\(title)\"") {
@@ -135,41 +216,23 @@ public struct WebFeedButton<C: ReaderContentModel>: View {
                     }
                 }
                 Divider()
-                Button("Manage Library Categories") {
+                Button( "Manage Library Categories") {
                     libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
-                    isLibraryPresented = true
+                    LibraryManagerViewModel.shared.isLibraryPresented = true
                 }
             }
         } label: {
             Label("RSS Feed", systemImage:  "dot.radiowaves.up.forward")
         }
-        .disabled(isDisabled)
+        .disabled(viewModel.isDisabled)
         .fixedSize()
-        .task {
-            refresh()
-        }
-        .onChange(of: feeds) { _ in
-            refresh()
-        }
-        .onChange(of: readerContent.isRSSAvailable) { _ in
-            refresh()
+        .task { @MainActor in
+            viewModel.initialize(readerContent: readerContent)
         }
     }
     
     public init(readerContent: C) {
         self.readerContent = readerContent
-    }
-    
-    private func refresh() {
-        let rssURLs = Array(readerContent.rssURLs)
-        Task.detached {
-            let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
-            let feed = realm.objects(Feed.self).filter { rssURLs.map({ $0 }).contains($0.rssUrl) }.first?.freeze()
-            Task { @MainActor in
-                guard let feed = feed?.thaw() else { return }
-                self.feed = feed
-            }
-        }
     }
 }
 

@@ -177,6 +177,7 @@ public struct Reader: View {
                             let pairs = result.rssURLs.prefix(10)
                             let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                             let titles = pairs.map { $0.last ?? $0.first ?? "" }
+                            print("!! WRITING rssurls \(urls)")
                             try await content.asyncWrite { _, content in
                                 content.rssURLs.removeAll()
                                 content.rssTitles.removeAll()
@@ -203,7 +204,7 @@ public struct Reader: View {
                             }
                         }
                     },
-                    "swiftUIWebViewEPUBJSInitialized": { message in
+                    "ebookViewerInitialized": { message in
                         let url = readerViewModel.state.pageURL
                         if let scheme = url.scheme, scheme == "ebook" || scheme == "ebook-url", url.absoluteString.hasPrefix("\(url.scheme ?? "")://"), url.isEBookURL, let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(url.scheme ?? "")://".count))") {
                             Task { @MainActor in
