@@ -102,6 +102,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                   Task { @MainActor in
                       do {
                           // User file.
+                          print("!! ebook load user file \(fileURL)")
                           if try await readerFileManager.directoryExists(directoryURL: fileURL) {
                               //                            if fileURL.hasDirectoryPath || fileURL.isFilePackage() {
                               let localFileURL = try await readerFileManager.localDirectoryURL(forReaderFileURL: fileURL)

@@ -424,7 +424,7 @@ window.loadEBook = ({ url }) => {
         .then(res => res.blob())
         .then(blob => {
             reader.open(new File([blob], new URL(url).pathname))
-            cacheWarmer.open(new File([blob], new URL(url).pathname))
+//            cacheWarmer.open(new File([blob], new URL(url).pathname))
         })
         .then(() => {
         })
