@@ -561,7 +561,7 @@ class Loader {
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
             if (this.replaceText) {
-                const replacedText = await this.replaceText(textResult, mediaType)
+                const replacedText = await this.replaceText(href, textResult, item.mediaType)
                 return this.createURL(href, replacedText, item.mediaType, parent)
             }
             return this.createURL(href, textResult, item.mediaType, parent)

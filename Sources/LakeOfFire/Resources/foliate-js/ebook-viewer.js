@@ -3,13 +3,15 @@ import { createTOCView } from './ui/tree.js'
 import { createMenu } from './ui/menu.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 
-const replaceText = async (text, mediaType) => {
+const replaceText = async (href, text, mediaType) => {
     return await fetch('ebook://ebook/process-text', {
         method: "POST", // *GET, POST, PUT, DELETE, etc.
         mode: "cors", // no-cors, *cors, same-origin
         cache: "no-cache", // *default, no-cache, reload, force-cache, only-if-cached
         headers: {
             "Content-Type": mediaType,
+            "X-Replaced-Text-Location": href,
+            "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
         },
         body: text,
     }).then((response) => {
@@ -155,7 +157,6 @@ const percentFormat = new Intl.NumberFormat(locales, { style: 'percent' })
 class Reader {
     #tocView
     hasLoadedLastPosition = false
-    hasFinishedInitialLoad = false
     style = {
         spacing: 1.4,
         justify: true,
@@ -313,13 +314,9 @@ class Reader {
     }
     #onLoad({ detail: { doc } }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
-        if (!this.hasFinishedInitialLoad) {
-            window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
-            this.hasFinishedInitialLoad = true
-        }
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
-            currentPageURL: window.location.href,
+            currentPageURL: doc.location.href,
         })
     }
     
@@ -362,19 +359,17 @@ class CacheWarmer {
         this.view.renderer.setAttribute('flow', 'paginated')
         //        this.view.renderer.next()
         
-        const toc = book.toc
-        if (toc) {
-//            this.#tocView = createTOCView(toc, href => {
-        }
+        await this.view.renderer.firstSection()
     }
     
     #onLoad({ detail: { doc } }) {
+//        window.webkit.messageHandlers.pritn.postMessage({"test": "cache onload..", "1": this.view.ownerDocument.defaultView})
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
-            frameURL: this.view.ownerDocument.defaultView,
+            frameURL: event.detail.doc.location.href,
         })
         
-        if (!window.cacheWarmer.renderer.atEnd) {
+        if (!this.view.renderer.atEnd) {
             window.webkit.messageHandlers.ebookCacheWarmerReadyToLoadNextSection.postMessage({
                 topWindowURL: window.top.location.href,
             })
@@ -407,12 +402,12 @@ class CacheWarmer {
 //else dropTarget.style.visibility = 'visible'
 
 window.loadNextCacheWarmerSection = async () => {
-    await window.cacheWarmer.renderer.nextSection()
+    await window.cacheWarmer.view.renderer.nextSection()
 }
 
 window.loadEBook = ({ url }) => {
-    window.reader = new Reader()
-//    globalThis.reader = reader
+    let reader = new Reader()
+    globalThis.reader = reader
     
     window.cacheWarmer = new CacheWarmer()
     
@@ -422,22 +417,26 @@ window.loadEBook = ({ url }) => {
         },
     })
         .then(res => res.blob())
-        .then(blob => {
-            reader.open(new File([blob], new URL(url).pathname))
-//            cacheWarmer.open(new File([blob], new URL(url).pathname))
+        .then(async (blob) => {
+            window.blob = blob
+            await reader.open(new File([blob], new URL(url).pathname))
         })
         .then(() => {
+            window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         .catch(e => console.error(e))
 }
 
 window.loadLastPosition = async ({ cfi }) => {
     if (cfi.length > 0) {
-        await window.reader.view.goTo(cfi).catch(e => console.error(e))
+        await globalThis.reader.view.goTo(cfi).catch(e => console.error(e))
     } else {
-        await window.reader.view.renderer.next()
+        await globalThis.reader.view.renderer.next()
     }
-    window.reader.hasLoadedLastPosition = true
+    globalThis.reader.hasLoadedLastPosition = true
+    
+    // Don't overlap cache warming with initial page load
+    await cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
