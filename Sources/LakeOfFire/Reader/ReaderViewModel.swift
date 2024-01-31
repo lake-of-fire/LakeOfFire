@@ -84,10 +84,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     ]
     """
     
-    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript], processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil) {
+    public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         super.init()
-        
-        self.processReadabilityContent = processReadabilityContent
         
         Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }

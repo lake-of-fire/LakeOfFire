@@ -498,7 +498,6 @@ public extension Feed {
                     continuation.resume(throwing: FeedError.parserFailed)
                     return
                 }
-                continuation.resume(returning: ())
             }
         })
     }

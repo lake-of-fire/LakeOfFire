@@ -61,8 +61,8 @@ public struct Reader: View {
     
     @ObservedObject private var downloadController = DownloadController.shared
     
-    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
-    @AppStorage("readerFontSize") private var readerFontSize: Double?
+    @ScaledMetric(relativeTo: .body) internal var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
+    @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
@@ -177,7 +177,6 @@ public struct Reader: View {
                             let pairs = result.rssURLs.prefix(10)
                             let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                             let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                            print("!! WRITING rssurls \(urls)")
                             try await content.asyncWrite { _, content in
                                 content.rssURLs.removeAll()
                                 content.rssTitles.removeAll()
@@ -281,22 +280,7 @@ public struct Reader: View {
             }
         }
     }
-    
-    private func ebookTextProcessor(content: String) async throws -> String {
-        do {
-            let doc = try processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
-            doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
-            if let processReadabilityContent = readerViewModel.processReadabilityContent {
-                return await processReadabilityContent(doc)
-            } else {
-                return try doc.outerHtml()
-            }
-        } catch {
-            print("Error processing readability content")
-        }
-        return content
-    }
-    
+   
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
 //        EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)

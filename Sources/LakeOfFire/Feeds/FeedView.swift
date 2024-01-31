@@ -5,7 +5,7 @@ import Combine
 
 @MainActor
 public class FeedViewModel: ObservableObject {
-    @State var entries: [FeedEntry]? = nil
+    @Published var entries: [FeedEntry]? = nil
     
     private var cancellables = Set<AnyCancellable>()
     
@@ -19,7 +19,8 @@ public class FeedViewModel: ObservableObject {
             .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] entries in
-                self?.entries = Array(entries.where { !$0.isDeleted })
+                let undeletedEntries = Array(entries.where { !$0.isDeleted })
+                self?.entries = undeletedEntries
             })
             .store(in: &cancellables)
     }

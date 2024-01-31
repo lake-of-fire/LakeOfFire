@@ -155,6 +155,7 @@ const percentFormat = new Intl.NumberFormat(locales, { style: 'percent' })
 class Reader {
     #tocView
     hasLoadedLastPosition = false
+    hasFinishedInitialLoad = false
     style = {
         spacing: 1.4,
         justify: true,
@@ -312,7 +313,14 @@ class Reader {
     }
     #onLoad({ detail: { doc } }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
-        window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
+        if (!this.hasFinishedInitialLoad) {
+            window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
+            this.hasFinishedInitialLoad = true
+        }
+        window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
+            topWindowURL: window.top.location.href,
+            currentPageURL: window.location.href,
+        })
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
@@ -361,8 +369,16 @@ class CacheWarmer {
     }
     
     #onLoad({ detail: { doc } }) {
-        window.webkit.messageHandlers.ebookCacheWarmerReadyToLoad.postMessage({
+        window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
+            topWindowURL: window.top.location.href,
+            frameURL: this.view.ownerDocument.defaultView,
         })
+        
+        if (!window.cacheWarmer.renderer.atEnd) {
+            window.webkit.messageHandlers.ebookCacheWarmerReadyToLoadNextSection.postMessage({
+                topWindowURL: window.top.location.href,
+            })
+        }
     }
     
 //    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
