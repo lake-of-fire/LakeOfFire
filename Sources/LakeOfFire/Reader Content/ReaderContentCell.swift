@@ -32,29 +32,30 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
 }
 
 extension ReaderContentModel {
-    @ViewBuilder func readerContentCellView(showThumbnails: Bool = true) -> some View {
-        ReaderContentCell(item: self, showThumbnails: showThumbnails)
+    @ViewBuilder func readerContentCellView(alwaysShowThumbnails: Bool = true) -> some View {
+        ReaderContentCell(item: self, alwaysShowThumbnails: alwaysShowThumbnails)
     }
 }
 
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
-    var showThumbnails = true
+    var alwaysShowThumbnails = true
+    var isEbookStyle = false
     
-    @ScaledMetric(relativeTo: .headline) private var scaledImageWidth: CGFloat = 140
-    @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 90
+    @ScaledMetric(relativeTo: .headline) private var scaledImageWidth: CGFloat = 100
+    @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 100
     
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            if showThumbnails, let imageUrl = item.imageURLToDisplay {
+            if let imageUrl = item.imageURLToDisplay {
                 VStack(spacing: 0) {
                     LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
 //                        .frame(maxWidth: scaledImageWidth)
-                        .frame(idealHeight: cellHeight)
+                        .frame(idealHeight: isEbookStyle ? cellHeight * 2 : cellHeight)
                         .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 12))
+                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
                     Spacer(minLength: 0)
                 }
                 .frame(maxHeight: .infinity)
@@ -103,7 +104,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
 #endif
                 }
             }
-            .frame(minWidth: cellHeight, idealHeight: showThumbnails ? cellHeight : nil)
+            .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
 //                    .frame(maxHeight: .infinity)
             
 //#if os(macOS)

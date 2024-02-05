@@ -28,7 +28,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
                             await navigator.load(content: content, readerFileManager: readerFileManager)
                         }
                     } label: {
-                        AnyView(content.readerContentCellView(showThumbnails: true))
+                        AnyView(content.readerContentCellView(alwaysShowThumbnails: true))
                             .background(Color.white.opacity(0.00000001)) // Clickability
                             .frame(maxWidth: max(155, min(maxWidth, viewWidth - 50)))
                     }

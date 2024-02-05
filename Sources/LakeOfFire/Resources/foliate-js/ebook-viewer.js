@@ -236,11 +236,15 @@ class Reader {
         document.title = title
         $('#side-bar-title').innerText = title
         const author = book.metadata?.author
-        $('#side-bar-author').innerText = typeof author === 'string' ? author
+        let authorText = typeof author === 'string' ? author
             : author
                 ?.map(author => typeof author === 'string' ? author : author.name)
                 ?.join(', ')
                 ?? ''
+        $('#side-bar-author').innerText = authorText
+        window.webkit.messageHandlers.pageMetadataUpdated.postMessage({
+            'title': title, 'author': authorText, 'url': window.top.location.href})
+
         Promise.resolve(book.getCover?.())?.then(blob => {
             blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
             if (blob) {
@@ -318,6 +322,11 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
+        
+        // TODO: Should also offer "end" if last non-glossary/backmatter section
+        if (this.view.renderer.atEnd) {
+            doc.getElementById('manabi-finished-reading-book-container')?.classList.remove('manabi-hidden')
+        }
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {

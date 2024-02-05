@@ -13,7 +13,7 @@ public struct FeedCategoryImage: View {
             }
     }
     
-    public init(category: FeedCategory) {
-        imageURL = category.backgroundImageUrl
+    public init(imageURL: URL) {
+        self.imageURL = imageURL
     }
 }

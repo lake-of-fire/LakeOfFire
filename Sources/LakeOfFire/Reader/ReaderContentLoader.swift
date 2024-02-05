@@ -104,6 +104,43 @@ public struct ReaderContentLoader {
         return mapped
     }
     
+    @RealmBackgroundActor
+    public static func loadAll(url: URL) async throws -> [(any ReaderContentModel)] {
+        let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+        
+        let contentFile = historyRealm.objects(ContentFile.self)
+            .where { !$0.isDeleted }
+            .sorted(by: \.createdAt, ascending: false)
+            .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
+            .first
+        let history = historyRealm.objects(HistoryRecord.self)
+            .where { !$0.isDeleted }
+            .sorted(by: \.createdAt, ascending: false)
+            .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
+            .first
+        let bookmark = bookmarkRealm.objects(Bookmark.self)
+            .where { !$0.isDeleted }
+            .sorted(by: \.createdAt, ascending: false)
+            .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
+            .first
+        let feeds = feedRealm.objects(FeedEntry.self)
+            .where { !$0.isDeleted }
+            .sorted(by: \.createdAt, ascending: false)
+        
+        var feed: FeedEntry?
+        if url.scheme == "https" {
+            feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
+            feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
+        } else if !url.isReaderFileURL {
+            feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+        }
+        
+        let candidates: [any ReaderContentModel] = [contentFile, bookmark, history, feed].compactMap { $0 }
+        return candidates
+    }
+    
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentModel)? {
         let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentModel)? in
@@ -118,44 +155,13 @@ public struct ReaderContentLoader {
                 return historyRecord
             }
             
-            var url = url
+//            var url = url
 //            if url.isFileURL, url.isEBookURL {
 //                url = URL(string: "ebook://ebook/load" + url.path) ?? url
 //            }
             
-            let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
-            let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
-            let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
-            
             var match: (any ReaderContentModel)?
-            let contentFile = historyRealm.objects(ContentFile.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-                .first
-            let history = historyRealm.objects(HistoryRecord.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-                .first
-            let bookmark = bookmarkRealm.objects(Bookmark.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-                .first
-            let feeds = feedRealm.objects(FeedEntry.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-            
-            var feed: FeedEntry?
-            if url.scheme == "https" {
-                feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
-                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
-            } else if !url.isReaderFileURL {
-                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
-            }
-            
-            let candidates: [any ReaderContentModel] = [contentFile, bookmark, history, feed].compactMap { $0 }
+            let candidates = try await loadAll(url: url)
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
@@ -168,6 +174,7 @@ public struct ReaderContentLoader {
                 //        historyRecord.isReaderModeByDefault
                 historyRecord.updateCompoundKey()
                 if persist {
+                    let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
                     try await historyRealm.asyncWrite {
                         historyRealm.add(historyRecord, update: .modified)
                     }

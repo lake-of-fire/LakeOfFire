@@ -81,6 +81,7 @@ public struct ContentCategoryButtons: View {
     public var body: some View {
         if let categories = viewModel.libraryConfiguration?.categories {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
+                BooksCategoryButton(categorySelection: $categorySelection, font: font, isCompact: isCompact)
                 ForEach(categories) { category in
                     FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
                 }
@@ -89,6 +90,27 @@ public struct ContentCategoryButtons: View {
     }
     
     public init(categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool = false) {
+        _categorySelection = categorySelection
+        self.font = font
+        self.isCompact = isCompact
+    }
+}
+
+public struct BooksCategoryButton: View {
+    @Binding var categorySelection: String?
+    var font = Font.title3
+    var isCompact = false
+    
+    public var body: some View {
+        Button(action: {
+            categorySelection = "books"
+        }) {
+            FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, font: font, isCompact: isCompact)
+        }
+        .buttonStyle(ReaderCategoryButtonStyle())
+    }
+    
+    public init(categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
         _categorySelection = categorySelection
         self.font = font
         self.isCompact = isCompact
@@ -106,7 +128,7 @@ public struct FeedCategoryButton: View {
         Button(action: {
             categorySelection = category.id.uuidString
         }) {
-            FeedCategoryButtonLabel(category: category, font: font, isCompact: isCompact)
+            FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, font: font, isCompact: isCompact)
         }
         .buttonStyle(ReaderCategoryButtonStyle())
     }
@@ -142,7 +164,8 @@ struct ReaderCategoryButtonStyle: ButtonStyle {
 }
 
 public struct FeedCategoryButtonLabel: View {
-    let category: LakeOfFire.FeedCategory
+    let title: String
+    let backgroundImageURL: URL
     var font = Font.title3
     var isCompact = false
     
@@ -160,13 +183,13 @@ public struct FeedCategoryButtonLabel: View {
         VStack(spacing: 0) {
             Spacer()
             Group {
-                if category.title.isEmpty {
+                if title.isEmpty {
                     Text("Untitled Category")
                         .fontWeight(.bold)
                         .font(font)
                         .foregroundColor(.secondary)
                 } else {
-                    Text(category.title)
+                    Text(title)
                         .fontWeight(.bold)
                         .font(font)
                         .foregroundColor(.white)
@@ -187,15 +210,16 @@ public struct FeedCategoryButtonLabel: View {
         //            .padding(.horizontal, scaledCategoryHeight * 0.36)
         .overlay(Color.white.opacity(0.0000001)) // Weird macOS hack...
         .background {
-            FeedCategoryImage(category: category)
+            FeedCategoryImage(imageURL: backgroundImageURL)
             //                            .frame(maxHeight: isInSidebar ? scaledCategoryHeight : 110)
                 .allowsHitTesting(false)
         }
         .multilineTextAlignment(.leading)
     }
     
-    public init(category: LakeOfFire.FeedCategory, font: Font = Font.title3, isCompact: Bool, scaledCategoryHeight: CGFloat? = nil) {
-        self.category = category
+    public init(title: String, backgroundImageURL: URL, font: Font = Font.title3, isCompact: Bool, scaledCategoryHeight: CGFloat? = nil) {
+        self.title = title
+        self.backgroundImageURL = backgroundImageURL
         self.font = font
         self.isCompact = isCompact
     }

@@ -15,7 +15,10 @@ public class ReaderFileManager: ObservableObject {
     
     private let readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip]
     @MainActor public var readerContentFiles: [ContentFile]? {
-        return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) }
+        return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
+    }
+    @MainActor public var ebookFiles: [ContentFile]? {
+        return files?.filter { [UTType.epub, UTType.epubZip].compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
     }
     
     @MainActor private var cloudDrive: CloudDrive?

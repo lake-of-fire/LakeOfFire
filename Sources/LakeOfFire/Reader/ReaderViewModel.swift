@@ -426,17 +426,22 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func pageTitleUpdated(title: String?) async throws {
+    func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
         guard !state.pageURL.isNativeReaderView, !state.pageURL.isEBookURL, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty, let content = try await getContent(forURL: state.pageURL) else { return }
         let newTitle = fixAnnoyingTitlesWithPipes(title: title)
         // Only update if empty... sometimes annoying titles load later after first page load. Could be smarter though.
-        if content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !newTitle.isEmpty {
-            try await content.asyncWrite { _, content in
-                content.title = newTitle
+        let contents = try await ReaderContentLoader.fromBackgroundActor(contents: ReaderContentLoader.loadAll(url: state.pageURL))
+        for content in contents {
+            if content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !newTitle.isEmpty {
+                try await content.asyncWrite { _, content in
+                    content.title = newTitle
+                    if let author = author {
+                        content.author = author
+                    }
+                }
+                refreshTitleInWebView(content: content)
             }
-            refreshTitleInWebView(content: content)
         }
-
     }
     
     @MainActor
@@ -460,11 +465,18 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
     }
     
     if let htmlTag = try? doc.getElementsByTag("html").first() {
-        var htmlStyle = "font-size: \(fontSize)px"
+        var htmlStyle = ""
         if let existingHtmlStyle = try? htmlTag.attr("style"), !existingHtmlStyle.isEmpty {
             htmlStyle = "\(htmlStyle); \(existingHtmlStyle)"
         }
         _ = try? htmlTag.attr("style", htmlStyle)
+    }
+    if let bodyTag = doc.body() {
+        var bodyStyle = "font-size: \(fontSize)px"
+        if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
+            bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
+        }
+        _ = try? bodyTag.attr("style", bodyStyle)
     }
     
     if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {

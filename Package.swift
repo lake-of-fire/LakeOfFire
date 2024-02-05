@@ -38,6 +38,7 @@ let package = Package(
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/drewmccormack/SwiftCloudDrive.git", branch: "main"),
         .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/readium-swift-toolkit.git", branch: "develop"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
     ],
     targets: [
@@ -71,6 +72,7 @@ let package = Package(
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "MarkdownKit", package: "swift-markdownkit"),
                 .product(name: "DSFStepperView", package: "DSFStepperView"),
+                .product(name: "ReadiumOPDS", package: "readium-swift-toolkit"),
 //                .product(name: "WrappingHStack", package: "WrappingHStack"),
                 ],
             resources: [

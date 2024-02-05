@@ -16,6 +16,7 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     
     var url: URL { get set }
     var title: String { get set }
+    var author: String { get set }
     var imageUrl: URL? { get set }
     var content: Data? { get set }
     var publicationDate: Date? { get set }

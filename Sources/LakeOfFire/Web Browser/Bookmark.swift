@@ -8,6 +8,7 @@ public class Bookmark: Object, ReaderContentModel {
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
     @Persisted public var title = ""
+    @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var publicationDate: Date?
     @Persisted public var isFromClipboard = false

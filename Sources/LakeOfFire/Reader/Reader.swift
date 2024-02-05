@@ -186,20 +186,23 @@ public struct Reader: View {
                             }
                         }
                     },
-                    "titleUpdated": { message in
+                    "pageMetadataUpdated": { message in
                         Task { @MainActor in
-                            guard let result = TitleUpdatedMessage(fromMessage: message) else { return }
+                            guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
                             guard result.url == readerViewModel.state.pageURL else { return }
-                            try await readerViewModel.pageTitleUpdated(title: result.newTitle)
+                            try await readerViewModel.pageMetadataUpdated(title: result.title, author: result.author)
                         }
                     },
                     "imageUpdated": { message in
-                        Task { @MainActor in
+                        Task { @RealmBackgroundActor in
                             guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                            guard let url = result.mainDocumentURL, !url.isNativeReaderView, let content = try await readerViewModel.getContent(forURL: url) else { return }
-                            guard result.mainDocumentURL == readerViewModel.state.pageURL && result.mainDocumentURL == content.url, content.imageUrl != result.newImageURL else { return }
-                            try await content.asyncWrite { _, content in
-                                content.imageUrl = result.newImageURL
+                            guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
+                            let contents = try await ReaderContentLoader.loadAll(url: url)
+                            for content in contents {
+                                guard content.imageUrl != result.newImageURL else { continue }
+                                try await content.realm?.asyncWrite {
+                                    content.imageUrl = result.newImageURL
+                                }
                             }
                         }
                     },
@@ -239,14 +242,12 @@ public struct Reader: View {
 #endif
             .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
                 Task { @MainActor in
-                    try await readerViewModel.pageTitleUpdated(title: pageTitle)
+                    try await readerViewModel.pageMetadataUpdated(title: pageTitle)
                 }
             }
-            .onChange(of: readerFontSize) { readerFontSize in
+            .task(id: readerFontSize) { @MainActor in
                 guard let readerFontSize = readerFontSize else { return }
-                Task { @MainActor in
-                    await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
-                }
+                await readerViewModel.scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
             }
             .onChange(of: lightModeTheme) { lightModeTheme in
                 Task { @MainActor in
@@ -311,98 +312,14 @@ public struct Reader: View {
 
 fileprivate extension Reader {
     // MARK: Readability
-   
+    
     @MainActor
     func showOriginal() async throws {
-//        if !(readerViewModel.content is FeedEntry) {
+        //        if !(readerViewModel.content is FeedEntry) {
         try await readerViewModel.content.asyncWrite { _, content in
             content.isReaderModeByDefault = false
         }
-//        }
+        //        }
         readerViewModel.navigator.reload()
     }
-//    
-//    @MainActor
-//    func showReaderView() {
-//        guard let readabilityContent = readerViewModel.readabilityContent else {
-//            return
-//        }
-//        let title = readerViewModel.content.title
-//        let imageURL = readerViewModel.content.imageURLToDisplay
-//        Task.detached {
-//            do {
-//                try await showReadabilityContent(content: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: readerViewModel.readabilityContainerSelector, in: readerViewModel.readabilityContainerFrameInfo)
-//            } catch { }
-//        }
-//    }
-//    
-//    /// Content before it has been treated with Reader-specific processing.
-//    private func showReadabilityContent(content: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
-//        try await readerViewModel.content.asyncWrite { _, content in
-//            content.isReaderModeByDefault = true
-//        }
-//        
-//        let injectEntryImageIntoHeader = readerViewModel.content.injectEntryImageIntoHeader
-//        let readerFontSize = readerFontSize
-//        let defaultFontSize = defaultFontSize
-//        let processReadabilityContent = processReadabilityContent
-//        try await Task.detached {
-//            var doc: SwiftSoup.Document
-//            do {
-//                doc = try processForReaderMode(content: content, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
-//            } catch {
-//                print(error.localizedDescription)
-//                return
-//            }
-//            
-//            var html: String
-//            if let processReadabilityContent = processReadabilityContent {
-//                html = await processReadabilityContent(doc)
-//            } else {
-//                html = try doc.outerHtml()
-//            }
-//#warning("SwiftUIDrag menu (?)")
-//            let transformedContent = html
-//            await Task { @MainActor in
-//                if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-//                    await readerViewModel.scriptCaller.evaluateJavaScript(
-//                                """
-//                                var root = document.body
-//                                if (renderToSelector) {
-//                                    root = document.querySelector(renderToSelector)
-//                                }
-//                                var serialized = html
-//                                
-//                                let xmlns = document.documentElement.getAttribute('xmlns')
-//                                if (xmlns) {
-//                                    let parser = new DOMParser()
-//                                    let doc = parser.parseFromString(serialized, 'text/html')
-//                                    let readabilityNode = doc.body
-//                                    let replacementNode = root.cloneNode()
-//                                    replacementNode.innerHTML = ''
-//                                    for (let innerNode of readabilityNode.childNodes) {
-//                                        serialized = new XMLSerializer().serializeToString(innerNode)
-//                                        replacementNode.innerHTML += serialized
-//                                    }
-//                                    root.innerHTML = replacementNode.innerHTML
-//                                } else if (root) {
-//                                    root.outerHTML = serialized
-//                                }
-//                                
-//                                let style = document.createElement('style')
-//                                style.textContent = css
-//                                document.head.appendChild(style)
-//                                document.body.classList.add('readability-mode')
-//                                """,
-//                                arguments: [
-//                                    "renderToSelector": renderToSelector ?? "",
-//                                    "html": transformedContent,
-//                                    "css": Readability.shared.css,
-//                                ], in: frameInfo)
-//                } else {
-//                    readerViewModel.navigator.loadHTML(transformedContent, baseURL: url)
-//                }
-//            }.value
-//        }.value
-//    }
 }

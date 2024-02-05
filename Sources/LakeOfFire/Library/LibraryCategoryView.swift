@@ -190,7 +190,7 @@ struct LibraryCategoryView: View {
             List(selection: $viewModel.selectedFeed) {
                 Section(header: Text("Category"), footer: Text("Enter an image URL to show as the category button background.").font(.footnote).foregroundColor(.secondary)) {
                     ZStack {
-                        FeedCategoryImage(category: viewModel.category)
+                        FeedCategoryImage(imageURL: viewModel.category.backgroundImageUrl)
                             .allowsHitTesting(false)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .frame(maxHeight: scaledCategoryHeight)

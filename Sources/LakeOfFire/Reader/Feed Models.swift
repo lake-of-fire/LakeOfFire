@@ -122,6 +122,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     
     @Persisted public var url: URL
     @Persisted public var title = ""
+    @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var publicationDate: Date?
 //    @Persisted public var isFromClipboard = false
@@ -370,6 +371,7 @@ public extension Feed {
             feedEntry.html = content
             feedEntry.url = url
             feedEntry.title = title ?? ""
+            feedEntry.author = item.author ?? ""
             feedEntry.imageUrl = imageUrl
             feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
             feedEntry.updateCompoundKey()
@@ -434,6 +436,7 @@ public extension Feed {
             feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: self.id)
             feedEntry.url = url
             feedEntry.title = title ?? ""
+            feedEntry.author = item.authors?.compactMap { $0.name } .joined(separator: ", ") ?? ""
             feedEntry.imageUrl = imageUrl
             feedEntry.publicationDate = item.published ?? item.updated
             feedEntry.html = item.content?.value

@@ -47,13 +47,15 @@ public struct ReadabilityParsedMessage {
     }
 }
 
-public struct TitleUpdatedMessage {
-    public let newTitle: String
+public struct PageMetadataUpdatedMessage {
+    public let title: String
+    public let author: String
     public let url: URL?
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-        newTitle = body["newTitle"] as! String
+        guard let body = message.body as? [String: Any], let title = body["title"] as? String, let author = body["title"] as? String else { return nil }
+        self.title = title
+        self.author = author
         url = URL(string: body["url"] as! String)
     }
 }
