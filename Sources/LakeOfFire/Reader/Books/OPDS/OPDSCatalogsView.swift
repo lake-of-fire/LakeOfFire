@@ -108,7 +108,7 @@ struct OPDSCatalogsView: View {
 
 struct OPDSCatalogDetailView: View {
     @ObservedRealmObject var catalog: OPDSCatalog
-    @State private var publications: [Book] = []
+    @State private var publications: [Publication] = []
     @State private var errorMessage: String?
     
     var body: some View {
@@ -130,7 +130,7 @@ struct OPDSCatalogDetailView: View {
         OPDSParser.parseURL(url: url) { parseData, error in
             DispatchQueue.main.async {
                 if let feed = parseData?.feed {
-                    self.publications = feed.publications.map { Book(title: $0.metadata.title) }
+                    self.publications = feed.publications.map { Publication(title: $0.metadata.title) }
                 } else if let error = error {
                     self.errorMessage = "Failed to fetch catalog data: \(error.localizedDescription)"
                 }

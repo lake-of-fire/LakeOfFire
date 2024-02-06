@@ -205,20 +205,22 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     }
     
     public var body: some View {
-#if os(macOS)            
-        ScrollView {
-            LazyVStack {
+        Group {
+#if os(macOS)
+            ScrollView {
+                LazyVStack {
+                    listItems
+                }
+            }
+#else
+            List(selection: $entrySelection) {
                 listItems
             }
-        }
-#else
-        List(selection: $entrySelection) {
-            listItems
-        }
-        .listStyle(.plain)
-        .scrollContentBackgroundIfAvailable(.hidden)
-        .listItemTint(appTint)
+            .listStyle(.plain)
+            .scrollContentBackgroundIfAvailable(.hidden)
+            .listItemTint(appTint)
 #endif
+        }
     }
     
     public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder) {
@@ -233,6 +235,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
 
 public struct ReaderContentListItems<C: ReaderContentModel>: View {
     let contents: [C]
+    // TODO: Something with this triggers repreatedly in printchanges; change to an environmentkey
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
@@ -250,7 +253,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, viewModel: viewModel)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-                guard let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
+                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
                 Task { @MainActor in
                     await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.

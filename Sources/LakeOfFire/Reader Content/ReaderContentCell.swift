@@ -51,11 +51,14 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = item.imageURLToDisplay {
                 VStack(spacing: 0) {
-                    LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
-//                        .frame(maxWidth: scaledImageWidth)
-                        .frame(idealHeight: isEbookStyle ? cellHeight * 2 : cellHeight)
-                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
+                    if isEbookStyle {
+                        BookThumbnail(imageURL: imageUrl)
+                    } else {
+                        LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
+                            .frame(idealHeight: cellHeight)
+                            .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
+                            .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
+                    }
                     Spacer(minLength: 0)
                 }
                 .frame(maxHeight: .infinity)

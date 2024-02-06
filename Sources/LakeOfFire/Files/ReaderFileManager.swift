@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import SwiftCloudDrive
 import SwiftUtilities
+import SwiftUIDownloads
 import RealmSwift
 import RealmSwiftGaps
 
@@ -112,7 +113,7 @@ public class ReaderFileManager: ObservableObject {
             }
         }
 
-        let targetDirectory = Self.rootRelativePath(forFileURL: fileURL)
+        let targetDirectory = Self.rootRelativePath(forURLExtension: fileURL)
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
@@ -126,14 +127,17 @@ public class ReaderFileManager: ObservableObject {
                 targetExists = true
                 if fileURL.isFilePackage() {
                     originData = try fileURL.concatenateDataInDirectory()
-                    distinctTargetExists = try targetURL.concatenateDataInDirectory() != originData
+                    distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
                 } else {
                     distinctTargetExists = true
                 }
             } else if try await drive.fileExists(at: targetFilePath) {
                 originData = try await FileManager.default.contentsOfFile(coordinatingAccessAt: fileURL)
                 targetExists = true
-                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
+                distinctTargetExists = targetURL != fileURL
+                if !distinctTargetExists {
+                    distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
+                }
             }
             if distinctTargetExists, let originData = originData {
                 if try await drive.readFile(at: targetFilePath) != originData {
@@ -282,7 +286,24 @@ public class ReaderFileManager: ObservableObject {
     }
 }
 
-
+public extension ReaderFileManager {
+    // Downloadables
+    
+    @MainActor
+    func downloadable(url: URL, name: String) async throws -> Downloadable? {
+        guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
+        
+        let targetDirectory = Self.rootRelativePath(forURLExtension: url)
+        var targetFilePath = targetDirectory.appending(url.lastPathComponent)
+        let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
+        
+        return Downloadable(
+            url: url,
+            name: name,
+            localDestination: targetURL
+        )
+    }
+}
 
 extension ReaderFileManager: CloudDriveObserver {
     nonisolated public func cloudDriveDidChange(_ drive: CloudDrive, rootRelativePaths: [RootRelativePath]) {
@@ -293,8 +314,8 @@ extension ReaderFileManager: CloudDriveObserver {
 }
 
 private extension ReaderFileManager {
-    static func rootRelativePath(forFileURL fileURL: URL) -> RootRelativePath {
-        switch fileURL.pathExtension.lowercased() {
+    static func rootRelativePath(forURLExtension url: URL) -> RootRelativePath {
+        switch url.pathExtension.lowercased() {
         case "epub": return .ebooks
         default: return .root
         }
