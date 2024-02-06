@@ -32,6 +32,8 @@ struct BookGridCell: View {
     let downloadURL: URL?
     var onSelected: ((Bool) -> Void)? = nil
     
+    @State private var wasDownloaded = false
+    
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @ObservedObject private var downloadController = DownloadController.shared
     
@@ -77,6 +79,7 @@ struct BookGridCell: View {
                         downloadedText: "In Library") { _ in
                             buttonPress()
                         }
+                        .id("book-grid-cell-\(downloadable.id)-\(wasDownloaded)")
                     .font(.caption)
                     .textCase(.uppercase)
                     .foregroundStyle(.primary)
@@ -94,11 +97,22 @@ struct BookGridCell: View {
         .task { @MainActor in
             await refreshDownloadable()
         }
+        .onChange(of: downloadable?.isFinishedDownloading) { isFinishedDownloading in
+            Task {
+                await refreshDownloadable()
+            }
+        }
     }
     
     private func refreshDownloadable() async {
         if let downloadURL = downloadURL {
-            downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: title)
+            if downloadable?.url != downloadURL || downloadable?.name != title {
+                downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: title)
+            }
+            if downloadable?.existsLocally() ?? false && !wasDownloaded {
+                try? await readerFileManager.refreshAllFilesMetadata()
+                wasDownloaded = true
+            }
         }
     }
     
@@ -112,7 +126,6 @@ struct BookGridCell: View {
                 }
             }
             onSelected?(wasAlreadyDownloaded)
-            await refreshDownloadable()
         }
     }
 }
