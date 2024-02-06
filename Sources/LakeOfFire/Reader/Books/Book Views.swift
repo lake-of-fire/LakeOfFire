@@ -92,23 +92,28 @@ struct BookGridCell: View {
         .lineLimit(1)
         .truncationMode(.tail)
         .task { @MainActor in
-            if let downloadURL = downloadURL {
-                downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: title)
-            }
+            await refreshDownloadable()
+        }
+    }
+    
+    private func refreshDownloadable() async {
+        if let downloadURL = downloadURL {
+            downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: title)
         }
     }
     
     private func buttonPress() {
-        var wasAlreadyDownloaded = false
-        if let downloadable = downloadable {
-            wasAlreadyDownloaded = downloadable.existsLocally()
-            if !wasAlreadyDownloaded {
-                Task {
+        Task { @MainActor in
+            var wasAlreadyDownloaded = false
+            if let downloadable = downloadable {
+                wasAlreadyDownloaded = downloadable.existsLocally()
+                if !wasAlreadyDownloaded {
                     await downloadController.ensureDownloaded([downloadable])
                 }
             }
+            onSelected?(wasAlreadyDownloaded)
+            await refreshDownloadable()
         }
-        onSelected?(wasAlreadyDownloaded)
     }
 }
 
