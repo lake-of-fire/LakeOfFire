@@ -38,6 +38,12 @@ public struct FeedView: View {
         }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
             if let entries = viewModel.entries {
                 ReaderContentList(contents: entries, entrySelection: $feedEntrySelection, sortOrder: .publicationDate)
+                    .modifier {
+                        if #available(macOS 14, iOS 17, *) {
+                            $0
+                                .safeAreaPadding(.all, 8)
+                        } else { $0 }
+                    }
             }
         }
     }
