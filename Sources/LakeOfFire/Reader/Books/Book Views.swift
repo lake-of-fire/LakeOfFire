@@ -98,6 +98,7 @@ struct BookGridCell: View {
             await refreshDownloadable()
         }
         .onChange(of: downloadable?.isFinishedDownloading) { isFinishedDownloading in
+            guard isFinishedDownloading ?? false else { return }
             Task {
                 await refreshDownloadable()
             }

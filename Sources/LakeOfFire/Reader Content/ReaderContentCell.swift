@@ -46,6 +46,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 100
     
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -80,7 +81,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
 #endif
                 }
                 Spacer(minLength: 0)
-                HStack(alignment: .center, spacing: 0) {
+                HStack(alignment: .bottom) {
                     VStack(alignment: .leading, spacing: 2) {
                         if item.displayPublicationDate, let publicationDate = item.humanReadablePublicationDate {
                             VStack {
@@ -94,31 +95,51 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
                         }
                     }
+                    Spacer()
 #if os(iOS)
-                    Spacer(minLength: 0)
                     BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
                         .buttonStyle(.borderless)
                         .padding(.leading, 5)
-//                    if viewModel.bookmarkExists {
-//                        Spacer(minLength: 0)
-//                        Image(systemName: "bookmark.fill")
-//                            .padding(.leading, 5)
-//                    }
+                    //                    if viewModel.bookmarkExists {
+                    //                        Spacer(minLength: 0)
+                    //                        Image(systemName: "bookmark.fill")
+                    //                            .padding(.leading, 5)
+                    //                    }
 #endif
+                    if let item = item as? (any DeletableReaderContent) {
+                        Menu {
+                            Button(role: .destructive) {
+                                readerContentListModalsModel.confirmDeletionOf = item
+                                readerContentListModalsModel.confirmDelete = true
+                            } label: {
+                                Label(item.deleteActionTitle, image: "trash")
+                            }
+                        } label: {
+                            Label("More Options", systemImage: "ellipsis")
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 10)
+                                .background(.secondary.opacity(0.000000001)) // clickability
+                                .labelStyle(.iconOnly)
+                        }
+                        .foregroundStyle(.secondary)
+                        .menuIndicator(.hidden)
+                        .offset(y: 3)
+                        //                    .menuStyle(.borderlessButton)
+                    }
                 }
             }
             .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
 //                    .frame(maxHeight: .infinity)
             
 //#if os(macOS)
-            Spacer(minLength: 0)
+//            Spacer(minLength: 0)
 //#endif
         }
         .fixedSize(horizontal: false, vertical: true)
 #if os(macOS)
         .padding(.top, 4)
         .padding(.bottom, 4)
-        .padding(.horizontal, 8)
+//        .padding(.horizontal, 8)
 #else
         .padding(.vertical, 4)
 #endif

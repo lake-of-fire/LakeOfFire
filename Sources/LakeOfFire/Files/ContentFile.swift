@@ -12,7 +12,7 @@ public class ContentFile: Bookmark {
 
 extension ContentFile: DeletableReaderContent {
     public var deleteActionTitle: String {
-        "Delete File"
+        "Delete File…"
     }
     
     @MainActor

@@ -100,6 +100,7 @@ public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject
 fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     @Binding var entrySelection: String?
     var alwaysShowThumbnails = true
+    var showSeparators = false
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     
 //    @Environment(\.readerWebViewState) private var readerState
@@ -108,34 +109,59 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     
+    @ViewBuilder private func unstyledCell(item: C) -> some View {
+        ReaderContentCell(item: item, alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
+    }
+
+    @ViewBuilder private func cell(item: C) -> some View {
+        if showSeparators {
+            unstyledCell(item: item)
+        } else {
+            unstyledCell(item: item)
+                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+                .background(.ultraThinMaterial)
+                .background(.secondary.opacity(0.09))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+    
     var body: some View {
         Group {
 #if os(macOS)
             ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
-                Toggle(isOn: Binding<Bool>(
-                    get: {
-                        //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                        readerViewModel.state.matches(content: content)
-                    },
-                    set: {
-                        entrySelection = $0 ? content.compoundKey : nil
-                    }
-                ), label: {
-                    ReaderContentCell(item: content, alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
-                        .background(Color.white.opacity(0.00000001)) // Clickability
-                })
-                .toggleStyle(ListItemToggleStyle())
-                //                    .buttonStyle(.borderless)
-                //                    .id(feedEntry.compoundKey)
-                .contextMenu {
-                    if let content = content as? (any DeletableReaderContent) {
-                        Button(role: .destructive) {
-                            readerContentListModalsModel.confirmDeletionOf = content
-                            readerContentListModalsModel.confirmDelete = true
-                        } label: {
-                            Label(content.deleteActionTitle, image: "trash")
+                VStack(spacing: 0) {
+                    Toggle(isOn: Binding<Bool>(
+                        get: {
+                            //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
+                            readerViewModel.state.matches(content: content)
+                        },
+                        set: {
+                            entrySelection = $0 ? content.compoundKey : nil
                         }
+                    ), label: {
+                        cell(item: content)
+                            .background(Color.white.opacity(0.00000001)) // Clickability
+                    })
+                    .toggleStyle(ListItemToggleStyle())
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    
+                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
+                        Divider()
                     }
+//                                    .contextMenu {
+//                    if let content = content as? (any DeletableReaderContent) {
+//                        Button(role: .destructive) {
+//                            readerContentListModalsModel.confirmDeletionOf = content
+//                            readerContentListModalsModel.confirmDelete = true
+//                        } label: {
+//                            Label(content.deleteActionTitle, image: "trash")
+//                        }
+//                    }
+//                }
+
+                    //                    .buttonStyle(.borderless)
+                    //                    .id(feedEntry.compoundKey)
                 }
             }
             .headerProminence(.increased)
@@ -143,14 +169,13 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
             ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
                 Group {
                     if #available(iOS 16.0, *) {
-                        ReaderContentCell(item: content, alwaysShowThumbnails: showThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
+                        cell(item: content)
                     } else {
                         Button {
                             entrySelection = content.compoundKey
                         } label: {
-                            ReaderContentCell(item: content, alwaysShowThumbnails: showThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
+                            cell(item: content)
                                 .multilineTextAlignment(.leading)
-                            //                        .id(content.compoundKey)
                         }
                         .buttonStyle(.borderless)
                         .tint(.primary)
@@ -171,16 +196,17 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                         }
                     }
                 }
-                .tint(.red)
+//                .tint(.)
             }
 #endif
         }
         .frame(minHeight: 10) // Needed so ScrollView doesn't collapse at start...
     }
     
-    init(entrySelection: Binding<String?>, alwaysShowThumbnails: Bool = true, viewModel: ReaderContentListViewModel<C>) {
+    init(entrySelection: Binding<String?>, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false, viewModel: ReaderContentListViewModel<C>) {
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.showSeparators = showSeparators
         self.viewModel = viewModel
     }
 }
@@ -239,6 +265,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
+    var showSeparators = false
     var contentFilter: ((C) async throws -> Bool)? = nil
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
@@ -251,7 +278,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
     
     public var body: some View {
         ScrollViewReader { scrollViewProxy in
-            ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, viewModel: viewModel)
+            ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
                 Task { @MainActor in
@@ -286,10 +313,11 @@ refreshSelection(scrollViewProxy: scrollViewProxy, state: readerViewModel.state)
         }
     }
     
-    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder) {
+    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder) {
         self.contents = contents
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.showSeparators = showSeparators
         self.contentSortAscending = contentSortAscending
         self.contentFilter = contentFilter
         self.sortOrder = sortOrder

@@ -26,6 +26,8 @@ public class ReaderFileManager: ObservableObject {
     @MainActor private var localDrive: CloudDrive?
     public var ubiquityContainerIdentifier: String? = nil
     
+    private var refreshAllFilesMetadataTask: Task<Void, Never>?
+    
     public init() { }
     
     @MainActor public init(ubiquityContainerIdentifier: String) async throws {
@@ -103,7 +105,7 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor
-    public func importFile(fileURL: URL, restrictToReaderContentMimeTypes: Bool) async throws -> URL? {
+    public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?, restrictToReaderContentMimeTypes: Bool) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         if restrictToReaderContentMimeTypes {
             let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
@@ -112,8 +114,8 @@ public class ReaderFileManager: ObservableObject {
                 return nil
             }
         }
-
-        let targetDirectory = Self.rootRelativePath(forURLExtension: fileURL)
+        
+        let targetDirectory = Self.rootRelativePath(forURLExtension: downloadURL ?? fileURL)
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
@@ -168,40 +170,51 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func refreshAllFilesMetadata() async throws {
-        guard localDrive != nil || cloudDrive != nil else { return }
-        var files = [ThreadSafeReference<ContentFile>]()
-        for drive in [cloudDrive, localDrive].compactMap({ $0 }) {
-            let discovered = try await refreshFilesMetadata(drive: drive)
-            files.append(contentsOf: discovered)
-        }
-        
-        let discoveredFiles = files
-        try await Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
-            let files = discoveredFiles.compactMap { realm.resolve($0) }
-            self.files = files.map { $0.freeze() }
-            objectWillChange.send()
-            let discoveredURLs = files.map { $0.url }
-            
-            // Delete orphans
-            try await Task.detached { @RealmBackgroundActor in
-                let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
-                let existingURLs = discoveredURLs.map { $0.absoluteString }
-                let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND NOT (url IN %@)", existingURLs))
-                try await realm.asyncWrite {
-                    for orphan in orphans {
-                        orphan.isDeleted = true
-                    }
+        refreshAllFilesMetadataTask?.cancel()
+        refreshAllFilesMetadataTask = Task { @MainActor in
+            do {
+                guard localDrive != nil || cloudDrive != nil else { return }
+                var files = [ThreadSafeReference<ContentFile>]()
+                for drive in [cloudDrive, localDrive].compactMap({ $0 }) {
+                    let discovered = try await refreshFilesMetadata(drive: drive)
+                    files.append(contentsOf: discovered)
                 }
-            }.value
-        }.value
+                
+                let discoveredFiles = files
+                try await Task { @MainActor [weak self] in
+                    try Task.checkCancellation()
+                    guard let self = self else { return }
+                    let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+                    let files = discoveredFiles.compactMap { realm.resolve($0) }
+                    self.files = files.map { $0.freeze() }
+                    objectWillChange.send()
+                    let discoveredURLs = files.map { $0.url }
+                    
+                    // Delete orphans
+                    try await Task.detached { @RealmBackgroundActor in
+                        try Task.checkCancellation()
+                        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+                        let existingURLs = discoveredURLs.map { $0.absoluteString }
+                        let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND NOT (url IN %@)", existingURLs))
+                        try await realm.asyncWrite {
+                            for orphan in orphans {
+                                orphan.isDeleted = true
+                            }
+                        }
+                    }.value
+                }.value
+            } catch {
+                print(error)
+            }
+        }
+        await refreshAllFilesMetadataTask
     }
     
     @MainActor
     func refreshFilesMetadata(drive: CloudDrive, relativePath: RootRelativePath? = nil) async throws -> [ThreadSafeReference<ContentFile>] {
         var files = [ThreadSafeReference<ContentFile>]()
         for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
+            try Task.checkCancellation()
             var tryRelativePath = RootRelativePath(path: url.relativePath)
             if let relativePath = relativePath {
                 tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
@@ -251,7 +264,7 @@ public class ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) {
         contentFile.url = fileURL
-        contentFile.title = fileURL.lastPathComponent
+        contentFile.title = fileURL.deletingPathExtension().lastPathComponent
         contentFile.isDeleted = false
         contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
         contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain"
@@ -316,7 +329,7 @@ extension ReaderFileManager: CloudDriveObserver {
 private extension ReaderFileManager {
     static func rootRelativePath(forURLExtension url: URL) -> RootRelativePath {
         switch url.pathExtension.lowercased() {
-        case "epub": return .ebooks
+        case "epub": return .ebooks.appending(url.host ?? "")
         default: return .root
         }
     }

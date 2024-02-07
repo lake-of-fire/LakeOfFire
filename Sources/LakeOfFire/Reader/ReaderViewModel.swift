@@ -399,6 +399,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
+    /// Also sets a history visit.
     @MainActor
     public func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
@@ -427,12 +428,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
-        guard !state.pageURL.isNativeReaderView, !state.pageURL.isEBookURL, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty, let content = try await getContent(forURL: state.pageURL) else { return }
+        guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle = fixAnnoyingTitlesWithPipes(title: title)
         // Only update if empty... sometimes annoying titles load later after first page load. Could be smarter though.
         let contents = try await ReaderContentLoader.fromBackgroundActor(contents: ReaderContentLoader.loadAll(url: state.pageURL))
         for content in contents {
-            if content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !newTitle.isEmpty {
+            if !newTitle.isEmpty, state.pageURL.isEBookURL || content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try await content.asyncWrite { _, content in
                     content.title = newTitle
                     if let author = author {

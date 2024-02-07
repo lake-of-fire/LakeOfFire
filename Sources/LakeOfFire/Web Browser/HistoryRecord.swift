@@ -14,7 +14,7 @@ public class HistoryRecord: Bookmark {
 
 extension HistoryRecord: DeletableReaderContent {
     public var deleteActionTitle: String {
-        "Remove from History"
+        "Remove from History…"
     }
     
     @RealmBackgroundActor

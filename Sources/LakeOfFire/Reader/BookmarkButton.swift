@@ -116,6 +116,8 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
         } label: {
             Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark")
                 .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(.secondary.opacity(0.000000001)) // clickability
         }
 //        .buttonStyle(.borderless)
 //        .buttonStyle(.plain)
