@@ -3,6 +3,19 @@ import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import SwiftUtilities
+import Pow
+
+fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+        //            .padding(.vertical, 12)
+        //            .padding(.horizontal, 64)
+            .brightness(configuration.isPressed ? -0.06 : 0)
+            .conditionalEffect(
+                .pushDown,
+                condition: configuration.isPressed)
+    }
+}
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View {
     var filteredContents: [C]
@@ -12,8 +25,8 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
     @AppStorage("appTint") private var appTint: Color = Color.accentColor
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
-    @ScaledMetric(relativeTo: .headline) private var maxWidth = 330
-    @State private var viewWidth: CGFloat = 0
+    @ScaledMetric(relativeTo: .headline) private var maxWidth = 250
+//    @State private var viewWidth: CGFloat = 0
     
     @State private var confirmDelete: Bool = false
     @State private var confirmDeletionOf: (any DeletableReaderContent)?
@@ -30,14 +43,16 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
                     } label: {
                         AnyView(content.readerContentCellView(alwaysShowThumbnails: true))
                             .background(Color.white.opacity(0.00000001)) // Clickability
-                            .frame(maxWidth: max(155, min(maxWidth, viewWidth - 50)))
+//                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
+                            .frame(maxWidth: maxWidth)
                     }
-#if os(iOS)
-                    .buttonStyle(.bordered)
-#else
-                    .buttonStyle(.borderless)
-#endif
+                    .buttonStyle(ReaderContentCellButtonStyle())
                     .tint(.secondary)
+//                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .background(.ultraThinMaterial)
+                    .background(.secondary.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     //                    .id(feedEntry.compoundKey)
                     .contextMenu {
                         if let entry = content as? (any DeletableReaderContent) {
@@ -49,20 +64,19 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
                             }
                         }
                     }
-                    Divider()
                 }
                 .headerProminence(.increased)
             }
             .fixedSize()
             .padding(.horizontal)
         }
-        .geometryReader { geometry in
-            Task { @MainActor in
-                if viewWidth != geometry.size.width {
-                    viewWidth = geometry.size.width
-                }
-            }
-        }
+//        .geometryReader { geometry in
+//            Task { @MainActor in
+//                if viewWidth != geometry.size.width {
+//                    viewWidth = geometry.size.width
+//                }
+//            }
+//        }
         .confirmationDialog("Do you really want to delete \(confirmDeletionOf?.title.truncate(20) ?? "")?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) {
                 Task { @MainActor in

@@ -169,7 +169,7 @@ public class LibraryDataManager: NSObject {
                     let libraryConfiguration = try await LibraryConfiguration.get()
                     for download in opmlDownloads {
                         try Task.checkCancellation()
-                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? Date()) >= (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
                             do {
                                 try await self?.importOPML(download: download)
                             } catch {
@@ -338,6 +338,7 @@ public class LibraryDataManager: NSObject {
         guard let realm = configuration.realm else { return }
         
         for entry in opml.entries {
+            try Task.checkCancellation()
             let (importedCategories, importedFeeds, importedScripts) = try await importOPMLEntry(entry, opml: opml, download: download)
             allImportedCategories.formUnion(importedCategories)
             allImportedFeeds.formUnion(importedFeeds)
@@ -536,6 +537,7 @@ public class LibraryDataManager: NSObject {
                 if script.opmlURL == download?.url || script.isDeleted {
                     try Task.checkCancellation()
                     try await realm.asyncWrite {
+                        try Task.checkCancellation()
                         try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
                         try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
@@ -588,6 +590,7 @@ public class LibraryDataManager: NSObject {
         }
         
         for childEntry in (opmlEntry.children ?? []) {
+            try Task.checkCancellation()
             let (newCategories, newFeeds, newScripts) = try await importOPMLEntry(childEntry, opml: opml, download: download, category: category, importedCategories: importedCategories, importedFeeds: importedFeeds, importedScripts: importedScripts)
             importedCategories.append(contentsOf: newCategories)
             importedFeeds.append(contentsOf: newFeeds)

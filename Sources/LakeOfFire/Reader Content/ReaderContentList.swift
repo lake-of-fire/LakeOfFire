@@ -58,15 +58,18 @@ public enum ReaderContentSortOrder {
 public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject {
     @Published var filteredContents: [C] = []
     var refreshSelectionTask: Task<Void, Error>?
+    var loadContentsTask: Task<Void, Error>?
     
     @MainActor
     func load(contents: [C], contentFilter: @escaping (@RealmBackgroundActor (C) async throws -> Bool), sortOrder: ReaderContentSortOrder) async throws {
-        try await Task { @RealmBackgroundActor in
+        loadContentsTask?.cancel()
+        loadContentsTask = Task { @RealmBackgroundActor in
             var filtered: [C] = []
             //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
             //                try await contentFilter($0)
             //            })
             for content in contents {
+                try Task.checkCancellation()
                 if try await contentFilter(content) {
                     filtered.append(content)
                 }
@@ -86,14 +89,18 @@ public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject
                     print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
                 }
             }
+            try Task.checkCancellation()
+            
             // TODO: Pagination
             let toSet = Array(sorted.prefix(3000))
             try await Task { @MainActor [weak self] in
+                try Task.checkCancellation()
                 guard let self = self else { return }
                 //                self?.filteredContents = toSet
                 filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet as [any ReaderContentModel]) as? [C] ?? filteredContents
             }.value
-        }.value
+        }
+        try await loadContentsTask?.value
     }
 }
 
@@ -225,7 +232,8 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    
+    @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
+
     @ViewBuilder private var listItems: some View {
         ReaderContentListItems(contents: contents, entrySelection: $entrySelection, contentSortAscending: contentSortAscending, alwaysShowThumbnails: alwaysShowThumbnails, contentFilter: contentFilter, sortOrder: sortOrder)
     }
@@ -279,6 +287,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
     public var body: some View {
         ScrollViewReader { scrollViewProxy in
             ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
+                .frame(maxWidth: 850)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
                 Task { @MainActor in

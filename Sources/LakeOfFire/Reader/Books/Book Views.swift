@@ -84,7 +84,7 @@ struct BookGridCell: View {
                     .textCase(.uppercase)
                     .foregroundStyle(.primary)
                     .modifier {
-                        if #available(macOS 13, iOS 15, *) {
+                        if #available(macOS 13, iOS 16, *) {
                             $0
                                 .fontWeight(.bold)
                         } else { $0 }
@@ -171,7 +171,7 @@ fileprivate struct BookButtonStyle: ButtonStyle {
         configuration.label
 //            .padding(.vertical, 12)
 //            .padding(.horizontal, 64)
-            .brightness(configuration.isPressed ? -0.1 : 0)
+            .brightness(configuration.isPressed ? -0.06 : 0)
             .conditionalEffect(
                 .pushDown,
                 condition: configuration.isPressed)
