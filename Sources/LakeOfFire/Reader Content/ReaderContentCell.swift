@@ -51,18 +51,20 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = item.imageURLToDisplay {
-                VStack(spacing: 0) {
+//                VStack(spacing: 0) {
                     if isEbookStyle {
                         BookThumbnail(imageURL: imageUrl)
-                    } else {
-                        LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
-                            .frame(idealHeight: cellHeight)
                             .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
+                    } else {
+//                        LakeImage(imageUrl, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight)
+                        LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
+//                            .frame(idealHeight: cellHeight)
+//                            .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
                             .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
                     }
-                    Spacer(minLength: 0)
-                }
-                .frame(maxHeight: .infinity)
+//                }
+//                .frame(maxHeight: .infinity)
+//                .background(.purple.opacity(0.3))
 //                .padding(.trailing, 8)
             }
             VStack(alignment: .leading, spacing: 0) {
@@ -73,7 +75,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                        .padding(.trailing, 5)
+//                        .padding(.trailing, 5)
 #if os(macOS)
                     Spacer(minLength: 0)
                     BookmarkButton(readerContent: item, hiddenIfUnbookmarked: !viewModel.forceShowBookmark)
@@ -81,25 +83,27 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
 #endif
                 }
                 Spacer(minLength: 0)
-                HStack(alignment: .bottom) {
+                HStack(alignment: .bottom, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
                         if item.displayPublicationDate, let publicationDate = item.humanReadablePublicationDate {
-                            VStack {
-                                Text("\(publicationDate)")
-                            }
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
+                            Text("\(publicationDate)")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .lineLimit(9001)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
                             ProgressView(value: min(1, readingProgressFloat))
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                                .padding(.bottom, 2)
                         }
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
 #if os(iOS)
                     BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
                         .buttonStyle(.borderless)
-                        .padding(.leading, 5)
+                        .padding(.leading, 2)
+//                        .padding(.leading, 5)
                     //                    if viewModel.bookmarkExists {
                     //                        Spacer(minLength: 0)
                     //                        Image(systemName: "bookmark.fill")
@@ -118,7 +122,6 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                             Label("More Options", systemImage: "ellipsis")
                                 .padding(.horizontal, 4)
                                 .padding(.vertical, 10)
-                                .background(.secondary.opacity(0.000000001)) // clickability
                                 .labelStyle(.iconOnly)
                         }
                         .foregroundStyle(.secondary)
@@ -128,21 +131,17 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                     }
                 }
             }
-            .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
+            .frame(maxHeight: cellHeight)
+        }
+        .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
 //                    .frame(maxHeight: .infinity)
             
 //#if os(macOS)
 //            Spacer(minLength: 0)
 //#endif
-        }
-        .fixedSize(horizontal: false, vertical: true)
-#if os(macOS)
-        .padding(.top, 4)
-        .padding(.bottom, 4)
-//        .padding(.horizontal, 8)
-#else
-        .padding(.vertical, 4)
-#endif
+//        }
+//        .fixedSize(horizontal: false, vertical: true)
+//        .padding(4)
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }

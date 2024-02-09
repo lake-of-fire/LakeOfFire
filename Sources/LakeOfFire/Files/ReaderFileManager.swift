@@ -22,15 +22,17 @@ public class ReaderFileManager: ObservableObject {
         return files?.filter { [UTType.epub, UTType.epubZip].compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
     }
     
-    @MainActor private var cloudDrive: CloudDrive?
-    @MainActor private var localDrive: CloudDrive?
+    @MainActor @Published private var cloudDrive: CloudDrive?
+    @MainActor @Published private var localDrive: CloudDrive?
     public var ubiquityContainerIdentifier: String? = nil
+    
+    let foo = UUID().uuidString
     
     private var refreshAllFilesMetadataTask: Task<Void, Never>?
     
     public init() { }
     
-    @MainActor public init(ubiquityContainerIdentifier: String) async throws {
+    @MainActor public func initialize(ubiquityContainerIdentifier: String) async throws {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
@@ -189,7 +191,7 @@ public class ReaderFileManager: ObservableObject {
                     self.files = files.map { $0.freeze() }
                     objectWillChange.send()
                     let discoveredURLs = files.map { $0.url }
-                    
+
                     // Delete orphans
                     try await Task.detached { @RealmBackgroundActor in
                         try Task.checkCancellation()
@@ -218,6 +220,9 @@ public class ReaderFileManager: ObservableObject {
             var tryRelativePath = RootRelativePath(path: url.relativePath)
             if let relativePath = relativePath {
                 tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
+            }
+            if url.lastPathComponent.hasSuffix(".realm") || url.lastPathComponent.hasSuffix(".realm.lock") || url.lastPathComponent.hasSuffix(".realm.management") {
+                continue
             }
             if !url.isFilePackage(), try await drive.directoryExists(at: tryRelativePath) {
                 let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)

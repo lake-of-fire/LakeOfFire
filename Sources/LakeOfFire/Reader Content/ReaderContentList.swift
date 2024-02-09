@@ -61,7 +61,7 @@ public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject
     var loadContentsTask: Task<Void, Error>?
     
     @MainActor
-    func load(contents: [C], contentFilter: @escaping (@RealmBackgroundActor (C) async throws -> Bool), sortOrder: ReaderContentSortOrder) async throws {
+    func load(contents: [C], sortOrder: ReaderContentSortOrder, contentFilter: (@RealmBackgroundActor (C) async throws -> Bool)? = nil) async throws {
         loadContentsTask?.cancel()
         loadContentsTask = Task { @RealmBackgroundActor in
             var filtered: [C] = []
@@ -70,7 +70,7 @@ public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject
             //            })
             for content in contents {
                 try Task.checkCancellation()
-                if try await contentFilter(content) {
+                if try await contentFilter?(content) ?? true {
                     filtered.append(content)
                 }
             }
@@ -121,16 +121,20 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     }
 
     @ViewBuilder private func cell(item: C) -> some View {
-        if showSeparators {
-            unstyledCell(item: item)
-        } else {
-            unstyledCell(item: item)
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
-                .background(.ultraThinMaterial)
-                .background(.secondary.opacity(0.09))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+        Group {
+            if showSeparators {
+                unstyledCell(item: item)
+            } else {
+                unstyledCell(item: item)
+//                    .padding(.vertical, 4)
+//                    .padding(.horizontal, 8)
+                    .padding(8)
+                    .background(.ultraThinMaterial)
+                    .background(.secondary.opacity(0.09))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
         }
+        .tag(item.compoundKey)
     }
     
     var body: some View {
@@ -155,6 +159,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                     
                     if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
                         Divider()
+                            .padding(.top, 4)
                     }
 //                                    .contextMenu {
 //                    if let content = content as? (any DeletableReaderContent) {
@@ -174,7 +179,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
             .headerProminence(.increased)
 #else
             ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
-                Group {
+                VStack(spacing: 0) {
                     if #available(iOS 16.0, *) {
                         cell(item: content)
                     } else {
@@ -189,7 +194,12 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                         .frame(maxWidth: .infinity)
                     }
                     //                .headerProminence(.increased)
+                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
+                        Divider()
+                            .padding(.top, 8)
+                    }
                 }
+                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 .deleteDisabled((content as? any DeletableReaderContent) == nil)
                 .swipeActions {
                     if let content = content as? any DeletableReaderContent {
@@ -223,8 +233,8 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
-    var contentFilter: ((C) async throws -> Bool)? = nil
     //    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+    var contentFilter: ((C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
@@ -235,7 +245,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
 
     @ViewBuilder private var listItems: some View {
-        ReaderContentListItems(contents: contents, entrySelection: $entrySelection, contentSortAscending: contentSortAscending, alwaysShowThumbnails: alwaysShowThumbnails, contentFilter: contentFilter, sortOrder: sortOrder)
+        ReaderContentListItems(viewModel: viewModel, entrySelection: $entrySelection, contentSortAscending: contentSortAscending, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: false)
     }
     
     public var body: some View {
@@ -249,90 +259,92 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
 #else
             List(selection: $entrySelection) {
                 listItems
+                    .listRowSeparatorIfAvailable(.hidden)
             }
             .listStyle(.plain)
             .scrollContentBackgroundIfAvailable(.hidden)
             .listItemTint(appTint)
 #endif
         }
+        .task { @MainActor in
+            try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+        }
+        .onChange(of: readerFileManager.ebookFiles) { ebookFiles in
+            Task { @MainActor in
+                try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+            }
+        }
     }
     
-    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder) {
+    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, sortOrder: ReaderContentSortOrder, contentFilter: ((C) async throws -> Bool)? = nil) {
         self.contents = contents
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.contentSortAscending = contentSortAscending
-        self.contentFilter = contentFilter
         self.sortOrder = sortOrder
+        self.contentFilter = contentFilter
     }
 }
 
 public struct ReaderContentListItems<C: ReaderContentModel>: View {
-    let contents: [C]
+    @ObservedObject private var viewModel = ReaderContentListViewModel<C>()
+//    let contents: [C]
     // TODO: Something with this triggers repreatedly in printchanges; change to an environmentkey
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
     var showSeparators = false
-    var contentFilter: ((C) async throws -> Bool)? = nil
+//    var contentFilter: ((C) async throws -> Bool)? = nil
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-    var sortOrder = ReaderContentSortOrder.publicationDate
-    
-    @StateObject private var viewModel = ReaderContentListViewModel<C>()
+//    var sortOrder = ReaderContentSortOrder.publicationDate
     
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     public var body: some View {
-        ScrollViewReader { scrollViewProxy in
-            ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
-                .frame(maxWidth: 850)
+        ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
+            .frame(maxWidth: 850)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
                 Task { @MainActor in
                     await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
-//                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-//                        scrollViewProxy.scrollTo(entrySelection)
-//                    }
+                    //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    //                        scrollViewProxy.scrollTo(entrySelection)
+                    //                    }
                 }
             }
             .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
                 if oldState.pageURL != state.pageURL {
-                    refreshSelection(scrollViewProxy: scrollViewProxy, state: state, oldState: oldState)
+                    refreshSelection(state: state, oldState: oldState)
                 }
             }
-            .onChange(of: contents/*, debounceTime: 0.1*/) { contents in
+            .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
                 Task { @MainActor in
-                    try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
-refreshSelection(scrollViewProxy: scrollViewProxy, state: readerViewModel.state)
+                    refreshSelection(state: readerViewModel.state)
                 }
             }
             .task { @MainActor in
-                try? await viewModel.load(contents: contents, contentFilter: contentFilter ?? { _ in return true }, sortOrder: sortOrder)
-                refreshSelection(scrollViewProxy: scrollViewProxy, state: readerViewModel.state)
+                refreshSelection(state: readerViewModel.state)
             }
-//            .onChange(of: contents) { contents in
-//                Task { @MainActor in
-//                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
-//                    refreshSelection(scrollViewProxy: scrollViewProxy, state: readerState)
-//                }
-//            }
-        }
+        //            .onChange(of: contents) { contents in
+        //                Task { @MainActor in
+        //                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+        //                    refreshSelection(state: readerState)
+        //                }
+        //            }
     }
     
-    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder) {
-        self.contents = contents
+    public init(viewModel: ReaderContentListViewModel<C>, entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false) {
+        self.viewModel = viewModel
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.showSeparators = showSeparators
         self.contentSortAscending = contentSortAscending
-        self.contentFilter = contentFilter
-        self.sortOrder = sortOrder
     }
     
-    private func refreshSelection(scrollViewProxy: ScrollViewProxy, state: WebViewState, oldState: WebViewState? = nil) {
+    private func refreshSelection(state: WebViewState, oldState: WebViewState? = nil) {
         viewModel.refreshSelectionTask?.cancel()
         guard !state.isProvisionallyNavigating else { return }
         
@@ -374,6 +386,6 @@ refreshSelection(scrollViewProxy: scrollViewProxy, state: readerViewModel.state)
 
 public extension ReaderContentModel {
     static func readerContentListView(contents: [Self], entrySelection: Binding<String?>, sortOrder: ReaderContentSortOrder, contentFilter: ((Self) async throws -> Bool)? = nil) -> some View {
-        return ReaderContentList(contents: contents, entrySelection: entrySelection, contentFilter: contentFilter, sortOrder: sortOrder)
+        return ReaderContentList(contents: contents, entrySelection: entrySelection, sortOrder: sortOrder, contentFilter: contentFilter)
     }
 }

@@ -25,7 +25,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
     @AppStorage("appTint") private var appTint: Color = Color.accentColor
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
-    @ScaledMetric(relativeTo: .headline) private var maxWidth = 250
+    @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
 //    @State private var viewWidth: CGFloat = 0
     
     @State private var confirmDelete: Bool = false
@@ -45,11 +45,13 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
                             .background(Color.white.opacity(0.00000001)) // Clickability
 //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
                             .frame(maxWidth: maxWidth)
+                            .padding(8)
                     }
-                    .buttonStyle(ReaderContentCellButtonStyle())
+//                    .buttonStyle(ReaderContentCellButtonStyle())
+                    .buttonStyle(.plain)
                     .tint(.secondary)
 //                    .padding(.vertical, 4)
-                    .padding(.horizontal, 8)
+//                    .padding(.horizontal, 8)
                     .background(.ultraThinMaterial)
                     .background(.secondary.opacity(0.09))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -68,7 +70,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
                 .headerProminence(.increased)
             }
             .fixedSize()
-            .padding(.horizontal)
+//            .padding(.horizontal)
         }
 //        .geometryReader { geometry in
 //            Task { @MainActor in
@@ -112,12 +114,12 @@ public struct ReaderContentHorizontalList<C: ReaderContentModel>: View {
             .task { @MainActor in
 //                await Task { @RealmBackgroundActor in
 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
-                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+                try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
 //                }.value
             }
             .onChange(of: contents, debounceTime: 0.1) { contents in
                 Task { @MainActor in
-                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
+                    try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
                 }
             }
