@@ -50,7 +50,8 @@ struct BookGridCell: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 0)
             if let imageURL = imageURL {
                 Button {
                     buttonPress()
@@ -58,28 +59,30 @@ struct BookGridCell: View {
                     BookThumbnail(imageURL: imageURL)
                 }
                 .buttonStyle(BookButtonStyle())
-                
-                Button {
-                    buttonPress()
-                } label: {
-                    VStack(alignment: .leading) {
-                        Text(title)
-                            .font(.headline)
-                        Text("\(author ?? "")\(author != nil && publicationDate != nil ? " • " : "")\(publicationDate != nil ? String(Calendar.current.component(.year, from: publicationDate!)) : "")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                .padding(.bottom, 8)
+            }
+            
+            Button {
+                buttonPress()
+            } label: {
+                VStack(alignment: .leading) {
+                    Text(title)
+                        .font(.headline)
+                    Text("\(author ?? "")\(author != nil && publicationDate != nil ? " • " : "")\(publicationDate != nil ? String(Calendar.current.component(.year, from: publicationDate!)) : "")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                
-                if let downloadable = downloadable {
-                    HidingDownloadButton(
-                        downloadable: downloadable,
-                        downloadText: "Get",
-                        downloadedText: "In Library") { _ in
-                            buttonPress()
-                        }
-                        .id("book-grid-cell-\(downloadable.id)-\(wasDownloaded)")
+            }
+            .buttonStyle(.plain)                
+            .padding(.bottom, 8)
+            
+            if let downloadable = downloadable {
+                HidingDownloadButton(
+                    downloadable: downloadable,
+                    downloadText: "Get",
+                    downloadedText: "In Library") { _ in
+                        buttonPress()
+                    }
                     .font(.caption)
                     .textCase(.uppercase)
                     .foregroundStyle(.primary)
@@ -89,7 +92,8 @@ struct BookGridCell: View {
                                 .fontWeight(.bold)
                         } else { $0 }
                     }
-                }
+                    .padding(.bottom, 2)
+//                    .id("book-grid-cell-\(downloadable.id)-\(wasDownloaded)")
             }
         }
         .lineLimit(1)
