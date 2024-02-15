@@ -97,7 +97,7 @@ public struct LibraryManagerView: View {
                     }
             }
 #if os(macOS)
-            .navigationSplitViewColumnWidth(min: 200, ideal: 210, max: 300)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
 #endif
         }, detail: {
             Group {

@@ -269,6 +269,11 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
         .task { @MainActor in
             try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
         }
+        .onChange(of: contents) { contents in
+            Task { @MainActor in
+                try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+            }
+        }
         .onChange(of: readerFileManager.ebookFiles) { ebookFiles in
             Task { @MainActor in
                 try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
