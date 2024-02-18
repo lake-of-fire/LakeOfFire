@@ -33,7 +33,6 @@ public struct FeedView: View {
     @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
     
     public var body: some View {
-        let _ = Self._printChanges()
         AsyncView(operation: {
             try await feed.fetch()
         }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
