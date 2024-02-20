@@ -132,7 +132,11 @@ public struct Reader: View {
                             return
                         }
                         try? await Task { @MainActor in
-                            guard let url = result.windowURL, let content = try await readerViewModel.getContent(forURL: url) else { return }
+                            guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try await readerViewModel.getContent(forURL: url) else { return }
+                            if !message.frameInfo.isMainFrame, readerViewModel.readabilityContent != nil, readerViewModel.readabilityContainerFrameInfo != message.frameInfo {
+                                // Don't override a parent window readability result.
+                                return
+                            }
                             guard !result.outputHTML.isEmpty else {
                                 try? await content.asyncWrite { _, content in
                                     content.isReaderModeAvailable = false
@@ -222,6 +226,7 @@ public struct Reader: View {
                 },
                 onNavigationCommitted: { state in
                     Task { @MainActor in
+                        readerViewModel.readabilityContainerFrameInfo = nil
                         try await readerViewModel.onNavigationCommitted(newState: state)
                         if let onNavigationCommitted = onNavigationCommitted {
                             try await onNavigationCommitted(state)
