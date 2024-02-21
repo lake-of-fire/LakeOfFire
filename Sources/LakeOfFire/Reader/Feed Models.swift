@@ -317,7 +317,8 @@ public enum FeedError: Error {
 }
 
 fileprivate func getRssData(rssUrl: URL) async throws -> Data? {
-    let (data, response) = try await URLSession.shared.data(from: rssUrl)
+    let configuration = URLSessionConfiguration.ephemeral
+    let (data, response) = try await URLSession(configuration: configuration).data(from: rssUrl)
     guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
         throw FeedError.downloadFailed
     }
@@ -457,7 +458,6 @@ public extension Feed {
         guard var rssData = try await getRssData(rssUrl: rssUrl) else {
             throw FeedError.downloadFailed
         }
-        
         rssData = cleanRssData(rssData)
         let parser = FeedKit.FeedParser(data: rssData)
         return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
