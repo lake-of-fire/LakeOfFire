@@ -275,6 +275,31 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
+    public func getOrCreateAppFeed(rssURL: URL, isReaderModeByDefault: Bool, rssContainsFullContent: Bool) async throws -> Feed? {
+        let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+        var feed = Feed()
+        if let existing = realm.objects(Feed.self).where({ !$0.isDeleted && $0.category == nil }).first(where: { $0.rssUrl == rssURL }) {
+            feed = existing
+            if feed.meaningfulContentMinLength != 0 || feed.isReaderModeByDefault != isReaderModeByDefault || feed.rssContainsFullContent != rssContainsFullContent {
+                try await realm.asyncWrite {
+                    feed.meaningfulContentMinLength = 0
+                    feed.isReaderModeByDefault = isReaderModeByDefault
+                    feed.rssContainsFullContent = rssContainsFullContent
+                }
+            }
+        } else {
+            feed.rssUrl = rssURL
+            feed.meaningfulContentMinLength = 0
+            feed.isReaderModeByDefault = isReaderModeByDefault
+            feed.rssContainsFullContent = rssContainsFullContent
+            try await realm.asyncWrite {
+                realm.add(feed, update: .modified)
+            }
+        }
+        return feed
+    }
+    
+    @RealmBackgroundActor
     public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> Feed? {
         let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }

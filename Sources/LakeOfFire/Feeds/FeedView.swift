@@ -29,6 +29,7 @@ public class FeedViewModel: ObservableObject {
 public struct FeedView: View {
     @ObservedRealmObject var feed: Feed
     @ObservedObject var viewModel: FeedViewModel
+    var isHorizontal = false
     
     @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
     
@@ -37,19 +38,26 @@ public struct FeedView: View {
             try await feed.fetch()
         }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
             if let entries = viewModel.entries {
-                ReaderContentList(contents: entries, entrySelection: $feedEntrySelection, sortOrder: .publicationDate)
-                    .modifier {
-                        if #available(macOS 14, iOS 17, *) {
-                            $0
-                                .safeAreaPadding(.all, 8)
-                        } else { $0 }
+                Group {
+                    if isHorizontal {
+                        ReaderContentHorizontalList(
+                            contents: entries,
+                            sortOrder: .publicationDate)
+                        
+                    } else {
+                        ReaderContentList(
+                            contents: entries,
+                            entrySelection: $feedEntrySelection,
+                            sortOrder: .publicationDate)
                     }
+                }
             }
         }
     }
     
-    public init(feed: Feed, viewModel: FeedViewModel) {
+    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false) {
         self.feed = feed
         self.viewModel = viewModel
+        self.isHorizontal = isHorizontal
     }
 }
