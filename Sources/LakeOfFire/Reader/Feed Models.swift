@@ -341,116 +341,123 @@ fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderConte
 }
 
 public extension Feed {
-    @RealmBackgroundActor
+    @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration) async throws {
-        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-        let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-            guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed), let url = URL(string: link) else { return nil }
-            var imageUrl: URL? = nil
-            if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
-                if let imageUrlRaw = enclosureAttribs.url {
-                    imageUrl = URL(string: imageUrlRaw)
+        // TODO: Optimize by only persisting changes if it's actually changed.
+        let feedID = id
+        try await Task.detached { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
+                guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed), let url = URL(string: link) else { return nil }
+                var imageUrl: URL? = nil
+                if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
+                    if let imageUrlRaw = enclosureAttribs.url {
+                        imageUrl = URL(string: imageUrlRaw)
+                    }
                 }
+                let content = item.content?.contentEncoded ?? item.description
+                
+                var title = item.title
+                do {
+                    if let feedItemTitle = item.title?.unescapeHTML(), let doc = try? SwiftSoup.parse(feedItemTitle) {
+                        doc.outputSettings().prettyPrint(pretty: false)
+                        try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
+                        title = try doc.text()
+                    } else {
+                        print("Failed to parse HTML in order to transform content.")
+                        throw FeedError.parserFailed
+                    }
+                } catch { }
+                title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                let feedEntry = FeedEntry()
+                feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID)
+                feedEntry.html = content
+                feedEntry.url = url
+                feedEntry.title = title ?? ""
+                feedEntry.author = item.author ?? ""
+                feedEntry.imageUrl = imageUrl
+                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                feedEntry.updateCompoundKey()
+                return feedEntry
             }
-            let content = item.content?.contentEncoded ?? item.description
-            
-            var title = item.title
-            do {
-                if let feedItemTitle = item.title?.unescapeHTML(), let doc = try? SwiftSoup.parse(feedItemTitle) {
-                    doc.outputSettings().prettyPrint(pretty: false)
-                    try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                    title = try doc.text()
-                } else {
-                    print("Failed to parse HTML in order to transform content.")
-                    throw FeedError.parserFailed
-                }
-            } catch { }
-            title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            let feedEntry = FeedEntry()
-            feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: self.id)
-            feedEntry.html = content
-            feedEntry.url = url
-            feedEntry.title = title ?? ""
-            feedEntry.author = item.author ?? ""
-            feedEntry.imageUrl = imageUrl
-            feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
-            feedEntry.updateCompoundKey()
-            return feedEntry
-        }
-        try await realm.asyncWrite {
-            realm.add(feedEntries, update: .modified)
-        }
+            try await realm.asyncWrite {
+                realm.add(feedEntries, update: .modified)
+            }
+        }.value
     }
     
-    @RealmBackgroundActor
+    @MainActor
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration) async throws {
-        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-        let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
-            var url: URL?
-            var imageUrl: URL?
-            item.links?.forEach { (link: AtomFeedEntryLink) in
-                guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else { return }
+        let feedID = id
+        try await Task.detached { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
+                var url: URL?
+                var imageUrl: URL?
+                item.links?.forEach { (link: AtomFeedEntryLink) in
+                    guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else { return }
+                    
+                    if (link.attributes?.rel ?? "alternate") == "alternate" {
+                        url = URL(string: linkHref)
+                    } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
+                        imageUrl = URL(string: linkHref)
+                    }
+                }
+                guard let url = url else { return nil }
                 
-                if (link.attributes?.rel ?? "alternate") == "alternate" {
-                    url = URL(string: linkHref)
-                } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
-                    imageUrl = URL(string: linkHref)
+                var voiceFrameUrl: URL? = nil
+                if let rawVoiceFrameUrl = item.links?.filter({ (link) -> Bool in
+                    return (link.attributes?.rel ?? "") == "voice-frame"
+                }).first?.attributes?.href {
+                    voiceFrameUrl = URL(string: rawVoiceFrameUrl)
                 }
-            }
-            guard let url = url else { return nil }
-            
-            var voiceFrameUrl: URL? = nil
-            if let rawVoiceFrameUrl = item.links?.filter({ (link) -> Bool in
-                return (link.attributes?.rel ?? "") == "voice-frame"
-            }).first?.attributes?.href {
-                voiceFrameUrl = URL(string: rawVoiceFrameUrl)
-            }
-            
-            let voiceAudioURLs: [URL] = (item.links ?? [])
-                .filter { $0.attributes?.rel == "voice-audio" }
-                .compactMap { $0.attributes?.href }
-                .compactMap { URL(string: $0) }
-            
-            // TODO: Refactor into community commentary links
-            var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
-            if let redditTranslationsAttrs = item.links?.filter({ (link) -> Bool in
-                return (link.attributes?.rel ?? "") == "reddit-translations"
-            }).first?.attributes, let rawRedditTranslationsUrl = redditTranslationsAttrs.href?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-                redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
-                redditTranslationsTitle = redditTranslationsAttrs.title
-            }
-            
-            var title = item.title
-            do {
-                if let feedItemTitle = item.title, let doc = try? SwiftSoup.parse(feedItemTitle) {
-                    doc.outputSettings().prettyPrint(pretty: false)
-                    try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                    title = try doc.text()
-                } else {
-                    print("Failed to parse HTML in order to transform content.")
+                
+                let voiceAudioURLs: [URL] = (item.links ?? [])
+                    .filter { $0.attributes?.rel == "voice-audio" }
+                    .compactMap { $0.attributes?.href }
+                    .compactMap { URL(string: $0) }
+                
+                // TODO: Refactor into community commentary links
+                var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
+                if let redditTranslationsAttrs = item.links?.filter({ (link) -> Bool in
+                    return (link.attributes?.rel ?? "") == "reddit-translations"
+                }).first?.attributes, let rawRedditTranslationsUrl = redditTranslationsAttrs.href?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                    redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
+                    redditTranslationsTitle = redditTranslationsAttrs.title
                 }
-            } catch { }
-            title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            let feedEntry = FeedEntry()
-            feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: self.id)
-            feedEntry.url = url
-            feedEntry.title = title ?? ""
-            feedEntry.author = item.authors?.compactMap { $0.name } .joined(separator: ", ") ?? ""
-            feedEntry.imageUrl = imageUrl
-            feedEntry.publicationDate = item.published ?? item.updated
-            feedEntry.html = item.content?.value
-            feedEntry.voiceFrameUrl = voiceFrameUrl
-            feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
-            feedEntry.redditTranslationsUrl = redditTranslationsUrl
-            feedEntry.redditTranslationsTitle = redditTranslationsTitle
-            feedEntry.updateCompoundKey()
-            return feedEntry
-        }
-        try await realm.asyncWrite {
-            realm.add(feedEntries, update: .modified)
-        }
+                
+                var title = item.title
+                do {
+                    if let feedItemTitle = item.title, let doc = try? SwiftSoup.parse(feedItemTitle) {
+                        doc.outputSettings().prettyPrint(pretty: false)
+                        try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
+                        title = try doc.text()
+                    } else {
+                        print("Failed to parse HTML in order to transform content.")
+                    }
+                } catch { }
+                title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                let feedEntry = FeedEntry()
+                feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID)
+                feedEntry.url = url
+                feedEntry.title = title ?? ""
+                feedEntry.author = item.authors?.compactMap { $0.name } .joined(separator: ", ") ?? ""
+                feedEntry.imageUrl = imageUrl
+                feedEntry.publicationDate = item.published ?? item.updated
+                feedEntry.html = item.content?.value
+                feedEntry.voiceFrameUrl = voiceFrameUrl
+                feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+                feedEntry.redditTranslationsUrl = redditTranslationsUrl
+                feedEntry.redditTranslationsTitle = redditTranslationsTitle
+                feedEntry.updateCompoundKey()
+                return feedEntry
+            }
+            try await realm.asyncWrite {
+                realm.add(feedEntries, update: .modified)
+            }
+        }.value
     }
     
     @MainActor

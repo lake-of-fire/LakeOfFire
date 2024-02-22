@@ -28,12 +28,12 @@ struct LibraryFeedView: View {
             if let libraryFeedFormSectionsViewModel = libraryFeedFormSectionsViewModel {
                 Form {
                     LibraryFeedFormSections(viewModel: libraryFeedFormSectionsViewModel)
-                        .disabled(!feed.isUserEditable)
                 }
                 .formStyle(.grouped)
+                .disabled(!feed.isUserEditable)
             }
         }
-        .task { @MainActor in
+        .task(id: feed.id) { @MainActor in
             libraryFeedFormSectionsViewModel = LibraryFeedFormSectionsViewModel(feed: feed)
         }
     }
@@ -89,6 +89,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         }
         
         $feedTitle
+            .dropFirst()
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedTitle in
@@ -98,6 +99,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedDescription
+            .dropFirst()
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedDescription in
@@ -107,6 +109,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedEnabled
+            .dropFirst()
             .removeDuplicates()
             .sink { feedEnabled in
                 writeFeedAsync { feed in
@@ -115,6 +118,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedURL
+            .dropFirst()
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedURL in
@@ -128,6 +132,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedIconURL
+            .dropFirst()
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { feedIconURL in
@@ -141,6 +146,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedIsReaderModeByDefault
+            .dropFirst()
             .removeDuplicates()
             .sink { feedIsReaderModeByDefault in
                 writeFeedAsync { feed in
@@ -149,6 +155,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedInjectEntryImageIntoHeader
+            .dropFirst()
             .removeDuplicates()
             .sink { feedInjectEntryImageIntoHeader in
                 writeFeedAsync { feed in
@@ -157,6 +164,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedExtractImageFromContent
+            .dropFirst()
             .removeDuplicates()
             .sink { feedExtractImageFromContent in
                 writeFeedAsync { feed in
@@ -165,6 +173,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedRssContainsFullContent
+            .dropFirst()
             .removeDuplicates()
             .sink { feedRssContainsFullContent in
                 writeFeedAsync { feed in
@@ -173,6 +182,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         $feedDisplayPublicationDate
+            .dropFirst()
             .removeDuplicates()
             .sink { feedDisplayPublicationDate in
                 writeFeedAsync { feed in
@@ -349,10 +359,8 @@ struct LibraryFeedFormSections: View {
         Section("Feed Preview") {
             feedPreview
         }
-        .task {
-            Task { @MainActor in
-                reinitializeState()
-            }
+        .task(id: viewModel.feed.id) { @MainActor in
+            reinitializeState()
         }
 //        .onChange(of: viewModel.feed) { [oldFeed = feed] feed in
 //            Task { @MainActor in
@@ -458,10 +466,10 @@ struct LibraryFeedFormSections: View {
                     ],
                     downloadImage: false
                 ).downloadFavicon()
-                Task { @MainActor in
+                await Task { @MainActor in
                     guard !viewModel.feed.iconUrl.isNativeReaderView else { return }
                     viewModel.feedIconURL = favicon.url.absoluteString
-                }
+                }.value
             } catch let error {
                 print("Error finding favicon: \(error)")
             }
