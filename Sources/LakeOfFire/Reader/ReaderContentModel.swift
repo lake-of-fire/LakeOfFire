@@ -318,8 +318,8 @@ public extension ReaderContentModel {
             record.isReaderModeByDefault = isReaderModeByDefault
             record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
             record.lastVisitedAt = Date()
-            if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
-                await record.configureBookmark(bookmark)
+            if objectSchema.objectClass == FeedEntry.self || objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
+                record.configureBookmark(bookmark)
             }
             record.updateCompoundKey()
             try await realm.asyncWrite {
