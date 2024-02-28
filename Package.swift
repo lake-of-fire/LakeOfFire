@@ -41,6 +41,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/readium-swift-toolkit.git", branch: "develop"),
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
+        .package(path: "../../lake-of-fire/LakeKit"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -75,6 +76,7 @@ let package = Package(
                 .product(name: "DSFStepperView", package: "DSFStepperView"),
                 .product(name: "ReadiumOPDS", package: "readium-swift-toolkit"),
                 .product(name: "Pow", package: "Pow"),
+                .product(name: "LakeKit", package: "LakeKit"),
 //                .product(name: "WrappingHStack", package: "WrappingHStack"),
                 ],
             resources: [

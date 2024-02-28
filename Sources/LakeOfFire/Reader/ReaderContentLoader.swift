@@ -257,15 +257,19 @@ public struct ReaderContentLoader {
             || ((doc.body()?.children().first()?.tagNameNormal() ?? "") == "pre" && doc.body()?.children().count == 1) )
     }
     
-    static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
+    public static func textToHTMLDoc(_ text: String) throws -> SwiftSoup.Document {
+        let html = textToHTML(text)
+        print("!! html \(html)")
+        return try SwiftSoup.parse(html)
+    }
+    
+    public static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
         var convertedText = text
         if forceRaw {
             convertedText = convertedText.escapeHtml()
         } else if let doc = try? SwiftSoup.parse(text) {
             if docIsPlainText(doc: doc) {
-                return "<html><body>\(text)</body></html>"
-            } else {
-                return text // HTML content
+                convertedText = "<html><body>\(text)</body></html>"
             }
         }
         convertedText = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>")
