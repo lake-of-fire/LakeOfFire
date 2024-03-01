@@ -259,7 +259,6 @@ public struct ReaderContentLoader {
     
     public static func textToHTMLDoc(_ text: String) throws -> SwiftSoup.Document {
         let html = textToHTML(text)
-        print("!! html \(html)")
         return try SwiftSoup.parse(html)
     }
     
@@ -269,10 +268,11 @@ public struct ReaderContentLoader {
             convertedText = convertedText.escapeHtml()
         } else if let doc = try? SwiftSoup.parse(text) {
             if docIsPlainText(doc: doc) {
-                convertedText = "<html><body>\(text)</body></html>"
+                convertedText = "<html><body>\(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>"))</body></html>"
             }
+        } else {
+            convertedText = "<html><body>\(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>"))</body></html>"
         }
-        convertedText = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>")
         return convertedText
     }
     
