@@ -67,6 +67,18 @@ public class ReaderViewModel: NSObject, ObservableObject {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
     
+    public var locationShortName: String? {
+        if content.url.isNativeReaderView {
+            return nil
+        } else if content.url.isEBookURL {
+            return content.titleForDisplay
+        } else if content.url.isSnippetURL {
+            return content.titleForDisplay
+        } else {
+            return content.url.host
+        }
+    }
+    
     public var contentRulesForReadabilityLoading = """
     [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
         """
