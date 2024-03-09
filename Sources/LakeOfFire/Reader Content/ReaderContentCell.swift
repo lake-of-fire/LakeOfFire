@@ -35,6 +35,10 @@ extension ReaderContentModel {
     @ViewBuilder func readerContentCellView(alwaysShowThumbnails: Bool = true) -> some View {
         ReaderContentCell(item: self, alwaysShowThumbnails: alwaysShowThumbnails)
     }
+    
+    @ViewBuilder func readerContentCellButtonsView() -> some View {
+        ReaderContentCellButtons(item: self)
+    }
 }
 
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
@@ -42,46 +46,33 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     var alwaysShowThumbnails = true
     var isEbookStyle = false
     
+    static var buttonSize: CGFloat {
+        return 26
+    }
+    
     @ScaledMetric(relativeTo: .headline) private var scaledImageWidth: CGFloat = 100
     @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 100
     
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = item.imageURLToDisplay {
-//                VStack(spacing: 0) {
-                    if isEbookStyle {
-                        BookThumbnail(imageURL: imageUrl)
-                            .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                    } else {
-//                        LakeImage(imageUrl, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                        LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
-//                            .frame(idealHeight: cellHeight)
-//                            .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                            .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
-                    }
-//                }
-//                .frame(maxHeight: .infinity)
-//                .background(.purple.opacity(0.3))
-//                .padding(.trailing, 8)
+                if isEbookStyle {
+                    BookThumbnail(imageURL: imageUrl)
+                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
+                } else {
+                    LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
+                }
             }
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 0) {
-                    Text(item.titleForDisplay)
-                        .font(.headline)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-//                        .padding(.trailing, 5)
-#if os(macOS)
-                    Spacer(minLength: 0)
-                    BookmarkButton(readerContent: item, hiddenIfUnbookmarked: !viewModel.forceShowBookmark)
-                        .buttonStyle(.borderless)
-#endif
-                }
+                Text(item.titleForDisplay)
+                    .font(.headline)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
                 Spacer(minLength: 0)
                 HStack(alignment: .bottom, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -99,17 +90,55 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                         }
                     }
                     Spacer(minLength: 0)
-#if os(iOS)
-                    BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                    // Button placeholders:
+                    Spacer()
+                        .frame(width: Self.buttonSize, height: Self.buttonSize)
+                    Spacer()
+                        .frame(width: Self.buttonSize, height: Self.buttonSize)
+                }
+                .padding(.trailing, 5)
+            }
+            .frame(maxHeight: cellHeight)
+        }
+        .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
+        .onHover { hovered in
+            viewModel.forceShowBookmark = hovered
+        }
+        .task {
+            viewModel.load(item: item)
+        }
+    }
+}
+
+struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: View {
+    @ObservedRealmObject var item: C
+    
+    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    
+    private var buttonSize: CGFloat {
+        return ReaderContentCell<C>.buttonSize
+    }
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 0) {
+//#if os(macOS)
+//                    Spacer(minLength: 0)
+//                    BookmarkButton(readerContent: item, hiddenIfUnbookmarked: !viewModel.forceShowBookmark)
+//                        .buttonStyle(.borderless)
+//#endif
+                }
+                Spacer(minLength: 0)
+                HStack(alignment: .bottom, spacing: 0) {
+                    Spacer(minLength: 0)
+//#if os(iOS)
+//                    BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                    BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
                         .buttonStyle(.borderless)
                         .padding(.leading, 2)
-//                        .padding(.leading, 5)
-                    //                    if viewModel.bookmarkExists {
-                    //                        Spacer(minLength: 0)
-                    //                        Image(systemName: "bookmark.fill")
-                    //                            .padding(.leading, 5)
-                    //                    }
-#endif
+//#endif
                     if let item = item as? (any DeletableReaderContent) {
                         Menu {
                             Button(role: .destructive) {
@@ -120,37 +149,21 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                             }
                         } label: {
                             Label("More Options", systemImage: "ellipsis")
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 10)
+//                                .padding(.horizontal, 4)
+//                                .padding(.vertical, 10)
                                 .labelStyle(.iconOnly)
+                                .frame(width: buttonSize, height: buttonSize)
                         }
                         .foregroundStyle(.secondary)
                         .menuIndicator(.hidden)
-                        .offset(y: 3)
-                        //                    .menuStyle(.borderlessButton)
+//                        .offset(y: 3)
                     }
                 }
+                .padding(.trailing, 5)
             }
-            .frame(maxHeight: cellHeight)
         }
-        .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
-//                    .frame(maxHeight: .infinity)
-            
-//#if os(macOS)
-//            Spacer(minLength: 0)
-//#endif
+//        .onHover { hovered in
+//            viewModel.forceShowBookmark = hovered
 //        }
-//        .fixedSize(horizontal: false, vertical: true)
-//        .padding(4)
-        .onHover { hovered in
-            viewModel.forceShowBookmark = hovered
-        }
-        .task {
-            viewModel.load(item: item)
-        }
     }
-    
-//    static func == (lhs: ReaderContentCell<C>, rhs: ReaderContentCell<C>) -> Bool {
-//        return lhs.item.compoundKey == rhs.item.compoundKey && lhs.item.bookmarkExists(realmConfiguration: ManabiReaderRealmConfigurer.configuration) == rhs.item.bookmarkExists(realmConfiguration: ManabiReaderRealmConfigurer.configuration) && lhs.articleReadingProgress == rhs.articleReadingProgress
-//    }
 }

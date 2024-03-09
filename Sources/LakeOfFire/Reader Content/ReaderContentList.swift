@@ -155,6 +155,9 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                             .background(Color.white.opacity(0.00000001)) // Clickability
                     })
                     .toggleStyle(ListItemToggleStyle())
+                    .overlay {
+                        AnyView(content.readerContentCellButtonsView())
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     
                     if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
@@ -198,6 +201,9 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                         Divider()
                             .padding(.top, 8)
                     }
+                }
+                .overlay {
+                    AnyView(content.readerContentCellButtonsView())
                 }
                 .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 .deleteDisabled((content as? any DeletableReaderContent) == nil)

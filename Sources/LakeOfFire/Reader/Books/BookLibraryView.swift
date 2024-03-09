@@ -187,19 +187,10 @@ public struct BookLibraryView: View {
             }
         }
     }
+    
     public var body: some View {
-//#if os(macOS)
-//        GroupBox {
-//            list
-//                .scrollContentBackgroundIfAvailable(.hidden)
-//        }
-//        .padding()
-//        .frame(maxWidth: 850)
-//#else
         list
-//#endif
     }
-
     
     public init() { }
 }

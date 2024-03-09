@@ -54,6 +54,9 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
 //                    .padding(.horizontal, 8)
                     .background(.ultraThinMaterial)
                     .background(.secondary.opacity(0.09))
+                    .overlay {
+                        AnyView(content.readerContentCellButtonsView())
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     //                    .id(feedEntry.compoundKey)
                     .contextMenu {
