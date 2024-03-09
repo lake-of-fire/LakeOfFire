@@ -95,6 +95,9 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
 }
 
 public struct BookmarkButton<C: ReaderContentModel>: View {
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
+    let iconOnly: Bool
     var readerContent: C
     var hiddenIfUnbookmarked = false
     
@@ -118,10 +121,15 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .background(.secondary.opacity(0.000000001)) // clickability
+                .frame(width: width, height: height)
         }
 //        .buttonStyle(.borderless)
 //        .buttonStyle(.plain)
-        .labelStyle(.iconOnly)
+        .modifier {
+            if iconOnly {
+                $0.labelStyle(.iconOnly)
+            } else { $0 }
+        }
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
 //        .fixedSize()
@@ -131,31 +139,42 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
                 viewModel.readerContent = nil
             }
         }
-        .task(id: readerContent) {
+        .task(id: readerContent) { @MainActor in
             viewModel.readerContent = readerContent
         }
     }
     
-    public init(readerContent: C, hiddenIfUnbookmarked: Bool = false) {
+    public init(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool, readerContent: C, hiddenIfUnbookmarked: Bool = false) {
+        self.width = width
+        self.height = height
+        self.iconOnly = iconOnly
         self.readerContent = readerContent
         self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
     }
 }
 
 public extension ReaderContentModel {
-    var bookmarkButtonView: some View {
-        BookmarkButton(readerContent: self)
+    @ViewBuilder func bookmarkButtonView(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool) -> some View {
+        BookmarkButton(width: width, height: height, iconOnly: iconOnly, readerContent: self)
     }
 }
 
 public struct CurrentWebViewBookmarkButton: View {
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
+    
+    let iconOnly: Bool
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @Environment(\.readerWebViewState) private var readerWebViewState
     
     public var body: some View {
-        AnyView(readerViewModel.content.bookmarkButtonView)
+        AnyView(readerViewModel.content.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
             .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
     }
     
-    public init() { }
+    public init(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool) {
+        self.width = width
+        self.height = height
+        self.iconOnly = iconOnly
+    }
 }

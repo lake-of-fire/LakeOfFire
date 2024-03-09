@@ -226,6 +226,7 @@ public struct Reader: View {
                 },
                 onNavigationCommitted: { state in
                     Task { @MainActor in
+                        readerViewModel.isReaderMode = state.pageURL.isEBookURL
                         readerViewModel.readabilityContainerFrameInfo = nil
                         try await readerViewModel.onNavigationCommitted(newState: state)
                         if let onNavigationCommitted = onNavigationCommitted {
@@ -238,6 +239,17 @@ public struct Reader: View {
                         readerViewModel.onNavigationFinished(newState: state) { newState in
                             if let onNavigationFinished = onNavigationFinished {
                                 onNavigationFinished(newState)
+                            }
+                        }
+                        
+                        await readerViewModel.scriptCaller.evaluateJavaScript("return document.documentElement.classList.contains('readability-mode')") { @MainActor result in
+                            switch result {
+                            case .success(let response):
+                                if let isReaderMode = response as? Bool {
+                                    readerViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                                }
+                            case .failure(let error):
+                                print(error)
                             }
                         }
                     }

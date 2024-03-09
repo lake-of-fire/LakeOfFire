@@ -41,6 +41,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @Published public var content: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
  
+    @Published public var locationBarShouldGainFocusOnAppearance = false
+    @Published public var isReaderMode = false
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -68,7 +70,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public var locationShortName: String? {
-        if content.url.isNativeReaderView {
+        if content.url.absoluteString == "about:blank" {
+            return "Home"
+        } else if content.url.isNativeReaderView {
             return nil
         } else if content.url.isEBookURL {
             return content.titleForDisplay
@@ -229,6 +233,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 } else {
                     navigator.loadHTML(transformedContent, baseURL: url)
                 }
+                isReaderMode = true
             }.value
         }.value
     }

@@ -100,7 +100,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                     }
                     Spacer(minLength: 0)
 #if os(iOS)
-                    BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                    BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
                         .buttonStyle(.borderless)
                         .padding(.leading, 2)
 //                        .padding(.leading, 5)

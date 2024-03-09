@@ -29,11 +29,12 @@ struct ReaderModeButtonBar: View {
 #if os(iOS)
                         .font(.headline)
 #endif
-                        .padding(5)
+                        .padding(.horizontal)
                 }
                 .padding(.horizontal, 44)
                 .buttonStyle(.borderedProminent)
-                .padding(10)
+                .controlSize(.regular)
+                .padding(8)
                 
                 HStack {
                     Spacer(minLength: 0)
