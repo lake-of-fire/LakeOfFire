@@ -1,11 +1,23 @@
 import Foundation
-import LRUCache
+import LakeKit
 
-fileprivate struct EbookProcessorCacheKey: Hashable {
+fileprivate struct EbookProcessorCacheKey: Encodable {
     let contentURL: URL
     let sectionLocation: String
+    
+    private enum CodingKeys: String, CodingKey {
+        case contentURL
+        case sectionLocation
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(contentURL, forKey: .contentURL)
+        try container.encode(sectionLocation, forKey: .sectionLocation)
+    }
 }
-fileprivate let ebookProcessorCache = LRUCache<EbookProcessorCacheKey, String>(totalCostLimit: 30_000_000)
+
+fileprivate let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", version: 1, totalBytesLimit: 30_000_000)
 
 fileprivate func extractBlobUrls(from html: String) -> [String] {
     let prefix = "blob:"
@@ -62,7 +74,7 @@ internal extension Reader {
             } else {
                 html = try doc.outerHtml()
             }
-            ebookProcessorCache.setValue(html, forKey: cacheKey, cost: html.utf8.count)
+            ebookProcessorCache.setValue(html, forKey: cacheKey)
             return html
         } catch {
             print("Error processing readability content")

@@ -1,23 +1,20 @@
 <!DOCTYPE html>
-<html class="ebook-viewer readability-mode">
+<html>
     <head>
         <meta charset="utf-8" />
         <meta name="color-scheme" content="light dark" />
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
         <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; script-src 'self'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src blob: data:; object-src blob: data:; form-action 'none';" />
         <style>
-            :root {
+            body {
                 --active-bg: rgba(0, 0, 0, .05);
             }
             @supports (color-scheme: light dark) {
                 @media (prefers-color-scheme: dark) {
-                    :root {
+                    body {
                         --active-bg: rgba(255, 255, 255, .1);
                     }
                 }
-            }
-            html {
-                /*height: 100dvh;*/
             }
             body {
                 margin: 0 auto;
@@ -86,6 +83,7 @@
             }
             #nav-bar {
                 bottom: 0;
+                -webkit-backdrop-filter: blur(30px);
             }
             #progress-slider {
                 flex-grow: 1;
@@ -257,7 +255,7 @@
             }
         </style>
     </head>
-    <body>
+    <body class="ebook-viewer readability-mode">
         <div id="dimming-overlay" aria-hidden="true"></div>
         <div id="side-bar">
             <div id="side-bar-header">

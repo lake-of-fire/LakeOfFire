@@ -149,13 +149,20 @@ struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: 
                             }
                         } label: {
                             Label("More Options", systemImage: "ellipsis")
+//                            #if os(macOS)
 //                                .padding(.horizontal, 4)
 //                                .padding(.vertical, 10)
-                                .labelStyle(.iconOnly)
+//                            #else
                                 .frame(width: buttonSize, height: buttonSize)
+//#endif
+                                .labelStyle(.iconOnly)
                         }
                         .foregroundStyle(.secondary)
                         .menuIndicator(.hidden)
+                        .buttonStyle(.borderless)
+#if os(macOS)
+                        .offset(y: -(buttonSize / 4)) // IDK why
+#endif
 //                        .offset(y: 3)
                     }
                 }

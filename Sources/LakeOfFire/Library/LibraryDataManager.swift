@@ -280,14 +280,16 @@ public class LibraryDataManager: NSObject {
         var feed = Feed()
         if let existing = realm.objects(Feed.self).where({ !$0.isDeleted && $0.category == nil }).first(where: { $0.rssUrl == rssURL }) {
             feed = existing
-            if feed.meaningfulContentMinLength != 0 || feed.isReaderModeByDefault != isReaderModeByDefault || feed.rssContainsFullContent != rssContainsFullContent {
+            if feed.meaningfulContentMinLength != 0 || feed.isReaderModeByDefault != isReaderModeByDefault || feed.rssContainsFullContent != rssContainsFullContent || !feed.deleteOrphans {
                 try await realm.asyncWrite {
+                    feed.deleteOrphans = true
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
                 }
             }
         } else {
+            feed.deleteOrphans = true
             feed.rssUrl = rssURL
             feed.meaningfulContentMinLength = 0
             feed.isReaderModeByDefault = isReaderModeByDefault

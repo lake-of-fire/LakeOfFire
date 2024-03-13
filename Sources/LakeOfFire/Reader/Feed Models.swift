@@ -56,7 +56,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var displayPublicationDate = true
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var extractImageFromContent = true
-    
+    @Persisted public var deleteOrphans = false
+
     @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
     @Persisted public var isDeleted = false
@@ -73,6 +74,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         case displayPublicationDate
         case meaningfulContentMinLength
         case extractImageFromContent
+        case deleteOrphans
         case modifiedAt
         case isArchived
     }
@@ -91,6 +93,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         try container.encode(injectEntryImageIntoHeader, forKey: .injectEntryImageIntoHeader)
         try container.encode(displayPublicationDate, forKey: .displayPublicationDate)
         try container.encode(meaningfulContentMinLength, forKey: .meaningfulContentMinLength)
+        try container.encode(deleteOrphans, forKey: .deleteOrphans)
         try container.encode(modifiedAt, forKey: .modifiedAt)
     }
     
@@ -108,6 +111,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.injectEntryImageIntoHeader = try container.decode(Bool.self, forKey: .injectEntryImageIntoHeader)
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
+        self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
         self.modifiedAt = try container.decode(Date.self, forKey: .modifiedAt)
     }
 }
@@ -342,11 +346,15 @@ fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderConte
 
 public extension Feed {
     @MainActor
-    private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration) async throws {
+    private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         // TODO: Optimize by only persisting changes if it's actually changed.
         let feedID = id
         try await Task.detached { @RealmBackgroundActor in
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            
+            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
+            
+            var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
                 guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed), let url = URL(string: link) else { return nil }
                 var imageUrl: URL? = nil
@@ -379,19 +387,30 @@ public extension Feed {
                 feedEntry.imageUrl = imageUrl
                 feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
                 feedEntry.updateCompoundKey()
+                incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
             try await realm.asyncWrite {
+                if deleteOrphans {
+                    let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                    for orphan in orphans {
+                        orphan.isDeleted = true
+                    }
+                }
                 realm.add(feedEntries, update: .modified)
             }
         }.value
     }
     
     @MainActor
-    private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration) async throws {
+    private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         try await Task.detached { @RealmBackgroundActor in
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            
+            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
+            
+            var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
                 var url: URL?
                 var imageUrl: URL?
@@ -452,9 +471,16 @@ public extension Feed {
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
                 feedEntry.redditTranslationsTitle = redditTranslationsTitle
                 feedEntry.updateCompoundKey()
+                incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
             try await realm.asyncWrite {
+                if deleteOrphans {
+                    let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                    for orphan in orphans {
+                        orphan.isDeleted = true
+                    }
+                }
                 realm.add(feedEntries, update: .modified)
             }
         }.value
@@ -467,8 +493,9 @@ public extension Feed {
         }
         rssData = cleanRssData(rssData)
         let parser = FeedKit.FeedParser(data: rssData)
-        return try await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<(), Error>) in
-            parser.parseAsync { parserResult in
+        return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
+            parser.parseAsync { [weak self] parserResult in
+                guard let self = self else { return }
                 switch parserResult {
                 case .success(let feed):
                     switch feed {
@@ -477,9 +504,10 @@ public extension Feed {
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
-                        Task { @MainActor in
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
                             do {
-                                try await self.persist(rssItems: items, realmConfiguration: realmConfiguration)
+                                try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
                                 continuation.resume(returning: ())
                             } catch {
                                 continuation.resume(throwing: error)
@@ -491,9 +519,10 @@ public extension Feed {
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
-                        Task { @MainActor in
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
                             do {
-                                try await self.persist(atomItems: items, realmConfiguration: realmConfiguration)
+                                try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
                                 continuation.resume(returning: ())
                             } catch {
                                 continuation.resume(throwing: error)

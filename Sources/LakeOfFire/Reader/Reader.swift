@@ -151,7 +151,7 @@ public struct Reader: View {
                             if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                                 readerViewModel.showReaderView(content: content)
                             } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
-                                await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.classList.add('manabi-reader-mode-available-confidently')")
+                                await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
                             }
                             
                             if !content.isReaderModeAvailable {
@@ -242,7 +242,7 @@ public struct Reader: View {
                             }
                         }
                         
-                        await readerViewModel.scriptCaller.evaluateJavaScript("return document.documentElement.classList.contains('readability-mode')") { @MainActor result in
+                        await readerViewModel.scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
                             switch result {
                             case .success(let response):
                                 if let isReaderMode = response as? Bool {
@@ -268,12 +268,12 @@ public struct Reader: View {
             }
             .onChange(of: lightModeTheme) { lightModeTheme in
                 Task { @MainActor in
-                    await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
+                    await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
                 }
             }
             .onChange(of: darkModeTheme) { darkModeTheme in
                 Task { @MainActor in
-                    await readerViewModel.scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
+                    await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
                 }
             }
             .onChange(of: readerViewModel.audioURLs) { audioURLs in
@@ -317,10 +317,10 @@ public struct Reader: View {
 //            await readerViewModel.scriptCaller.evaluateJavaScript(
 //                """
 //                if (\(readerFontSize ?? -1) > -1) {
-//                    document.documentElement.style.fontSize = '\(readerFontSize ?? -1)px'
+//                    document.body?.style.fontSize = '\(readerFontSize ?? -1)px'
 //                }
-//                document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')
-//                document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')
+//                document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')
+//                document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')
 //                """,
 //                in: frame, duplicateInMultiTargetFrames: true, in: .page)
 //        }

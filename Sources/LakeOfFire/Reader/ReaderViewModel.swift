@@ -204,7 +204,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         }
                         var serialized = html
                         
-                        let xmlns = document.documentElement.getAttribute('xmlns')
+                        let xmlns = document.body?.getAttribute('xmlns')
                         if (xmlns) {
                             let parser = new DOMParser()
                             let doc = parser.parseFromString(serialized, 'text/html')
@@ -223,7 +223,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         let style = document.createElement('style')
                         style.textContent = css
                         document.head.appendChild(style)
-                        document.documentElement.classList.add('readability-mode')
+                        document.body?.classList.add('readability-mode')
                         """,
                         arguments: [
                             "renderToSelector": renderToSelector ?? "",
@@ -290,10 +290,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 //                if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
                 if content.isReaderModeByDefault && !html.contains("<body.* class=.readability-mode.>") {
-                    if let _ = html.range(of: "<html", options: .caseInsensitive) {
-                        html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
+                    if let _ = html.range(of: "<body", options: .caseInsensitive) {
+                        html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode ", options: .caseInsensitive)
                     } else {
-                        html = "<html data-is-next-load-in-reader-mode>\n\(html)\n</html>"
+                        html = "<body data-is-next-load-in-reader-mode>\n\(html)\n</html>"
                     }
                     contentRules = contentRulesForReadabilityLoading
                 }
@@ -384,7 +384,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     
         print("## nav fin else: isNextReader \(isNextLoadInReaderMode)")
                     if isNextLoadInReaderMode {
-                        await scriptCaller.evaluateJavaScript("if (document.documentElement && !document.documentElement.classList.contains('readability-mode')) { document.documentElement.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
+                        await scriptCaller.evaluateJavaScript("if (document.body && !document.body?.classList.contains('readability-mode')) { document.body.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
                             switch result {
                             case .success(let value):
                                 if let isReaderMode = value as? Bool, !isReaderMode {
@@ -438,7 +438,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let state = newState ?? state
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
-                scriptCaller.evaluateJavaScript("(function() { if (document.documentElement.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
+                scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
             }
         }
     }
@@ -466,8 +466,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     func refreshSettingsInWebView(content: (any ReaderContentModel), newState: WebViewState? = nil) {
         // TODO: consolidate code duplication
         Task { @MainActor in
-            await scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
-            await scriptCaller.evaluateJavaScript("document.documentElement.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
+            await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
+            await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
             refreshTitleInWebView(content: content, newState: newState)
         }
     }
@@ -482,13 +482,6 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
         try doc.attr("data-is-ebook", true)
     }
     
-    if let htmlTag = try? doc.getElementsByTag("html").first() {
-        var htmlStyle = ""
-        if let existingHtmlStyle = try? htmlTag.attr("style"), !existingHtmlStyle.isEmpty {
-            htmlStyle = "\(htmlStyle); \(existingHtmlStyle)"
-        }
-        _ = try? htmlTag.attr("style", htmlStyle)
-    }
     if let bodyTag = doc.body() {
         var bodyStyle = "font-size: \(fontSize)px"
         if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
