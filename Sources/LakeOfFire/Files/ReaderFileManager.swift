@@ -5,6 +5,7 @@ import SwiftUtilities
 import SwiftUIDownloads
 import RealmSwift
 import RealmSwiftGaps
+import LakeKit
 
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
@@ -25,8 +26,6 @@ public class ReaderFileManager: ObservableObject {
     @MainActor @Published private var cloudDrive: CloudDrive?
     @MainActor @Published private var localDrive: CloudDrive?
     public var ubiquityContainerIdentifier: String? = nil
-    
-    let foo = UUID().uuidString
     
     private var refreshAllFilesMetadataTask: Task<Void, Never>?
     
@@ -178,6 +177,7 @@ public class ReaderFileManager: ObservableObject {
                 guard localDrive != nil || cloudDrive != nil else { return }
                 var files = [ThreadSafeReference<ContentFile>]()
                 for drive in [cloudDrive, localDrive].compactMap({ $0 }) {
+                    try Task.checkCancellation()
                     let discovered = try await refreshFilesMetadata(drive: drive)
                     files.append(contentsOf: discovered)
                 }
@@ -206,10 +206,12 @@ public class ReaderFileManager: ObservableObject {
                     }.value
                 }.value
             } catch {
-                print(error)
+                if !(error is CancellationError) {
+                    Logger.shared.logger.error("\(error)")
+                }
             }
         }
-        await refreshAllFilesMetadataTask
+        await refreshAllFilesMetadataTask?.value
     }
     
     @MainActor

@@ -149,6 +149,7 @@ struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: 
                             }
                         } label: {
                             Label("More Options", systemImage: "ellipsis")
+                                .foregroundStyle(.secondary)
 //                            #if os(macOS)
 //                                .padding(.horizontal, 4)
 //                                .padding(.vertical, 10)
