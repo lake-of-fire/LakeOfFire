@@ -43,7 +43,6 @@ public struct FeedView: View {
                         ReaderContentHorizontalList(
                             contents: entries,
                             sortOrder: .publicationDate)
-                        
                     } else {
                         ReaderContentList(
                             contents: entries,

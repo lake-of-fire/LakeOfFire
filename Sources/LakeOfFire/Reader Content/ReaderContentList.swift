@@ -121,18 +121,23 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     }
 
     @ViewBuilder private func cell(item: C) -> some View {
-        Group {
-            if showSeparators {
-                unstyledCell(item: item)
-            } else {
-                unstyledCell(item: item)
-//                    .padding(.vertical, 4)
-//                    .padding(.horizontal, 8)
-                    .padding(8)
-                    .background(.ultraThinMaterial)
-                    .background(.secondary.opacity(0.09))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Group {
+                if showSeparators {
+                    unstyledCell(item: item)
+                } else {
+                    unstyledCell(item: item)
+                    //                    .padding(.vertical, 4)
+                    //                    .padding(.horizontal, 8)
+                        .padding(8)
+                        .background(.ultraThinMaterial)
+                        .background(.secondary.opacity(0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
             }
+            .frame(maxWidth: 850)
+            Spacer(minLength: 0)
         }
         .tag(item.compoundKey)
     }
@@ -315,7 +320,6 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
     
     public var body: some View {
         ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
-            .frame(maxWidth: 850)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
                 Task { @MainActor in

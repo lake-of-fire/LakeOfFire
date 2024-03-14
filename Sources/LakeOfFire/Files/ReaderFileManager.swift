@@ -15,6 +15,8 @@ public enum ReaderFileManagerError: Swift.Error {
 public class ReaderFileManager: ObservableObject {
     @MainActor @Published public var files: [ContentFile]?
     
+    let foo = UUID().uuidString
+    
     private let readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip]
     @MainActor public var readerContentFiles: [ContentFile]? {
         return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
@@ -35,7 +37,7 @@ public class ReaderFileManager: ObservableObject {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
-        Task.detached { [weak self] in
+        Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
     }
@@ -176,7 +178,7 @@ public class ReaderFileManager: ObservableObject {
             do {
                 guard localDrive != nil || cloudDrive != nil else { return }
                 var files = [ThreadSafeReference<ContentFile>]()
-                for drive in [cloudDrive, localDrive].compactMap({ $0 }) {
+                for drive in [localDrive, cloudDrive].compactMap({ $0 }) {
                     try Task.checkCancellation()
                     let discovered = try await refreshFilesMetadata(drive: drive)
                     files.append(contentsOf: discovered)
@@ -314,7 +316,7 @@ public extension ReaderFileManager {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
         let targetDirectory = Self.rootRelativePath(forURLExtension: url)
-        var targetFilePath = targetDirectory.appending(url.lastPathComponent)
+        let targetFilePath = targetDirectory.appending(url.lastPathComponent)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         
         return Downloadable(

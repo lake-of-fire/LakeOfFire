@@ -123,7 +123,6 @@ public struct BookLibraryView: View {
                     .foregroundStyle(.primary)
             }
             .buttonStyle(.bordered)
-            .controlSize(.large)
         }
     }
 
