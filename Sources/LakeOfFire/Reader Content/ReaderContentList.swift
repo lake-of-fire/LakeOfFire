@@ -136,7 +136,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .frame(maxWidth: 850)
             Spacer(minLength: 0)
         }
         .tag(item.compoundKey)

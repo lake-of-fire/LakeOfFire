@@ -334,12 +334,12 @@ class Reader {
             doc.getElementById('manabi-previous-chapter-button')?.classList.remove('manabi-hidden')
         }
         
-        document.getElementById('manabi-previous-chapter-button')?.addEventListener('click', function () {
+        doc.getElementById('manabi-previous-chapter-button')?.addEventListener('click', function () {
             this.view.renderer.prevSection()
-        })
-        document.getElementById('manabi-next-chapter-button')?.addEventListener('click', function () {
+        }.bind(this))
+        doc.getElementById('manabi-next-chapter-button')?.addEventListener('click', function () {
             this.view.renderer.nextSection()
-        })
+        }.bind(this))
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {

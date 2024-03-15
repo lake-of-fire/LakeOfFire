@@ -39,7 +39,6 @@ public struct FeedCell: View {
                         .lineLimit(Int.max)
                 }
             }
-            .frame(maxWidth: 850)
             Spacer(minLength: 0)
         }
         .tag(feed.id.uuidString)
