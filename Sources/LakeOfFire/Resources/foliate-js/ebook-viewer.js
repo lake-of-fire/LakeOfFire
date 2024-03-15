@@ -327,7 +327,19 @@ class Reader {
         // TODO: Should also offer "end" if last non-glossary/backmatter section
         if (this.view.renderer.atEnd) {
             doc.getElementById('manabi-finished-reading-book-container')?.classList.remove('manabi-hidden')
+        } else {
+            doc.getElementById('manabi-next-chapter-button')?.classList.remove('manabi-hidden')
         }
+        if (!this.view.renderer.atStart) {
+            doc.getElementById('manabi-previous-chapter-button')?.classList.remove('manabi-hidden')
+        }
+        
+        document.getElementById('manabi-previous-chapter-button')?.addEventListener('click', function () {
+            this.view.renderer.prevSection()
+        })
+        document.getElementById('manabi-next-chapter-button')?.addEventListener('click', function () {
+            this.view.renderer.nextSection()
+        })
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {

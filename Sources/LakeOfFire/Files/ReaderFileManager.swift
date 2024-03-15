@@ -15,8 +15,6 @@ public enum ReaderFileManagerError: Swift.Error {
 public class ReaderFileManager: ObservableObject {
     @MainActor @Published public var files: [ContentFile]?
     
-    let foo = UUID().uuidString
-    
     private let readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip]
     @MainActor public var readerContentFiles: [ContentFile]? {
         return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
@@ -122,44 +120,49 @@ public class ReaderFileManager: ObservableObject {
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
-        if fileURL.startAccessingSecurityScopedResource() {
-            try await drive.createDirectory(at: targetDirectory)
-            
-            var targetExists = false
-            var distinctTargetExists = false
-            var originData: Data?
-            if targetURL.isFilePackage() {
-                targetExists = true
-                if fileURL.isFilePackage() {
-                    originData = try fileURL.concatenateDataInDirectory()
-                    distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
-                } else {
-                    distinctTargetExists = true
-                }
-            } else if try await drive.fileExists(at: targetFilePath) {
-                originData = try await FileManager.default.contentsOfFile(coordinatingAccessAt: fileURL)
-                targetExists = true
-                distinctTargetExists = targetURL != fileURL
-                if !distinctTargetExists {
-                    distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
-                }
+        let shouldStopAccessingFile = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if shouldStopAccessingFile {
+                fileURL.stopAccessingSecurityScopedResource()
             }
-            if distinctTargetExists, let originData = originData {
-                if try await drive.readFile(at: targetFilePath) != originData {
-                    // Make a unique filename
-                    var ext = fileURL.pathExtension
-                    if !ext.isEmpty {
-                        ext = "." + ext
-                    }
-                    let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
-                    let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
-                    targetFilePath = targetDirectory.appending(newFileName)
+        }
+        
+        try await drive.createDirectory(at: targetDirectory)
+        
+        var targetExists = false
+        var distinctTargetExists = false
+        var originData: Data?
+        if targetURL.isFilePackage() {
+            targetExists = true
+            if fileURL.isFilePackage() {
+                originData = try fileURL.concatenateDataInDirectory()
+                distinctTargetExists = try targetURL != fileURL && targetURL.concatenateDataInDirectory() != originData
+            } else {
+                distinctTargetExists = true
+            }
+        } else if try await drive.fileExists(at: targetFilePath) {
+            originData = try await FileManager.default.contentsOfFile(coordinatingAccessAt: fileURL)
+            targetExists = true
+            distinctTargetExists = targetURL != fileURL
+            if !distinctTargetExists {
+                distinctTargetExists = try await drive.readFile(at: targetFilePath) != originData
+            }
+        }
+        if distinctTargetExists, let originData = originData {
+            if try await drive.readFile(at: targetFilePath) != originData {
+                // Make a unique filename
+                var ext = fileURL.pathExtension
+                if !ext.isEmpty {
+                    ext = "." + ext
                 }
+                let hash = String(format: "%02X", stableHash(data: originData)).prefix(6).uppercased()
+                let newFileName = fileURL.deletingPathExtension().lastPathComponent + " (\(hash))" + ext
+                targetFilePath = targetDirectory.appending(newFileName)
             }
-            // Don't overwrite
-            if distinctTargetExists || !targetExists {
-                try await drive.upload(from: fileURL, to: targetFilePath)
-            }
+        }
+        // Don't overwrite
+        if distinctTargetExists || !targetExists {
+            try await drive.upload(from: fileURL, to: targetFilePath)
         }
         
         let contentRef = try await refreshFileMetadata(drive: drive, relativePath: targetFilePath)
@@ -244,10 +247,12 @@ public class ReaderFileManager: ObservableObject {
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
         let absoluteFileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
         var readerFileURL: URL?
-        if absoluteFileURL.isEBookURL {
-            readerFileURL = URL(string: "ebook://ebook/load/\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(relativePath.path)")
-        } else {
-            readerFileURL = URL(string: "reader-file://local/\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(relativePath.path)")
+        if let encodedPath = "\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(relativePath.path)".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
+            if absoluteFileURL.isEBookURL {
+                readerFileURL = URL(string: "ebook://ebook/load/\(encodedPath)")
+            } else {
+                readerFileURL = URL(string: "reader-file://local/\(encodedPath)")
+            }
         }
         guard let readerFileURL = readerFileURL else {
             throw ReaderFileManagerError.invalidFileURL

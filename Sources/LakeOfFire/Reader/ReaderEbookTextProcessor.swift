@@ -17,7 +17,7 @@ fileprivate struct EbookProcessorCacheKey: Encodable {
     }
 }
 
-fileprivate let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", version: 1, totalBytesLimit: 30_000_000)
+fileprivate let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000)
 
 fileprivate func extractBlobUrls(from html: String) -> [String] {
     let prefix = "blob:"
