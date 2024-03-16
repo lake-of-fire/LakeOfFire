@@ -181,8 +181,8 @@ class Reader {
                 label: 'Layout',
                 type: 'radio',
                 items: [
-                    ['Scrolled', 'scrolled'],
                     ['Paginated', 'paginated'],
+                    ['Scrolled', 'scrolled'],
                 ],
                 onclick: value => {
                     this.view?.renderer.setAttribute('flow', value)
@@ -195,8 +195,8 @@ class Reader {
         $('#menu-button > button').addEventListener('click', () =>
             menu.element.classList.toggle('show'))
         
-//        menu.groups.layout.select('paginated')
-        menu.groups.layout.select('scrolled')
+        menu.groups.layout.select('paginated')
+//        menu.groups.layout.select('scrolled')
     }
     async open(file) {
         this.hasLoadedLastPosition = false
@@ -205,8 +205,8 @@ class Reader {
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
         const { book } = this.view
-        this.view.renderer.setAttribute('flow', 'scrolled')
-//        this.view.renderer.setAttribute('flow', 'paginated')
+//        this.view.renderer.setAttribute('flow', 'scrolled')
+        this.view.renderer.setAttribute('flow', 'paginated')
         this.view.renderer.setStyles?.(getCSS(this.style))
 //        this.view.renderer.next()
         
@@ -377,8 +377,8 @@ class CacheWarmer {
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
         const { book } = this.view
-        this.view.renderer.setAttribute('flow', 'scrolled')
-//        this.view.renderer.setAttribute('flow', 'paginated')
+//        this.view.renderer.setAttribute('flow', 'scrolled')
+        this.view.renderer.setAttribute('flow', 'paginated')
         //        this.view.renderer.next()
         
         await this.view.renderer.firstSection()

@@ -463,11 +463,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func refreshSettingsInWebView(content: (any ReaderContentModel), newState: WebViewState? = nil) {
+    public func refreshSettingsInWebView(content: (any ReaderContentModel)? = nil, newState: WebViewState? = nil) {
         // TODO: consolidate code duplication
-        Task { @MainActor in
-            await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
-            await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            let content = content ?? self.content
+            await scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
+            await scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
             refreshTitleInWebView(content: content, newState: newState)
         }
     }

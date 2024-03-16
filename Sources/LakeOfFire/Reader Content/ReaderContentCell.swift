@@ -86,7 +86,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
                             ProgressView(value: min(1, readingProgressFloat))
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
-                                .padding(.bottom, 2)
+//                                .padding(.bottom, 2)
                         }
                     }
                     Spacer(minLength: 0)
