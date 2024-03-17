@@ -32,23 +32,27 @@ struct BookLibrarySheetsModifier: ViewModifier {
                 }
             }
             .environmentObject(opdsCatalogsViewModel)
-            .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: [.epub, .epubZip, .directory]) { result in
-                Task { @MainActor in
-                    switch result {
-                    case .success(let url):
-                        do {
-                            guard let importedFileURL = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil, restrictToReaderContentMimeTypes: true) else {
-                                print("Couldn't import \(url.absoluteString)")
-                                return
+            .background {
+                // Weird hack because stacking fileImporter breaks all of them
+                Color.clear
+                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: [.epub, .epubZip, .directory]) { result in
+                        Task { @MainActor in
+                            switch result {
+                            case .success(let url):
+                                do {
+                                    guard let importedFileURL = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil, restrictToReaderContentMimeTypes: true) else {
+                                        print("Couldn't import \(url.absoluteString)")
+                                        return
+                                    }
+                                } catch {
+                                    print("Couldn't import \(url.absoluteString): \(error)")
+                                    return
+                                }
+                            case .failure(let error):
+                                print(error)
                             }
-                        } catch {
-                            print("Couldn't import \(url.absoluteString): \(error)")
-                            return
                         }
-                    case .failure(let error):
-                        print(error)
                     }
-                }
             }
     }
 }
