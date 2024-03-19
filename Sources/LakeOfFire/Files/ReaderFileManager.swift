@@ -278,7 +278,9 @@ public class ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) {
         contentFile.url = fileURL
-        contentFile.title = fileURL.deletingPathExtension().lastPathComponent
+        if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            contentFile.title = fileURL.deletingPathExtension().lastPathComponent
+        }
         contentFile.isDeleted = false
         contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
         contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain"

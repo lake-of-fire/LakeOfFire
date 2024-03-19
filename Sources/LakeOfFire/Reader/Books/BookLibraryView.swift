@@ -136,15 +136,6 @@ public struct BookLibraryView: View {
 
     @ViewBuilder var list: some View {
         List(selection: $entrySelection) {
-            if #available(iOS 17, macOS 14.0, *) {
-                Section("Editor's Picks", isExpanded: $isEditorsPicksExpanded) {
-                    EditorsPicksView(viewModel: viewModel)
-                }
-            } else {
-                Section("Editor's Picks") {
-                    EditorsPicksView(viewModel: viewModel)
-                }
-            }
 //
 //            Button("Catalogs") {
 //                // Implementation remains unchanged
@@ -162,6 +153,16 @@ public struct BookLibraryView: View {
                     myBooksSection
                 } header: {
                     myBooksHeader
+                }
+            }
+            
+            if #available(iOS 17, macOS 14.0, *) {
+                Section("Editor's Picks", isExpanded: $isEditorsPicksExpanded) {
+                    EditorsPicksView(viewModel: viewModel)
+                }
+            } else {
+                Section("Editor's Picks") {
+                    EditorsPicksView(viewModel: viewModel)
                 }
             }
         }

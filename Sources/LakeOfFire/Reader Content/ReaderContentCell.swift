@@ -32,8 +32,8 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
 }
 
 extension ReaderContentModel {
-    @ViewBuilder func readerContentCellView(alwaysShowThumbnails: Bool = true) -> some View {
-        ReaderContentCell(item: self, alwaysShowThumbnails: alwaysShowThumbnails)
+    @ViewBuilder func readerContentCellView(alwaysShowThumbnails: Bool = true, isEbookStyle: Bool = false) -> some View {
+        ReaderContentCell(item: self, alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: isEbookStyle)
     }
     
     @ViewBuilder func readerContentCellButtonsView() -> some View {

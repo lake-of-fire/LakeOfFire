@@ -117,7 +117,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
-        ReaderContentCell(item: item, alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
+        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
     }
 
     @ViewBuilder private func cell(item: C) -> some View {
