@@ -201,15 +201,15 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
                         .frame(maxWidth: .infinity)
                     }
                     //                .headerProminence(.increased)
-                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
-                        Divider()
-                            .padding(.top, 8)
-                    }
+//                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
+//                        Divider()
+//                            .padding(.top, 8)
+//                    }
                 }
                 .overlay {
                     AnyView(content.readerContentCellButtonsView())
                 }
-                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+//                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 .deleteDisabled((content as? any DeletableReaderContent) == nil)
                 .swipeActions {
                     if let content = content as? any DeletableReaderContent {

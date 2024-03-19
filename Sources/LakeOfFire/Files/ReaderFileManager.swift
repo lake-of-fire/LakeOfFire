@@ -228,7 +228,7 @@ public class ReaderFileManager: ObservableObject {
             if let relativePath = relativePath {
                 tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
             }
-            if url.lastPathComponent.hasSuffix(".realm") || url.lastPathComponent.hasSuffix(".realm.lock") || url.lastPathComponent.hasSuffix(".realm.management") {
+            if url.lastPathComponent.hasSuffix(".realm") || url.lastPathComponent.hasSuffix(".realm.lock") || url.lastPathComponent.hasSuffix(".realm.management") || url.lastPathComponent.hasSuffix(".realm.note") {
                 continue
             }
             if !url.isFilePackage(), try await drive.directoryExists(at: tryRelativePath) {
