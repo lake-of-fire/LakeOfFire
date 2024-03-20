@@ -291,9 +291,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 //                if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
                 if content.isReaderModeByDefault && !html.contains("<body.* class=.readability-mode.>") {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
-                        html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode ", options: .caseInsensitive)
+                        html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
                     } else {
-                        html = "<body data-is-next-load-in-reader-mode>\n\(html)\n</html>"
+                        html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
                     }
                     contentRules = contentRulesForReadabilityLoading
                 }

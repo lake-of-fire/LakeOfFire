@@ -94,7 +94,7 @@
 //
 //        if let html = html {
 //            if let doc = try? SwiftSoup.parse(html) {
-//                if !((doc.body()?.children().isEmpty()) ?? true) || ((doc.body()?.children().first()?.tagName() ?? "") == "pre" && doc.body()?.children().count == 1), let text = text {
+//                if !((doc.body()?.children().isEmpty()) ?? true) || ((doc.body()?.children().first()?.tagNameNormal() ?? "") == "pre" && doc.body()?.children().count == 1), let text = text {
 //                    match = load(html: textToHTML(text))
 //                } else {
 //                    match = load(html: html)
