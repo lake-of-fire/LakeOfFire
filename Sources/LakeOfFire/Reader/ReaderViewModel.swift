@@ -83,6 +83,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
+    public var willReaderModeLoad: Bool {
+        return content.isReaderModeAvailable && content.isReaderModeByDefault
+    }
+    
     public var contentRulesForReadabilityLoading = """
     [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
         """
@@ -133,10 +137,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     func showReaderView(content: (any ReaderContentModel)? = nil) {
+        guard let readabilityContent = readabilityContent else { return }
         let content = content ?? self.content
-        guard let readabilityContent = readabilityContent else {
-            return
-        }
         let title = content.title
         let imageURL = content.imageURLToDisplay
         let url = content.url
@@ -160,6 +162,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     private func showReadabilityContent(content: (any ReaderContentModel), readabilityContent: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
+            content.isReaderModeAvailable = false
             if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
 #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
                 if !content.url.isReaderFileURL && (content.content?.isEmpty ?? true) {
