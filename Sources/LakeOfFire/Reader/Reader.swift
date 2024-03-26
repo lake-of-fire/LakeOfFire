@@ -131,35 +131,33 @@ public struct Reader: View {
                         guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                             return
                         }
-                        try? await Task { @MainActor in
-                            guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try await readerViewModel.getContent(forURL: url) else { return }
-                            if !message.frameInfo.isMainFrame, readerViewModel.readabilityContent != nil, readerViewModel.readabilityContainerFrameInfo != message.frameInfo {
-                                // Don't override a parent window readability result.
-                                return
+                        guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await readerViewModel.getContent(forURL: url) else { return }
+                        if !message.frameInfo.isMainFrame, readerViewModel.readabilityContent != nil, readerViewModel.readabilityContainerFrameInfo != message.frameInfo {
+                            // Don't override a parent window readability result.
+                            return
+                        }
+                        guard !result.outputHTML.isEmpty else {
+                            try? await content.asyncWrite { _, content in
+                                content.isReaderModeAvailable = false
                             }
-                            guard !result.outputHTML.isEmpty else {
-                                try? await content.asyncWrite { _, content in
-                                    content.isReaderModeAvailable = false
-                                }
-                                return
+                            return
+                        }
+                        
+                        guard !url.isNativeReaderView else { return }
+                        readerViewModel.readabilityContent = result.outputHTML
+                        readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
+                        readerViewModel.readabilityContainerFrameInfo = message.frameInfo
+                        if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
+                            readerViewModel.showReaderView(content: content)
+                        } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
+                            await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
+                        }
+                        
+                        if !content.isReaderModeAvailable {
+                            try? await content.asyncWrite { _, content in
+                                content.isReaderModeAvailable = true
                             }
- 
-                            guard !url.isNativeReaderView else { return }
-                            readerViewModel.readabilityContent = result.outputHTML
-                            readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
-                            readerViewModel.readabilityContainerFrameInfo = message.frameInfo
-                            if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                                readerViewModel.showReaderView(content: content)
-                            } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
-                                await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
-                            }
-                            
-                            if !content.isReaderModeAvailable {
-                                try await content.asyncWrite { _, content in
-                                    content.isReaderModeAvailable = true
-                                }
-                            }
-                        }.value
+                        }
                     },
                     "showReaderView": { _ in
                         Task { @MainActor in readerViewModel.showReaderView() }

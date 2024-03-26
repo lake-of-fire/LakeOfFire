@@ -141,7 +141,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let content = content ?? self.content
         let title = content.title
         let imageURL = content.imageURLToDisplay
-        let url = content.url
         let readabilityContainerSelector = readabilityContainerSelector
         let readabilityContainerFrameInfo = readabilityContainerFrameInfo
         let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type
@@ -152,14 +151,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
             let realm = try await Realm(configuration: contentConfig, actor: MainActor.shared)
             guard let contentType = contentType, let content = realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentModel else { return }
             do {
-                try await showReadabilityContent(content: content, readabilityContent: readabilityContent, url: url, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
+                try await showReadabilityContent(content: content, readabilityContent: readabilityContent, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
             } catch { }
         }
     }
     
     /// Content before it has been treated with Reader-specific processing.
     @MainActor
-    private func showReadabilityContent(content: (any ReaderContentModel), readabilityContent: String, url: URL?, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+    private func showReadabilityContent(content: (any ReaderContentModel), readabilityContent: String, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+        guard content.url == state.pageURL else { return }
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
@@ -179,6 +179,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let readerFontSize = readerFontSize
         let defaultFontSize = defaultFontSize ?? 15
         let processReadabilityContent = processReadabilityContent
+        let url = content.url
+
         try await Task.detached { [weak self] in
             var doc: SwiftSoup.Document
             do {
@@ -198,6 +200,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             let transformedContent = html
             await Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                guard url == state.pageURL else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     await scriptCaller.evaluateJavaScript(
                         """
