@@ -19,4 +19,9 @@ extension ContentFile: DeletableReaderContent {
     public func delete(readerFileManager: ReaderFileManager) async throws {
         try await readerFileManager.delete(readerFileURL: url)
     }
+    
+    @MainActor
+    func cloudDriveSyncStatus(readerFileManager: ReaderFileManager) async throws -> CloudDriveSyncStatus {
+        return try await readerFileManager.cloudDriveSyncStatus(readerFileURL: url)
+    }
 }

@@ -7,7 +7,7 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
     @Published var forceShowBookmark = false
-    
+
     init() { }
     
     @MainActor
@@ -41,6 +41,60 @@ extension ReaderContentModel {
     }
 }
 
+struct CloudDriveSyncStatusView: View { //, Equatable {
+    @ObservedRealmObject var item: ContentFile
+    
+    @EnvironmentObject var cloudDriveSyncStatusModel: CloudDriveSyncStatusModel
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
+    
+    private var title: String? {
+        switch cloudDriveSyncStatusModel.status {
+        case .fileMissing:
+            return "File Missing"
+        case .notInUbiquityContainer:
+            return "Local File"
+        case .downloading:
+            return "Downloading from iCloud"
+        case .uploading:
+            return "Uploading to iCloud"
+        case .synced:
+            return "Synchronized with iCloud"
+        case .notSynced:
+            return "Not Synchronized with iCloud"
+        case .loadingStatus:
+            return nil
+        }
+    }
+    
+    private var systemImage: String? {
+        switch cloudDriveSyncStatusModel.status {
+        case .fileMissing:
+            return "exclamationmark.icloud"
+        case .notInUbiquityContainer:
+            return "icloud.slash"
+        case .downloading:
+            return "icloud.and.arrow.down"
+        case .uploading:
+            return "icloud.and.arrow.up"
+        case .synced:
+            return "checkmark.icloud.fill"
+        case .notSynced:
+            return "xmark.icloud"
+        case .loadingStatus:
+            return nil
+        }
+    }
+    
+    var body: some View {
+        if let title = title, let systemImage = systemImage {
+            Label(title, systemImage: systemImage)
+        } else {
+            Text("")
+                .hidden()
+        }
+    }
+}
+
 struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     var alwaysShowThumbnails = true
@@ -54,7 +108,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 100
     
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = item.imageURLToDisplay {
@@ -76,17 +130,28 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
                 Spacer(minLength: 0)
                 HStack(alignment: .bottom, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
-                        if item.displayPublicationDate, let publicationDate = item.humanReadablePublicationDate {
-                            Text("\(publicationDate)")
-                                .font(.footnote)
-                                .foregroundColor(.secondary)
-                                .lineLimit(9001)
-                                .fixedSize(horizontal: true, vertical: false)
+                        HStack {
+                            let displayPublicationDate = item.displayPublicationDate && item.humanReadablePublicationDate != nil
+                            if displayPublicationDate, let publicationDate = item.humanReadablePublicationDate {
+                                Text("\(publicationDate)")
+                                    .lineLimit(9001)
+                                    .font(.footnote)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            if let item = item as? ContentFile {
+                                if displayPublicationDate {
+//                                    Divider()
+                                }
+                                CloudDriveSyncStatusView(item: item)
+                                    .labelStyle(.iconOnly)
+                                    .font(.callout)
+                            }
                         }
+                        .foregroundStyle(.secondary)
+
                         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
                             ProgressView(value: min(1, readingProgressFloat))
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
-//                                .padding(.bottom, 2)
                         }
                     }
                     Spacer(minLength: 0)
@@ -138,9 +203,18 @@ struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: 
                     BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
                         .buttonStyle(.borderless)
                         .padding(.leading, 2)
+#if os(macOS)
+                        .offset(y: -(buttonSize / 4)) // IDK why
+#endif
 //#endif
                     if let item = item as? (any DeletableReaderContent) {
                         Menu {
+                            if let item = item as? ContentFile {
+                                CloudDriveSyncStatusView(item: item)
+                                    .labelStyle(.titleAndIcon)
+                                Divider()
+                            }
+                            
                             Button(role: .destructive) {
                                 readerContentListModalsModel.confirmDeletionOf = item
                                 readerContentListModalsModel.confirmDelete = true
@@ -150,24 +224,24 @@ struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: 
                         } label: {
                             Label("More Options", systemImage: "ellipsis")
                                 .foregroundStyle(.secondary)
-//                            #if os(macOS)
-//                                .padding(.horizontal, 4)
-//                                .padding(.vertical, 10)
-//                            #else
+                            //                            #if os(macOS)
+                            //                                .padding(.horizontal, 4)
+                            //                                .padding(.vertical, 10)
+                            //                            #else
                                 .frame(width: buttonSize, height: buttonSize)
-//#endif
+                            //#endif
                                 .labelStyle(.iconOnly)
                         }
                         .foregroundStyle(.secondary)
                         .menuIndicator(.hidden)
                         .buttonStyle(.borderless)
 #if os(macOS)
-                        .offset(y: -(buttonSize / 4)) // IDK why
+                        .offset(y: -(buttonSize / 2.5)) // IDK why
+                                                        //                        .offset(y: 3)
 #endif
-//                        .offset(y: 3)
                     }
                 }
-                .padding(.trailing, 5)
+                .padding(.trailing, 8)
             }
         }
 //        .onHover { hovered in

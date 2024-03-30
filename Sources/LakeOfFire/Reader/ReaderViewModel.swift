@@ -10,8 +10,8 @@ import WebKit
 public class ReaderViewModel: NSObject, ObservableObject {
     public var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
     public var readerFileManager: ReaderFileManager?
-    public let navigator = WebViewNavigator()
-    @Published public var state: WebViewState = .empty 
+    public var navigator: WebViewNavigator?
+    @Published public var state: WebViewState = .empty
     {
 //    public var action: WebViewAction = .idle
 //    public var state: WebViewState = .empty {
@@ -237,7 +237,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
-                    navigator.loadHTML(transformedContent, baseURL: url)
+                    navigator?.loadHTML(transformedContent, baseURL: url)
                 }
                 isReaderMode = true
             }.value
@@ -303,10 +303,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     }
                     contentRules = contentRulesForReadabilityLoading
                 }
-                navigator.loadHTML(html, baseURL: content.url)
+                navigator?.loadHTML(html, baseURL: content.url)
             } else {
                 // Shouldn't come here... results in duplicate history. Here for safety though.
-                navigator.load(URLRequest(url: content.url))
+                navigator?.load(URLRequest(url: content.url))
             }
         } else {
             if content.isReaderModeByDefault {

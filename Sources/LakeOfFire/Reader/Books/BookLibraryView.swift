@@ -264,17 +264,27 @@ class BookLibraryViewModel: ObservableObject {
         }
     }
     
+    @RealmBackgroundActor
     func open(publication: Publication, readerFileManager: ReaderFileManager, readerViewModel: ReaderViewModel, navigator: WebViewNavigator) async throws {
         guard let downloadURL = publication.downloadURL else { return }
-        let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title)
-        
-        guard let downloadable = downloadable, let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url, restrictToReaderContentMimeTypes: true) else {
-            print("Couldn't import \(publication.title) file URL")
-            return
+        guard let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title) else { return }
+
+        var importedURL: URL?
+        if await downloadable.existsLocally() {
+            importedURL = try await readerFileManager.readerFileURL(for: downloadable)
+        } else {
+            guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url, restrictToReaderContentMimeTypes: true) else {
+                print("Couldn't import \(publication.title) file URL")
+                return
+            }
+            importedURL = importedFileURL
         }
         
-        guard let content = try await ReaderContentLoader.load(url: importedFileURL, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
-        await navigator.load(content: content, readerFileManager: readerFileManager)
+        guard let toLoad = importedURL else { return }
+        try await Task { @MainActor in
+            guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
+            await navigator.load(content: content, readerFileManager: readerFileManager)
+        }.value
     }
 }
 

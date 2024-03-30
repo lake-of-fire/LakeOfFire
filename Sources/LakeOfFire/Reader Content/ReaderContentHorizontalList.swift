@@ -17,12 +17,67 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
     }
 }
 
+fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: View {
+    var content: C
+    
+    @State var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
+    @EnvironmentObject private var navigator: WebViewNavigator
+    @Environment(\.readerWebViewState) private var readerState
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
+    
+    @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
+    //    @State private var viewWidth: CGFloat = 0
+    
+    @State private var confirmDelete: Bool = false
+    @State private var confirmDeletionOf: (any DeletableReaderContent)?
+    
+    var body: some View {
+        Button {
+            guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
+            Task { @MainActor in
+                await navigator.load(content: content, readerFileManager: readerFileManager)
+            }
+        } label: {
+            AnyView(content.readerContentCellView(alwaysShowThumbnails: true))
+                .background(Color.white.opacity(0.00000001)) // Clickability
+                                                             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
+                .frame(maxWidth: maxWidth)
+                .padding(8)
+        }
+        //                    .buttonStyle(ReaderContentCellButtonStyle())
+        .buttonStyle(.plain)
+        .tint(.secondary)
+        //                    .padding(.vertical, 4)
+        //                    .padding(.horizontal, 8)
+        .background(.ultraThinMaterial)
+        .background(.secondary.opacity(0.09))
+        .overlay {
+            AnyView(content.readerContentCellButtonsView())
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        //                    .id(feedEntry.compoundKey)
+        .contextMenu {
+            if let entry = content as? (any DeletableReaderContent) {
+                Button(role: .destructive) {
+                    confirmDeletionOf = entry
+                    confirmDelete = true
+                } label: {
+                    Label(entry.deleteActionTitle, image: "trash")
+                }
+            }
+        }
+        .environmentObject(cloudDriveSyncStatusModel)
+        .task { @MainActor in
+            if let item = content as? ContentFile {
+                await cloudDriveSyncStatusModel.refreshAsync(item: item, readerFileManager: readerFileManager)
+            }
+        }
+    }
+}
+
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View {
     var filteredContents: [C]
     
-    @EnvironmentObject private var navigator: WebViewNavigator
-    @Environment(\.readerWebViewState) private var readerState
-    @AppStorage("appTint") private var appTint: Color = Color.accentColor
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
@@ -35,40 +90,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
         ScrollView(.horizontal) {
             LazyHStack {
                 ForEach(filteredContents, id: \.compoundKey) { (content: C) in
-                    Button {
-                        guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
-                        Task { @MainActor in
-                            await navigator.load(content: content, readerFileManager: readerFileManager)
-                        }
-                    } label: {
-                        AnyView(content.readerContentCellView(alwaysShowThumbnails: true))
-                            .background(Color.white.opacity(0.00000001)) // Clickability
-//                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
-                            .frame(maxWidth: maxWidth)
-                            .padding(8)
-                    }
-//                    .buttonStyle(ReaderContentCellButtonStyle())
-                    .buttonStyle(.plain)
-                    .tint(.secondary)
-//                    .padding(.vertical, 4)
-//                    .padding(.horizontal, 8)
-                    .background(.ultraThinMaterial)
-                    .background(.secondary.opacity(0.09))
-                    .overlay {
-                        AnyView(content.readerContentCellButtonsView())
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    //                    .id(feedEntry.compoundKey)
-                    .contextMenu {
-                        if let entry = content as? (any DeletableReaderContent) {
-                            Button(role: .destructive) {
-                                confirmDeletionOf = entry
-                                confirmDelete = true
-                            } label: {
-                                Label(entry.deleteActionTitle, image: "trash")
-                            }
-                        }
-                    }
+                    ReaderContentInnerHorizontalListItem(content: content)
                 }
                 .headerProminence(.increased)
             }

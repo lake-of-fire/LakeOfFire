@@ -380,7 +380,7 @@ class View {
     }
     destroy() {
         if (this.document) this.#resizeObserver.unobserve(this.document.body)
-        if (this.document) this.#mutationObserver.unobserve(this.document.body)
+        if (this.document) this.#mutationObserver.disconnect()
     }
 }
 

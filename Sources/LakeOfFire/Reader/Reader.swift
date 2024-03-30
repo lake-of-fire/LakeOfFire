@@ -71,7 +71,8 @@ public struct Reader: View {
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    
+    @EnvironmentObject private var navigator: WebViewNavigator
+
 //    var url: URL {
 //        return readerViewModel.content.url
 //    }
@@ -100,7 +101,7 @@ public struct Reader: View {
                 config: WebViewConfig(
                     contentRules: readerViewModel.contentRules,
                     userScripts: readerViewModel.allScripts),
-                navigator: readerViewModel.navigator,
+                navigator: navigator,
                 state: $readerViewModel.state,
                 scriptCaller: readerViewModel.scriptCaller,
                 blockedHosts: Set([
@@ -335,6 +336,6 @@ fileprivate extension Reader {
             content.isReaderModeByDefault = false
         }
         //        }
-        readerViewModel.navigator.reload()
+        navigator.reload()
     }
 }

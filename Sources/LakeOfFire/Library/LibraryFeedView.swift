@@ -413,7 +413,7 @@ struct LibraryFeedFormSections: View {
    
     private func reinitializeState() {
         readerFeedEntry = nil
-        readerViewModel.navigator.load(URLRequest(url: URL(string: "about:blank")!))
+        readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
         
         refreshFromOpenGraph()
         if viewModel.feed.entries.isEmpty {
@@ -479,7 +479,7 @@ struct LibraryFeedFormSections: View {
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
         guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: viewModel.feed.id) else {
             readerFeedEntry = nil
-            readerViewModel.navigator.load(URLRequest(url: URL(string: "about:blank")!))
+            readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             return
         }
         
@@ -490,12 +490,12 @@ struct LibraryFeedFormSections: View {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
                     if readerViewModel.content != entry {
-                        await readerViewModel.navigator.load(content: entry, readerFileManager: readerFileManager)
+                        await readerViewModel.navigator?.load(content: entry, readerFileManager: readerFileManager)
                     }
                 }
             } else {
                 readerFeedEntry = nil
-                readerViewModel.navigator.load(URLRequest(url: URL(string: "about:blank")!))
+                readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             }
         }
     }

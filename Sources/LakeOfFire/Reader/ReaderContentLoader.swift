@@ -168,7 +168,7 @@ public struct ReaderContentLoader {
             
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
-            } else if match == nil {
+            } else if match == nil, !url.isEBookURL {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 //        historyRecord.isReaderModeByDefault

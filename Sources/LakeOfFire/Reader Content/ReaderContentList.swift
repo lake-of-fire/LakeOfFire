@@ -104,6 +104,133 @@ public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject
     }
 }
 
+fileprivate struct ReaderContentInnerListItem<C: ReaderContentModel>: View {
+    let content: C
+    @Binding var entrySelection: String?
+    var alwaysShowThumbnails = true
+    var showSeparators = false
+    @ObservedObject var viewModel: ReaderContentListViewModel<C>
+    
+    //    @Environment(\.readerWebViewState) private var readerState
+    
+    @State private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    
+    @ViewBuilder private func unstyledCell(item: C) -> some View {
+        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
+    }
+    
+    @ViewBuilder private func cell(item: C) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Group {
+                if showSeparators {
+                    unstyledCell(item: item)
+                } else {
+                    unstyledCell(item: item)
+                    //                    .padding(.vertical, 4)
+                    //                    .padding(.horizontal, 8)
+                        .padding(8)
+                        .background(.ultraThinMaterial)
+                        .background(.secondary.opacity(0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .tag(item.compoundKey)
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+#if os(macOS)
+            Toggle(isOn: Binding<Bool>(
+                get: {
+                    //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
+                    readerViewModel.state.matches(content: content)
+                },
+                set: {
+                    entrySelection = $0 ? content.compoundKey : nil
+                }
+            ), label: {
+                cell(item: content)
+                    .background(Color.white.opacity(0.00000001)) // Clickability
+            })
+            .toggleStyle(ListItemToggleStyle())
+            .overlay {
+                AnyView(content.readerContentCellButtonsView())
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            
+            if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
+                Divider()
+                    .padding(.top, 4)
+            }
+            //                                    .contextMenu {
+            //                    if let content = content as? (any DeletableReaderContent) {
+            //                        Button(role: .destructive) {
+            //                            readerContentListModalsModel.confirmDeletionOf = content
+            //                            readerContentListModalsModel.confirmDelete = true
+            //                        } label: {
+            //                            Label(content.deleteActionTitle, image: "trash")
+            //                        }
+            //                    }
+            //                }
+            
+            //                    .buttonStyle(.borderless)
+            //                    .id(feedEntry.compoundKey)
+#elseif os(iOS)
+            if #available(iOS 16.0, *) {
+                cell(item: content)
+            } else {
+                Button {
+                    entrySelection = content.compoundKey
+                } label: {
+                    cell(item: content)
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.borderless)
+                .tint(.primary)
+                .frame(maxWidth: .infinity)
+            }
+            //                .headerProminence(.increased)
+            //                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
+            //                        Divider()
+            //                            .padding(.top, 8)
+            //                    }
+#endif
+        }
+#if os(iOS)
+        .overlay {
+            AnyView(content.readerContentCellButtonsView())
+        }
+        //                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+        .deleteDisabled((content as? any DeletableReaderContent) == nil)
+        .swipeActions {
+            if let content = content as? any DeletableReaderContent {
+                Button {
+                    readerContentListModalsModel.confirmDeletionOf = content
+                    if readerContentListModalsModel.confirmDeletionOf != nil {
+                        readerContentListModalsModel.confirmDelete = true
+                    }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+        //                .tint(.)
+#endif
+        .environmentObject(cloudDriveSyncStatusModel)
+        .task { @MainActor in
+            if let item = content as? ContentFile {
+                await cloudDriveSyncStatusModel.refreshAsync(item: item, readerFileManager: readerFileManager)
+            }
+        }
+    }
+}
+
 fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     @Binding var entrySelection: String?
     var alwaysShowThumbnails = true
@@ -111,7 +238,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     
 //    @Environment(\.readerWebViewState) private var readerState
-    @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerViewModel: ReaderViewModel
@@ -145,90 +271,17 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
         Group {
 #if os(macOS)
             ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
-                VStack(spacing: 0) {
-                    Toggle(isOn: Binding<Bool>(
-                        get: {
-                            //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                            readerViewModel.state.matches(content: content)
-                        },
-                        set: {
-                            entrySelection = $0 ? content.compoundKey : nil
-                        }
-                    ), label: {
-                        cell(item: content)
-                            .background(Color.white.opacity(0.00000001)) // Clickability
-                    })
-                    .toggleStyle(ListItemToggleStyle())
-                    .overlay {
-                        AnyView(content.readerContentCellButtonsView())
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    
-                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
-                        Divider()
-                            .padding(.top, 4)
-                    }
-//                                    .contextMenu {
-//                    if let content = content as? (any DeletableReaderContent) {
-//                        Button(role: .destructive) {
-//                            readerContentListModalsModel.confirmDeletionOf = content
-//                            readerContentListModalsModel.confirmDelete = true
-//                        } label: {
-//                            Label(content.deleteActionTitle, image: "trash")
-//                        }
-//                    }
-//                }
-
-                    //                    .buttonStyle(.borderless)
-                    //                    .id(feedEntry.compoundKey)
-                }
+                ReaderContentInnerListItem(content: content, entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
             }
             .headerProminence(.increased)
 #else
             ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
-                VStack(spacing: 0) {
-                    if #available(iOS 16.0, *) {
-                        cell(item: content)
-                    } else {
-                        Button {
-                            entrySelection = content.compoundKey
-                        } label: {
-                            cell(item: content)
-                                .multilineTextAlignment(.leading)
-                        }
-                        .buttonStyle(.borderless)
-                        .tint(.primary)
-                        .frame(maxWidth: .infinity)
-                    }
-                    //                .headerProminence(.increased)
-//                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
-//                        Divider()
-//                            .padding(.top, 8)
-//                    }
-                }
-                .overlay {
-                    AnyView(content.readerContentCellButtonsView())
-                }
-//                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                .deleteDisabled((content as? any DeletableReaderContent) == nil)
-                .swipeActions {
-                    if let content = content as? any DeletableReaderContent {
-                        Button {
-                            readerContentListModalsModel.confirmDeletionOf = content
-                            if readerContentListModalsModel.confirmDeletionOf != nil {
-                                readerContentListModalsModel.confirmDelete = true
-                            }
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    }
-                }
-//                .tint(.)
+                ReaderContentInnerListItem(content: content, entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
             }
 #endif
         }
         .frame(minHeight: 10) // Needed so ScrollView doesn't collapse at start...
-    }
+   }
     
     init(entrySelection: Binding<String?>, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false, viewModel: ReaderContentListViewModel<C>) {
         _entrySelection = entrySelection

@@ -12,6 +12,58 @@ public enum ReaderFileManagerError: Swift.Error {
     case driveMissing
 }
 
+class CloudDriveSyncStatusModel: ObservableObject {
+    @Published var status: CloudDriveSyncStatus = .loadingStatus
+    private var refreshTask: Task<Void, Never>? = nil
+    
+    @MainActor
+    func refreshAsync(item: ContentFile, readerFileManager: ReaderFileManager) async {
+        refreshTask?.cancel() // Cancel any existing task
+        refreshTask = Task { [weak self] in
+            // Continuously refresh status in the background
+            await self?.periodicStatusRefresh(item: item, readerFileManager: readerFileManager)
+        }
+        await refreshTask?.value
+    }
+    
+    private func periodicStatusRefresh(item: ContentFile, readerFileManager: ReaderFileManager) async {
+        while !Task.isCancelled {
+            do {
+                let newStatus = try await item.cloudDriveSyncStatus(readerFileManager: readerFileManager)
+                await MainActor.run {
+                    self.status = newStatus
+                }
+                
+                // Check if we should continue refreshing
+                if newStatus != .downloading && newStatus != .uploading {
+                    break // Stop refreshing if status is not downloading or uploading
+                }
+                
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                await MainActor.run {
+                    print(error)
+                }
+                break // Exit on error
+            }
+        }
+    }
+    
+    deinit {
+        refreshTask?.cancel() // Ensure task is cancelled if the model is deinitialized
+    }
+}
+
+public enum CloudDriveSyncStatus {
+    case fileMissing
+    case notInUbiquityContainer
+    case downloading
+    case uploading
+    case synced
+    case notSynced
+    case loadingStatus
+}
+
 public class ReaderFileManager: ObservableObject {
     @MainActor @Published public var files: [ContentFile]?
     
@@ -31,12 +83,37 @@ public class ReaderFileManager: ObservableObject {
     
     public init() { }
     
-    @MainActor public func initialize(ubiquityContainerIdentifier: String) async throws {
+    @MainActor
+    public func initialize(ubiquityContainerIdentifier: String) async throws {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
+        }
+    }
+    
+    @MainActor
+    public func cloudDriveSyncStatus(readerFileURL: URL) async throws -> CloudDriveSyncStatus {
+        try Self.validate(readerFileURL: readerFileURL)
+        let relativePath = try Self.extractRelativePath(fileURL: readerFileURL)
+        guard try await cloudDrive?.fileExists(at: relativePath) ?? false else {
+            guard try await localDrive?.fileExists(at: relativePath) ?? false else {
+                return .notInUbiquityContainer
+            }
+            return .notInUbiquityContainer
+        }
+        
+        let localFileURL = try await localFileURL(forReaderFileURL: readerFileURL)
+        let values = try localFileURL.resourceValues(forKeys: [.ubiquitousItemIsUploadingKey, .ubiquitousItemIsUploadedKey, .ubiquitousItemIsDownloadingKey, .ubiquitousItemDownloadingStatusKey])
+        if let isDownloading = values.ubiquitousItemIsDownloading, isDownloading {
+            return .downloading
+        } else if let isUploading = values.ubiquitousItemIsUploading, isUploading {
+            return .uploading
+        } else if let isUploaded = values.ubiquitousItemIsUploaded, isUploaded, let downloadingStatus = values.ubiquitousItemDownloadingStatus, downloadingStatus == .current {
+            return .synced
+        } else {
+            return .notSynced
         }
     }
     
@@ -105,6 +182,38 @@ public class ReaderFileManager: ObservableObject {
         return try await drive.readFile(at: relativePath)
     }
     
+    @MainActor
+    public func readerFileURL(for downloadable: Downloadable) async throws -> URL? {
+        let fileURL = downloadable.localDestination
+        let readerFileURL = try await readerFileURL(for: fileURL)
+        return readerFileURL
+    }
+    
+    @MainActor
+    public func readerFileURL(for fileURL: URL, drive: CloudDrive? = nil) async throws -> URL? {
+        let relativePath = RootRelativePath(path: fileURL.relativePath)
+        let drives: [CloudDrive] = (drive == nil ? [cloudDrive, localDrive] : [drive]).filter({ $0?.isConnected ?? false }).compactMap({ $0 })
+        for drive in drives {
+            // This relativePath stuff is funky/fragile
+            let matchFileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
+            if matchFileURL.absoluteURL != fileURL.absoluteURL {
+                continue
+            }
+            var normalizedPath = relativePath.path
+            if normalizedPath.hasPrefix("./") {
+                normalizedPath = String(normalizedPath.dropFirst(2))
+            }
+            if let encodedPath = "\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(normalizedPath)".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
+                if fileURL.isEBookURL {
+                    return URL(string: "ebook://ebook/load/\(encodedPath)")
+                } else {
+                    return URL(string: "reader-file://local/\(encodedPath)")
+                }
+            }
+        }
+        return nil
+    }
+
     @MainActor
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?, restrictToReaderContentMimeTypes: Bool) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
@@ -246,15 +355,7 @@ public class ReaderFileManager: ObservableObject {
     private func refreshFileMetadata(drive: CloudDrive, relativePath: RootRelativePath) async throws -> ThreadSafeReference<ContentFile> {
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
         let absoluteFileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
-        var readerFileURL: URL?
-        if let encodedPath = "\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(relativePath.path)".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
-            if absoluteFileURL.isEBookURL {
-                readerFileURL = URL(string: "ebook://ebook/load/\(encodedPath)")
-            } else {
-                readerFileURL = URL(string: "reader-file://local/\(encodedPath)")
-            }
-        }
-        guard let readerFileURL = readerFileURL else {
+        guard let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) else {
             throw ReaderFileManagerError.invalidFileURL
         }
         let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first

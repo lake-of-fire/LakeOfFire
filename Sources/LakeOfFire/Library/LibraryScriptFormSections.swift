@@ -395,7 +395,7 @@ struct LibraryScriptFormSections: View {
                 webNavigator.load(URLRequest(url: url))
             }
             if readerModeViewModel.state.pageURL != url || forceRefresh {
-                readerModeViewModel.navigator.load(URLRequest(url: url))
+                readerModeViewModel.navigator?.load(URLRequest(url: url))
             }
         }
     }
