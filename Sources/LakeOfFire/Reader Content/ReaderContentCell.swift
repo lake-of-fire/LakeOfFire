@@ -169,7 +169,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }
-        .task {
+        .task { @MainActor in
             viewModel.load(item: item)
         }
     }

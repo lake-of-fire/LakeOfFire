@@ -5,7 +5,6 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
-import SwiftUIDownloads
 
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
@@ -58,8 +57,6 @@ public struct Reader: View {
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
-    
-    @ObservedObject private var downloadController = DownloadController.shared
     
     @ScaledMetric(relativeTo: .body) internal var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
     @AppStorage("readerFontSize") internal var readerFontSize: Double?

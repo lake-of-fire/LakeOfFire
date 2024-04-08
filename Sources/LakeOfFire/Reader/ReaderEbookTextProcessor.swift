@@ -1,23 +1,23 @@
 import Foundation
 import LakeKit
 
-fileprivate struct EbookProcessorCacheKey: Encodable {
-    let contentURL: URL
-    let sectionLocation: String
+public struct EbookProcessorCacheKey: Encodable {
+    public let contentURL: URL
+    public let sectionLocation: String
     
-    private enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case contentURL
         case sectionLocation
     }
     
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(contentURL, forKey: .contentURL)
         try container.encode(sectionLocation, forKey: .sectionLocation)
     }
 }
 
-fileprivate let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000, countLimit: 2_000)
+public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000, countLimit: 2_000)
 
 fileprivate func extractBlobUrls(from html: String) -> [String] {
     let prefix = "blob:"
