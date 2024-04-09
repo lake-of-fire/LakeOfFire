@@ -169,6 +169,7 @@ public class ReaderFileManager: ObservableObject {
     
     public func fileExists(fileURL: URL) async throws -> Bool {
         let (drive, relativePath) = try await extract(fileURL: fileURL)
+        try await print("file \(fileURL) exists? \(drive.fileExists(at: relativePath)) on drive \(drive)")
         return try await drive.fileExists(at: relativePath)
     }
     
@@ -191,10 +192,13 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public func readerFileURL(for fileURL: URL, drive: CloudDrive? = nil) async throws -> URL? {
-        let relativePath = RootRelativePath(path: fileURL.relativePath)
         let drives: [CloudDrive] = (drive == nil ? [cloudDrive, localDrive] : [drive]).filter({ $0?.isConnected ?? false }).compactMap({ $0 })
         for drive in drives {
             // This relativePath stuff is funky/fragile
+            guard let relativePathStr = relativePath(for: fileURL, relativeTo: drive.rootDirectory) else {
+                continue
+            }
+            let relativePath = RootRelativePath(path: relativePathStr)
             let matchFileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
             if matchFileURL.absoluteURL != fileURL.absoluteURL {
                 continue
@@ -488,4 +492,23 @@ fileprivate extension FileManager {
         var isDirectory: ObjCBool = false
         return fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
+}
+
+fileprivate func relativePath(for fileURL: URL, relativeTo rootDirectory: URL) -> String? {
+    let filePath = fileURL.path
+    let rootPath = rootDirectory.path
+    
+    // Check if the file path is within the root directory
+    guard filePath.hasPrefix(rootPath) else {
+        print("File is not within the root directory.")
+        return nil
+    }
+    
+    // Extract the relative path
+    let relativePath = String(filePath.dropFirst(rootPath.count))
+    
+    // Ensure the relative path does not start with a "/" to make it a true relative path
+    let trimmedRelativePath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    
+    return trimmedRelativePath
 }
