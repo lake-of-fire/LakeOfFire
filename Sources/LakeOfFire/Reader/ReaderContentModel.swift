@@ -22,7 +22,8 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
     var imageURLToDisplay: URL? { get }
-    
+    var isReaderModeOfferHidden: Bool { get set }
+
     // Caches.
     var isReaderModeAvailable: Bool { get set }
     
@@ -234,9 +235,10 @@ public extension ReaderContentModel {
         let imageURL = imageUrl
         let isFromClipboard = isFromClipboard
         let isReaderModeByDefault = isReaderModeByDefault
+        let isReaderModeOfferHidden = isReaderModeOfferHidden
         try await Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, realmConfiguration: realmConfiguration)
+            let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeOfferHidden: isReaderModeOfferHidden, realmConfiguration: realmConfiguration)
             await Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 configureBookmark(bookmark)

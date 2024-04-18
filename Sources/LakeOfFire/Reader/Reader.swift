@@ -277,11 +277,9 @@ public struct Reader: View {
                     readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if readerViewModel.content.isReaderModeAvailable && !readerViewModel.content.isReaderModeByDefault {
-                    ReaderModeButtonBar(showReaderView: {
-                       readerViewModel.showReaderView()
-                    })
+            .safeAreaInset(edge: .top) {
+                if readerViewModel.isReaderModeButtonBarVisible {
+                    ReaderModeButtonBar(readerViewModel: readerViewModel)
                 }
             }
             .task { @MainActor in

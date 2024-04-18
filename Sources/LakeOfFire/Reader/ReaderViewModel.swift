@@ -69,6 +69,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
     
+    public var isReaderModeButtonBarVisible: Bool {
+        if content.isReaderModeOfferHidden {
+            return false
+        }
+        return content.isReaderModeAvailable && !content.isReaderModeByDefault
+    }
+    public var isReaderModeVisibleInMenu: Bool {
+        return content.isReaderModeOfferHidden && content.isReaderModeAvailable
+    }
+
     public var locationShortName: String? {
         if content.url.absoluteString == "about:blank" {
             return "Home"
@@ -136,6 +146,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
+    func hideReaderModeButtonBar() async throws {
+        try await content.asyncWrite { _, content in
+            content.isReaderModeOfferHidden = true
+        }
+    }
+    
+    @MainActor
     func showReaderView(content: (any ReaderContentModel)? = nil) {
         guard let readabilityContent = readabilityContent else { return }
         let content = content ?? self.content
@@ -163,6 +180,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
+            content.isReaderModeOfferHidden = false
             if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
 #warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
                 if !content.url.isReaderFileURL && (content.content?.isEmpty ?? true) {

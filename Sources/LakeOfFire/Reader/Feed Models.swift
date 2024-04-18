@@ -129,6 +129,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var publicationDate: Date?
+    @Persisted public var isReaderModeOfferHidden = false
 //    @Persisted public var isFromClipboard = false
     @Persisted public var content: Data?
 //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
