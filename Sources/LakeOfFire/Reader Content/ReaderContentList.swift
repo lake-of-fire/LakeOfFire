@@ -157,13 +157,18 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentModel>: View {
             ), label: {
                 cell(item: content)
                     .background(Color.white.opacity(0.00000001)) // Clickability
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(.secondary.opacity(0.2))
+                            .shadow(radius: 5)
+                    }
             })
             .toggleStyle(ListItemToggleStyle())
             .overlay {
                 AnyView(content.readerContentCellButtonsView())
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            
+
             if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
                 Divider()
                     .padding(.top, 4)

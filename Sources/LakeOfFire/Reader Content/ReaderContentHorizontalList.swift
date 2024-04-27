@@ -43,14 +43,19 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
                                                              //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
                 .frame(maxWidth: maxWidth)
                 .padding(8)
+                .background(.ultraThinMaterial)
+                .background(.secondary.opacity(0.09))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(.secondary.opacity(0.2))
+                        .shadow(radius: 5)
+                }
         }
         //                    .buttonStyle(ReaderContentCellButtonStyle())
         .buttonStyle(.plain)
         .tint(.secondary)
         //                    .padding(.vertical, 4)
         //                    .padding(.horizontal, 8)
-        .background(.ultraThinMaterial)
-        .background(.secondary.opacity(0.09))
         .overlay {
             AnyView(content.readerContentCellButtonsView())
         }

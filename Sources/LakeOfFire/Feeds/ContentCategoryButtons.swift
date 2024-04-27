@@ -148,6 +148,11 @@ struct ReaderCategoryButtonStyle: ButtonStyle {
 //#if os(iOS)
 //            .clipShape(Capsule())
 //#else
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.secondary.opacity(0.2))
+                    .shadow(radius: 5)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 //#endif
             .buttonStyle(.borderless)
