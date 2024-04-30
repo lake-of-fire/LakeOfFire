@@ -5,6 +5,7 @@ import RealmSwift
 import RealmSwiftGaps
 import SwiftUIDownloads
 import Combine
+import LakeKit
 
 public class BookLibraryModalsModel: ObservableObject {
     @Published var showingEbookCatalogs = false
@@ -16,6 +17,8 @@ public class BookLibraryModalsModel: ObservableObject {
 
 struct BookLibrarySheetsModifier: ViewModifier {
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
+    let isActive: Bool
+    
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
@@ -58,8 +61,8 @@ struct BookLibrarySheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel) -> some View {
-        modifier(BookLibrarySheetsModifier(bookLibraryModalsModel: bookLibraryModalsModel))
+    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel, isActive: Bool) -> some View {
+        modifier(BookLibrarySheetsModifier(bookLibraryModalsModel: bookLibraryModalsModel, isActive: isActive))
     }
 }
 

@@ -4,6 +4,7 @@ import Combine
 import OPML
 import UniformTypeIdentifiers
 import RealmSwiftGaps
+import LakeKit
 
 public enum LibraryRoute: Hashable, Codable {
     case userScripts
@@ -59,13 +60,17 @@ public extension View {
 }
 
 struct LibraryManagerSheetModifier: ViewModifier {
+    let isActive: Bool
+    
     @available(iOS 16, macOS 13, *)
     struct ActiveLibrarySheetModifier: ViewModifier {
+        let isActive: Bool
+        
         @ObservedObject private var libraryViewModel = LibraryManagerViewModel.shared
         
         func body(content: Content) -> some View {
             content
-                .sheet(isPresented: $libraryViewModel.isLibraryPresented) {
+                .sheet(isPresented: $libraryViewModel.isLibraryPresented && isActive) {
                     if #available(iOS 16.4, macOS 13.1, *) {
                         LibraryManagerView()
 #if os(macOS)
@@ -79,7 +84,7 @@ struct LibraryManagerSheetModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16, macOS 13, *) {
             content
-                .modifier(ActiveLibrarySheetModifier())
+                .modifier(ActiveLibrarySheetModifier(isActive: isActive))
         } else {
             content
         }
@@ -87,8 +92,8 @@ struct LibraryManagerSheetModifier: ViewModifier {
 }
 
 public extension View {
-    func libraryManagerSheet() -> some View {
-        modifier(LibraryManagerSheetModifier())
+    func libraryManagerSheet(isActive: Bool) -> some View {
+        modifier(LibraryManagerSheetModifier(isActive: isActive))
     }
 }
 

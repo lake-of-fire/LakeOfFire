@@ -3,6 +3,7 @@ import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import SwiftUtilities
+import LakeKit
 
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
@@ -12,11 +13,13 @@ public class ReaderContentListModalsModel: ObservableObject {
 }
 struct ReaderContentListSheetsModifier: ViewModifier {
     @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
+    let isActive: Bool
+    
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     func body(content: Content) -> some View {
         content
-            .confirmationDialog("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")?", isPresented: $readerContentListModalsModel.confirmDelete) {
+            .confirmationDialog("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")?", isPresented: $readerContentListModalsModel.confirmDelete && isActive) {
                 Button("Delete", role: .destructive) {
                     Task { @MainActor in
                         try await readerContentListModalsModel.confirmDeletionOf?.delete(readerFileManager: readerFileManager)
@@ -32,8 +35,8 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel) -> some View {
-        modifier(ReaderContentListSheetsModifier(readerContentListModalsModel: readerContentListModalsModel))
+    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel, isActive: Bool) -> some View {
+        modifier(ReaderContentListSheetsModifier(readerContentListModalsModel: readerContentListModalsModel, isActive: isActive))
     }
 }
 

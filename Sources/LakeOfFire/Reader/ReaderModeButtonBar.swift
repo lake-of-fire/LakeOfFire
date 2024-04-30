@@ -15,12 +15,11 @@ struct ReaderModeButtonBar: View {
             
             HStack {
                 Spacer(minLength: 0)
-                Button("") {
+                DismissButton {
                     Task { @MainActor in
                         try await readerViewModel.hideReaderModeButtonBar()
                     }
                 }
-                .buttonStyle(DismissButtonStyle())
             }
         }
         .frame(maxWidth: .infinity)
