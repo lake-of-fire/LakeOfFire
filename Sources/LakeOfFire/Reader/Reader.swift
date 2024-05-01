@@ -92,8 +92,12 @@ public struct Reader: View {
     public var body: some View {
         // TODO: Capture segment identifier and use it for unique word tracking instead of element ID
         // TODO: capture reading progress via sentence identifiers from a read section
-//        let _ = Self._printChanges()
-        GeometryReader { geometry in
+        //        let _ = Self._printChanges()
+        VStack(spacing: 0) {
+            if readerViewModel.isReaderModeButtonBarVisible {
+                ReaderModeButtonBar(readerViewModel: readerViewModel)
+            }
+
             WebView(
                 config: WebViewConfig(
                     contentRules: readerViewModel.contentRules,
@@ -253,43 +257,43 @@ public struct Reader: View {
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
-            .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
-                Task { @MainActor in
-                    try await readerViewModel.pageMetadataUpdated(title: pageTitle)
-                }
+        }
+        .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
+            Task { @MainActor in
+                try await readerViewModel.pageMetadataUpdated(title: pageTitle)
             }
-            .task(id: readerFontSize) { @MainActor in
-                guard let readerFontSize = readerFontSize else { return }
-                await readerViewModel.scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
+        }
+        .task(id: readerFontSize) { @MainActor in
+            guard let readerFontSize = readerFontSize else { return }
+            await readerViewModel.scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
+        }
+        .onChange(of: lightModeTheme) { lightModeTheme in
+            Task { @MainActor in
+                await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
             }
-            .onChange(of: lightModeTheme) { lightModeTheme in
-                Task { @MainActor in
-                    await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
-                }
+        }
+        .onChange(of: darkModeTheme) { darkModeTheme in
+            Task { @MainActor in
+                await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
             }
-            .onChange(of: darkModeTheme) { darkModeTheme in
-                Task { @MainActor in
-                    await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
-                }
+        }
+        .onChange(of: readerViewModel.audioURLs) { audioURLs in
+            Task { @MainActor in
+                readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
             }
-            .onChange(of: readerViewModel.audioURLs) { audioURLs in
-                Task { @MainActor in
-                    readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
-                }
-            }
-            .safeAreaInset(edge: .top) {
-                if readerViewModel.isReaderModeButtonBarVisible {
-                    ReaderModeButtonBar(readerViewModel: readerViewModel)
-                }
-            }
-            .task { @MainActor in
-                readerViewModel.defaultFontSize = defaultFontSize
-                ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
-            }
-            .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
-                readerFileURLSchemeHandler.readerFileManager = readerFileManager
-                ebookURLSchemeHandler.readerFileManager = readerFileManager
-            }
+        }
+        //            .safeAreaInset(edge: .top) {
+        //                if readerViewModel.isReaderModeButtonBarVisible {
+        //                    ReaderModeButtonBar(readerViewModel: readerViewModel)
+        //                }
+        //            }
+        .task { @MainActor in
+            readerViewModel.defaultFontSize = defaultFontSize
+            ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
+        }
+        .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
+            readerFileURLSchemeHandler.readerFileManager = readerFileManager
+            ebookURLSchemeHandler.readerFileManager = readerFileManager
         }
     }
    

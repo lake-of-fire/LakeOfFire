@@ -6,21 +6,23 @@ struct ReaderModeButtonBar: View {
     
     var body: some View {
         ZStack {
-            ReaderModeButton(readerViewModel: readerViewModel)
-                .labelStyle(.titleOnly)
-                .padding(.horizontal, 44)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .padding(8)
-            
-            HStack {
-                Spacer(minLength: 0)
-                DismissButton {
-                    Task { @MainActor in
-                        try await readerViewModel.hideReaderModeButtonBar()
+            Group {
+                ReaderModeButton(readerViewModel: readerViewModel)
+                    .labelStyle(.titleOnly)
+                    .padding(.horizontal, 44)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                
+                HStack {
+                    Spacer(minLength: 0)
+                    DismissButton(.xMark) {
+                        Task { @MainActor in
+                            try await readerViewModel.hideReaderModeButtonBar()
+                        }
                     }
                 }
             }
+            .padding(8)
         }
         .frame(maxWidth: .infinity)
         .background(.ultraThinMaterial)
