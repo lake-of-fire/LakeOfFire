@@ -168,6 +168,8 @@ struct LibraryCategoriesView: View {
     
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
+    @State private var categoryIDNeedsScrollTo: String?
+    
 #if os(macOS)
     @State private var savePanel: NSSavePanel?
     @State private var window: NSWindow?
@@ -362,15 +364,25 @@ struct LibraryCategoriesView: View {
         }
     }
     
-    func addCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
+    @ViewBuilder func addCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
-            Task { @MainActor in
+            Task { @RealmBackgroundActor in
                 let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                scrollProxy.scrollTo("library-sidebar-\(category.id.uuidString)")
+                let categoryID = category.id.uuidString
+                await Task { @MainActor in
+                    categoryIDNeedsScrollTo = categoryID
+                }.value
             }
         } label: {
             Label("Add User Category", systemImage: "plus.circle")
                 .labelStyle(.titleAndIcon)
+        }
+        .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in
+            guard let categoryIDNeedsScrollTo = categoryIDNeedsScrollTo else { return }
+            Task { @MainActor in // Untested whether this is needed
+                scrollProxy.scrollTo("library-sidebar-\(categoryIDNeedsScrollTo)")
+                self.categoryIDNeedsScrollTo = nil
+            }
         }
     }
 }
