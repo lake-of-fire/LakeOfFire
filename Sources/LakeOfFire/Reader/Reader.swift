@@ -5,6 +5,7 @@ import WebKit
 import SwiftSoup
 import Combine
 import RealmSwiftGaps
+import SplitView
 
 struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
