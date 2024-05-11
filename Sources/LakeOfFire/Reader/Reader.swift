@@ -98,7 +98,7 @@ public struct Reader: View {
             if readerViewModel.isReaderModeButtonBarVisible {
                 ReaderModeButtonBar(readerViewModel: readerViewModel)
             }
-
+            
             WebView(
                 config: WebViewConfig(
                     contentRules: readerViewModel.contentRules,
@@ -297,10 +297,9 @@ public struct Reader: View {
             ebookURLSchemeHandler.readerFileManager = readerFileManager
         }
     }
-   
+    
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
-//        EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         return EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
 #else
         EdgeInsets()
@@ -308,34 +307,14 @@ public struct Reader: View {
     }
 }
 
-//fileprivate extension Reader {
-//    // MARK: Reader settings in web view
-//
-//    func refreshSettingsInWebView(in frame: WKFrameInfo? = nil) {
-//        Task { @MainActor in
-//            await readerViewModel.scriptCaller.evaluateJavaScript(
-//                """
-//                if (\(readerFontSize ?? -1) > -1) {
-//                    document.body?.style.fontSize = '\(readerFontSize ?? -1)px'
-//                }
-//                document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')
-//                document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')
-//                """,
-//                in: frame, duplicateInMultiTargetFrames: true, in: .page)
-//        }
-//    }
-//}
-
 fileprivate extension Reader {
     // MARK: Readability
     
     @MainActor
     func showOriginal() async throws {
-        //        if !(readerViewModel.content is FeedEntry) {
         try await readerViewModel.content.asyncWrite { _, content in
             content.isReaderModeByDefault = false
         }
-        //        }
         navigator.reload()
     }
 }

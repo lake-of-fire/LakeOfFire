@@ -67,7 +67,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
                     confirmDeletionOf = entry
                     confirmDelete = true
                 } label: {
-                    Label(entry.deleteActionTitle, image: "trash")
+                    Label(entry.deleteActionTitle, systemImage: "trash")
                 }
             }
         }

@@ -150,6 +150,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         try await content.asyncWrite { _, content in
             content.isReaderModeOfferHidden = true
         }
+        objectWillChange.send()
     }
     
     @MainActor

@@ -219,7 +219,7 @@ struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: 
                                 readerContentListModalsModel.confirmDeletionOf = item
                                 readerContentListModalsModel.confirmDelete = true
                             } label: {
-                                Label(item.deleteActionTitle, image: "trash")
+                                Label(item.deleteActionTitle, systemImage: "trash")
                             }
                         } label: {
                             Label("More Options", systemImage: "ellipsis")

@@ -169,7 +169,6 @@ public class ReaderFileManager: ObservableObject {
     
     public func fileExists(fileURL: URL) async throws -> Bool {
         let (drive, relativePath) = try await extract(fileURL: fileURL)
-        try await print("file \(fileURL) exists? \(drive.fileExists(at: relativePath)) on drive \(drive)")
         return try await drive.fileExists(at: relativePath)
     }
     
