@@ -285,6 +285,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
 #else
             ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
                 ReaderContentInnerListItem(content: content, entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
+                    .listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
             }
 #endif
         }
