@@ -85,6 +85,20 @@ public struct LibraryManagerView: View {
         NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
             NavigationStack(path: $viewModel.navigationPath) {
                 LibraryCategoriesView()
+#if os(iOS)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            if horizontalSizeClass == .compact {
+                                Button {
+                                    viewModel.isLibraryPresented = false
+                                } label: {
+                                    Text("Done")
+                                        .bold()
+                                }
+                            }
+                        }
+                    }
+#endif
                     .navigationDestination(for: FeedCategory.self) { category in
                         if let libraryConfiguration = viewModel.libraryConfiguration {
                             LibraryCategoryViewContainer(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $viewModel.selectedFeed)
@@ -100,7 +114,7 @@ public struct LibraryManagerView: View {
             .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
 #endif
         }, detail: {
-            Group {
+            VStack {
                 if let feed = viewModel.selectedFeed {
 #if os(macOS)
                     ScrollView {
@@ -124,18 +138,18 @@ public struct LibraryManagerView: View {
 #endif
                 }
                 if viewModel.selectedFeed == nil && viewModel.selectedScript == nil {
-                    VStack {
-                        Spacer()
-                        Text("Select a category and feed to edit.\nImport or export user feeds (excluding Manabi Reader defaults) via the toolbar.")
-                            .multilineTextAlignment(.center)
-                            .padding().padding()
-                            .foregroundColor(.secondary)
-                            .font(.callout)
-                        Spacer()
-                    }
+                    Spacer()
+                    Text("Select a category and feed to edit.\nImport or export user feeds (excluding Manabi Reader defaults) via the toolbar.")
+                        .multilineTextAlignment(.center)
+                        .padding().padding()
+                        .foregroundColor(.secondary)
+                        .font(.callout)
+                    Spacer()
                 }
             }
+#if os(macOS)
             .textFieldStyle(.roundedBorder)
+#endif
             //                .fixedSize(horizontal: false, vertical: true)
             //            }
             .toolbar {

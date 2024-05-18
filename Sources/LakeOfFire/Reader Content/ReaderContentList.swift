@@ -312,7 +312,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-    @EnvironmentObject private var navigator: WebViewNavigator
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
 
@@ -376,7 +376,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
 //    var sortOrder = ReaderContentSortOrder.publicationDate
     
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-    @EnvironmentObject private var navigator: WebViewNavigator
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     public var body: some View {

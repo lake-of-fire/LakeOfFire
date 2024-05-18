@@ -28,9 +28,9 @@ struct LibraryFeedView: View {
             if let libraryFeedFormSectionsViewModel = libraryFeedFormSectionsViewModel {
                 Form {
                     LibraryFeedFormSections(viewModel: libraryFeedFormSectionsViewModel)
+                        .disabled(!feed.isUserEditable)
                 }
                 .formStyle(.grouped)
-                .disabled(!feed.isUserEditable)
             }
         }
         .task(id: feed.id) { @MainActor in
@@ -240,32 +240,32 @@ struct LibraryFeedFormSections: View {
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.openURL) private var openURL
 
-    private var synchronizationSection: some View {
-        Section("Synchronized") {
+    @ViewBuilder private var synchronizationSection: some View {
+        Section("Synced") {
             Text("Manabi Reader manages this feed for you.")
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
     
-    private var feedLocationSection: some View {
-        Section(header: Group {
-            HStack(alignment: .bottom) {
+    @ViewBuilder private var feedTitleSection: some View {
+        Section {
+            LabeledContent {
+                TextField("", text: $viewModel.feedTitle, prompt: Text("Enter website title"))
+                    .textCase(nil)
+                    .font(.headline)
+                    .disabled(!viewModel.feed.isUserEditable)
+            } label: {
                 if !viewModel.feed.iconUrl.isNativeReaderView {
                     LakeImage(viewModel.feed.iconUrl)
                         .frame(maxWidth: 44, maxHeight: 44)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                if viewModel.feed.isUserEditable {
-                    TextField("", text: $viewModel.feedTitle, prompt: Text("Enter website title"))
-                        .textCase(nil)
-                        .font(.headline)
-                } else {
-                    Text(viewModel.feed.title)
-                        .textCase(nil)
-                        .font(.headline)
-                }
             }
-        }, footer: Text("Feeds are either RSS or Atom web syndication formats. Look for the RSS icon button that appears in Manabi Reader's main toolbar menus which indicates RSS or Atom availability on any page you visit.").font(.footnote).foregroundColor(.secondary)) {
+        }
+    }
+    
+    @ViewBuilder private var feedLocationSection: some View {
+        Section {
             Toggle("Enabled", isOn: $viewModel.feedEnabled)
             HStack {
                 TextField("Feed URL", text: $viewModel.feedURL, prompt: Text("Enter URL of RSS or Atom content"), axis: .vertical)
@@ -275,11 +275,15 @@ struct LibraryFeedFormSections: View {
                     }
                 }
             }
+        } header: {
+            Text("Feed")
+        } footer: {
+            Text("Feeds use RSS or Atom syndication formats.").font(.footnote).foregroundColor(.secondary)
         }
     }
     
-    private var iconSection: some View {
-        Section {
+    @ViewBuilder private var iconSection: some View {
+        Section("Icon URL") {
             TextField("Icon URL", text: $viewModel.feedIconURL, prompt: Text("Enter website icon URL"), axis: .vertical)
         }
     }
@@ -308,7 +312,7 @@ struct LibraryFeedFormSections: View {
     private var previewReader: some View {
         Reader(
             readerViewModel: readerViewModel,
-            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
+//            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
             bounces: false)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .frame(idealHeight: readerPreviewHeight)
@@ -355,7 +359,7 @@ struct LibraryFeedFormSections: View {
         }
     }
     
-    private var feedPreviewSection: some View {
+    @ViewBuilder private var feedPreviewSection: some View {
         Section("Feed Preview") {
             feedPreview
         }
@@ -402,6 +406,7 @@ struct LibraryFeedFormSections: View {
      }
     
     var body: some View {
+        feedTitleSection
         if let opmlURL = viewModel.feed.category?.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
             synchronizationSection
         }

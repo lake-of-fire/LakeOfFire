@@ -21,7 +21,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
     var content: C
     
     @State var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
-    @EnvironmentObject private var navigator: WebViewNavigator
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.readerWebViewState) private var readerState
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     

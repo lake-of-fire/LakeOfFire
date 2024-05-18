@@ -24,6 +24,18 @@ public extension URL {
     }
 }
 
+public struct WebViewNavigatorEnvironmentKey: EnvironmentKey {
+    public static var defaultValue = WebViewNavigator()
+}
+
+public extension EnvironmentValues {
+    // the new key path to access your object (\.object)
+    var webViewNavigator: WebViewNavigator {
+        get { self[WebViewNavigatorEnvironmentKey.self] }
+        set { self[WebViewNavigatorEnvironmentKey.self] = newValue }
+    }
+}
+
 public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
@@ -69,7 +81,7 @@ public struct Reader: View {
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    @EnvironmentObject private var navigator: WebViewNavigator
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
 //    var url: URL {
 //        return readerViewModel.content.url

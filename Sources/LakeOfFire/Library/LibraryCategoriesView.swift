@@ -90,6 +90,22 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
         }
     }
     
+        
+    func deletionTitle(category: FeedCategory) -> String {
+        if category.isArchived {
+            return "Delete Category"
+        }
+        return "Archive Category"
+    }
+    
+    func showDeleteButton(category: FeedCategory) -> Bool {
+        return category.isUserEditable && !category.isDeleted
+    }
+    
+    func showRestoreButton(category: FeedCategory) -> Bool {
+        return category.isUserEditable && category.isArchived
+    }
+    
     private func setCategories(from libraryConfiguration: LibraryConfiguration?) {
         guard let libraryConfiguration = libraryConfiguration else {
             categories = nil
@@ -97,29 +113,25 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
         }
         categories = Array(libraryConfiguration.categories).filter { !$0.isArchived && !$0.isDeleted }
     }
-    
+
     @MainActor
     func deleteCategory(_ category: FeedCategory) async throws {
-        guard let libraryConfiguration = libraryConfiguration else { return }
-        if !category.isUserEditable || (category.isArchived && category.opmlURL != nil) {
-            return
-        }
-        
-        let categoryID = category.id
-        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
-            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-            if let idx = libraryConfiguration.categories.firstIndex(of: category) {
-                libraryConfiguration.categories.remove(at: idx)
-            }
-        }
-        
-        try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { realm, category in
-            if category.isArchived && !LibraryConfiguration.opmlURLs.map({ $0 }).contains(category.opmlURL) {
-                category.isDeleted = true
-            } else if !category.isArchived {
-                category.isArchived = true
-            }
-        }
+        let ref = ThreadSafeReference(to: category)
+        try await Task { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let category = realm.resolve(ref) else { return }
+            try await LibraryDataManager.shared.deleteCategory(category)
+        }.value
+    }
+    
+    @MainActor
+    func restoreCategory(_ category: FeedCategory) async throws {
+        let ref = ThreadSafeReference(to: category)
+        try await Task { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let category = realm.resolve(ref) else { return }
+            try await LibraryDataManager.shared.restoreCategory(category)
+        }.value
     }
     
     @MainActor
@@ -129,27 +141,16 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
             for offset in offsets {
                 let category = libraryConfiguration.categories[offset]
                 guard category.isUserEditable else { continue }
-                try await deleteCategory(category)
+                let ref = ThreadSafeReference(to: category)
+                try await Task { @RealmBackgroundActor in
+                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+                    guard let category = realm.resolve(ref) else { return }
+                    try await LibraryDataManager.shared.deleteCategory(category)
+                }.value
             }
         }
     }
-    
-    @MainActor
-    func restoreCategory(_ category: FeedCategory) async throws {
-        guard let libraryConfiguration = libraryConfiguration else { return }
-        guard category.isUserEditable else { return }
-        try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { realm, category in
-            category.isArchived = false
-        }
-        let categoryID = category.id
-        try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
-            guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-            if !libraryConfiguration.categories.contains(category) {
-                libraryConfiguration.categories.append(category)
-            }
-        }
-    }
-    
+   
     @MainActor
     func moveCategories(fromOffsets: IndexSet, toOffset: Int) {
         Task { @MainActor in
@@ -164,8 +165,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoriesView: View {
     @StateObject private var viewModel = LibraryCategoriesViewModel()
-    @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
     
+    @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
+
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
     @State private var categoryIDNeedsScrollTo: String?
@@ -185,8 +187,12 @@ struct LibraryCategoriesView: View {
     
     @ViewBuilder var importExportView: some View {
         ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
+#if os(macOS)
             Text("Share User Library…")
                 .frame(maxWidth: .infinity)
+#else
+            Text("Export User Library…")
+#endif
         }
         .labelStyle(.titleAndIcon)
         .disabled(libraryManagerViewModel.exportedOPML == nil)
@@ -229,7 +235,9 @@ struct LibraryCategoriesView: View {
             }
         }, label: {
             Label("Import User Library…", systemImage: "square.and.arrow.down")
+#if os(macOS)
                 .frame(maxWidth: .infinity)
+#endif
         })
     }
     
@@ -237,14 +245,26 @@ struct LibraryCategoriesView: View {
         ForEach(viewModel.categories ?? []) { category in
             NavigationLink(value: category) {
                 FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, font: .headline, isCompact: true)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .listRowSeparator(.hidden)
             .deleteDisabled(!category.isUserEditable)
             .moveDisabled(!category.isUserEditable)
+            .swipeActions(edge: .trailing) {
+                if viewModel.showDeleteButton(category: category) {
+                    Button(role: .destructive) {
+                        Task {
+                            try await viewModel.deleteCategory(category)
+                        }
+                    } label: {
+                        Text(viewModel.deletionTitle(category: category))
+                    }
+                    .tint(.red)
+                }
+            }
             .contextMenu {
-                if category.isUserEditable {
-                    Button {
+                if viewModel.showDeleteButton(category: category) {
+                    Button(role: .destructive) {
                         Task {
                             try await viewModel.deleteCategory(category)
                         }
@@ -253,7 +273,6 @@ struct LibraryCategoriesView: View {
                     }
                 }
             }
-            //                        .id("library-sidebar-\(category.id.uuidString)")
         }
         .onMove {
             viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
@@ -272,34 +291,18 @@ struct LibraryCategoriesView: View {
             }
             .listRowSeparator(.hidden)
             .swipeActions(edge: .leading) {
-                Button {
-                    Task {
-                        try await viewModel.restoreCategory(category)
-                    }
-                } label: {
-                    Label("Restore", systemImage: "plus")
-                }
-            }
-            .swipeActions(edge: .trailing) {
-                Button(role: .destructive) {
-                    Task {
-                        try await viewModel.deleteCategory(category)
-                    }
-                } label: {
-                    Text("Delete")
-                }
-                .tint(.red)
-            }
-            .contextMenu {
-                if category.isUserEditable {
+                if viewModel.showRestoreButton(category: category) {
                     Button {
                         Task {
                             try await viewModel.restoreCategory(category)
                         }
                     } label: {
-                        Label("Restore", systemImage: "plus")
+                        Text("Restore")
                     }
-                    Divider()
+                }
+            }
+            .swipeActions(edge: .trailing) {
+                if viewModel.showDeleteButton(category: category) {
                     Button(role: .destructive) {
                         Task {
                             try await viewModel.deleteCategory(category)
@@ -310,7 +313,28 @@ struct LibraryCategoriesView: View {
                     .tint(.red)
                 }
             }
-            //                        .id("library-sidebar-\(category.id.uuidString)")
+            .contextMenu {
+                if viewModel.showRestoreButton(category: category) {
+                    Button {
+                        Task {
+                            try await viewModel.restoreCategory(category)
+                        }
+                    } label: {
+                        Label("Restore Category", systemImage: "plus")
+                    }
+                    Divider()
+                }
+                if viewModel.showDeleteButton(category: category) {
+                    Button(role: .destructive) {
+                        Task {
+                            try await viewModel.deleteCategory(category)
+                        }
+                    } label: {
+                        Text(viewModel.deletionTitle(category: category))
+                    }
+                    .tint(.red)
+                }
+            }
         }
         .onDelete {
             viewModel.deleteCategory(at: $0)
@@ -320,7 +344,7 @@ struct LibraryCategoriesView: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             List {
-                Section(header: Text("Import and Export"), footer: Text("Imports and exports use the OPML file format, which is optimized for RSS reader compatibility. The User Scripts category is supported for importing/exporting. User Library exports exclude Manabi Reader system-provided data.").font(.footnote).foregroundColor(.secondary)) {
+                Section(header: Text("Import and Export"), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
                 .labelStyle(.titleOnly)
@@ -368,13 +392,18 @@ struct LibraryCategoriesView: View {
         Button {
             Task { @RealmBackgroundActor in
                 let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                let categoryID = category.id.uuidString
-                await Task { @MainActor in
-                    categoryIDNeedsScrollTo = categoryID
+                let ref = ThreadSafeReference(to: category)
+                try await Task { @MainActor in
+                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                    guard let category = realm.resolve(ref) else { return }
+                    categoryIDNeedsScrollTo = category.id.uuidString
+                    try await Task.sleep(nanoseconds: 100_000_000_000)
+                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
+                    libraryManagerViewModel.navigationPath.append(category)
                 }.value
             }
         } label: {
-            Label("Add User Category", systemImage: "plus.circle")
+            Label("Add Category", systemImage: "plus.circle")
                 .labelStyle(.titleAndIcon)
         }
         .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in

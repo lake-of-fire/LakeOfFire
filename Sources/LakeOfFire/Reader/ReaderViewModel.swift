@@ -79,6 +79,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
         return content.isReaderModeOfferHidden && content.isReaderModeAvailable
     }
 
+    public func isHome(categorySelection: String?) -> Bool {
+        return content.url.absoluteString == "about:blank" && (categorySelection ?? "home") == "home"
+    }
+        
     public var locationShortName: String? {
         if content.url.absoluteString == "about:blank" {
             return "Home"

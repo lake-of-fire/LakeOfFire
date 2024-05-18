@@ -231,7 +231,7 @@ struct LibraryScriptFormSections: View {
     
     var body: some View {
         if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL)  {
-            Section("Synchronized") {
+            Section("Synced") {
                 Text("Manabi Reader manages this User Script for you.")
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -256,9 +256,9 @@ struct LibraryScriptFormSections: View {
         .disabled(!script.isUserEditable)
         
         if let opmlURL = script.opmlURL {
-            Section("Synchronization") {
+            Section("Synced") {
                 if LibraryConfiguration.opmlURLs.contains(opmlURL) {
-                    Text("This script is not user-editable. Manabi Reader manages and actively improves this user script for you.")
+                    Text("Manabi Reader manages this User Script for you.")
                         .lineLimit(9001)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -320,7 +320,7 @@ struct LibraryScriptFormSections: View {
         Section {
             HStack {
                 TextField("Preview URL", text: $viewModel.scriptPreviewURL, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.roundedBorder)
                 PasteButton(payloadType: String.self) { strings in
                     viewModel.pastePreviewURL(strings: strings)
                 }

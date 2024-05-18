@@ -73,7 +73,7 @@ fileprivate struct EditorsPicksView: View {
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-    @EnvironmentObject private var navigator: WebViewNavigator
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
         Group {

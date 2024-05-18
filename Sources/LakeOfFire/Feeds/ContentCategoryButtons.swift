@@ -187,21 +187,15 @@ public struct FeedCategoryButtonLabel: View {
     public var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            Group {
-                if title.isEmpty {
-                    Text("Untitled Category")
-                        .fontWeight(.bold)
-                        .font(font)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text(title)
-                        .fontWeight(.bold)
-                        .font(font)
-                        .foregroundColor(.white)
-                }
-            }
-            .shadow(color: .black.opacity(0.25), radius: 30, x: 0, y: 0)
-            .shadow(color: .black.opacity(0.896), radius: 3, x: 0, y: 0)
+            Text(title.isEmpty ? "Untitled" : title)
+                .fontWeight(.bold)
+                .font(font)
+                .foregroundColor(.white)
+                .opacity(title.isEmpty ? 0.85 : 1)
+//                .shadow(color: .black.opacity(0.95), radius: 4)
+                .shadow(color: .black, radius: 1)
+                .shadow(color: .black, radius: 3)
+                .shadow(color: .black.opacity(0.5), radius: 15)
             Spacer()
         }
         .frame(minHeight: isCompact ? nil : scaledCategoryHeight, alignment: .leading)

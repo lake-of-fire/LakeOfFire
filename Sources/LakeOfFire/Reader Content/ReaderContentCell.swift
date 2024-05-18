@@ -58,9 +58,9 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
         case .uploading:
             return "Uploading to iCloud"
         case .synced:
-            return "Synchronized with iCloud"
+            return "Synced with iCloud"
         case .notSynced:
-            return "Not Synchronized with iCloud"
+            return "Not Synced with iCloud"
         case .loadingStatus:
             return nil
         }

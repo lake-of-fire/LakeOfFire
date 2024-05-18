@@ -323,7 +323,7 @@ public class LibraryDataManager: NSObject {
     public func createEmptyScript(addToLibrary: Bool) async throws -> UserScript {
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
         let script = UserScript()
-        script.title = "Untitled"
+        script.title = ""
         if addToLibrary {
             try await realm.asyncWrite {
                 realm.add(script, update: .modified)

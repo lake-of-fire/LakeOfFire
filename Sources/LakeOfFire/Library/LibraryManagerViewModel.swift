@@ -113,7 +113,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     @Published var selectedScript: UserScript?
-    @Published var navigationPath = NavigationPath()
+    @Published public var navigationPath = NavigationPath()
     @Published var libraryConfiguration: LibraryConfiguration?
     
     private var objectNotificationToken: NotificationToken?

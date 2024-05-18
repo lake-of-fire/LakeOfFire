@@ -119,6 +119,7 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
 //                .padding(.horizontal, 4)
 //                .padding(.vertical, 2)
                 .background(.secondary.opacity(0.000000001)) // clickability
+                .frame(width: width, height: height)
         }
 //        .buttonStyle(.borderless)
 //        .buttonStyle(.plain)
@@ -127,7 +128,6 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
                 $0.labelStyle(.iconOnly)
             } else { $0 }
         }
-        .frame(width: width, height: height)
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
 //        .fixedSize()
