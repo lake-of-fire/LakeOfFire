@@ -166,10 +166,12 @@ public class LibraryDataManager: NSObject {
                 importOPMLTask?.cancel()
                 importOPMLTask = Task.detached { @RealmBackgroundActor [weak self] in
                     let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
-                    let libraryConfiguration = try await LibraryConfiguration.get()
+//                    let libraryConfiguration = try await LibraryConfiguration.get()
                     for download in opmlDownloads {
                         try Task.checkCancellation()
-                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                        //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                        // ^ Re-enable reloading on every launch:
+                        if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
                             do {
                                 try await self?.importOPML(download: download)
                             } catch {
