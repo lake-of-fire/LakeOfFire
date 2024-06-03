@@ -44,7 +44,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
                 .frame(maxWidth: maxWidth)
                 .padding(8)
                 .background(.groupBoxBackground)
-//                .background(.ultraThinMaterial)
+//                .background(.regularMaterial)
 //                .background(.secondary.opacity(0.09))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12)
