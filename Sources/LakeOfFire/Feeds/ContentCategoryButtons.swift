@@ -103,7 +103,9 @@ public struct BooksCategoryButton: View {
     
     public var body: some View {
         Button(action: {
-            categorySelection = "books"
+            withAnimation {
+                categorySelection = "books"
+            }
         }) {
             FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, font: font, isCompact: isCompact)
         }
