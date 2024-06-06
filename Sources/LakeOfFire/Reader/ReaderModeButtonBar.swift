@@ -25,6 +25,5 @@ struct ReaderModeButtonBar: View {
             .padding(8)
         }
         .frame(maxWidth: .infinity)
-        .background(.ultraThinMaterial)
     }
 }
