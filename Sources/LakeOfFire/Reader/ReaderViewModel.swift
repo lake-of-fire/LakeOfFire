@@ -16,7 +16,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
 //    public var action: WebViewAction = .idle
 //    public var state: WebViewState = .empty {
         didSet {
-            if let imageURL = state.pageImageURL, content.imageUrl == nil {
+            if let imageURL = state.pageImageURL, content.realm != nil, content.imageUrl == nil {
                 // TODO: Replace with fromMainActor instead of the if / else if
                 if let content = content as? Bookmark {
                     let contentRef = ThreadSafeReference(to: content)
