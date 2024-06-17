@@ -16,10 +16,20 @@ extension HistoryRecord: DeletableReaderContent {
     public var deleteActionTitle: String {
         "Remove from History…"
     }
-    
+}
+
+extension DeletableReaderContent {
+    @RealmBackgroundActor
+    public func deleteRealmData() async throws {
+        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
+        try await realm.asyncWrite {
+//            for videoStatus in realm.objects(VideoS)
+            content.isDeleted = true
+        }
+    }
     @RealmBackgroundActor
     public func delete(readerFileManager: ReaderFileManager) async throws {
-        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? HistoryRecord, let realm = content.realm else { return }
+        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
         try await realm.asyncWrite {
             content.isDeleted = true
         }

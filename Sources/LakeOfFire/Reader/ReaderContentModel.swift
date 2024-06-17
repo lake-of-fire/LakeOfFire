@@ -84,6 +84,7 @@ public extension ReaderContentModel {
 }
 
 public protocol DeletableReaderContent: ReaderContentModel {
+    var isDeleted: Bool { get set }
     var deleteActionTitle: String { get }
     func delete(readerFileManager: ReaderFileManager) async throws
 }
