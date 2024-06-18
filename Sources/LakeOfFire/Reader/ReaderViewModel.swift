@@ -482,9 +482,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             if !newTitle.isEmpty, state.pageURL.isEBookURL || content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try await content.asyncWrite { _, content in
                     content.title = newTitle
-                    if let author = author {
-                        content.author = author
-                    }
+                    content.author = author ?? ""
                 }
                 refreshTitleInWebView(content: content)
             }
