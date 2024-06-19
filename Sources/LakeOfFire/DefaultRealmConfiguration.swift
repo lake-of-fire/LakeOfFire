@@ -24,6 +24,7 @@ public enum DefaultRealmConfiguration {
             LibraryConfiguration.self,
             UserScript.self,
             UserScriptAllowedDomain.self,
+            VideoStatus.self,
         ]
         return config
     }

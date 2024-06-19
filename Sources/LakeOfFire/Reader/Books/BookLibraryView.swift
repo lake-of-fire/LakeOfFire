@@ -135,6 +135,7 @@ public struct BookLibraryView: View {
 
     @ViewBuilder private var myBooksSection: some View {
         ReaderContentListItems(viewModel: readerContentListViewModel, entrySelection: $entrySelection, alwaysShowThumbnails: false, showSeparators: false)
+            .listRowSeparatorIfAvailable(.hidden)
     }
 
     @ViewBuilder var list: some View {
@@ -169,9 +170,11 @@ public struct BookLibraryView: View {
                 }
             }
         }
-//        .listStyle(.sidebar)
-        .listRowSeparatorIfAvailable(.visible)
-//        .listRowSeparatorIfAvailable(.hidden)
+#if os(iOS)
+        .listStyle(.sidebar)
+#endif
+        .scrollContentBackgroundIfAvailable(.hidden)
+//        .listRowSeparatorIfAvailable(.visible)
         .navigationTitle("Books")
         .task { @MainActor in
             await viewModel.fetchAllData()

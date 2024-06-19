@@ -106,6 +106,9 @@ internal extension Reader {
                 Task { @RealmBackgroundActor in
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
                     debugPrint("!!", result)
+                    if let pageURL = result.pageURL {
+                        let videoStatus = try await VideoStatus.getOrCreate(url: pageURL)
+                    }
                 }
             }
         ].merging(messageHandlers) { (current, new) in

@@ -1,80 +1,48 @@
-//import Foundation
-//import RealmSwift
-//import RealmSwiftGaps
-//import BigSyncKit
-//
-//public class VideoStatus: Object, UnownedSyncableObject {
-//    @Persisted public var lastVisitedAt = Date()
-//    
-//    @Persisted public var bookmark: Bookmark?
-//    
-//    public override func configureBookmark(_ bookmark: Bookmark) {
-//        super.configureBookmark(bookmark)
-//    }
-//}
-//
-//extension HistoryRecord: DeletableReaderContent {
-//    public var deleteActionTitle: String {
-//        "Remove from History…"
-//    }
-//}
-//
-//extension DeletableReaderContent {
-//    @RealmBackgroundActor
-//    public func deleteRealmData() async throws {
-//        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
-//        try await realm.asyncWrite {
-//            for videoStatus in realm.objects(VideoS)
-//                    content.isDeleted = true
-//        }
-//    }
-//    @RealmBackgroundActor
-//    public func delete(readerFileManager: ReaderFileManager) async throws {
-//        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
-//        try await realm.asyncWrite {
-//            content.isDeleted = true
-//        }
-//    }
-//}
-//
-////public extension HistoryRecord {
-////  /// A way to compare `Bool`s.
-////  ///
-////  /// Note: `false` is "less than" `true`.
-////  enum Comparable: CaseIterable, Swift.Comparable {
-////    case `false`, `true`
-////  }
-////
-////  /// Make a `Bool` `Comparable`, with `false` being "less than" `true`.
-////  var comparable: Comparable { .init(booleanLiteral: self) }
-////}
-//
-////public struct OptionalHistoryRecordBookmarkComparator: SortComparator {
-////    public var order: SortOrder = .forward
-////
-////    public func compare(_ lhs: HistoryRecord?, _ rhs: HistoryRecord?) -> ComparisonResult {
-////        let result: ComparisonResult
-////        switch (lhs?.bookmark, rhs?.bookmark) {
-////        case (nil, nil): result = .orderedSame
-////        case (.some, nil): result = .orderedDescending
-////        case (nil, .some): result = .orderedAscending
-////        case let (lhs?, rhs?):
-////            result = lhs.createdAt.compare(rhs.createdAt)
-////        }
-////        return order == .forward ? result : result.reversed
-////    }
-////
-////    public init(order: SortOrder = .forward) {
-////        self.order = order
-////    }
-////}
-////
-////fileprivate extension ComparisonResult {
-////    var reversed: ComparisonResult {
-////        switch self {
-////        case .orderedAscending: return .orderedDescending
-////        case .orderedSame: return .orderedSame
-////        case .orderedDescending: return .orderedAscending
-////        }
-////    }
-////}
+import Foundation
+import RealmSwift
+import RealmSwiftGaps
+import BigSyncKit
+import SwiftUtilities
+
+public class VideoStatus: Object, UnownedSyncableObject {
+    @Persisted(primaryKey: true) public var compoundKey = ""
+    @Persisted public var url = URL(string: "about:blank")!
+    @Persisted public var providerVideoID: String?
+
+    @Persisted public var modifiedAt: Date
+    @Persisted public var isDeleted = false
+    
+    public var needsSyncToServer: Bool {
+        return false
+    }
+    
+    public static func makeCompoundKey(url: URL) -> String {
+        return String(format: "%02X", stableHash(url.absoluteString))
+    }
+    
+    func updateCompoundKey() {
+        compoundKey = Self.makeCompoundKey(url: url)
+    }
+    
+    @RealmBackgroundActor
+    static func getOrCreate(url: URL) async throws -> VideoStatus {
+        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+        
+        if let videoStatus = realm.object(ofType: VideoStatus.self, forPrimaryKey: VideoStatus.makeCompoundKey(url: url)) {
+            if videoStatus.isDeleted {
+                try await realm.asyncWrite {
+                    videoStatus.isDeleted = false
+                }
+            }
+            return videoStatus
+        }
+        
+        let videoStatus = VideoStatus()
+        videoStatus.url = url
+        videoStatus.updateCompoundKey()
+        try await realm.asyncWrite {
+            realm.add(videoStatus, update: .modified)
+        }
+        return videoStatus
+    }
+}
