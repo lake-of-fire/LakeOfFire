@@ -107,7 +107,7 @@ internal extension Reader {
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
                     debugPrint("!!", result)
                     if let pageURL = result.pageURL {
-                        let videoStatus = try await VideoStatus.getOrCreate(url: pageURL)
+                        let mediaStatus = try await MediaStatus.getOrCreate(url: pageURL)
                     }
                 }
             }

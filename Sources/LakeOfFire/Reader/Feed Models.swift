@@ -26,10 +26,10 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     public enum CodingKeys: String, CodingKey, CaseIterable {
         case id
         case title
-        case backgroundImageUrl // = "background_image_url"
-        case createdAt //= "created_at"
-        case modifiedAt //= "modified_at"
-        case isDeleted //= "is_deleted"
+        case backgroundImageUrl
+        case createdAt
+        case modifiedAt
+        case isDeleted
     }
     
     public var isUserEditable: Bool {

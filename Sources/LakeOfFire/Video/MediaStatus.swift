@@ -4,16 +4,26 @@ import RealmSwiftGaps
 import BigSyncKit
 import SwiftUtilities
 
-public class VideoStatus: Object, UnownedSyncableObject {
+public class MediaStatus: Object, UnownedSyncableObject {
     @Persisted(primaryKey: true) public var compoundKey = ""
     @Persisted public var url = URL(string: "about:blank")!
-    @Persisted public var providerVideoID: String?
+    @Persisted public var providerMediaID: String?
 
     @Persisted public var modifiedAt: Date
     @Persisted public var isDeleted = false
     
+    @Persisted(originProperty: "mediaStatus") public var feeds: LinkingObjects<MediaTranscript>
+    
     public var needsSyncToServer: Bool {
         return false
+    }
+   
+    private enum CodingKeys: String, CodingKey {
+        case compoundKey
+        case url
+        case providerMediaID
+        case modifiedAt
+        case isDeleted
     }
     
     public static func makeCompoundKey(url: URL) -> String {
@@ -25,24 +35,24 @@ public class VideoStatus: Object, UnownedSyncableObject {
     }
     
     @RealmBackgroundActor
-    static func getOrCreate(url: URL) async throws -> VideoStatus {
+    static func getOrCreate(url: URL) async throws -> MediaStatus {
         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
         
-        if let videoStatus = realm.object(ofType: VideoStatus.self, forPrimaryKey: VideoStatus.makeCompoundKey(url: url)) {
-            if videoStatus.isDeleted {
+        if let mediaStatus = realm.object(ofType: MediaStatus.self, forPrimaryKey: MediaStatus.makeCompoundKey(url: url)) {
+            if mediaStatus.isDeleted {
                 try await realm.asyncWrite {
-                    videoStatus.isDeleted = false
+                    mediaStatus.isDeleted = false
                 }
             }
-            return videoStatus
+            return mediaStatus
         }
         
-        let videoStatus = VideoStatus()
-        videoStatus.url = url
-        videoStatus.updateCompoundKey()
+        let mediaStatus = MediaStatus()
+        mediaStatus.url = url
+        mediaStatus.updateCompoundKey()
         try await realm.asyncWrite {
-            realm.add(videoStatus, update: .modified)
+            realm.add(mediaStatus, update: .modified)
         }
-        return videoStatus
+        return mediaStatus
     }
 }
