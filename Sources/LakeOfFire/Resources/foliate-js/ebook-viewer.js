@@ -320,8 +320,8 @@ class Reader {
     #onLoad({ detail: { doc } }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
-            topWindowURL: window.top.location.href,
-            currentPageURL: doc.location.href,
+        topWindowURL: window.top.location.href,
+        currentPageURL: doc.location.href,
         })
         
         // TODO: Should also offer "end" if last non-glossary/backmatter section
@@ -334,14 +334,30 @@ class Reader {
             doc.getElementById('manabi-previous-chapter-button')?.classList.remove('manabi-hidden')
         }
         
+        // Add event listeners for the previous and next buttons
         doc.getElementById('manabi-previous-chapter-button')?.addEventListener('click', function () {
             this.view.renderer.prevSection()
         }.bind(this))
         doc.getElementById('manabi-next-chapter-button')?.addEventListener('click', function () {
             this.view.renderer.nextSection()
         }.bind(this))
+        
+        // Reorder buttons based on the writing mode and direction
+        const container = doc.getElementById('manabi-chapter-navigation-buttons-container');
+        const prevButton = doc.getElementById('manabi-previous-chapter-button');
+        const nextButton = doc.getElementById('manabi-next-chapter-button');
+        const bookDir = this.view.renderer.bookDir;
+        if (bookDir === 'rtl') {
+            if (prevButton.nextElementSibling === nextButton) {
+                container.insertBefore(nextButton, prevButton);
+            }
+        } else {
+            if (nextButton.nextElementSibling === prevButton) {
+                container.insertBefore(prevButton, nextButton);
+            }
+        }
     }
-    
+
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
@@ -350,7 +366,6 @@ class Reader {
             mainDocumentURL: mainDocumentURL,
         })
     }, 400)
-
     #onRelocate({ detail }) {
         const { fraction, location, tocItem, pageItem, cfi } = detail
         const percent = percentFormat.format(fraction)
