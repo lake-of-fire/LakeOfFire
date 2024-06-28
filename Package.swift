@@ -40,7 +40,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/readium-swift-toolkit.git", branch: "develop"),
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
-        .package(path: "../../lake-of-fire/LakeKit"),
+        .package(url: "https://github.com/lake-of-fire/LakeKit.git", branch: "main"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
