@@ -253,7 +253,8 @@ public class ReaderFileManager: ObservableObject {
                 distinctTargetExists = true
             }
         } else if try await drive.fileExists(at: targetFilePath) {
-            originData = try await FileManager.default.contentsOfFile(coordinatingAccessAt: fileURL)
+            let coordinatedFileManager = CoordinatedFileManager()
+            originData = try await coordinatedFileManager.contentsOfFile(coordinatingAccessAt: fileURL)
             targetExists = true
             distinctTargetExists = targetURL != fileURL
             if !distinctTargetExists {
