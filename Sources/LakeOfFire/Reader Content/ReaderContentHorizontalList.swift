@@ -24,12 +24,10 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.readerWebViewState) private var readerState
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
     //    @State private var viewWidth: CGFloat = 0
-    
-    @State private var confirmDelete: Bool = false
-    @State private var confirmDeletionOf: (any DeletableReaderContent)?
     
     var body: some View {
         Button {
@@ -65,8 +63,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
         .contextMenu {
             if let entry = content as? (any DeletableReaderContent) {
                 Button(role: .destructive) {
-                    confirmDeletionOf = entry
-                    confirmDelete = true
+                    readerContentListModalsModel.confirmDeletionOf = entry
+                    readerContentListModalsModel.confirmDelete = true
                 } label: {
                     Label(entry.deleteActionTitle, systemImage: "trash")
                 }
