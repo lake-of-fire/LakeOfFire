@@ -247,34 +247,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     
 //    @Environment(\.readerWebViewState) private var readerState
     
-    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-    @EnvironmentObject private var readerViewModel: ReaderViewModel
-    
-    @ViewBuilder private func unstyledCell(item: C) -> some View {
-        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
-    }
-
-    @ViewBuilder private func cell(item: C) -> some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            Group {
-                if showSeparators {
-                    unstyledCell(item: item)
-                } else {
-                    unstyledCell(item: item)
-                    //                    .padding(.vertical, 4)
-                    //                    .padding(.horizontal, 8)
-                        .padding(8)
-                        .background(.ultraThinMaterial)
-                        .background(.secondary.opacity(0.09))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .tag(item.compoundKey)
-    }
-    
     var body: some View {
         Group {
 #if os(macOS)
