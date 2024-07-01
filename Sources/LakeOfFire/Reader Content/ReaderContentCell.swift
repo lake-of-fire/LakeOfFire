@@ -234,7 +234,8 @@ struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: 
                         }
                         .foregroundStyle(.secondary)
                         .menuIndicator(.hidden)
-                        .buttonStyle(.borderless)
+//                        .buttonStyle(.borderless)
+                        .buttonStyle(.plain)
 #if os(macOS)
                         .offset(y: -(buttonSize / 2.5)) // IDK why
                                                         //                        .offset(y: 3)

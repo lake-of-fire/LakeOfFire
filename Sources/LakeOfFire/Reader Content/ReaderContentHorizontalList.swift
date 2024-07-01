@@ -29,7 +29,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
     //    @State private var viewWidth: CGFloat = 0
     
-    var body: some View {
+    @ViewBuilder var body: some View {
         Button {
             guard !content.url.matchesReaderURL(readerState.pageURL) else { return }
             Task { @MainActor in
@@ -37,13 +37,13 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
             }
         } label: {
             AnyView(content.readerContentCellView(alwaysShowThumbnails: true))
-                .background(Color.white.opacity(0.00000001)) // Clickability
+//                .background(Color.white.opacity(0.00000001)) // Clickability
                                                              //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
                 .frame(maxWidth: maxWidth)
                 .padding(8)
                 .background(.groupBoxBackground)
-//                .background(.regularMaterial)
-//                .background(.secondary.opacity(0.09))
+            //                .background(.regularMaterial)
+            //                .background(.secondary.opacity(0.09))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(.secondary.opacity(0.2))
@@ -51,7 +51,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
                 }
         }
         //                    .buttonStyle(ReaderContentCellButtonStyle())
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .tint(.secondary)
         //                    .padding(.vertical, 4)
         //                    .padding(.horizontal, 8)
@@ -87,9 +87,6 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
 //    @State private var viewWidth: CGFloat = 0
     
-    @State private var confirmDelete: Bool = false
-    @State private var confirmDeletionOf: (any DeletableReaderContent)?
-    
     var body: some View {
         ScrollView(.horizontal) {
             LazyHStack {
@@ -108,18 +105,6 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
 //                }
 //            }
 //        }
-        .confirmationDialog("Do you really want to delete \(confirmDeletionOf?.title.truncate(20) ?? "")?", isPresented: $confirmDelete) {
-            Button("Delete", role: .destructive) {
-                Task { @MainActor in
-                    try await confirmDeletionOf?.delete(readerFileManager: readerFileManager)
-                }
-            }.keyboardShortcut(.defaultAction)
-            Button("Cancel", role: .cancel) {
-                confirmDeletionOf = nil
-            }.keyboardShortcut(.cancelAction)
-        } message: {
-            Text("Deletion cannot be undone.")
-        }
     }
     
     init(filteredContents: [C]) {

@@ -11,6 +11,7 @@ public class ReaderContentListModalsModel: ObservableObject {
     
     public init() { }
 }
+
 struct ReaderContentListSheetsModifier: ViewModifier {
     @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
     let isActive: Bool
@@ -19,17 +20,19 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .confirmationDialog("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")?", isPresented: $readerContentListModalsModel.confirmDelete && isActive) {
-                Button("Delete", role: .destructive) {
-                    Task { @MainActor in
-                        try await readerContentListModalsModel.confirmDeletionOf?.delete(readerFileManager: readerFileManager)
+            .alert(isPresented: $readerContentListModalsModel.confirmDelete && isActive) {
+                Alert(
+                    title: Text("Delete Confirmation"),
+                    message: Text("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")? Deletion cannot be undone."),
+                    primaryButton: .destructive(Text("Delete")) {
+                        Task { @MainActor in
+                            try await readerContentListModalsModel.confirmDeletionOf?.delete(readerFileManager: readerFileManager)
+                        }
+                    },
+                    secondaryButton: .cancel {
+                        readerContentListModalsModel.confirmDeletionOf = nil
                     }
-                }.keyboardShortcut(.defaultAction)
-                Button("Cancel", role: .cancel) {
-                    readerContentListModalsModel.confirmDeletionOf = nil
-                }.keyboardShortcut(.cancelAction)
-            } message: {
-                Text("Deletion cannot be undone.")
+                )
             }
     }
 }
@@ -47,7 +50,7 @@ struct ListItemToggleStyle: ToggleStyle {
         } label: {
             configuration.label
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
         .background(configuration.isOn ? Color.accentColor : Color.clear)
     }
 }
