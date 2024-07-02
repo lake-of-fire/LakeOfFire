@@ -107,11 +107,16 @@ public struct Reader: View {
         // TODO: capture reading progress via sentence identifiers from a read section
         //        let _ = Self._printChanges()
         VStack(spacing: 0) {
-#if os(macOS)
-            if readerViewModel.isReaderModeButtonBarVisible {
-                ReaderModeButtonBar(readerViewModel: readerViewModel)
-            }
-#endif
+//#if os(macOS)
+//            if readerViewModel.isReaderModeButtonBarVisible {
+////                ReaderModeButtonBar(readerViewModel: readerViewModel)
+//                HStack {
+//                    Spacer()
+//                    Text("Hello")
+//                    Spacer()
+//                }
+//            }
+//#endif
             
             WebView(
                 config: WebViewConfig(
@@ -195,15 +200,17 @@ public struct Reader: View {
                 readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
             }
         }
-#if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                if readerViewModel.isReaderModeButtonBarVisible {
-                    ReaderModeButtonBar(readerViewModel: readerViewModel)
-                }
-            }
-        }
-#endif
+//#if os(iOS)
+//        .toolbar {
+//            ToolbarItem(placement: .automatic) {
+//                //        .safeAreaInset(edge: .top, spacing: 0) {
+//                if readerViewModel.isReaderModeButtonBarVisible {
+//                    ReaderModeButtonBar(readerViewModel: readerViewModel)
+//                }
+//                //        }
+//            }
+//        }
+//#endif
         .task { @MainActor in
             readerViewModel.defaultFontSize = defaultFontSize
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
