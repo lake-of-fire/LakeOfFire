@@ -185,7 +185,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         guard content.url == state.pageURL else { return }
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
-            debugPrint("!! isReaderModeByDefault 1", true)
             content.isReaderModeAvailable = false
             content.isReaderModeOfferHidden = false
             if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
@@ -341,9 +340,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                 contentRules = contentRulesForReadabilityLoading
                 if content.isReaderModeAvailable {
+                    debugPrint("!! onNavCommit, reader is avail! load it")
                     showReaderView(content: content)
-                } else if content.isFromClipboard, let readerFileManager = readerFileManager, let html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
-                    navigator?.loadHTML(html, baseURL: content.url)
+//                } else if content.isFromClipboard, let readerFileManager = readerFileManager, let html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
+//                    debugPrint("!! onNavCommit, load clipboard html. reada content?", readabilityContent)
+//                    navigator?.loadHTML(html, baseURL: content.url)
                 }
             } else {
                 contentRules = nil
