@@ -67,7 +67,7 @@ public class Bookmark: Object, ReaderContentModel {
 
 public extension Bookmark {
     @RealmBackgroundActor
-    static func add(url: URL? = nil, title: String = "", imageUrl: URL? = nil, html: String? = nil, content: Data? = nil, publicationDate: Date? = nil, isFromClipboard: Bool, isReaderModeByDefault: Bool, isReaderModeOfferHidden: Bool, realmConfiguration: Realm.Configuration) async throws -> Bookmark {
+    static func add(url: URL? = nil, title: String = "", imageUrl: URL? = nil, html: String? = nil, content: Data? = nil, publicationDate: Date? = nil, isFromClipboard: Bool, isReaderModeByDefault: Bool, isReaderModeAvailable: Bool, isReaderModeOfferHidden: Bool, realmConfiguration: Realm.Configuration) async throws -> Bookmark {
         let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
@@ -82,6 +82,7 @@ public extension Bookmark {
                 bookmark.publicationDate = publicationDate
                 bookmark.isFromClipboard = isFromClipboard
                 bookmark.isReaderModeByDefault = isReaderModeByDefault
+                bookmark.isReaderModeAvailable = isReaderModeAvailable
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.isDeleted = false
             }
@@ -105,6 +106,7 @@ public extension Bookmark {
             bookmark.publicationDate = publicationDate
             bookmark.isFromClipboard = isFromClipboard
             bookmark.isReaderModeByDefault = isReaderModeByDefault
+            bookmark.isReaderModeAvailable = isReaderModeAvailable
             bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
             try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)

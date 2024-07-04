@@ -181,7 +181,7 @@ public struct ReaderContentLoader {
                 }
                 match = historyRecord
             }
-            if persist, let match = match, url.isReaderFileURL, url.contains(.plainText),  let realm = match.realm {
+            if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
                 }
@@ -190,6 +190,7 @@ public struct ReaderContentLoader {
                     match.isReaderModeByDefault = true
                 }
             }
+//            debugPrint("!! match", match?.url, match?.html)
             return match
         }.value
         if let content = content {
@@ -245,6 +246,7 @@ public struct ReaderContentLoader {
             }
             return historyRecord
         }.value
+        
         if let content = content {
             return try await fromBackgroundActor(content: content)
         }
@@ -327,16 +329,16 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     public static func saveBookmark(text: String?, title: String?, url: URL, isFromClipboard: Bool, isReaderModeByDefault: Bool) async throws {
         if let text = text {
-            try await _ = Bookmark.add(url: url, title: title ?? "", html: textToHTML(text), isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
+            try await _ = Bookmark.add(url: url, title: title ?? "", html: textToHTML(text), isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
         } else {
-            try await _ = Bookmark.add(url: url, title: title ?? "", isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
+            try await _ = Bookmark.add(url: url, title: title ?? "", isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
         }
     }
     
     @RealmBackgroundActor
     public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool) async throws {
         let html = Self.textToHTML(text)
-        try await _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
+        try await _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
     }
 }
 

@@ -49,8 +49,11 @@ public extension WebViewNavigator {
             url = content.url
         } else if !content.url.isReaderFileURL, content.isReaderModeByDefault, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
             guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
+            
+//            debugPrint("!! load(content isREaderModebydefault", historyURL)
             url = historyURL
         } else {
+//            debugPrint("!! load(content other", content.url)
             url = content.url
         }
         if let url = url {

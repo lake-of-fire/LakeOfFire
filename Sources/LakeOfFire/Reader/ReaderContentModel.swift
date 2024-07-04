@@ -236,10 +236,11 @@ public extension ReaderContentModel {
         let imageURL = imageUrl
         let isFromClipboard = isFromClipboard
         let isReaderModeByDefault = isReaderModeByDefault
+        let isReaderModeAvailable = isReaderModeAvailable
         let isReaderModeOfferHidden = isReaderModeOfferHidden
         try await Task.detached { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeOfferHidden: isReaderModeOfferHidden, realmConfiguration: realmConfiguration)
+            let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: isReaderModeAvailable, isReaderModeOfferHidden: isReaderModeOfferHidden, realmConfiguration: realmConfiguration)
             await Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 configureBookmark(bookmark)
@@ -319,6 +320,7 @@ public extension ReaderContentModel {
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard
             record.isReaderModeByDefault = isReaderModeByDefault
+            record.isReaderModeAvailable = isReaderModeAvailable
             record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
             record.lastVisitedAt = Date()
             if objectSchema.objectClass == FeedEntry.self || objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {

@@ -16,7 +16,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
 //    public var action: WebViewAction = .idle
 //    public var state: WebViewState = .empty {
         didSet {
-            if let imageURL = state.pageImageURL, content.realm != nil, content.imageUrl == nil {
+//            debugPrint("!! new state", state.pageURL, "content...", content.url, content.title ?? "")
+            if let imageURL = state.pageImageURL, content.realm != nil, content.url == state.pageURL, content.imageUrl == nil {
                 // TODO: Replace with fromMainActor instead of the if / else if
                 if let content = content as? Bookmark {
                     let contentRef = ThreadSafeReference(to: content)
@@ -184,6 +185,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         guard content.url == state.pageURL else { return }
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
+            debugPrint("!! isReaderModeByDefault 1", true)
             content.isReaderModeAvailable = false
             content.isReaderModeOfferHidden = false
             if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
@@ -260,6 +262,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
+//                    debugPrint("!! showREadContent", url)
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
                 isReaderMode = true
@@ -283,6 +286,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func onNavigationCommitted(newState: WebViewState) async throws {
+//        debugPrint("!! onNavCommit", newState)
         readabilityContent = nil
         guard let content = try await getContent(forURL: newState.pageURL) else {
             print("WARNING No content matched for \(newState.pageURL)")
@@ -329,13 +333,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 navigator?.loadHTML(html, baseURL: content.url)
             } else {
                 // Shouldn't come here... results in duplicate history. Here for safety though.
+//                debugPrint("!! onNavCommit weird spot")
                 navigator?.load(URLRequest(url: content.url))
             }
         } else {
             if content.isReaderModeByDefault {
                 // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                 contentRules = contentRulesForReadabilityLoading
-                if content.isReaderModeAvailable {
+                if content.isReaderModeAvailable || content.isFromClipboard {
                     showReaderView(content: content)
                 }
             } else {
