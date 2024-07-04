@@ -340,8 +340,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
             if content.isReaderModeByDefault {
                 // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                 contentRules = contentRulesForReadabilityLoading
-                if content.isReaderModeAvailable || content.isFromClipboard {
+                if content.isReaderModeAvailable {
                     showReaderView(content: content)
+                } else if content.isFromClipboard, let readerFileManager = readerFileManager, let html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
+                    navigator?.loadHTML(html, baseURL: content.url)
                 }
             } else {
                 contentRules = nil
