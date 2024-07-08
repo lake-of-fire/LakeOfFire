@@ -158,7 +158,10 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentModel>: View {
                     readerViewModel.state.matches(content: content)
                 },
                 set: {
-                    entrySelection = $0 ? content.compoundKey : nil
+                    let newValue = $0 ? content.compoundKey : nil
+                    if entrySelection != newValue {
+                        entrySelection = newValue
+                    }
                 }
             ), label: {
                 cell(item: content)

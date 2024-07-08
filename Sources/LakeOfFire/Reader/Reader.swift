@@ -7,17 +7,6 @@ import Combine
 import RealmSwiftGaps
 import SplitView
 
-struct ReaderWebViewStateKey: EnvironmentKey {
-    static let defaultValue: WebViewState = .empty
-}
-
-public extension EnvironmentValues {
-    var readerWebViewState: WebViewState {
-        get { self[ReaderWebViewStateKey.self] }
-        set { self[ReaderWebViewStateKey.self] = newValue }
-    }
-}
-
 public extension URL {
     var isNativeReaderView: Bool {
         return absoluteString == "about:blank" || (scheme == "internal" && host == "local" && path != "/snippet")
