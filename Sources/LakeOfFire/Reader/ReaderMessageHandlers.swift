@@ -35,7 +35,7 @@ internal extension Reader {
                 readerViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                     readerViewModel.showReaderView(content: content)
-                } else if result.outputHTML.filter({ String($0).hasKanji || String($0).hasKana }).count > 50 {
+                } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
                 }
                 
