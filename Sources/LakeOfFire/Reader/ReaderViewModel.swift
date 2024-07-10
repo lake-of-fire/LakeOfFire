@@ -261,7 +261,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
-//                    debugPrint("!! showREadContent", url)
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
                 isReaderMode = true
@@ -321,7 +320,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 //                if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
-                if content.isReaderModeByDefault && !html.contains("<body.* class=.readability-mode.>") {
+                if content.isReaderModeByDefault && html.range(of: "<body.*?class=['\"]readability-mode['\"]>", options: .regularExpression) == nil {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
                     } else {
@@ -332,7 +331,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 navigator?.loadHTML(html, baseURL: content.url)
             } else {
                 // Shouldn't come here... results in duplicate history. Here for safety though.
-//                debugPrint("!! onNavCommit weird spot")
                 navigator?.load(URLRequest(url: content.url))
             }
         } else {
@@ -340,7 +338,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                 contentRules = contentRulesForReadabilityLoading
                 if content.isReaderModeAvailable {
-                    debugPrint("!! onNavCommit, reader is avail! load it")
                     showReaderView(content: content)
 //                } else if content.isFromClipboard, let readerFileManager = readerFileManager, let html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
 //                    debugPrint("!! onNavCommit, load clipboard html. reada content?", readabilityContent)
