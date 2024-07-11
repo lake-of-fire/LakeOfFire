@@ -251,8 +251,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     var showSeparators = false
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     
-//    @Environment(\.readerWebViewState) private var readerState
-    
     var body: some View {
         Group {
 #if os(macOS)
