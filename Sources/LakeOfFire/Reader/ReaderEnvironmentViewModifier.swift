@@ -5,22 +5,8 @@ struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
 
-public extension EnvironmentValues {
-    var readerWebViewState: WebViewState {
-        get { self[ReaderWebViewStateKey.self] }
-        set { self[ReaderWebViewStateKey.self] = newValue }
-    }
-}
-
 struct IsReaderModeLoadPendingKey: EnvironmentKey {
     static let defaultValue: @MainActor (any ReaderContentProtocol) -> Bool = { _ in false }
-}
-
-public extension EnvironmentValues {
-    var isReaderModeLoadPending: @MainActor (any ReaderContentProtocol) -> Bool {
-        get { self[IsReaderModeLoadPendingKey.self] }
-        set { self[IsReaderModeLoadPendingKey.self] = newValue }
-    }
 }
 
 struct RefreshSettingsInReaderKey: EnvironmentKey {
@@ -28,6 +14,14 @@ struct RefreshSettingsInReaderKey: EnvironmentKey {
 }
 
 public extension EnvironmentValues {
+    var readerWebViewState: WebViewState {
+        get { self[ReaderWebViewStateKey.self] }
+        set { self[ReaderWebViewStateKey.self] = newValue }
+    }
+    var isReaderModeLoadPending: @MainActor (any ReaderContentProtocol) -> Bool {
+        get { self[IsReaderModeLoadPendingKey.self] }
+        set { self[IsReaderModeLoadPendingKey.self] = newValue }
+    }
     var refreshSettingsInReader: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void {
         get { self[RefreshSettingsInReaderKey.self] }
         set { self[RefreshSettingsInReaderKey.self] = newValue }

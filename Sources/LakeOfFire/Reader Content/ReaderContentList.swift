@@ -122,7 +122,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @State private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @Environment(\.readerWebViewState) private var readerWebViewState
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
         item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
@@ -155,7 +155,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             Toggle(isOn: Binding<Bool>(
                 get: {
                     //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                    readerViewModel.state.matches(content: content)
+                    readerWebViewState.matches(content: content)
                 },
                 set: {
                     let newValue = $0 ? content.compoundKey : nil
