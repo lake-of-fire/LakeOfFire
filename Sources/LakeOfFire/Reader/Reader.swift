@@ -138,7 +138,7 @@ public struct Reader: View {
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
                     Task { @MainActor in
-                        readerContent.content = ReaderViewModel.getContent(forURL: state.pageURL)
+                        readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? readerContent.content
                         try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
@@ -159,7 +159,7 @@ public struct Reader: View {
                             switch result {
                             case .success(let response):
                                 if let isReaderMode = response as? Bool {
-                                    readerViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                                    readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
                                 }
                             case .failure(let error):
                                 print(error)

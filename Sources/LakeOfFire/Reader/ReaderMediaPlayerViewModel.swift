@@ -14,12 +14,7 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
     public init() { }
     
     @MainActor
-    public func onNavigationCommitted(newState: WebViewState) async throws {
-        guard let content = try await ReaderViewModel.getContent(forURL: newState.pageURL) else {
-            print("WARNING No content matched for \(newState.pageURL)")
-            return
-        }
-
+    public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         let voiceAudioURLs = Array(content.voiceAudioURLs)
         if !newState.pageURL.isNativeReaderView, newState.pageURL.host != nil, !newState.pageURL.isFileURL {
             if voiceAudioURLs != audioURLs {
