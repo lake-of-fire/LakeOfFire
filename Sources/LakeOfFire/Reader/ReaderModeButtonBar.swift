@@ -2,8 +2,9 @@ import SwiftUI
 import LakeKit
 
 public struct ReaderModeButtonBar: View {
+    @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-    
+
     public init() { }
     
     public var body: some View {
@@ -19,7 +20,7 @@ public struct ReaderModeButtonBar: View {
                     Spacer(minLength: 0)
                     DismissButton(.xMark) {
                         Task { @MainActor in
-                            try await readerViewModel.hideReaderModeButtonBar()
+                            try await readerViewModel.hideReaderModeButtonBar(content: readerContent.content)
                         }
                     }
                 }

@@ -72,6 +72,7 @@ public struct Reader: View {
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
     @EnvironmentObject internal var readerContent: ReaderContent
+    @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
@@ -112,11 +113,11 @@ public struct Reader: View {
             
             WebView(
                 config: WebViewConfig(
-                    contentRules: readerContent.contentRules,
+                    contentRules: readerViewModel.contentRules,
                     userScripts: readerViewModel.allScripts),
                 navigator: navigator,
                 state: $readerViewModel.state,
-                scriptCaller: readerViewModel.scriptCaller,
+                scriptCaller: scriptCaller,
                 blockedHosts: Set([
                     "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
                     "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
@@ -138,7 +139,7 @@ public struct Reader: View {
                     Task { @MainActor in
                         readerViewModel.isReaderMode = state.pageURL.isEBookURL
                         readerViewModel.readabilityContainerFrameInfo = nil
-                        try await readerViewModel.onNavigationCommitted(newState: state)
+                        try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         if let onNavigationCommitted = onNavigationCommitted {
                             try await onNavigationCommitted(state)
                         }
@@ -146,13 +147,13 @@ public struct Reader: View {
                 },
                 onNavigationFinished: { state in
                     Task { @MainActor in
-                        readerViewModel.onNavigationFinished(newState: state) { newState in
+                        readerViewModel.onNavigationFinished(content: readerContent.content, newState: state) { newState in
                             if let onNavigationFinished = onNavigationFinished {
                                 onNavigationFinished(newState)
                             }
                         }
                         
-                        await readerViewModel.scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
+                        await scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
                             switch result {
                             case .success(let response):
                                 if let isReaderMode = response as? Bool {
@@ -180,16 +181,16 @@ public struct Reader: View {
         }
         .task(id: readerFontSize) { @MainActor in
             guard let readerFontSize = readerFontSize else { return }
-            await readerViewModel.scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
+            await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
         }
         .onChange(of: lightModeTheme) { lightModeTheme in
             Task { @MainActor in
-                await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
+                await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
             }
         }
         .onChange(of: darkModeTheme) { darkModeTheme in
             Task { @MainActor in
-                await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
+                await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
             }
         }
         .onChange(of: readerViewModel.audioURLs) { audioURLs in
