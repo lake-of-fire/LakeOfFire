@@ -230,11 +230,12 @@ struct LibraryFeedFormSections: View {
     @ScaledMetric(relativeTo: .body) private var readerPreviewHeight = 480
     @ScaledMetric(relativeTo: .body) private var readerPreviewLocationBarHeight = 40
     
-//    @State private var readerContent: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
+//    @State private var readerContent: (any ReaderContentProtocol) = ReaderContentLoader.unsavedHome
 //    @State private var readerState = WebViewState.empty
 //    @State private var readerAction = WebViewAction.idle
+    @State private var readerContent = ReaderContent()
     @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
-    
+
     @State private var readerFeedEntry: FeedEntry?
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -313,6 +314,7 @@ struct LibraryFeedFormSections: View {
         Reader(
 //            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
             bounces: false)
+        .environmentObject(readerContent)
         .environmentObject(readerViewModel)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .frame(idealHeight: readerPreviewHeight)
@@ -384,9 +386,9 @@ struct LibraryFeedFormSections: View {
             let oldEntry = oldEntries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
             Task { @MainActor in
                 if let entry = entry {
-                    readerViewModel.content = entry
+                    readerContent.content = entry
                 } else {
-                    readerViewModel.content = ReaderContentLoader.unsavedHome
+                    readerContent.content = ReaderContentLoader.unsavedHome
                 }
                 if entry?.id != oldEntry?.id {
                     refresh(entries: Array(entries))
@@ -494,7 +496,7 @@ struct LibraryFeedFormSections: View {
             if let entry = entries.last {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
-                    if readerViewModel.content != entry {
+                    if readerContent.content != entry {
                         await readerViewModel.navigator?.load(content: entry, readerFileManager: readerFileManager)
                     }
                 }

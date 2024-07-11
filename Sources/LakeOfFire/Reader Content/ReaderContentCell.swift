@@ -3,7 +3,7 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeImage
 
-class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>: ObservableObject {
+class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
     @Published var forceShowBookmark = false
@@ -31,7 +31,7 @@ class ReaderContentCellViewModel<C: ReaderContentModel & ObjectKeyIdentifiable>:
     }
 }
 
-extension ReaderContentModel {
+extension ReaderContentProtocol {
     @ViewBuilder func readerContentCellView(alwaysShowThumbnails: Bool = true, isEbookStyle: Bool = false) -> some View {
         ReaderContentCell(item: self, alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: isEbookStyle)
     }
@@ -95,7 +95,7 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
     }
 }
 
-struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { //, Equatable {
+struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     var alwaysShowThumbnails = true
     var isEbookStyle = false
@@ -175,7 +175,7 @@ struct ReaderContentCell<C: ReaderContentModel & ObjectKeyIdentifiable>: View { 
     }
 }
 
-struct ReaderContentCellButtons<C: ReaderContentModel & ObjectKeyIdentifiable>: View {
+struct ReaderContentCellButtons<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
     @ObservedRealmObject var item: C
     
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()

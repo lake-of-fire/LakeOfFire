@@ -25,7 +25,7 @@ public struct ReaderContentLoader {
         let contentKey: String
         let realmConfiguration: Realm.Configuration
         
-        init?(content: any ReaderContentModel) {
+        init?(content: any ReaderContentProtocol) {
             guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type, let config = content.realm?.configuration else { return nil }
             self.contentType = contentType
             contentKey = content.compoundKey
@@ -37,7 +37,7 @@ public struct ReaderContentLoader {
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
  
-    public static var unsavedHome: (any ReaderContentModel) {
+    public static var unsavedHome: (any ReaderContentProtocol) {
 //        return try await Self.load(url: URL(string: "about:blank")!, persist: false)!
         let historyRecord = HistoryRecord()
         historyRecord.url = URL(string: "about:blank")!
@@ -46,14 +46,14 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static var home: (any ReaderContentModel) {
+    public static var home: (any ReaderContentProtocol) {
         get async throws {
             return try await Self.load(url: URL(string: "about:blank")!, persist: true)!
         }
     }
     
     @MainActor
-    public static func fromBackgroundActor(content: any ReaderContentModel) async throws -> (any ReaderContentModel)? {
+    public static func fromBackgroundActor(content: any ReaderContentProtocol) async throws -> (any ReaderContentProtocol)? {
         if content.realm == nil {
             return content
         }
@@ -61,11 +61,11 @@ public struct ReaderContentLoader {
             return ContentReference(content: content)
         }).value else { return nil }
         let realm = try await Realm(configuration: ref.realmConfiguration, actor: MainActor.shared)
-        return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentModel
+        return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
     }
     
     @RealmBackgroundActor
-    public static func fromMainActor(content: any ReaderContentModel) async throws -> (any ReaderContentModel)? {
+    public static func fromMainActor(content: any ReaderContentProtocol) async throws -> (any ReaderContentProtocol)? {
         if content.realm == nil {
             return content
         }
@@ -73,15 +73,15 @@ public struct ReaderContentLoader {
             return ContentReference(content: content)
         }).value else { return nil }
         let realm = try await Realm(configuration: ref.realmConfiguration, actor: RealmBackgroundActor.shared)
-        return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentModel
+        return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
     }
     
     @MainActor
-    public static func fromBackgroundActor(contents: [any ReaderContentModel]) async throws -> [any ReaderContentModel] {
+    public static func fromBackgroundActor(contents: [any ReaderContentProtocol]) async throws -> [any ReaderContentProtocol] {
         if contents.allSatisfy({ $0.realm == nil }) {
             return contents
         }
-        var mapped: [any ReaderContentModel] = []
+        var mapped: [any ReaderContentProtocol] = []
         for content in contents {
             if let newMapped = try await fromBackgroundActor(content: content) {
                 mapped.append(newMapped)
@@ -91,11 +91,11 @@ public struct ReaderContentLoader {
     }
     
     @RealmBackgroundActor
-    public static func fromMainActor(contents: [any ReaderContentModel]) async throws -> [any ReaderContentModel] {
+    public static func fromMainActor(contents: [any ReaderContentProtocol]) async throws -> [any ReaderContentProtocol] {
         if contents.allSatisfy({ $0.realm == nil }) {
             return contents
         }
-        var mapped: [any ReaderContentModel] = []
+        var mapped: [any ReaderContentProtocol] = []
         for content in contents {
             if let newMapped = try await fromMainActor(content: content) {
                 mapped.append(newMapped)
@@ -105,7 +105,7 @@ public struct ReaderContentLoader {
     }
     
     @RealmBackgroundActor
-    public static func loadAll(url: URL) async throws -> [(any ReaderContentModel)] {
+    public static func loadAll(url: URL) async throws -> [(any ReaderContentProtocol)] {
         let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
         let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
         let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
@@ -137,13 +137,13 @@ public struct ReaderContentLoader {
             feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
         }
         
-        let candidates: [any ReaderContentModel] = [contentFile, bookmark, history, feed].compactMap { $0 }
+        let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
         return candidates
     }
     
     @MainActor
-    public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentModel)? {
-        let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentModel)? in
+    public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
@@ -160,7 +160,7 @@ public struct ReaderContentLoader {
 //                url = URL(string: "ebook://ebook/load" + url.path) ?? url
 //            }
             
-            var match: (any ReaderContentModel)?
+            var match: (any ReaderContentProtocol)?
             let candidates = try await loadAll(url: url)
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
@@ -200,14 +200,14 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static func load(urlString: String) async throws -> (any ReaderContentModel)? {
+    public static func load(urlString: String) async throws -> (any ReaderContentProtocol)? {
         guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme ?? "") else { return nil }
         return try await load(url: url)
     }
     
     @MainActor
-    public static func load(html: String) async throws -> (any ReaderContentModel)? {
-        let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentModel)? in
+    public static func load(html: String) async throws -> (any ReaderContentProtocol)? {
+        let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
             let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
             let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
@@ -227,7 +227,7 @@ public struct ReaderContentLoader {
                 .sorted(by: \.createdAt, ascending: false)
                 .where { $0.content == data }
                 .first
-            let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
+            let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
             
             if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
                 return match
@@ -283,14 +283,14 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static func load(text: String) async throws -> (any ReaderContentModel)? {
+    public static func load(text: String) async throws -> (any ReaderContentProtocol)? {
         let html = textToHTML(text, forceRaw: true)
         return try await load(html: html)
     }
     
     @MainActor
-    public static func loadPasteboard(bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) async throws -> (any ReaderContentModel)? {
-        var match: (any ReaderContentModel)?
+    public static func loadPasteboard(bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) async throws -> (any ReaderContentProtocol)? {
+        var match: (any ReaderContentProtocol)?
         
 #if os(macOS)
         let html = NSPasteboard.general.string(forType: .html)

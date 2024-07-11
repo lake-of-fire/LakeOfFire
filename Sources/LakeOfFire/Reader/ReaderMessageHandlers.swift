@@ -46,7 +46,7 @@ internal extension Reader {
                 }
             },
             "showReaderView": { _ in
-                Task { @MainActor in readerViewModel.showReaderView() }
+                Task { @MainActor in readerViewModel.showReaderView(content: readerContent.content) }
             },
             "showOriginal": { _ in
                 Task { @MainActor in
@@ -125,7 +125,7 @@ fileprivate extension Reader {
     
     @MainActor
     func showOriginal() async throws {
-        try await readerViewModel.content.asyncWrite { _, content in
+        try await readerContent.content.asyncWrite { _, content in
             content.isReaderModeByDefault = false
         }
         navigator.reload()

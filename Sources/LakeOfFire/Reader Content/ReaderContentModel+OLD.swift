@@ -3,7 +3,7 @@
 //import ManabiCommon
 //import LakeKit
 //
-//protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable {
+//protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable {
 //    var compoundKey: String { get set }
 //    var keyPrefix: String? { get }
 //
@@ -33,7 +33,7 @@
 //    func configureBookmark(_ bookmark: Bookmark)
 //}
 //
-//extension ReaderContentModel {
+//extension ReaderContentProtocol {
 //    var keyPrefix: String? {
 //        return nil
 //    }
@@ -80,7 +80,7 @@
 //    }
 //}
 //
-//extension ReaderContentModel {
+//extension ReaderContentProtocol {
 //    var humanReadablePublicationDate: String? {
 //        guard let publicationDate = publicationDate else { return nil}
 //

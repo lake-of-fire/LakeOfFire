@@ -116,7 +116,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     }
 }
 
-public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentModel {
+public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     public var keyPrefix: String? {
         return feed?.primaryKeyValue

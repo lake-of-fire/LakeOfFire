@@ -7,7 +7,7 @@ import SwiftUtilities
 import Combine
 
 @MainActor
-class WebFeedButtonViewModel<C: ReaderContentModel>: ObservableObject {
+class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
             setCategories(from: libraryConfiguration)
@@ -130,7 +130,7 @@ class WebFeedButtonViewModel<C: ReaderContentModel>: ObservableObject {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-struct WebFeedMenuAddButtons<C: ReaderContentModel>: View {
+struct WebFeedMenuAddButtons<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel: WebFeedButtonViewModel<C>
     let url: URL
     let title: String
@@ -187,7 +187,7 @@ struct WebFeedMenuAddButtons<C: ReaderContentModel>: View {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-public struct WebFeedButton<C: ReaderContentModel>: View {
+public struct WebFeedButton<C: ReaderContentProtocol>: View {
     @ObservedObject var readerContent: C
     
     @EnvironmentObject private var libraryViewModel: LibraryManagerViewModel
@@ -237,7 +237,7 @@ public struct WebFeedButton<C: ReaderContentModel>: View {
 }
 
 @available(iOS 16, macOS 13.0, *)
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
     var webFeedButtonView: some View {
         WebFeedButton(readerContent: self)
     }

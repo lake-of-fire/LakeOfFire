@@ -3,7 +3,7 @@ import RealmSwift
 import RealmSwiftGaps
 import SwiftCloudDrive
 
-public class Bookmark: Object, ReaderContentModel {
+public class Bookmark: Object, ReaderContentProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!

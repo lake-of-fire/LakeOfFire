@@ -12,23 +12,23 @@ public extension EnvironmentValues {
     }
 }
 
-struct WillReaderModeLoadKey: EnvironmentKey {
-    static let defaultValue = Binding.constant(false)
+struct IsReaderModeLoadPendingKey: EnvironmentKey {
+    static let defaultValue: @MainActor (any ReaderContentProtocol) -> Bool = { _ in false }
 }
 
 public extension EnvironmentValues {
-    var willReaderModeLoad: Binding<Bool> {
-        get { self[WillReaderModeLoadKey.self] }
-        set { self[WillReaderModeLoadKey.self] = newValue }
+    var isReaderModeLoadPending: @MainActor (any ReaderContentProtocol) -> Bool {
+        get { self[IsReaderModeLoadPendingKey.self] }
+        set { self[IsReaderModeLoadPendingKey.self] = newValue }
     }
 }
 
 struct RefreshSettingsInReaderKey: EnvironmentKey {
-    static let defaultValue: @MainActor ((any ReaderContentModel)?, WebViewState?) -> Void = { _, _ in }
+    static let defaultValue: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void = { _, _ in }
 }
 
 public extension EnvironmentValues {
-    var refreshSettingsInReader: @MainActor ((any ReaderContentModel)?, WebViewState?) -> Void {
+    var refreshSettingsInReader: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void {
         get { self[RefreshSettingsInReaderKey.self] }
         set { self[RefreshSettingsInReaderKey.self] = newValue }
     }
@@ -48,7 +48,7 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
-            .environment(\.willReaderModeLoad, $readerViewModel.willReaderModeLoad)
+            .environment(\.isReaderModeLoadPending, readerViewModel.isReaderModeLoadPending)
             .environment(\.refreshSettingsInReader, readerViewModel.refreshSettingsInWebView)
             .environmentObject(readerViewModel.scriptCaller)
             .task { @MainActor in

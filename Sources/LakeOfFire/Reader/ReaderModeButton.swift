@@ -1,17 +1,16 @@
 import SwiftUI
 
 public struct ReaderModeButton: View {
-    @ObservedObject var readerViewModel: ReaderViewModel
-    
+    @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
+
     public var body: some View {
         Button {
-            readerViewModel.showReaderView()
+            readerViewModel.showReaderView(content: readerContent.content)
         } label: {
             Label("Reader Mode", systemImage: "doc.plaintext")
         }
     }
     
-    public init(readerViewModel: ReaderViewModel) {
-        self.readerViewModel = readerViewModel
-    }
+    public init() { }
 }

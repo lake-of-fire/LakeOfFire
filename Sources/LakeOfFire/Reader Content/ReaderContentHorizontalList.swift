@@ -17,7 +17,7 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
     }
 }
 
-fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: View {
+fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol>: View {
     var content: C
     
     @State var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
@@ -79,7 +79,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentModel>: 
     }
 }
 
-fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View {
+fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
     var filteredContents: [C]
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -112,7 +112,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentModel>: View
     }
 }
 
-public struct ReaderContentHorizontalList<C: ReaderContentModel>: View {
+public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
     let contents: [C]
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
@@ -120,7 +120,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentModel>: View {
     let contentSortAscending = false
     var contentFilter: (@RealmBackgroundActor (C) async throws -> Bool) = { @RealmBackgroundActor _ in return true }
 //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-//    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+//    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
     
     public var body: some View {

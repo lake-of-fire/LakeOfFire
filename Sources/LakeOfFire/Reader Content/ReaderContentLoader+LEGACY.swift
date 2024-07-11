@@ -12,7 +12,7 @@
 //
 ///// Loads from any source by URL.
 //struct ReaderContentLoader {
-//    static func load(url: URL) -> (any ReaderContentModel)? {
+//    static func load(url: URL) -> (any ReaderContentProtocol)? {
 //        guard let realm = try? Realm(), let sharedRealm = try? Realm(configuration: SharedRealmConfigurer.configuration) else { return nil }
 //
 //        let bookmark = realm.objects(Bookmark.self)
@@ -24,7 +24,7 @@
 //        let feed = sharedRealm.objects(FeedEntry.self)
 //            .sorted(by: \.createdAt, ascending: false)
 //            .first(where: { $0.url == url })
-//        let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
+//        let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
 //
 //        if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
 //            return match
@@ -39,12 +39,12 @@
 //        return historyRecord
 //    }
 //
-//    static func load(urlString: String) -> (any ReaderContentModel)? {
+//    static func load(urlString: String) -> (any ReaderContentProtocol)? {
 //        guard let url = URL(string: urlString) else { return nil }
 //        return load(url: url)
 //    }
 //
-//    static func load(html: String) -> (any ReaderContentModel)? {
+//    static func load(html: String) -> (any ReaderContentProtocol)? {
 //        guard let realm = try? Realm(), let sharedRealm = try? Realm(configuration: SharedRealmConfigurer.configuration) else { return nil }
 //
 //        let data = html.readerContentData
@@ -58,7 +58,7 @@
 //        let feed = sharedRealm.objects(FeedEntry.self)
 //            .sorted(by: \.createdAt, ascending: false)
 //            .first(where: { $0.content == data })
-//        let candidates: [any ReaderContentModel] = [bookmark, history, feed].compactMap { $0 }
+//        let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
 //
 //        if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
 //            return match
@@ -81,8 +81,8 @@
 //        return "<html><body>\(html)</body></html>"
 //    }
 //
-//    static func loadPasteboard() -> (any ReaderContentModel)? {
-//        var match: (any ReaderContentModel)?
+//    static func loadPasteboard() -> (any ReaderContentProtocol)? {
+//        var match: (any ReaderContentProtocol)?
 //
 //        #if os(macOS)
 //        let html = NSPasteboard.general.string(forType: .html)

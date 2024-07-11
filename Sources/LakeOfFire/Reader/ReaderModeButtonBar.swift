@@ -9,7 +9,7 @@ public struct ReaderModeButtonBar: View {
     public var body: some View {
         ZStack {
             Group {
-                ReaderModeButton(readerViewModel: readerViewModel)
+                ReaderModeButton()
                     .labelStyle(.titleOnly)
                     .padding(.horizontal, 44)
                     .buttonStyle(.borderedProminent)

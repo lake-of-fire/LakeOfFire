@@ -61,7 +61,7 @@ public enum ReaderContentSortOrder {
     case lastVisitedAt
 }
 
-public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject {
+public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
     @Published var filteredContents: [C] = []
     var refreshSelectionTask: Task<Void, Error>?
     var loadContentsTask: Task<Void, Error>?
@@ -103,14 +103,14 @@ public class ReaderContentListViewModel<C: ReaderContentModel>: ObservableObject
                 try Task.checkCancellation()
                 guard let self = self else { return }
                 //                self?.filteredContents = toSet
-                filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet as [any ReaderContentModel]) as? [C] ?? filteredContents
+                filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet as [any ReaderContentProtocol]) as? [C] ?? filteredContents
             }.value
         }
         try await loadContentsTask?.value
     }
 }
 
-fileprivate struct ReaderContentInnerListItem<C: ReaderContentModel>: View {
+fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     let content: C
     @Binding var entrySelection: String?
     var alwaysShowThumbnails = true
@@ -245,7 +245,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentModel>: View {
     }
 }
 
-fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
+fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     var alwaysShowThumbnails = true
     var showSeparators = false
@@ -278,12 +278,12 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentModel>: View {
     }
 }
 
-public struct ReaderContentList<C: ReaderContentModel>: View {
+public struct ReaderContentList<C: ReaderContentProtocol>: View {
     let contents: [C]
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
-    //    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+    //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var contentFilter: ((C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
     
@@ -341,7 +341,7 @@ public struct ReaderContentList<C: ReaderContentModel>: View {
     }
 }
 
-public struct ReaderContentListItems<C: ReaderContentModel>: View {
+public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel = ReaderContentListViewModel<C>()
 //    let contents: [C]
     // TODO: Something with this triggers repreatedly in printchanges; change to an environmentkey
@@ -350,7 +350,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
     var alwaysShowThumbnails = true
     var showSeparators = false
 //    var contentFilter: ((C) async throws -> Bool)? = nil
-//    var sortOrder = [KeyPathComparator(\(any ReaderContentModel).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+//    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
 //    var sortOrder = ReaderContentSortOrder.publicationDate
     
     @EnvironmentObject private var readerViewModel: ReaderViewModel
@@ -438,7 +438,7 @@ public struct ReaderContentListItems<C: ReaderContentModel>: View {
     }
 }
 
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
     static func readerContentListView(contents: [Self], entrySelection: Binding<String?>, sortOrder: ReaderContentSortOrder, contentFilter: ((Self) async throws -> Bool)? = nil) -> some View {
         return ReaderContentList(contents: contents, entrySelection: entrySelection, sortOrder: sortOrder, contentFilter: contentFilter)
     }

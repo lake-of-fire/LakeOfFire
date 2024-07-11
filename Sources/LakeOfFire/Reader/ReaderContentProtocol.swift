@@ -7,10 +7,10 @@ import RealmSwiftGaps
 public struct ReaderContentReadingProgressLoader {
     /// Float is progress, Bool is whether article is "finished".
     @RealmBackgroundActor
-    public static var readingProgressLoader: ((any ReaderContentModel) async throws -> (Float, Bool)?)?
+    public static var readingProgressLoader: ((any ReaderContentProtocol) async throws -> (Float, Bool)?)?
 }
 
-public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
+public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
     var compoundKey: String { get set }
     var keyPrefix: String? { get }
     
@@ -55,7 +55,7 @@ public protocol ReaderContentModel: RealmSwift.Object, ObjectKeyIdentifiable, Eq
     func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String?
 }
 
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
     var keyPrefix: String? {
         return nil
     }
@@ -69,7 +69,7 @@ public extension ReaderContentModel {
     }
     
     @MainActor
-    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentModel) -> Void)) async throws {
+    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
         let config = realm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
@@ -83,7 +83,7 @@ public extension ReaderContentModel {
     }
 }
 
-public protocol DeletableReaderContent: ReaderContentModel {
+public protocol DeletableReaderContent: ReaderContentProtocol {
     var isDeleted: Bool { get set }
     var deleteActionTitle: String { get }
     func delete(readerFileManager: ReaderFileManager) async throws
@@ -100,7 +100,7 @@ public extension URL {
 }
 
 public extension WebViewState {
-    func matches(content: any ReaderContentModel) -> Bool {
+    func matches(content: any ReaderContentProtocol) -> Bool {
         return content.url.matchesReaderURL(pageURL)
     }
 }
@@ -124,7 +124,7 @@ extension String {
     }
 }
 
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
     var humanReadablePublicationDate: String? {
         guard let publicationDate = publicationDate else { return nil}
         
@@ -193,7 +193,7 @@ public extension ReaderContentModel {
     }
 }
 
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
 //    var rawEntryThumbnailContentMode: Int = UIView.ContentMode.scaleAspectFill.rawValue
     /*var entryThumbnailContentMode: UIView.ContentMode {
         get {
@@ -216,7 +216,7 @@ public extension ReaderContentModel {
     }
 }
 
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
     /// Returns whether the result is having a bookmark or not.
     func toggleBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
         if try await removeBookmark(realmConfiguration: realmConfiguration) {

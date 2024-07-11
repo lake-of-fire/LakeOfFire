@@ -12,33 +12,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public var readerFileManager: ReaderFileManager?
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
-    {
-        didSet {
-            if let imageURL = state.pageImageURL, content.realm != nil, content.url == state.pageURL, content.imageUrl == nil {
-                // TODO: Replace with fromMainActor instead of the if / else if
-                if let content = content as? Bookmark {
-                    let contentRef = ThreadSafeReference(to: content)
-                    guard let config = content.realm?.configuration else { return }
-                    Task.detached { @RealmBackgroundActor in
-                        try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
-                            content.imageUrl = imageURL
-                        }
-                    }
-                } else if let content = content as? HistoryRecord {
-                    let contentRef = ThreadSafeReference(to: content)
-                    guard let config = content.realm?.configuration else { return }
-                    Task.detached { @RealmBackgroundActor in
-                        try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
-                            content.imageUrl = imageURL
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    @Published public var content: (any ReaderContentModel) = ReaderContentLoader.unsavedHome
- 
     @Published public var locationBarShouldGainFocusOnAppearance = false
     @Published public var isReaderMode = false
     @Published var readabilityContent: String? = nil
@@ -67,32 +40,23 @@ public class ReaderViewModel: NSObject, ObservableObject {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
     
-    public var isReaderModeButtonBarVisible: Bool {
-        if content.isReaderModeOfferHidden {
-            return false
-        }
-        return content.isReaderModeAvailable && !content.isReaderModeByDefault
+    public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
+        return !content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
     }
-    public var isReaderModeVisibleInMenu: Bool {
+    public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
         return content.isReaderModeOfferHidden && content.isReaderModeAvailable
     }
-
-    public var locationShortName: String? {
+    
+    public func locationShortName(content: any ReaderContentProtocol) -> String? {
         if content.url.absoluteString == "about:blank" {
             return "Home"
         } else if content.url.isNativeReaderView {
             return nil
-        } else if content.url.isEBookURL {
-            return content.titleForDisplay
-        } else if content.url.isSnippetURL {
+        } else if content.url.isEBookURL || content.url.isSnippetURL {
             return content.titleForDisplay
         } else {
             return content.url.host
         }
-    }
-    
-    public var willReaderModeLoad: Bool {
-        return content.isReaderModeAvailable && content.isReaderModeByDefault
     }
     
     public var contentRulesForReadabilityLoading = """
@@ -122,8 +86,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
             try await Task { @MainActor [weak self] in
                 let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
                 guard let self = self, let configuration = realm.resolve(ref) else { return }
-                webViewSystemScripts = systemScripts + configuration.systemScripts
-                webViewUserScripts = configuration.activeWebViewUserScripts
+                self.webViewSystemScripts = systemScripts + configuration.systemScripts
+                self.webViewUserScripts = configuration.activeWebViewUserScripts
             }.value
             
             Task { @MainActor [weak self] in
@@ -138,13 +102,17 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             try await self?.updateScripts()
                         }
                     })
-                    .store(in: &cancellables)
+                    .store(in: &self.cancellables)
             }
         }
     }
     
+    func isReaderModeLoadPending(content: any ReaderContentProtocol) -> Bool {
+        return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
+    }
+    
     @MainActor
-    func hideReaderModeButtonBar() async throws {
+    func hideReaderModeButtonBar(content: (any ReaderContentProtocol)) async throws {
         try await content.asyncWrite { _, content in
             content.isReaderModeOfferHidden = true
         }
@@ -152,9 +120,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    internal func showReaderView(content: (any ReaderContentModel)? = nil) {
+    internal func showReaderView(content: any ReaderContentProtocol) {
         guard let readabilityContent = readabilityContent else { return }
-        let content = content ?? self.content
         let title = content.title
         let imageURL = content.imageURLToDisplay
         let readabilityContainerSelector = readabilityContainerSelector
@@ -165,23 +132,21 @@ public class ReaderViewModel: NSObject, ObservableObject {
         Task.detached { @MainActor [weak self] in
             guard let self = self else { return }
             let realm = try await Realm(configuration: contentConfig, actor: MainActor.shared)
-            guard let contentType = contentType, let content = realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentModel else { return }
+            guard let contentType = contentType, let content = realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol else { return }
             do {
-                try await showReadabilityContent(content: content, readabilityContent: readabilityContent, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
+                try await self.showReadabilityContent(content: content, readabilityContent: readabilityContent, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
             } catch { }
         }
     }
     
-    /// Content before it has been treated with Reader-specific processing.
     @MainActor
-    private func showReadabilityContent(content: (any ReaderContentModel), readabilityContent: String, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+    private func showReadabilityContent(content: (any ReaderContentProtocol), readabilityContent: String, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
         guard content.url == state.pageURL else { return }
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
             content.isReaderModeOfferHidden = false
             if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
-#warning("FIXME: have the button check for any matching records, or make sure that view model prefers history record, or doesn't switch, etc")
                 if !content.url.isReaderFileURL && (content.content?.isEmpty ?? true) {
                     content.html = readabilityContent
                 }
@@ -192,12 +157,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
             }
         }
         
-        let injectEntryImageIntoHeader = self.content.injectEntryImageIntoHeader
+        let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let readerFontSize = readerFontSize
         let defaultFontSize = defaultFontSize ?? 15
         let processReadabilityContent = processReadabilityContent
         let url = content.url
-
+        
         try await Task.detached { [weak self] in
             var doc: SwiftSoup.Document
             do {
@@ -213,13 +178,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
             } else {
                 html = try doc.outerHtml()
             }
-#warning("SwiftUIDrag menu (?)")
+            
             let transformedContent = html
             await Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                guard url == state.pageURL else { return }
+                guard url == self.state.pageURL else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-                    await scriptCaller.evaluateJavaScript(
+                    await self.scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
                         if (renderToSelector) {
@@ -254,9 +219,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
-                    navigator?.loadHTML(transformedContent, baseURL: url)
+                    self.navigator?.loadHTML(transformedContent, baseURL: url)
                 }
-                isReaderMode = true
+                self.isReaderMode = true
             }.value
         }.value
     }
@@ -269,21 +234,19 @@ public class ReaderViewModel: NSObject, ObservableObject {
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
             guard let scripts = realm.resolve(ref)?.activeWebViewUserScripts else { return }
             guard let self = self else { return }
-            if webViewUserScripts != scripts {
-                webViewUserScripts = scripts
+            if self.webViewUserScripts != scripts {
+                self.webViewUserScripts = scripts
             }
         }
     }
     
     @MainActor
-    public func onNavigationCommitted(newState: WebViewState) async throws {
-//        debugPrint("!! onNavCommit", newState)
+    public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         readabilityContent = nil
-        guard let content = try await Self.getContent(forURL: newState.pageURL) else {
+        guard let content = try await ReaderViewModel.getContent(forURL: newState.pageURL) else {
             print("WARNING No content matched for \(newState.pageURL)")
             return
         }
-        self.content = content
         
         if let historyRecord = content as? HistoryRecord {
             Task.detached { @RealmBackgroundActor in
@@ -306,12 +269,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 }
                 navigator?.loadHTML(html, baseURL: content.url)
             } else {
-                // Shouldn't come here... results in duplicate history. Here for safety though.
                 navigator?.load(URLRequest(url: content.url))
             }
         } else {
             if content.isReaderModeByDefault {
-                // TODO gotta wait later in readabilityParsed task callbacks to get isReaderModeAvailable=true...
                 contentRules = contentRulesForReadabilityLoading
                 if content.isReaderModeAvailable {
                     showReaderView(content: content)
@@ -332,15 +293,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 Task { @MainActor [weak self] in
                     try Task.checkCancellation()
                     guard let self = self else { return }
-                    if isMediaPlayerPresented {
-                        isMediaPlayerPresented = false
+                    if self.isMediaPlayerPresented {
+                        self.isMediaPlayerPresented = false
                     }
                 }
             }
         }
     }
     
-    public func onNavigationFinished(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+    public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
@@ -353,10 +314,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
-    // TODO: Move this out, maybe into Loader...
-    /// Also sets a history visit.
     @MainActor
-    public static func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
+    public static func getContent(forURL pageURL: URL) async throws -> (any ReaderContentProtocol)? {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
@@ -365,15 +324,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
         return nil
     }
     
-    private func getContent(configuration: Realm.Configuration, type: RealmSwift.Object.Type, key: String) -> (any ReaderContentModel)? {
-        guard let content = try! Realm(configuration: configuration).object(ofType: type, forPrimaryKey: key) as? any ReaderContentModel else { return nil }
-        return content
-    }
-    
     @MainActor
-    func refreshTitleInWebView(content: (any ReaderContentModel), newState: WebViewState? = nil) {
-        // TODO: consolidate code duplication
-        let state = newState ?? state
+    private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) {
+        let state = newState ?? self.state
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
                 scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
@@ -382,10 +335,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
+    public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle = fixAnnoyingTitlesWithPipes(title: title)
-        // Only update if empty... sometimes annoying titles load later after first page load. Could be smarter though.
         let contents = try await ReaderContentLoader.fromBackgroundActor(contents: ReaderContentLoader.loadAll(url: state.pageURL))
         for content in contents {
             if !newTitle.isEmpty, state.pageURL.isEBookURL || content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -399,14 +351,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    public func refreshSettingsInWebView(content: (any ReaderContentModel)? = nil, newState: WebViewState? = nil) {
-        // TODO: consolidate code duplication
+    public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            let content = content ?? self.content
-            await scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
-            await scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
-            refreshTitleInWebView(content: content, newState: newState)
+            await self.scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-light-theme', '\(self.lightModeTheme)')", duplicateInMultiTargetFrames: true)
+            await self.scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-dark-theme', '\(self.darkModeTheme)')", duplicateInMultiTargetFrames: true)
+            self.refreshTitleInWebView(content: content, newState: newState)
         }
     }
 }

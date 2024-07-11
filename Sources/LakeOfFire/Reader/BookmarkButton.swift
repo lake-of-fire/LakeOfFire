@@ -16,7 +16,7 @@ import Combine
 fileprivate class BookmarkButtonViewModel: ObservableObject {
     @Published var reloadTrigger = ""
 //    var readerContentHTML: String?
-    var readerContent: (any ReaderContentModel)? {
+    var readerContent: (any ReaderContentProtocol)? {
         didSet {
             refresh()
         }
@@ -94,7 +94,7 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
     }
 }
 
-public struct BookmarkButton<C: ReaderContentModel>: View {
+public struct BookmarkButton<C: ReaderContentProtocol>: View {
     var width: CGFloat? = nil
     var height: CGFloat? = nil
     let iconOnly: Bool
@@ -151,7 +151,7 @@ public struct BookmarkButton<C: ReaderContentModel>: View {
     }
 }
 
-public extension ReaderContentModel {
+public extension ReaderContentProtocol {
     @ViewBuilder func bookmarkButtonView(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool) -> some View {
         BookmarkButton(width: width, height: height, iconOnly: iconOnly, readerContent: self)
     }
@@ -162,11 +162,11 @@ public struct CurrentWebViewBookmarkButton: View {
     var height: CGFloat? = nil
     
     let iconOnly: Bool
-    @Environment(\.readerContent) private var readerContent
+    @EnvironmentObject private var readerContent: ReaderContent
     @Environment(\.readerWebViewState) private var readerWebViewState
 
     public var body: some View {
-        AnyView(readerContent.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
+        AnyView(readerContent.content.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
             .disabled(readerWebViewState.isProvisionallyNavigating || readerWebViewState.pageURL.isNativeReaderView)
     }
     

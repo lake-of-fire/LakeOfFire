@@ -28,7 +28,7 @@ public extension EnvironmentValues {
 public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
-    func load(content: any ReaderContentModel, readerFileManager: ReaderFileManager) async {
+    func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async {
         var url: URL?
         if content.url.isEBookURL {
 //            guard let absoluteStringWithoutScheme = content.url.absoluteStringWithoutScheme, let loadURL = URL(string: "ebook://ebook/load" + absoluteStringWithoutScheme) else {
@@ -71,16 +71,17 @@ public struct Reader: View {
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
+    @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
 
 //    var url: URL {
-//        return readerViewModel.content.url
+//        return readerContent.content.url
 //    }
     private var navigationTitle: String? {
-        guard !readerViewModel.content.isInvalidated else { return nil }
-        return readerViewModel.content.titleForDisplay
+        guard !readerContent.content.isInvalidated else { return nil }
+        return readerContent.content.titleForDisplay
     }
     
     public init(persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
@@ -111,7 +112,7 @@ public struct Reader: View {
             
             WebView(
                 config: WebViewConfig(
-                    contentRules: readerViewModel.contentRules,
+                    contentRules: readerContent.contentRules,
                     userScripts: readerViewModel.allScripts),
                 navigator: navigator,
                 state: $readerViewModel.state,
@@ -166,6 +167,11 @@ public struct Reader: View {
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
+        }
+        .onChange(of: readerViewModel.state) { state in
+            if let imageURL = state.pageImageURL, readerContent.content.realm != nil, readerContent.content.url == state.pageURL, readerContent.content.imageUrl == nil {
+                readerContent.content.updateImageUrl(imageURL: imageURL)
+            }
         }
         .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
             Task { @MainActor in
