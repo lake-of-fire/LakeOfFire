@@ -356,10 +356,10 @@ struct LibraryScriptFormSections: View {
                 Group {
                     if isPreviewReaderMode {
                         Reader(
-                            readerViewModel: readerModeViewModel,
                             forceReaderModeWhenAvailable: false,
                             /*persistentWebViewID: "library-script-preview-\(script.id.uuidString)",*/
                             bounces: false)
+                        .environmentObject(readerModeViewModel)
                     } else {
                         WebView(
                             config: WebViewConfig(userScripts: [script.webViewUserScript]),

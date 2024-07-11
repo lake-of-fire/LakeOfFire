@@ -54,7 +54,6 @@ public extension WebViewNavigator {
 }
 
 public struct Reader: View {
-    @ObservedObject var readerViewModel: ReaderViewModel
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
     var bounces = true
@@ -72,6 +71,7 @@ public struct Reader: View {
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
+    @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
 
@@ -83,8 +83,7 @@ public struct Reader: View {
         return readerViewModel.content.titleForDisplay
     }
     
-    public init(readerViewModel: ReaderViewModel, persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
-        self.readerViewModel = readerViewModel
+    public init(persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces

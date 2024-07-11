@@ -8,7 +8,7 @@ internal extension Reader {
         return [
             "readabilityFramePing": { @MainActor message in
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else { return }
-                guard !windowURL.isNativeReaderView, let content = try? await readerViewModel.getContent(forURL: windowURL) else { return }
+                guard !windowURL.isNativeReaderView, let content = try? await ReaderViewModel.getContent(forURL: windowURL) else { return }
                 if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
@@ -17,7 +17,7 @@ internal extension Reader {
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
-                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await readerViewModel.getContent(forURL: url) else { return }
+                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else { return }
                 if !message.frameInfo.isMainFrame, readerViewModel.readabilityContent != nil, readerViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
@@ -61,7 +61,7 @@ internal extension Reader {
             "rssURLs": { message in
                 Task { @MainActor in
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
-                    guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let content = try await readerViewModel.getContent(forURL: windowURL) else { return }
+                    guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let content = try await ReaderViewModel.getContent(forURL: windowURL) else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }

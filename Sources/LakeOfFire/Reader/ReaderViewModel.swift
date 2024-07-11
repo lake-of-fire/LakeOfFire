@@ -13,10 +13,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
     {
-//    public var action: WebViewAction = .idle
-//    public var state: WebViewState = .empty {
         didSet {
-//            debugPrint("!! new state", state.pageURL, "content...", content.url, content.title ?? "")
             if let imageURL = state.pageImageURL, content.realm != nil, content.url == state.pageURL, content.imageUrl == nil {
                 // TODO: Replace with fromMainActor instead of the if / else if
                 if let content = content as? Bookmark {
@@ -80,10 +77,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         return content.isReaderModeOfferHidden && content.isReaderModeAvailable
     }
 
-    public func isHome(categorySelection: String?) -> Bool {
-        return content.url.absoluteString == "about:blank" && (categorySelection ?? "home") == "home"
-    }
-        
     public var locationShortName: String? {
         if content.url.absoluteString == "about:blank" {
             return "Home"
@@ -159,7 +152,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    func showReaderView(content: (any ReaderContentModel)? = nil) {
+    internal func showReaderView(content: (any ReaderContentModel)? = nil) {
         guard let readabilityContent = readabilityContent else { return }
         let content = content ?? self.content
         let title = content.title
@@ -286,22 +279,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func onNavigationCommitted(newState: WebViewState) async throws {
 //        debugPrint("!! onNavCommit", newState)
         readabilityContent = nil
-        guard let content = try await getContent(forURL: newState.pageURL) else {
+        guard let content = try await Self.getContent(forURL: newState.pageURL) else {
             print("WARNING No content matched for \(newState.pageURL)")
             return
         }
         self.content = content
-        //
-        //        if let content = ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
-        //
-        //            self.content = content
-        //            self.isNextLoadInReaderMode = content.isReaderModeByDefault
-        //
-        //            print("## nav committed content \(content.className) \(content.url) page url: \(newState.pageURL) is reader: \(content.isReaderModeByDefault)")
-        //        }
-        //        let isReaderModeByDefault = content.isReaderModeByDefault
-        //        let existingTitle = content.title
-        //        let contentURL = content.url
         
         if let historyRecord = content as? HistoryRecord {
             Task.detached { @RealmBackgroundActor in
@@ -313,13 +295,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
         
         if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
-            //                newContent = content
-            //                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
-            //                let contentKey = content.compoundKey
-            //                    let htmlToDisplay = content.htmlToDisplay
-            
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
-                //                if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
                 if content.isReaderModeByDefault && html.range(of: "<body.*?class=['\"]readability-mode['\"]>", options: .regularExpression) == nil {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
@@ -339,9 +315,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 contentRules = contentRulesForReadabilityLoading
                 if content.isReaderModeAvailable {
                     showReaderView(content: content)
-//                } else if content.isFromClipboard, let readerFileManager = readerFileManager, let html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
-//                    debugPrint("!! onNavCommit, load clipboard html. reada content?", readabilityContent)
-//                    navigator?.loadHTML(html, baseURL: content.url)
                 }
             } else {
                 contentRules = nil
@@ -368,76 +341,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationFinished(newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-         // FIXME: move isNextLoadInReaderMode setting to onCommitted, so that readabilityParsed can trigger showReaderView
-        /*
-        navigationTask?.cancel()
-        navigationTask = Task.detached {
-            try Task.checkCancellation()
-//            var newContent: (any ReaderContentModel)? = nil
-            
-            if newState.pageURL.absoluteString.starts(with: "about:load/reader?reader-url="), let range = newState.pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(newState.pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = ReaderContentLoader.load(url: contentURL) {
-//                newContent = content
-                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
-                let contentKey = content.compoundKey
-                let htmlToDisplay = content.htmlToDisplay
-                
-                Task { @MainActor [weak self] in
-                    try Task.checkCancellation()
-                    guard let self = self else { return }
-                    guard let content = getContent(configuration: realmConfiguration, type: contentType, key: contentKey) else { return }
-                    isNextLoadInReaderMode = content.isReaderModeByDefault
-                    self.content = content
-                    
-                    if var html = htmlToDisplay {
-                        if isNextLoadInReaderMode && !html.contains("<html class=.readability-mode.>") {
-                            if let _ = html.range(of: "<html", options: .caseInsensitive) {
-                                html = html.replacingOccurrences(of: "<html", with: "<html data-is-next-load-in-reader-mode ", options: .caseInsensitive)
-                            } else {
-                                html = "<html data-is-next-load-in-reader-mode>\n\(html)\n</html>"
-                            }
-                            contentRules = contentRulesForReadabilityLoading
-                        }
-                        try Task.checkCancellation()
-                        navigator.loadHTML(html, baseURL: contentURL)
-                    } else {
-                        // Shouldn't come here... results in duplicate history. Here for safety though.
-                        navigator.load(URLRequest(url: contentURL))
-                    }
-                }
-            } else { // ReaderContentLoader.load(url: newState.pageURL, persist: !newState.pageURL.isNativeReaderView) {
-//                newContent = content
-//                guard let realmConfiguration = content.realm?.configuration, let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type else { return }
-//                let contentKey = content.compoundKey
-                
-                Task { @MainActor [weak self] in
-                    try Task.checkCancellation()
-                    guard let self = self else { return }
-//                    guard let content = getContent(configuration: realmConfiguration, type: contentType, key: contentKey) else { return }
-                    isNextLoadInReaderMode = isReaderModeByDefault
-//                    self.content = content
-                    
-        print("## nav fin else: isNextReader \(isNextLoadInReaderMode)")
-                    if isNextLoadInReaderMode {
-                        await scriptCaller.evaluateJavaScript("if (document.body && !document.body?.classList.contains('readability-mode')) { document.body.dataset.isNextLoadInReaderMode = ''; return false } else { return true }", in: nil, in: WKContentWorld.page) { result in
-                            switch result {
-                            case .success(let value):
-                                if let isReaderMode = value as? Bool, !isReaderMode {
-                                    Task { @MainActor [weak self] in
-                                        guard let self = self else { return }
-                                        contentRules = contentRulesForReadabilityLoading
-                                    }
-                                } else {
-                                    print("Error getting isReaderMode bool from \(value) or is already true")
-                                }
-                            case .failure(let error):
-                                print(error.localizedDescription)
-                            }
-                        }
-                    }
-                }
-            }
-         */
-        
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
@@ -450,9 +353,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }
     }
     
+    // TODO: Move this out, maybe into Loader...
     /// Also sets a history visit.
     @MainActor
-    public func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
+    public static func getContent(forURL pageURL: URL) async throws -> (any ReaderContentModel)? {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {

@@ -311,9 +311,9 @@ struct LibraryFeedFormSections: View {
     
     private var previewReader: some View {
         Reader(
-            readerViewModel: readerViewModel,
 //            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
             bounces: false)
+        .environmentObject(readerViewModel)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .frame(idealHeight: readerPreviewHeight)
         .padding(.horizontal, 15)
