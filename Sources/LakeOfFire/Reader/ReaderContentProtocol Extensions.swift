@@ -8,7 +8,7 @@ public extension ReaderContentProtocol {
     }
     
     @MainActor
-    private func updateImageUrl(imageURL: URL) {
+    func updateImageUrl(imageURL: URL) {
         if let content = self as? Bookmark {
             let contentRef = ThreadSafeReference(to: content)
             guard let config = content.realm?.configuration else { return }
