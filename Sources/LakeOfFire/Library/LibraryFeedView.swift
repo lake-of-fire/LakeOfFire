@@ -235,6 +235,9 @@ struct LibraryFeedFormSections: View {
 //    @State private var readerAction = WebViewAction.idle
     @State private var readerContent = ReaderContent()
     @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
+    @State private var readerModeViewModel = ReaderModeViewModel()
+    @State private var readerLocationBarViewModel = ReaderLocationBarViewModel()
+    @State private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
 
     @State private var readerFeedEntry: FeedEntry?
     
@@ -316,6 +319,9 @@ struct LibraryFeedFormSections: View {
             bounces: false)
         .environmentObject(readerContent)
         .environmentObject(readerViewModel)
+        .environmentObject(readerModeViewModel)
+        .environmentObject(readerLocationBarViewModel)
+        .environmentObject(readerMediaPlayerViewModel)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .frame(idealHeight: readerPreviewHeight)
         .padding(.horizontal, 15)

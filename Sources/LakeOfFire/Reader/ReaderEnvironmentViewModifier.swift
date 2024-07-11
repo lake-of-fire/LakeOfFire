@@ -36,19 +36,23 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
     }
     
     @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
+    @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     
     public func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
-            .environment(\.isReaderModeLoadPending, readerViewModel.isReaderModeLoadPending)
             .environment(\.refreshSettingsInReader, readerViewModel.refreshSettingsInWebView)
+            .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
             .environmentObject(readerViewModel.scriptCaller)
             .task { @MainActor in
                 try? await readerFileManager.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
                 readerViewModel.readerFileManager = readerFileManager
                 readerViewModel.navigator = navigator
+                readerModeViewModel.navigator = navigator
+                readerModeViewModel.scriptCaller = scriptCaller
             }
     }
 }

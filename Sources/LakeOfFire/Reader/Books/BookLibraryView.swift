@@ -72,7 +72,7 @@ fileprivate struct EditorsPicksView: View {
     @ObservedObject private var downloadController = DownloadController.shared
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @Environment(\.readerWebViewState) private var readerWebViewState
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
@@ -91,7 +91,7 @@ fileprivate struct EditorsPicksView: View {
             isDownloadable: true) { selectedPublication, wasAlreadyDownloaded in
                 if wasAlreadyDownloaded {
                     Task { @MainActor in
-                        try await viewModel.open(publication: selectedPublication, readerFileManager: readerFileManager, readerViewModel: readerViewModel, navigator: navigator)
+                        try await viewModel.open(publication: selectedPublication, readerFileManager: readerFileManager, readerWebViewState: readerWebViewState, navigator: navigator)
                     }
                 }
             }
@@ -272,7 +272,7 @@ class BookLibraryViewModel: ObservableObject {
     }
     
     @RealmBackgroundActor
-    func open(publication: Publication, readerFileManager: ReaderFileManager, readerViewModel: ReaderViewModel, navigator: WebViewNavigator) async throws {
+    func open(publication: Publication, readerFileManager: ReaderFileManager, readerWebViewState: WebViewState, navigator: WebViewNavigator) async throws {
         guard let downloadURL = publication.downloadURL else { return }
         guard let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title) else { return }
 
@@ -289,7 +289,7 @@ class BookLibraryViewModel: ObservableObject {
         
         guard let toLoad = importedURL else { return }
         try await Task { @MainActor in
-            guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
+            guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerWebViewState.pageURL) else { return }
             await navigator.load(content: content, readerFileManager: readerFileManager)
         }.value
     }

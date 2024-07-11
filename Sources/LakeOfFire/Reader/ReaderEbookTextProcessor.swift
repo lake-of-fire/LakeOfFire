@@ -69,7 +69,7 @@ internal extension Reader {
             let doc = try processForReaderMode(content: content, url: nil, isEBook: true, defaultTitle: nil, imageURL: nil, injectEntryImageIntoHeader: false, fontSize: readerFontSize ?? defaultFontSize)
             doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
             let html: String
-            if let processReadabilityContent = readerViewModel.processReadabilityContent {
+            if let processReadabilityContent = readerModeViewModel.processReadabilityContent {
                 html = await processReadabilityContent(doc)
             } else {
                 html = try doc.outerHtml()

@@ -289,8 +289,6 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     
-    @EnvironmentObject private var readerViewModel: ReaderViewModel
-    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
 
@@ -353,14 +351,14 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
 //    var sortOrder = ReaderContentSortOrder.publicationDate
     
-    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @Environment(\.readerWebViewState) private var readerWebViewState
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     public var body: some View {
         ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerViewModel.state.pageURL) else { return }
+                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerWebViewState.pageURL) else { return }
                 Task { @MainActor in
                     await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
@@ -369,18 +367,18 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     //                    }
                 }
             }
-            .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
-                if oldState.pageURL != state.pageURL {
-                    refreshSelection(state: state, oldState: oldState)
+            .onChange(of: readerWebViewState) { [oldState = readerWebViewState] readerWebViewState in
+                if oldState.pageURL != readerWebViewState.pageURL {
+                    refreshSelection(state: readerWebViewState, oldState: oldState)
                 }
             }
             .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
                 Task { @MainActor in
-                    refreshSelection(state: readerViewModel.state)
+                    refreshSelection(state: readerWebViewState)
                 }
             }
             .task { @MainActor in
-                refreshSelection(state: readerViewModel.state)
+                refreshSelection(state: readerWebViewState)
             }
         //            .onChange(of: contents) { contents in
         //                Task { @MainActor in

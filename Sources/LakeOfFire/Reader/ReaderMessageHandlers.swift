@@ -18,7 +18,7 @@ internal extension Reader {
                     return
                 }
                 guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else { return }
-                if !message.frameInfo.isMainFrame, readerViewModel.readabilityContent != nil, readerViewModel.readabilityContainerFrameInfo != message.frameInfo {
+                if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
                 }
@@ -30,13 +30,13 @@ internal extension Reader {
                 }
                 
                 guard !url.isNativeReaderView else { return }
-                readerViewModel.readabilityContent = result.outputHTML
-                readerViewModel.readabilityContainerSelector = result.readabilityContainerSelector
-                readerViewModel.readabilityContainerFrameInfo = message.frameInfo
+                readerModeViewModel.readabilityContent = result.outputHTML
+                readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
+                readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                    readerViewModel.showReaderView(content: content)
+                    readerModeViewModel.showReaderView(content: content)
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
-                    await readerViewModel.scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
+                    await scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
                 }
                 
                 if !content.isReaderModeAvailable {
@@ -46,7 +46,7 @@ internal extension Reader {
                 }
             },
             "showReaderView": { _ in
-                Task { @MainActor in readerViewModel.showReaderView(content: readerContent.content) }
+                Task { @MainActor in readerModeViewModel.showReaderView(content: readerContent.content) }
             },
             "showOriginal": { _ in
                 Task { @MainActor in
@@ -98,7 +98,7 @@ internal extension Reader {
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme, scheme == "ebook" || scheme == "ebook-url", url.absoluteString.hasPrefix("\(url.scheme ?? "")://"), url.isEBookURL, let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(url.scheme ?? "")://".count))") {
                     Task { @MainActor in
-                        await  readerViewModel.scriptCaller.evaluateJavaScript("window.loadEBook({ url })", arguments: ["url": loaderURL.absoluteString])
+                        await scriptCaller.evaluateJavaScript("window.loadEBook({ url })", arguments: ["url": loaderURL.absoluteString])
                     }
                 }
             },

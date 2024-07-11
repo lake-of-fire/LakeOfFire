@@ -74,6 +74,8 @@ public struct Reader: View {
     @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
+    @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
 
@@ -113,7 +115,7 @@ public struct Reader: View {
             
             WebView(
                 config: WebViewConfig(
-                    contentRules: readerViewModel.contentRules,
+                    contentRules: readerModeViewModel.contentRules,
                     userScripts: readerViewModel.allScripts),
                 navigator: navigator,
                 state: $readerViewModel.state,
@@ -137,9 +139,10 @@ public struct Reader: View {
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
                     Task { @MainActor in
-                        readerViewModel.isReaderMode = state.pageURL.isEBookURL
-                        readerViewModel.readabilityContainerFrameInfo = nil
+                        readerContent.content = ReaderViewModel.getContent(forURL: state.pageURL)
                         try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                        try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                        try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         if let onNavigationCommitted = onNavigationCommitted {
                             try await onNavigationCommitted(state)
                         }
@@ -193,9 +196,9 @@ public struct Reader: View {
                 await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
             }
         }
-        .onChange(of: readerViewModel.audioURLs) { audioURLs in
+        .onChange(of: readerMediaPlayerViewModel.audioURLs) { audioURLs in
             Task { @MainActor in
-                readerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
+                readerMediaPlayerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
             }
         }
 //#if os(iOS)

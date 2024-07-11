@@ -3,7 +3,7 @@ import LakeKit
 
 public struct ReaderModeButtonBar: View {
     @EnvironmentObject private var readerContent: ReaderContent
-    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
 
     public init() { }
     
@@ -20,7 +20,7 @@ public struct ReaderModeButtonBar: View {
                     Spacer(minLength: 0)
                     DismissButton(.xMark) {
                         Task { @MainActor in
-                            try await readerViewModel.hideReaderModeButtonBar(content: readerContent.content)
+                            try await readerModeViewModel.hideReaderModeButtonBar(content: readerContent.content)
                         }
                     }
                 }
