@@ -62,7 +62,6 @@ public struct Reader: View {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     
-    @ScaledMetric(relativeTo: .body) internal var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
@@ -201,6 +200,13 @@ public struct Reader: View {
                 readerMediaPlayerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
             }
         }
+        .task { @MainActor in
+            ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
+        }
+        .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
+            readerFileURLSchemeHandler.readerFileManager = readerFileManager
+            ebookURLSchemeHandler.readerFileManager = readerFileManager
+        }
 //#if os(iOS)
 //        .toolbar {
 //            ToolbarItem(placement: .automatic) {
@@ -212,14 +218,6 @@ public struct Reader: View {
 //            }
 //        }
 //#endif
-        .task { @MainActor in
-            readerViewModel.defaultFontSize = defaultFontSize
-            ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
-        }
-        .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
-            readerFileURLSchemeHandler.readerFileManager = readerFileManager
-            ebookURLSchemeHandler.readerFileManager = readerFileManager
-        }
     }
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {

@@ -8,7 +8,6 @@ import WebKit
 
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
-    public var readerFileManager: ReaderFileManager?
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
     
@@ -16,8 +15,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
     
-    public var defaultFontSize: Double?
-    @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     

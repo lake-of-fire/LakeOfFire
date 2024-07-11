@@ -46,6 +46,10 @@ internal extension Reader {
                 }
             },
             "showReaderView": { _ in
+                guard readerContent.content.url == readerViewModel.state.pageURL else {
+                    print("ERROR: showReaderView called with mismatched content URL (\(readerContent.content.url.absoluteString) vs \(readerViewModel.state.pageURL.absoluteString)")
+                    return
+                }
                 Task { @MainActor in readerModeViewModel.showReaderView(content: readerContent.content) }
             },
             "showOriginal": { _ in

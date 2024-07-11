@@ -7,11 +7,15 @@ import RealmSwiftGaps
 import WebKit
 
 @MainActor
-public class ReaderModeViewModel: NSObject, ObservableObject {
+public class ReaderModeViewModel: ObservableObject {
+    public var readerFileManager: ReaderFileManager?
     public var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var scriptCaller = WebViewScriptCaller()
 
+    public var defaultFontSize: Double?
+    @AppStorage("readerFontSize") private var readerFontSize: Double?
+    
     @Published public var isReaderMode = false
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
@@ -80,7 +84,6 @@ public class ReaderModeViewModel: NSObject, ObservableObject {
     
     @MainActor
     private func showReadabilityContent(content: (any ReaderContentProtocol), readabilityContent: String, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
-        guard content.url == state.pageURL else { return }
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
@@ -121,7 +124,7 @@ public class ReaderModeViewModel: NSObject, ObservableObject {
             let transformedContent = html
             await Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                guard url == self.state.pageURL else { return }
+//                guard url == self.state.pageURL else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     await self.scriptCaller.evaluateJavaScript(
                         """

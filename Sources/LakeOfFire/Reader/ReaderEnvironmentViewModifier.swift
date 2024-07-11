@@ -35,6 +35,8 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
     }
     
+    @ScaledMetric(relativeTo: .body) internal var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
+    
     @EnvironmentObject private var readerViewModel: ReaderViewModel
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -49,10 +51,11 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
             .environmentObject(readerViewModel.scriptCaller)
             .task { @MainActor in
                 try? await readerFileManager.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
-                readerViewModel.readerFileManager = readerFileManager
+                readerModeViewModel.readerFileManager = readerFileManager
                 readerViewModel.navigator = navigator
                 readerModeViewModel.navigator = navigator
                 readerModeViewModel.scriptCaller = scriptCaller
+                readerModeViewModel.defaultFontSize = defaultFontSize
             }
     }
 }
