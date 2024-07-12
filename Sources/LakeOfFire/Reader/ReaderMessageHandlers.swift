@@ -86,7 +86,7 @@ internal extension Reader {
                 }
             },
             "imageUpdated": { message in
-                Task { @RealmBackgroundActor in
+                Task(priority: .utility) { @RealmBackgroundActor in
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
                     guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
                     let contents = try await ReaderContentLoader.loadAll(url: url)
@@ -107,7 +107,7 @@ internal extension Reader {
                 }
             },
             "videoStatus": { message in
-                Task { @RealmBackgroundActor in
+                Task(priority: .utility) { @RealmBackgroundActor in
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
                     debugPrint("!!", result)
                     if let pageURL = result.pageURL {
