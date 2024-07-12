@@ -117,8 +117,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     var showSeparators = false
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     
-    //    @Environment(\.readerWebViewState) private var readerState
-    
     @State private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager

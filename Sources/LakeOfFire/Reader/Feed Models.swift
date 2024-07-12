@@ -149,9 +149,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol {
             let legacyHTMLContent = htmlContent
             let ref = ThreadSafeReference(to: self)
             Task.detached { @RealmBackgroundActor in
+                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
+                guard let entry = realm.resolve(ref) else { return }
+
                 if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html) {
-                    let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
-                    guard let entry = realm.resolve(ref) else { return }
                     try await realm.asyncWrite {
                         entry.imageUrl = url
                     }

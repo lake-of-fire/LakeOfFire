@@ -138,7 +138,7 @@ public struct Reader: View {
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
                     Task { @MainActor in
-                        readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? readerContent.content
+                        readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
                         try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)

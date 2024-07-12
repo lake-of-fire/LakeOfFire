@@ -54,7 +54,7 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
                 readerModeViewModel.readerFileManager = readerFileManager
                 readerViewModel.navigator = navigator
                 readerModeViewModel.navigator = navigator
-                readerModeViewModel.scriptCaller = scriptCaller
+                readerModeViewModel.scriptCaller = readerViewModel.scriptCaller
                 readerModeViewModel.defaultFontSize = defaultFontSize
             }
     }

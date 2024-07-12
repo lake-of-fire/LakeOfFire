@@ -124,7 +124,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     public override init() {
         super.init()
-        
+
         let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
         
         let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
