@@ -32,7 +32,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
                 let imageURL = item.imageURLToDisplay
-                if let (progress, finished) = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item, ReaderContentCellActor.shared) {
+                if let (progress, finished) = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url) {
                     try await Task { @MainActor [weak self] in
                         try Task.checkCancellation()
                         humanReadablePublicationDate

@@ -4,9 +4,14 @@ import SwiftUIWebView
 import SwiftUtilities
 import RealmSwiftGaps
 
-public struct ReaderContentReadingProgressLoader {
+@globalActor
+public actor ReaderContentReadingProgressLoader {
+    public static var shared = ReaderContentReadingProgressLoader()
+    
+    public init() { }
+    
     /// Float is progress, Bool is whether article is "finished".
-    public static var readingProgressLoader: ((any ReaderContentProtocol, any Actor) async throws -> (Float, Bool)?)?
+    public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
 }
 
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
