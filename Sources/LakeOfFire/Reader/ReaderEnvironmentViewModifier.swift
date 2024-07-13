@@ -69,6 +69,7 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
+            .environment(\.readerPageURL, readerViewModel.state.pageURL)
             .environment(\.isReaderLoading, readerViewModel.state.isLoading)
             .environment(\.isReaderProvisionallyNavigating, readerViewModel.state.isProvisionallyNavigating)
             .environment(\.refreshSettingsInReader, readerViewModel.refreshSettingsInWebView)
