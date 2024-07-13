@@ -5,6 +5,17 @@ struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
 
+struct IsReaderLoadingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+struct IsReaderProvisionallyNavigatingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+struct ReaderPageURLKey: EnvironmentKey {
+    static let defaultValue: URL = URL(string: "about:blank")!
+}
+
 struct IsReaderModeLoadPendingKey: EnvironmentKey {
     static let defaultValue: @MainActor (any ReaderContentProtocol) -> Bool = { _ in false }
 }
@@ -17,6 +28,18 @@ public extension EnvironmentValues {
     var readerWebViewState: WebViewState {
         get { self[ReaderWebViewStateKey.self] }
         set { self[ReaderWebViewStateKey.self] = newValue }
+    }
+    var readerPageURL: URL {
+        get { self[ReaderPageURLKey.self] }
+        set { self[ReaderPageURLKey.self] = newValue }
+    }
+    var isReaderLoading: Bool {
+        get { self[IsReaderLoadingKey.self] }
+        set { self[IsReaderLoadingKey.self] = newValue }
+    }
+    var isReaderProvisionallyNavigating: Bool {
+        get { self[IsReaderProvisionallyNavigatingKey.self] }
+        set { self[IsReaderProvisionallyNavigatingKey.self] = newValue }
     }
     var isReaderModeLoadPending: @MainActor (any ReaderContentProtocol) -> Bool {
         get { self[IsReaderModeLoadPendingKey.self] }
@@ -46,6 +69,8 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
+            .environment(\.isReaderLoading, readerViewModel.state.isLoading)
+            .environment(\.isReaderProvisionallyNavigating, readerViewModel.state.isProvisionallyNavigating)
             .environment(\.refreshSettingsInReader, readerViewModel.refreshSettingsInWebView)
             .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
             .environmentObject(readerViewModel.scriptCaller)

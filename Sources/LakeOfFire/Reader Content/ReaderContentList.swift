@@ -120,7 +120,9 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @State private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
+#if os(macOS)
     @Environment(\.readerWebViewState) private var readerWebViewState
+#endif
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
         item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
@@ -150,6 +152,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     var body: some View {
         VStack(spacing: 0) {
 #if os(macOS)
+            // TODO: Optimize by using state instead of dynamic binding, and get rid of the readerWebViewState and just use readerPageURL
             Toggle(isOn: Binding<Bool>(
                 get: {
                     //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
@@ -347,14 +350,15 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
 //    var sortOrder = ReaderContentSortOrder.publicationDate
     
-    @Environment(\.readerWebViewState) private var readerWebViewState
+    @Environment(\.readerPageURL) private var readerPageURL
+    @Environment(\.isReaderProvisionallyNavigating) private var isReaderProvisionallyNavigating
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     public var body: some View {
         ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerWebViewState.pageURL) else { return }
+                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerPageURL) else { return }
                 Task { @MainActor in
                     await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
@@ -363,18 +367,18 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     //                    }
                 }
             }
-            .onChange(of: readerWebViewState) { [oldState = readerWebViewState] readerWebViewState in
-                if oldState.pageURL != readerWebViewState.pageURL {
-                    refreshSelection(state: readerWebViewState, oldState: oldState)
+            .onChange(of: readerPageURL) { [oldPageURL = readerPageURL] readerPageURL in
+                if oldPageURL != readerPageURL {
+                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
                 }
             }
             .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
                 Task { @MainActor in
-                    refreshSelection(state: readerWebViewState)
+                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: isReaderProvisionallyNavigating)
                 }
             }
             .task { @MainActor in
-                refreshSelection(state: readerWebViewState)
+                refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: isReaderProvisionallyNavigating)
             }
         //            .onChange(of: contents) { contents in
         //                Task { @MainActor in
@@ -392,9 +396,9 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.contentSortAscending = contentSortAscending
     }
     
-    private func refreshSelection(state: WebViewState, oldState: WebViewState? = nil) {
+    private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
         viewModel.refreshSelectionTask?.cancel()
-        guard !state.isProvisionallyNavigating else { return }
+        guard !isReaderProvisionallyNavigating else { return }
         
 //        let readerContentCompoundKey = readerContent.compoundKey
         let entrySelection = entrySelection
@@ -403,15 +407,15 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         viewModel.refreshSelectionTask = Task.detached {
             try Task.checkCancellation()
             do {
-                if !state.pageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = filteredContentKeys.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(state.pageURL) {
+                if !readerPageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = filteredContentKeys.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     try await Task { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = nil
                     }.value
                 }
                 
-                guard !state.pageURL.isNativeReaderView, filteredContentURLs.contains(state.pageURL) else {
-                    if !state.pageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
+                guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
+                    if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
                         try await Task { @MainActor in
                             try Task.checkCancellation()
                             self.entrySelection = nil
@@ -420,7 +424,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     return
                 }
 //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
-                if entrySelection == nil, oldState?.pageURL != state.pageURL, let idx = filteredContentURLs.firstIndex(of: state.pageURL) {
+                if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
                     let contentKey = filteredContentKeys[idx]
                     try await Task { @MainActor in
                         try Task.checkCancellation()

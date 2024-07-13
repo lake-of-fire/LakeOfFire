@@ -6,8 +6,7 @@ import RealmSwiftGaps
 
 public struct ReaderContentReadingProgressLoader {
     /// Float is progress, Bool is whether article is "finished".
-    @RealmBackgroundActor
-    public static var readingProgressLoader: ((any ReaderContentProtocol) async throws -> (Float, Bool)?)?
+    public static var readingProgressLoader: ((any ReaderContentProtocol, any Actor) async throws -> (Float, Bool)?)?
 }
 
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
@@ -170,7 +169,6 @@ public extension ReaderContentProtocol {
         }
     }
     
-    @MainActor
     var titleForDisplay: String {
         get {
             var title = title.removingHTMLTags() ?? title

@@ -3,31 +3,48 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeImage
 
+@globalActor
+fileprivate actor ReaderContentCellActor {
+    static var shared = ReaderContentCellActor()
+}
+
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
     @Published var forceShowBookmark = false
+    @Published var title = ""
+    @Published var humanReadablePublicationDate: String?
+    @Published var imageURL: URL?
 
     init() { }
     
     @MainActor
-    func load(item: C) {
+    func load(item: C) async throws {
 //        guard let readingProgressLoader = ReaderContentReadingProgressLoader.readingProgressLoader else { return }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         //        let url = item.url
         //        let item = item.freeze()
-        Task.detached { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: config, actor: RealmBackgroundActor.shared)
+        try await Task.detached(priority: .utility) { @ReaderContentCellActor in
+            let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
-                if let (progress, finished) = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item) {
-                    Task { @MainActor in
-                        self.readingProgress = progress
-                        self.isFullArticleFinished = finished
-                    }
+                try Task.checkCancellation()
+                let title = item.titleForDisplay
+                let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
+                let imageURL = item.imageURLToDisplay
+                if let (progress, finished) = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item, ReaderContentCellActor.shared) {
+                    try await Task { @MainActor [weak self] in
+                        try Task.checkCancellation()
+                        humanReadablePublicationDate
+                        self?.title = title
+                        self?.imageURL = imageURL
+                        self?.humanReadablePublicationDate = humanReadablePublicationDate
+                        self?.readingProgress = progress
+                        self?.isFullArticleFinished = finished
+                    }.value
                 }
             }
-        }
+        }.value
     }
 }
 
@@ -111,7 +128,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            if let imageUrl = item.imageURLToDisplay {
+            if let imageUrl = viewModel.imageURL {
                 if isEbookStyle {
                     BookThumbnail(imageURL: imageUrl)
                         .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
@@ -121,7 +138,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 }
             }
             VStack(alignment: .leading, spacing: 0) {
-                Text(item.titleForDisplay)
+                Text(viewModel.title)
                     .font(.headline)
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
@@ -131,17 +148,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 HStack(alignment: .bottom, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
-                            let displayPublicationDate = item.displayPublicationDate && item.humanReadablePublicationDate != nil
-                            if displayPublicationDate, let publicationDate = item.humanReadablePublicationDate {
+                            if let publicationDate = viewModel.humanReadablePublicationDate {
                                 Text("\(publicationDate)")
                                     .lineLimit(9001)
                                     .font(.footnote)
                                     .fixedSize(horizontal: true, vertical: false)
                             }
                             if let item = item as? ContentFile {
-                                if displayPublicationDate {
-//                                    Divider()
-                                }
                                 CloudDriveSyncStatusView(item: item)
                                     .labelStyle(.iconOnly)
                                     .font(.callout)
@@ -170,7 +183,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             viewModel.forceShowBookmark = hovered
         }
         .task { @MainActor in
-            viewModel.load(item: item)
+            try? await viewModel.load(item: item)
         }
     }
 }
