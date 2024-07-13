@@ -32,17 +32,19 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
                 let imageURL = item.imageURLToDisplay
-                if let (progress, finished) = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url) {
-                    try await Task { @MainActor [weak self] in
-                        try Task.checkCancellation()
-                        humanReadablePublicationDate
-                        self?.title = title
-                        self?.imageURL = imageURL
-                        self?.humanReadablePublicationDate = humanReadablePublicationDate
+                let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
+                
+                try await Task { @MainActor [weak self] in
+                    try Task.checkCancellation()
+                    humanReadablePublicationDate
+                    self?.title = title
+                    self?.imageURL = imageURL
+                    self?.humanReadablePublicationDate = humanReadablePublicationDate
+                    if let (progress, finished) = progressResult {
                         self?.readingProgress = progress
                         self?.isFullArticleFinished = finished
-                    }.value
-                }
+                    }
+                }.value
             }
         }.value
     }
