@@ -392,14 +392,17 @@ public extension Feed {
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
-            try await realm.asyncWrite {
-                if deleteOrphans {
-                    let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                    for orphan in orphans {
-                        orphan.isDeleted = true
+            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
+            if !entriesToPersist.isEmpty || deleteOrphans {
+                try await realm.asyncWrite {
+                    if deleteOrphans {
+                        let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                        for orphan in orphans {
+                            orphan.isDeleted = true
+                        }
                     }
+                    realm.add(entriesToPersist, update: .modified)
                 }
-                realm.add(feedEntries, update: .modified)
             }
         }.value
     }
@@ -476,14 +479,17 @@ public extension Feed {
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
-            try await realm.asyncWrite {
-                if deleteOrphans {
-                    let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                    for orphan in orphans {
-                        orphan.isDeleted = true
+            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
+            if !entriesToPersist.isEmpty || deleteOrphans {
+                try await realm.asyncWrite {
+                    if deleteOrphans {
+                        let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                        for orphan in orphans {
+                            orphan.isDeleted = true
+                        }
                     }
+                    realm.add(entriesToPersist, update: .modified)
                 }
-                realm.add(feedEntries, update: .modified)
             }
         }.value
     }
@@ -542,6 +548,52 @@ public extension Feed {
             }
         })
     }
+}
+
+@RealmBackgroundActor
+fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) async throws -> [FeedEntry] {
+    var differentEntries: [FeedEntry] = []
+    let compoundKeys = entries.map { $0.compoundKey }
+    
+    let existingEntries = realm.objects(FeedEntry.self).where { $0.compoundKey.in(compoundKeys) }
+    let existingEntriesDict = Dictionary(uniqueKeysWithValues: existingEntries.map { ($0.compoundKey, $0) })
+    
+    for entry in entries {
+        if let existingEntry = existingEntriesDict[entry.compoundKey] {
+           let schema = entry.objectSchema
+            for property in schema.properties where property.name != "createdAt" {
+                let propertyName = property.name
+                if property.type == .object, let objectType = property.objectClassName {
+                    let primaryKey = realm.schema[objectType]?.primaryKeyProperty?.name ?? ""
+                    if let entryValue = entry.value(forKey: propertyName) as? Object, let existingValue = existingEntry.value(forKey: propertyName) as? Object {
+                        if entryValue.value(forKey: primaryKey) as? String != existingValue.value(forKey: primaryKey) as? String {
+                            differentEntries.append(entry)
+                            break
+                        }
+                    }
+                } else if property.isArray {
+                    switch property.type {
+                    case .string:
+                        if let entryList = entry.value(forKey: propertyName) as? List<String>, let existingList = existingEntry.value(forKey: propertyName) as? List<String> {
+                            if entryList != existingList {
+                                differentEntries.append(entry)
+                                break
+                            }
+                        }
+                    default:
+                        fatalError("Comparison for \(property.type) property type for feed entries not currently supported")
+                    }
+                } else if entry.value(forKey: propertyName) as? NSObject != existingEntry.value(forKey: propertyName) as? NSObject {
+                    differentEntries.append(entry)
+                    break
+                }
+            }
+        } else {
+            differentEntries.append(entry)
+        }
+    }
+    
+    return differentEntries
 }
 
 fileprivate func cleanRssData(_ rssData: Data) -> Data {

@@ -442,7 +442,7 @@ public class LibraryDataManager: NSObject {
         // Delete orphan categories
         try Task.checkCancellation()
         if let downloadURL = download?.url {
-            let filteredCategories = realm.objects(FeedCategory.self).filter({ $0.isDeleted == false && $0.opmlURL == downloadURL })
+            let filteredCategories = realm.objects(FeedCategory.self).filter({ !$0.isDeleted && $0.opmlURL == downloadURL })
             for category in filteredCategories {
                 if !allImportedCategoryIDs.contains(category.id) {
                     try await realm.asyncWrite {
@@ -456,7 +456,7 @@ public class LibraryDataManager: NSObject {
         // Delete orphan feeds
         try Task.checkCancellation()
         if let downloadURL = download?.url {
-            let filteredFeeds = realm.objects(Feed.self).filter({ $0.isDeleted == false && $0.category?.opmlURL == downloadURL })
+            let filteredFeeds = realm.objects(Feed.self).filter({ !$0.isDeleted && $0.category?.opmlURL == downloadURL })
             for feed in filteredFeeds {
                 if !allImportedFeedIDs.contains(feed.id) {
                     try await realm.asyncWrite {
@@ -651,65 +651,171 @@ public class LibraryDataManager: NSObject {
         }
         // TODO: Clean up orphan domain objects that appear due to some bug...
     }
-    
     static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, script: UserScript) throws {
-        script.title = opmlEntry.text
-        script.script = opmlEntry.attributeStringValue("script")?.removingPercentEncoding ?? ""
-        script.injectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
-        script.mainFrameOnly = opmlEntry.attributeBoolValue("mainFrameOnly") ?? false
-        script.sandboxed = opmlEntry.attributeBoolValue("sandboxed") ?? false
-        script.isArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
-        script.previewURL = URL(string: opmlEntry.attributeStringValue("previewURL") ?? "about:blank")
-        script.opmlOwnerName = opml.ownerName ?? script.opmlOwnerName
+        var didChange = false
         
-        script.isDeleted = false
-        script.isArchived = false
-        script.modifiedAt = Date()
+        if script.title != opmlEntry.text {
+            script.title = opmlEntry.text
+            didChange = true
+        }
+        let newScript = opmlEntry.attributeStringValue("script")?.removingPercentEncoding ?? ""
+        if script.script != newScript {
+            script.script = newScript
+            didChange = true
+        }
+        let newInjectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
+        if script.injectAtStart != newInjectAtStart {
+            script.injectAtStart = newInjectAtStart
+            didChange = true
+        }
+        let newMainFrameOnly = opmlEntry.attributeBoolValue("mainFrameOnly") ?? false
+        if script.mainFrameOnly != newMainFrameOnly {
+            script.mainFrameOnly = newMainFrameOnly
+            didChange = true
+        }
+        let newSandboxed = opmlEntry.attributeBoolValue("sandboxed") ?? false
+        if script.sandboxed != newSandboxed {
+            script.sandboxed = newSandboxed
+            didChange = true
+        }
+        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
+        if script.isArchived != newIsArchived {
+            script.isArchived = newIsArchived
+            didChange = true
+        }
+        let newPreviewURL = URL(string: opmlEntry.attributeStringValue("previewURL") ?? "about:blank")
+        if script.previewURL != newPreviewURL {
+            script.previewURL = newPreviewURL
+            didChange = true
+        }
+        let newOpmlOwnerName = opml.ownerName ?? script.opmlOwnerName
+        if script.opmlOwnerName != newOpmlOwnerName {
+            script.opmlOwnerName = newOpmlOwnerName
+            didChange = true
+        }
+        
+        if script.isDeleted {
+            script.isDeleted = false
+            didChange = true
+        }
+        if script.isArchived {
+            script.isArchived = false
+            didChange = true
+        }
+        
+        if didChange {
+            script.modifiedAt = Date()
+        }
     }
     
     static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, category: FeedCategory) throws {
-        let backgroundImageURL = opmlEntry.attributeStringValue("backgroundImageUrl")
+        var didChange = false
         
-        let opmlTitle = opmlEntry.title ?? opmlEntry.text
-        category.title = opmlTitle
-        category.opmlOwnerName = opml.ownerName ?? category.opmlOwnerName
-        if let backgroundImageURL = backgroundImageURL, let url = URL(string: backgroundImageURL) {
-            category.backgroundImageUrl = url
+        let newBackgroundImageURL = opmlEntry.attributeStringValue("backgroundImageUrl")
+        let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
+        
+        if category.title != newOpmlTitle {
+            category.title = newOpmlTitle
+            didChange = true
         }
-        category.isDeleted = false
-        category.isArchived = false
-        category.modifiedAt = Date()
+        let newOpmlOwnerName = opml.ownerName ?? category.opmlOwnerName
+        if category.opmlOwnerName != newOpmlOwnerName {
+            category.opmlOwnerName = newOpmlOwnerName
+            didChange = true
+        }
+        if let newBackgroundImageURL = newBackgroundImageURL, let newURL = URL(string: newBackgroundImageURL), category.backgroundImageUrl != newURL {
+            category.backgroundImageUrl = newURL
+            didChange = true
+        }
+        
+        if category.isDeleted {
+            category.isDeleted = false
+            didChange = true
+        }
+        if category.isArchived {
+            category.isArchived = false
+            didChange = true
+        }
+        
+        if didChange {
+            category.modifiedAt = Date()
+        }
     }
     
     static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, feed: Feed, category: FeedCategory?) throws {
         guard let feedURL = opmlEntry.feedURL else { return }
         
-        var iconURL: URL?
+        var didChange = false
+        
+        var newIconURL: URL?
         if let iconURLRaw = opmlEntry.attributeStringValue("iconUrl") {
-            iconURL = URL(string: iconURLRaw)
+            newIconURL = URL(string: iconURLRaw)
         }
         
-        if feed.category == nil {
+        if feed.category == nil && category != nil {
             feed.category = category
+            didChange = true
         }
-        let opmlTitle = opmlEntry.title ?? opmlEntry.text
-        feed.title = opmlTitle
-        feed.markdownDescription = opmlEntry.attributeStringValue("markdownDescription") ?? feed.markdownDescription
-        feed.rssUrl = feedURL
-        if let iconURL = iconURL {
-            feed.iconUrl = iconURL
+        let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
+        if feed.title != newOpmlTitle {
+            feed.title = newOpmlTitle
+            didChange = true
         }
-        feed.isReaderModeByDefault = opmlEntry.attributeBoolValue("isReaderModeByDefault") ?? true
-        feed.rssContainsFullContent = opmlEntry.attributeBoolValue("rssContainsFullContent") ?? false
-        feed.injectEntryImageIntoHeader = opmlEntry.attributeBoolValue("injectEntryImageIntoHeader") ?? false
-        feed.displayPublicationDate = opmlEntry.attributeBoolValue("displayPublicationDate") ?? true
-        if let meaningfulContentMinLength = opmlEntry.attributeStringValue("meaningfulContentMinLength") {
-            feed.meaningfulContentMinLength = Int(meaningfulContentMinLength) ?? 0
+        let newMarkdownDescription = opmlEntry.attributeStringValue("markdownDescription") ?? feed.markdownDescription
+        if feed.markdownDescription != newMarkdownDescription {
+            feed.markdownDescription = newMarkdownDescription
+            didChange = true
         }
-        feed.extractImageFromContent = opmlEntry.attributeBoolValue("extractImageFromContent") ?? true
-        feed.isDeleted = false
-        feed.isArchived = false
-        feed.modifiedAt = Date()
+        if feed.rssUrl != feedURL {
+            feed.rssUrl = feedURL
+            didChange = true
+        }
+        if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
+            feed.iconUrl = newIconURL
+            didChange = true
+        }
+        let newIsReaderModeByDefault = opmlEntry.attributeBoolValue("isReaderModeByDefault") ?? true
+        if feed.isReaderModeByDefault != newIsReaderModeByDefault {
+            feed.isReaderModeByDefault = newIsReaderModeByDefault
+            didChange = true
+        }
+        let newRssContainsFullContent = opmlEntry.attributeBoolValue("rssContainsFullContent") ?? false
+        if feed.rssContainsFullContent != newRssContainsFullContent {
+            feed.rssContainsFullContent = newRssContainsFullContent
+            didChange = true
+        }
+        let newInjectEntryImageIntoHeader = opmlEntry.attributeBoolValue("injectEntryImageIntoHeader") ?? false
+        if feed.injectEntryImageIntoHeader != newInjectEntryImageIntoHeader {
+            feed.injectEntryImageIntoHeader = newInjectEntryImageIntoHeader
+            didChange = true
+        }
+        let newDisplayPublicationDate = opmlEntry.attributeBoolValue("displayPublicationDate") ?? true
+        if feed.displayPublicationDate != newDisplayPublicationDate {
+            feed.displayPublicationDate = newDisplayPublicationDate
+            didChange = true
+        }
+        if let newMeaningfulContentMinLength = opmlEntry.attributeStringValue("meaningfulContentMinLength"), let meaningfulContentMinLengthInt = Int(newMeaningfulContentMinLength), feed.meaningfulContentMinLength != meaningfulContentMinLengthInt {
+            feed.meaningfulContentMinLength = meaningfulContentMinLengthInt
+            didChange = true
+        }
+        let newExtractImageFromContent = opmlEntry.attributeBoolValue("extractImageFromContent") ?? true
+        if feed.extractImageFromContent != newExtractImageFromContent {
+            feed.extractImageFromContent = newExtractImageFromContent
+            didChange = true
+        }
+        
+        if feed.isDeleted {
+            feed.isDeleted = false
+            didChange = true
+        }
+        if feed.isArchived {
+            feed.isArchived = false
+            didChange = true
+        }
+        
+        if didChange {
+            feed.modifiedAt = Date()
+        }
     }
     
     @RealmBackgroundActor
