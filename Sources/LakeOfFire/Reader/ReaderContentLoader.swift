@@ -253,6 +253,55 @@ public struct ReaderContentLoader {
         return nil
     }
     
+    /// Returns a URL to load for the given content into a Reader instance. The URL is either a resource (like a web location),
+    /// or an internal "local" URL for loading HTML content in Reader Mode.
+    @MainActor
+    public static func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws -> URL? {
+        if content.url.isEBookURL {
+            //            guard let absoluteStringWithoutScheme = content.url.absoluteStringWithoutScheme, let loadURL = URL(string: "ebook://ebook/load" + absoluteStringWithoutScheme) else {
+            //                print("Invalid ebook URL \(content.url)")
+            //                return
+            //            }
+            return content.url
+        }
+        
+        let contentURL = content.url
+        let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
+            let allContents = try await loadAll(url: contentURL)
+            
+            for candidateContent in allContents {
+                if !candidateContent.url.isReaderFileURL, candidateContent.isReaderModeByDefault, candidateContent.hasHTML {
+                    guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
+                    //            debugPrint("!! load(content isREaderModebydefault", historyURL)
+                    return historyURL
+                }
+            }
+            return nil
+        }.value
+        
+        return matchingURL ?? content.url
+    }
+    
+//    @MainActor
+//    public static func loadHTML(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws -> String? {
+//        if content
+//        let contentURL = content.url
+//        let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
+//            let allContents = try await loadAll(url: contentURL)
+//            
+//            for candidateContent in allContents {
+//                if !candidateContent.url.isReaderFileURL, candidateContent.isReaderModeByDefault, candidateContent.hasHTML {
+//                    guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
+//                    //            debugPrint("!! load(content isREaderModebydefault", historyURL)
+//                    return historyURL
+//                }
+//            }
+//            return nil
+//        }.value
+//        
+//        return matchingURL ?? content.url
+//    }
+
     private static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
         return (
             ((doc.body()?.children().isEmpty()) ?? true)

@@ -28,27 +28,9 @@ public extension EnvironmentValues {
 public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
-    func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async {
-        var url: URL?
-        if content.url.isEBookURL {
-//            guard let absoluteStringWithoutScheme = content.url.absoluteStringWithoutScheme, let loadURL = URL(string: "ebook://ebook/load" + absoluteStringWithoutScheme) else {
-//                print("Invalid ebook URL \(content.url)")
-//                return
-//            }
-            url = content.url
-        } else if !content.url.isReaderFileURL, content.isReaderModeByDefault, await content.htmlToDisplay(readerFileManager: readerFileManager) != nil {
-            guard let encodedURL = content.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return }
-            
-//            debugPrint("!! load(content isREaderModebydefault", historyURL)
-            url = historyURL
-        } else {
-//            debugPrint("!! load(content other", content.url)
-            url = content.url
-        }
-        if let url = url {
-            Task { @MainActor in
-                load(URLRequest(url: url))
-            }
+    func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws {
+        if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            load(URLRequest(url: url))
         }
     }
 }

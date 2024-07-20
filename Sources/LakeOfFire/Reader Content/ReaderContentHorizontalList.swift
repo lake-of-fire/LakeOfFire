@@ -33,7 +33,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         Button {
             guard !content.url.matchesReaderURL(readerPageURL) else { return }
             Task { @MainActor in
-                await navigator.load(content: content, readerFileManager: readerFileManager)
+                try await navigator.load(content: content, readerFileManager: readerFileManager)
             }
         } label: {
             AnyView(content.readerContentCellView(alwaysShowThumbnails: true))

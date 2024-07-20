@@ -290,7 +290,7 @@ class BookLibraryViewModel: ObservableObject {
         guard let toLoad = importedURL else { return }
         try await Task { @MainActor in
             guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
-            await navigator.load(content: content, readerFileManager: readerFileManager)
+            try await navigator.load(content: content, readerFileManager: readerFileManager)
         }.value
     }
 }

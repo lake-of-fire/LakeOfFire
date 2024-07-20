@@ -39,17 +39,6 @@ public class Bookmark: Object, ReaderContentProtocol {
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
     
-    @MainActor
-    public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
-        if rssContainsFullContent || isFromClipboard {
-            return html
-        } else if url.isReaderFileURL {
-            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
-            return String(decoding: data, as: UTF8.self)
-        }
-        return nil
-    }
-    
     public var imageURLToDisplay: URL? { imageUrl }
     
     public func configureBookmark(_ bookmark: Bookmark) {

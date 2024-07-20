@@ -360,7 +360,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerPageURL) else { return }
                 Task { @MainActor in
-                    await navigator.load(content: content, readerFileManager: readerFileManager)
+                    try await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
                     //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     //                        scrollViewProxy.scrollTo(entrySelection)

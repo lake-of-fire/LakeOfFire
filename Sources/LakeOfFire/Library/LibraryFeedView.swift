@@ -503,7 +503,7 @@ struct LibraryFeedFormSections: View {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
                     if readerContent.content != entry {
-                        await readerViewModel.navigator?.load(content: entry, readerFileManager: readerFileManager)
+                        try await readerViewModel.navigator?.load(content: entry, readerFileManager: readerFileManager)
                     }
                 }
             } else {

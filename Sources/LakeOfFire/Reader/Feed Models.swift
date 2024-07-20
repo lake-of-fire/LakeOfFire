@@ -136,14 +136,6 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol {
     
     public var isFromClipboard = false
     
-    @MainActor
-    public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
-        if rssContainsFullContent {
-            return Self.contentToHTML(legacyHTMLContent: htmlContent, content: content)
-        }
-        return nil
-    }
-    
     public var imageURLToDisplay: URL? {
         if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
             let legacyHTMLContent = htmlContent

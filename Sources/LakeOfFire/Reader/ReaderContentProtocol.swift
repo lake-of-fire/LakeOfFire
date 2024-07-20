@@ -56,20 +56,11 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var isDeleted: Bool { get }
     
     func configureBookmark(_ bookmark: Bookmark)
-    func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String?
 }
 
 public extension ReaderContentProtocol {
     var keyPrefix: String? {
         return nil
-    }
-    
-    /// Deprecated, use `content`.
-    var htmlContent: String? {
-        get {
-            return nil
-        }
-        set { }
     }
     
     @MainActor
@@ -164,7 +155,26 @@ public extension ReaderContentProtocol {
         return String(decoding: data, as: UTF8.self)
     }
     
-    var html: String? {
+    @MainActor
+    public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
+        if rssContainsFullContent || isFromClipboard {
+            return html
+        } else if url.isReaderFileURL {
+            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
+            return String(decoding: data, as: UTF8.self)
+        }
+        return nil
+    }
+    
+    /// Deprecated, use `content` or `html`.
+    var htmlContent: String? {
+        get {
+            return nil
+        }
+        set { }
+    }
+    
+    internal var html: String? {
         get {
             Self.contentToHTML(legacyHTMLContent: htmlContent, content: content)
         }
@@ -172,6 +182,18 @@ public extension ReaderContentProtocol {
             htmlContent = nil
             content = newValue?.readerContentData
         }
+    }
+    
+    var hasHTML: Bool {
+        if rssContainsFullContent || isFromClipboard {
+            if htmlContent != nil {
+                return true
+            }
+            return content != nil
+        } else if url.isReaderFileURL {
+            return true // Expects file to exist
+        }
+        return false
     }
     
     var titleForDisplay: String {

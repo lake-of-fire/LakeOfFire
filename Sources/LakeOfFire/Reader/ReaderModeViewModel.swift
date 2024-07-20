@@ -65,6 +65,13 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     internal func showReaderView(content: any ReaderContentProtocol) {
         guard let readabilityContent = readabilityContent else { return }
+        Task { @MainActor in
+            do {
+                try await showReadabilityContent(content: content, readabilityContent: readabilityContent, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
+            } catch { }
+        }
+        /*
+        guard let readabilityContent = readabilityContent else { return }
         let title = content.title
         let imageURL = content.imageURLToDisplay
         let readabilityContainerSelector = readabilityContainerSelector
@@ -80,10 +87,11 @@ public class ReaderModeViewModel: ObservableObject {
                 try await self.showReadabilityContent(content: content, readabilityContent: readabilityContent, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
             } catch { }
         }
+         */
     }
     
     @MainActor
-    private func showReadabilityContent(content: (any ReaderContentProtocol), readabilityContent: String, defaultTitle: String?, imageURL: URL?, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+    private func showReadabilityContent(content: (any ReaderContentProtocol), readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
@@ -103,12 +111,14 @@ public class ReaderModeViewModel: ObservableObject {
         let readerFontSize = readerFontSize
         let defaultFontSize = defaultFontSize ?? 15
         let processReadabilityContent = processReadabilityContent
+        let titleForDisplay = content.titleForDisplay
+        let imageURLToDisplay = content.imageURLToDisplay
         let url = content.url
         
         try await Task.detached { [weak self] in
             var doc: SwiftSoup.Document
             do {
-                doc = try processForReaderMode(content: readabilityContent, url: url, isEBook: false, defaultTitle: defaultTitle, imageURL: imageURL, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
+                doc = try processForReaderMode(content: readabilityContent, url: url, isEBook: false, defaultTitle: titleForDisplay, imageURL: imageURLToDisplay, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
             } catch {
                 print(error.localizedDescription)
                 return
@@ -172,6 +182,8 @@ public class ReaderModeViewModel: ObservableObject {
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
+        readabilityContainerSelector = nil
+        contentRules = nil
         isReaderMode = newState.pageURL.isEBookURL
 
         if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
@@ -183,8 +195,11 @@ public class ReaderModeViewModel: ObservableObject {
                         html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
                     }
                     contentRules = contentRulesForReadabilityLoading
+                    navigator?.loadHTML(html, baseURL: content.url)
+                } else {
+                    readabilityContent = html
+                    showReaderView(content: content)
                 }
-                navigator?.loadHTML(html, baseURL: content.url)
             } else {
                 navigator?.load(URLRequest(url: content.url))
             }
@@ -194,8 +209,6 @@ public class ReaderModeViewModel: ObservableObject {
                 if content.isReaderModeAvailable {
                     showReaderView(content: content)
                 }
-            } else {
-                contentRules = nil
             }
         }
     }
