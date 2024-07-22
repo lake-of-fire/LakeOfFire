@@ -1,5 +1,5 @@
 import SwiftUI
-import SwiftUIX
+import LakeKit
 
 public extension Color {
     static var groupBoxBackground: Color {

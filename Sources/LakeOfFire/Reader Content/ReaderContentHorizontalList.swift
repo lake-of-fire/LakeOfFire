@@ -4,6 +4,7 @@ import RealmSwift
 import RealmSwiftGaps
 import SwiftUtilities
 import Pow
+import LakeKit
 
 fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -41,7 +42,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                                                              //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
                 .frame(maxWidth: maxWidth)
                 .padding(8)
-                .background(.groupBoxBackground)
+                .background(Color.groupBoxBackground)
             //                .background(.regularMaterial)
             //                .background(.secondary.opacity(0.09))
                 .overlay {
