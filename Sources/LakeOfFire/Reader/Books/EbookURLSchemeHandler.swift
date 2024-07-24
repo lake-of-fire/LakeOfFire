@@ -32,7 +32,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                 let ebookTextProcessor = ebookTextProcessor
-                Task.detached {
+                Task.detached(priority: .utility) {
                     var respText = text
                     if let ebookTextProcessor = ebookTextProcessor {
                         do {

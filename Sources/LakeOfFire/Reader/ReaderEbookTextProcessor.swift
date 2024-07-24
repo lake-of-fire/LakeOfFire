@@ -24,16 +24,16 @@ fileprivate func extractBlobUrls(from html: String) -> [String] {
     let quotes: Set<Character> = ["'", "\""]
     
     var blobUrls: [String] = []
-    var index = html.startIndex
+    var searchRange = html.startIndex..<html.endIndex
     
-    while let startIndex = html.range(of: "\(prefix)", range: index..<html.endIndex)?.upperBound {
-        let endIndex = html[startIndex...].firstIndex(where: { quotes.contains($0) })
-        if let endIndex = endIndex {
-            blobUrls.append(String(html[startIndex..<endIndex]))
-            index = html.index(after: endIndex)
-        } else {
-            break
-        }
+    while let prefixRange = html.range(of: prefix, options: [], range: searchRange) {
+        let startIndex = prefixRange.upperBound
+        let endIndex = html[startIndex...].firstIndex(where: { quotes.contains($0) }) ?? html.endIndex
+        let blobUrl = String(html[startIndex..<endIndex])
+        blobUrls.append(blobUrl)
+        
+        // Move the search range past the current blob URL
+        searchRange = endIndex..<html.endIndex
     }
     
     return blobUrls

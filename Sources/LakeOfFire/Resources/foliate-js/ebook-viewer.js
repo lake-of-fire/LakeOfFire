@@ -5,21 +5,28 @@ import { Overlayer } from '../foliate-js/overlayer.js'
 
 const replaceText = async (href, text, mediaType) => {
     return await fetch('ebook://ebook/process-text', {
-        method: "POST", // *GET, POST, PUT, DELETE, etc.
-        mode: "cors", // no-cors, *cors, same-origin
-        cache: "no-cache", // *default, no-cache, reload, force-cache, only-if-cached
-        headers: {
-            "Content-Type": mediaType,
-            "X-Replaced-Text-Location": href,
-            "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
-        },
-        body: text,
-    }).then((response) => {
+    method: "POST", // *GET, POST, PUT, DELETE, etc.
+    mode: "cors", // no-cors, *cors, same-origin
+    cache: "no-cache", // *default, no-cache, reload, force-cache, only-if-cached
+    headers: {
+        "Content-Type": mediaType,
+        "X-Replaced-Text-Location": href,
+        "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
+    },
+    body: text,
+    }).then(async (response) => {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
-        return response.text()
-    })
+        let html = await response.text();
+        if (html && this.view.dataset.isCacheWarmer === 'true') {
+            html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ");
+        }
+        return html;
+    }).catch(error => {
+        console.error("Error replacing text:", error);
+        throw error;
+    });
 }
 
 const debounce = (f, wait, immediate) => {
@@ -258,7 +265,6 @@ class Reader {
                     canvas.height = bmp.height * resizing;
                     const ctx = canvas.getContext('bitmaprenderer');
                     ctx.transferFromImageBitmap(bmp);
-                    //const blob2 = await new Promise((res) => canvas.toBlob(res));
                     let dataUrl = canvas.toDataURL("image/jpeg", 0.4);
                     
                     let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
@@ -389,6 +395,7 @@ class CacheWarmer {
     async open(file) {
         this.view = await getView(file)
         this.view.style.display = 'none'
+//        this.view.dataset.isCacheWarmer = 'true'
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
         const { book } = this.view

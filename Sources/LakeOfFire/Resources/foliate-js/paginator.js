@@ -152,8 +152,9 @@ const makeMarginals = (length, part) => Array.from({ length }, () => {
 
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+    #debouncedExpand = debounce(this.expand.bind(this), 333)
     #resizeObserver = new ResizeObserver(async () => {
-        this.expand()
+        this.#debouncedExpand()
     })
     #mutationObserver = new MutationObserver(async () => {
         if (this.#column) {
@@ -257,7 +258,7 @@ class View {
             margin: 'auto',
         })
         this.setImageSize()
-        this.expand()
+        this.#debouncedExpand()
     }
     columnize({ width, height, gap, columnWidth }) {
         const vertical = this.#vertical
@@ -553,7 +554,7 @@ export class Paginator extends HTMLElement {
         }
         this.#view = new View({
             container: this,
-            onExpand: this.#onExpand.bind(this),
+            onExpand: debounce(() => this.#onExpand.bind(this), 500)
         })
         this.#container.append(this.#view.element)
         return this.#view
@@ -903,7 +904,7 @@ export class Paginator extends HTMLElement {
     #canGoToIndex(index) {
         return index >= 0 && index <= this.sections.length - 1
     }
-    async #goTo({ index, anchor, select}) {
+    async #goTo({ index, anchor, select }) {
         if (index === this.#index) {
             await this.#display({ index, anchor, select })
         } else {
