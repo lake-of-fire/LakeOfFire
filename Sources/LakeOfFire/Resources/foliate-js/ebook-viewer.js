@@ -3,30 +3,33 @@ import { createTOCView } from './ui/tree.js'
 import { createMenu } from './ui/menu.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 
+// TODO: replaceText factory for setting isCacheWarmer and returning a function below
 const replaceText = async (href, text, mediaType) => {
-    return await fetch('ebook://ebook/process-text', {
-    method: "POST", // *GET, POST, PUT, DELETE, etc.
-    mode: "cors", // no-cors, *cors, same-origin
-    cache: "no-cache", // *default, no-cache, reload, force-cache, only-if-cached
-    headers: {
-        "Content-Type": mediaType,
-        "X-Replaced-Text-Location": href,
-        "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
-    },
-    body: text,
-    }).then(async (response) => {
+//    const replaceText = async (href, text, mediaType, isCacheWarmer) => {
+    const response = await fetch('ebook://ebook/process-text', {
+        method: "POST", // *GET, POST, PUT, DELETE, etc.
+        mode: "cors", // no-cors, *cors, same-origin
+        cache: "no-cache", // *default, no-cache, reload, force-cache, only-if-cached
+        headers: {
+            "Content-Type": mediaType,
+            "X-Replaced-Text-Location": href,
+            "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
+        },
+        body: text})
+    try {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
-        let html = await response.text();
-        if (html && this.view.dataset.isCacheWarmer === 'true') {
-            html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ");
-        }
-        return html;
-    }).catch(error => {
+//        let html = await response.text();
+        /*if (html && html.replace && this.view.dataset.isCacheWarmer === 'true') {
+         html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ");
+         }*/
+        return await response.text();
+    } catch {
         console.error("Error replacing text:", error);
-        throw error;
-    });
+        //throw error;
+        return text;
+    }
 }
 
 const debounce = (f, wait, immediate) => {
@@ -48,7 +51,7 @@ const isZip = async file => {
     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
 }
 
-const makeZipLoader = async file => {
+const makeZipLoader = async (file, isCacheWarmer) => {
     const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
         await import('./vendor/zip.js')
     configure({ useWebWorkers: false })
@@ -60,6 +63,9 @@ const makeZipLoader = async file => {
     const loadText = load(entry => entry.getData(new TextWriter()))
     const loadBlob = load((entry, type) => entry.getData(new BlobWriter(type)))
     const getSize = name => map.get(name)?.uncompressedSize ?? 0
+//    const wrappedReplaceText = ((href, text, mediaType) => {
+//        replaceText(href, text, mediaType, isCacheWarmer)
+//    })
     return { entries, loadText, loadBlob, getSize, replaceText }
 }
 
@@ -79,11 +85,11 @@ const isFBZ = ({ name, type }) =>
     type === 'application/x-zip-compressed-fb2'
     || name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
-const getView = async file => {
+const getView = async (file, isCacheWarmer) => {
     let book
     if (!file.size) throw new Error('File not found')
     else if (await isZip(file)) {
-        const loader = await makeZipLoader(file)
+        const loader = await makeZipLoader(file, isCacheWarmer)
         if (isCBZ(file)) {
             throw new Error('File format not yet supported')
 //            const { makeComicBook } = await import('./comic-book.js')
@@ -207,7 +213,7 @@ class Reader {
     }
     async open(file) {
         this.hasLoadedLastPosition = false
-        this.view = await getView(file)
+        this.view = await getView(file, false)
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
@@ -354,11 +360,11 @@ class Reader {
         const nextButton = doc.getElementById('manabi-next-chapter-button');
         const bookDir = this.view.renderer.bookDir;
         if (bookDir === 'rtl') {
-            if (prevButton.nextElementSibling === nextButton) {
+            if (prevButton && prevButton.nextElementSibling === nextButton) {
                 container.insertBefore(nextButton, prevButton);
             }
         } else {
-            if (nextButton.nextElementSibling === prevButton) {
+            if (nextButton && nextButton.nextElementSibling === prevButton) {
                 container.insertBefore(prevButton, nextButton);
             }
         }
@@ -393,9 +399,8 @@ class CacheWarmer {
         this.view
     }
     async open(file) {
-        this.view = await getView(file)
+        this.view = await getView(file, true)
         this.view.style.display = 'none'
-//        this.view.dataset.isCacheWarmer = 'true'
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
         const { book } = this.view
@@ -482,7 +487,7 @@ window.loadLastPosition = async ({ cfi }) => {
     globalThis.reader.hasLoadedLastPosition = true
     
     // Don't overlap cache warming with initial page load
-    await cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+    // TODO: await cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

@@ -152,9 +152,10 @@ const makeMarginals = (length, part) => Array.from({ length }, () => {
 
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-    #debouncedExpand = debounce(this.expand.bind(this), 333)
+    #debouncedExpand
     #resizeObserver = new ResizeObserver(async () => {
         this.#debouncedExpand()
+//        this.expand()
     })
     #mutationObserver = new MutationObserver(async () => {
         if (this.#column) {
@@ -173,6 +174,9 @@ class View {
     #layout = {}
     constructor({ container, onExpand }) {
         this.container = container
+        this.#debouncedExpand = debounce(() => {
+            this.expand.bind(this)
+        }, 333)
         this.onExpand = onExpand
         this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
@@ -230,6 +234,7 @@ class View {
                 // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                 // until the bug is fixed we can at least account for font load
                 doc.fonts.ready.then(() => this.expand())
+//                doc.fonts.ready.then(() => this.#debouncedExpand())
 
                 resolve()
             }, { once: true })
@@ -259,6 +264,7 @@ class View {
         })
         this.setImageSize()
         this.#debouncedExpand()
+//        this.expand()
     }
     columnize({ width, height, gap, columnWidth }) {
         const vertical = this.#vertical
@@ -294,6 +300,7 @@ class View {
         // Don't infinite loop.
         if (!this.needsRenderForMutation) {
             this.expand()
+//            this.#debouncedExpand()
         }
     }
     setImageSize() {
@@ -554,7 +561,8 @@ export class Paginator extends HTMLElement {
         }
         this.#view = new View({
             container: this,
-            onExpand: debounce(() => this.#onExpand.bind(this), 500)
+            onExpand: this.#onExpand.bind(this),
+//            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
         this.#container.append(this.#view.element)
         return this.#view

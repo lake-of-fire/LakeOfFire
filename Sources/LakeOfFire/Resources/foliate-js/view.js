@@ -291,19 +291,20 @@ export class View extends HTMLElement {
         }
     }
     async goTo(target) {
-        this.#emit('is-loading', true)
+//        this.#emit('is-loading', true)
  
         const resolved = this.resolveNavigation(target)
         try {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
+            return resolved
         } catch(e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
-            return
+//            return
         }
-        this.#emit('is-loading', false)
-        return resolved
+//        this.#emit('is-loading', false)
+//        return resolved
     }
     async goToFraction(frac) {
         const [index, anchor] = this.#sectionProgress.getSection(frac)
