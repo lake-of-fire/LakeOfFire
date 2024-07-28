@@ -361,7 +361,7 @@ public extension Feed {
                 
                 var title = item.title
                 do {
-                    if let feedItemTitle = item.title?.unescapeHTML(), let doc = try? SwiftSoup.parse(feedItemTitle) {
+                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<"), let doc = try? SwiftSoup.parse(feedItemTitle) {
                         doc.outputSettings().prettyPrint(pretty: false)
                         try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
                         title = try doc.text()

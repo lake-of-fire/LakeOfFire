@@ -132,8 +132,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = viewModel.imageURL {
                 if isEbookStyle {
-                    BookThumbnail(imageURL: imageUrl)
-                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
+                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: cellHeight)
+//                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
                 } else {
                     LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
                         .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))

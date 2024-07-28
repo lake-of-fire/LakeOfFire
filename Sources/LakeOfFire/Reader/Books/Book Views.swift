@@ -7,8 +7,8 @@ import Pow
 struct BookThumbnail: View { //, Equatable {
     let imageURL: URL
     
-    @ScaledMetric(relativeTo: .headline) private var scaledImageWidth: CGFloat = 100
-    @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 140
+    @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 100
+    @ScaledMetric(relativeTo: .headline) var cellHeight: CGFloat = 140
     
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
