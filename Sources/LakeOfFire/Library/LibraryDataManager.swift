@@ -307,7 +307,7 @@ public class LibraryDataManager: NSObject {
     public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> Feed? {
         let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
-        let existing = category.feeds.filter { $0.isDeleted == false && $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
+        let existing = category.feeds.where { !$0.isDeleted && $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
         value.modifiedAt = Date()
@@ -821,14 +821,14 @@ public class LibraryDataManager: NSObject {
     @RealmBackgroundActor
     public func exportUserOPML() async throws -> OPML {
         let configuration = try await LibraryConfiguration.getOrCreate()
-        let userCategories = configuration.categories.filter { $0.opmlOwnerName == nil && $0.opmlURL == nil && $0.isDeleted == false }
+        let userCategories = configuration.categories.where { $0.opmlOwnerName == nil && $0.opmlURL == nil && !$0.isDeleted }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [
             Attribute(name: "isUserScriptList", value: "true"),
         ], children: configuration.userScripts.where({ $0.opmlURL == nil }).map({ script in
             return OPMLEntry(text: script.title, attributes: [
                 Attribute(name: "uuid", value: script.id.uuidString),
-                Attribute(name: "allowedDomains", value: script.allowedDomains.filter { !$0.isDeleted }.compactMap { $0.domain.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) }.joined(separator: ",")),
+                Attribute(name: "allowedDomains", value: script.allowedDomains.where { !$0.isDeleted } .compactMap { $0.domain.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) }.joined(separator: ",")),
                 Attribute(name: "script", value: script.script.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) ?? script.script),
                 Attribute(name: "injectAtStart", value: script.injectAtStart ? "true" : "false"),
                 Attribute(name: "mainFrameOnly", value: script.mainFrameOnly ? "true" : "false"),
