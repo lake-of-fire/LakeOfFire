@@ -212,6 +212,8 @@ class Reader {
 //        menu.groups.layout.select('scrolled')
     }
     async open(file) {
+        $('#loading-indicator').style.display = 'block'
+
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
         this.view.addEventListener('load', this.#onLoad.bind(this))
@@ -330,10 +332,12 @@ class Reader {
         else if(k === 'ArrowRight' || k === 'l') this.view.goRight()
     }
     #onLoad({ detail: { doc } }) {
+        $('#loading-indicator').style.display = 'none'
+
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
-        topWindowURL: window.top.location.href,
-        currentPageURL: doc.location.href,
+            topWindowURL: window.top.location.href,
+            currentPageURL: doc.location.href,
         })
         
         // TODO: Should also offer "end" if last non-glossary/backmatter section
