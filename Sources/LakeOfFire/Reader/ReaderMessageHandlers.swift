@@ -57,11 +57,12 @@ internal extension Reader {
                     try await showOriginal()
                 }
             },
-            //            .onMessageReceived(forName: "youtubeCaptions") { message in
-            //                Task { @MainActor in
-            //                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
-            //                }
-            //            }
+//            "youtubeCaptions": { message in
+//                Task { @MainActor in
+//                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
+//                    debugPrint(result)
+//                }
+//            },
             "rssURLs": { message in
                 Task { @MainActor in
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }

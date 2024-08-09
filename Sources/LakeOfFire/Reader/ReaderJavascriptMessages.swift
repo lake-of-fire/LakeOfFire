@@ -100,21 +100,21 @@ public struct ImageUpdatedMessage {
     }
 }
 
-public struct YoutubeCaptionsMessage {
-    public enum Status: String {
-        case idle = "idle"
-        case loading = "loading"
-        case available = "available"
-        case unavailable = "unavailable"
-    }
-    
-//    public let rssURLs: [[String]]
-    
-    public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any] else { return nil }
-//        rssURLs = body["rssURLs"] as! [[String]]
-    }
-}
+//public struct YoutubeCaptionsMessage {
+//    public enum Status: String {
+//        case idle = "idle"
+//        case loading = "loading"
+//        case available = "available"
+//        case unavailable = "unavailable"
+//    }
+//    
+////    public let rssURLs: [[String]]
+//    
+//    public init?(fromMessage message: WebViewMessage) {
+//        guard let body = message.body as? [String: Any] else { return nil }
+////        rssURLs = body["rssURLs"] as! [[String]]
+//    }
+//}
 
 public struct FractionalCompletionMessage {
     public var fractionalCompletion: Float

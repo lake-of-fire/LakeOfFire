@@ -46,8 +46,8 @@ public class LibraryConfiguration: Object, UnownedSyncableObject {
         return [
             Readability.shared.userScript,
 //            ManabiReaderUserScript().userScript,
-            YoutubeAdBlockUserScript.userScript,
-            YoutubeAdSkipUserScript.userScript,
+//            YoutubeAdBlockUserScript.userScript,
+//            YoutubeAdSkipUserScript.userScript,
             YoutubeCaptionsUserScript.userScript,
         ]
     }()
