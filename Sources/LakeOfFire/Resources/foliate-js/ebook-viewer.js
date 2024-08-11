@@ -491,7 +491,7 @@ window.loadLastPosition = async ({ cfi }) => {
     globalThis.reader.hasLoadedLastPosition = true
     
     // Don't overlap cache warming with initial page load
-    // TODO: await cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+    await cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
