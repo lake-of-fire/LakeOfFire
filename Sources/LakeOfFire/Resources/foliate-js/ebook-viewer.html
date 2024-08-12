@@ -86,6 +86,15 @@
                 bottom: 0;
                 -webkit-backdrop-filter: blur(30px);
             }
+            #progress-button {
+                all: unset; /* Remove default styling */
+                /*flex-grow: 1;*/
+                margin: 0 8px;
+                color: GrayText;
+                font-size: small;
+                -webkit-user-select: none;
+                visibility: hidden;
+            }
             #progress-slider {
                 flex-grow: 1;
                 margin: 0 12px;
@@ -380,6 +389,9 @@
                 <svg class="icon" width="24" height="24" aria-hidden="true">
                     <path d="M 15 6 L 9 12 L 15 18"/>
                 </svg>
+            </button>
+            <button id="progress-button">
+                
             </button>
             <input id="progress-slider" type="range" min="0" max="1" step="any" list="tick-marks">
                 <datalist id="tick-marks"></datalist>

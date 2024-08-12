@@ -386,6 +386,9 @@ class Reader {
         const { fraction, location, tocItem, pageItem, cfi } = detail
         const percent = percentFormat.format(fraction)
         const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
+        const progressButton = $('#progress-button')
+        progressButton.textContent = percent
+        progressButton.style.visibility = 'visible'
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
         slider.value = fraction

@@ -125,7 +125,8 @@ const getVisibleRange = (doc, start, end, mapRect) => {
 
 const getDirection = doc => {
     const { defaultView } = doc
-    const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
+    const firstElement = doc.body.firstElementChild
+    const { writingMode, direction } = defaultView.getComputedStyle(firstElement || doc.body)
     const vertical = writingMode === 'vertical-rl'
         || writingMode === 'vertical-lr'
     const rtl = doc.body.dir === 'rtl'
