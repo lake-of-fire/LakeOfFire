@@ -170,12 +170,20 @@ public struct Reader: View {
         }
         .onChange(of: lightModeTheme) { lightModeTheme in
             Task { @MainActor in
-                await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)')", duplicateInMultiTargetFrames: true)
+                await scriptCaller.evaluateJavaScript("""
+                    if (document.body?.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
+                        document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
+                    }
+                    """, duplicateInMultiTargetFrames: true)
             }
         }
         .onChange(of: darkModeTheme) { darkModeTheme in
             Task { @MainActor in
-                await scriptCaller.evaluateJavaScript("document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)')", duplicateInMultiTargetFrames: true)
+                await scriptCaller.evaluateJavaScript("""
+                    if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
+                        document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+                    }
+                    """, duplicateInMultiTargetFrames: true)
             }
         }
         .onChange(of: readerMediaPlayerViewModel.audioURLs) { audioURLs in

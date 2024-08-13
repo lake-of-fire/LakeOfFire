@@ -135,8 +135,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
-            await self.scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-light-theme', '\(self.lightModeTheme)')", duplicateInMultiTargetFrames: true)
-            await self.scriptCaller.evaluateJavaScript("document.body.setAttribute('data-manabi-dark-theme', '\(self.darkModeTheme)')", duplicateInMultiTargetFrames: true)
+            await self.scriptCaller.evaluateJavaScript("""
+                if (document.body.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
+                    document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
+                }
+                if (document.body.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
+                    document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+                }
+                """, duplicateInMultiTargetFrames: true)
             self.refreshTitleInWebView(content: content, newState: newState)
         }
     }

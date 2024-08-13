@@ -24,6 +24,9 @@ public class ReaderModeViewModel: ObservableObject {
     
     @Published var contentRules: String? = nil
 
+    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    
     private var contentRulesForReadabilityLoading = """
     [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
         """
@@ -70,24 +73,6 @@ public class ReaderModeViewModel: ObservableObject {
                 try await showReadabilityContent(content: content, readabilityContent: readabilityContent, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
             } catch { }
         }
-        /*
-        guard let readabilityContent = readabilityContent else { return }
-        let title = content.title
-        let imageURL = content.imageURLToDisplay
-        let readabilityContainerSelector = readabilityContainerSelector
-        let readabilityContainerFrameInfo = readabilityContainerFrameInfo
-        let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type
-        let contentKey = content.compoundKey
-        guard let contentConfig = content.realm?.configuration else { return }
-        Task.detached { @MainActor [weak self] in
-            guard let self = self else { return }
-            let realm = try await Realm(configuration: contentConfig, actor: MainActor.shared)
-            guard let contentType = contentType, let content = realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol else { return }
-            do {
-                try await self.showReadabilityContent(content: content, readabilityContent: readabilityContent, defaultTitle: title, imageURL: imageURL, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
-            } catch { }
-        }
-         */
     }
     
     @MainActor
@@ -114,11 +99,23 @@ public class ReaderModeViewModel: ObservableObject {
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = content.imageURLToDisplay
         let url = content.url
-        
+        let lightModeTheme = lightModeTheme
+        let darkModeTheme = darkModeTheme
+
         try await Task.detached { [weak self] in
             var doc: SwiftSoup.Document
             do {
-                doc = try processForReaderMode(content: readabilityContent, url: url, isEBook: false, defaultTitle: titleForDisplay, imageURL: imageURLToDisplay, injectEntryImageIntoHeader: injectEntryImageIntoHeader, fontSize: readerFontSize ?? defaultFontSize)
+                doc = try processForReaderMode(
+                    content: readabilityContent,
+                    url: url,
+                    isEBook: false,
+                    defaultTitle: titleForDisplay,
+                    imageURL: imageURLToDisplay,
+                    injectEntryImageIntoHeader: injectEntryImageIntoHeader,
+                    fontSize: readerFontSize ?? defaultFontSize,
+                    lightModeTheme: lightModeTheme,
+                    darkModeTheme: darkModeTheme
+                )
             } catch {
                 print(error.localizedDescription)
                 return
@@ -214,7 +211,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 }
 
-func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double) throws -> SwiftSoup.Document {
+func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double, lightModeTheme: LightModeTheme, darkModeTheme: LightModeTheme) throws -> SwiftSoup.Document {
     let isXML = content.hasPrefix("<?xml")
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
@@ -229,6 +226,8 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
             bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
         }
         _ = try? bodyTag.attr("style", bodyStyle)
+        _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
+        _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
     }
     
     if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
