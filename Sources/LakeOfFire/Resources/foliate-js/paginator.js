@@ -173,8 +173,10 @@ class View {
     #column = true
     #size
     #layout = {}
-    constructor({ container, onExpand }) {
+    #isCacheWarmer
+    constructor({ container, onExpand, isCacheWarmer }) {
         this.container = container
+        this.#isCacheWarmer = isCacheWarmer
         this.#debouncedExpand = debounce(() => {
             this.expand.bind(this)
         }, 333)
@@ -215,28 +217,32 @@ class View {
                 const doc = this.document
                 afterLoad?.(doc)
 
-                // it needs to be visible for Firefox to get computed style
-                this.#iframe.style.display = 'block'
-                const { vertical, rtl } = getDirection(doc)
-                const background = getBackground(doc)
-                this.#iframe.style.display = 'none'
-
-                this.#vertical = vertical
-                this.#rtl = rtl
-
-                this.#contentRange.selectNodeContents(doc.body)
-                const layout = beforeRender?.({ vertical, rtl, background })
-                this.#iframe.style.display = 'block'
-                this.render(layout)
-                this.#resizeObserver.observe(doc.body)
-                this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
-
-                // the resize observer above doesn't work in Firefox
-                // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
-                // until the bug is fixed we can at least account for font load
-                doc.fonts.ready.then(() => this.expand())
-//                doc.fonts.ready.then(() => this.#debouncedExpand())
-
+                if (this.#isCacheWarmer) {
+//                    this.render(layout)
+                } else {
+                    // it needs to be visible for Firefox to get computed style
+                    this.#iframe.style.display = 'block'
+                    const { vertical, rtl } = getDirection(doc)
+                    const background = getBackground(doc)
+                    this.#iframe.style.display = 'none'
+                    
+                    this.#vertical = vertical
+                    this.#rtl = rtl
+                    
+                    this.#contentRange.selectNodeContents(doc.body)
+                    const layout = beforeRender?.({ vertical, rtl, background })
+                    this.#iframe.style.display = 'block'
+                    this.render(layout)
+                    this.#resizeObserver.observe(doc.body)
+                    this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
+                    
+                    // the resize observer above doesn't work in Firefox
+                    // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
+                    // until the bug is fixed we can at least account for font load
+                    doc.fonts.ready.then(() => this.expand())
+                    //                doc.fonts.ready.then(() => this.#debouncedExpand())
+                }
+                
                 resolve()
             }, { once: true })
             this.#iframe.src = src
@@ -420,6 +426,7 @@ export class Paginator extends HTMLElement {
     #scrollBounds
     #touchState
     #touchScrolled
+    #isCacheWarmer = false
     pageAnimation = true
     constructor() {
         super()
@@ -551,7 +558,8 @@ export class Paginator extends HTMLElement {
                 break
         }
     }
-    open(book) {
+    open(book, isCacheWarmer) {
+        this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
         this.sections = book.sections
     }
@@ -563,6 +571,7 @@ export class Paginator extends HTMLElement {
         this.#view = new View({
             container: this,
             onExpand: this.#onExpand.bind(this),
+            isCacheWarmer: this.#isCacheWarmer,
 //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
         this.#container.append(this.#view.element)

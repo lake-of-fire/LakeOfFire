@@ -211,7 +211,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 }
 
-func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double, lightModeTheme: LightModeTheme, darkModeTheme: LightModeTheme) throws -> SwiftSoup.Document {
+func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double, lightModeTheme: LightModeTheme, darkModeTheme: DarkModeTheme) throws -> SwiftSoup.Document {
     let isXML = content.hasPrefix("<?xml")
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)

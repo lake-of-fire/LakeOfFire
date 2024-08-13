@@ -45,8 +45,8 @@ public struct Reader: View {
     var onNavigationFinished: ((WebViewState) -> Void)?
     
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
-    @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
-    @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("lightModeTheme") internal var lightModeTheme: LightModeTheme = .white
+    @AppStorage("darkModeTheme") internal var darkModeTheme: DarkModeTheme = .black
     
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()

@@ -100,7 +100,7 @@ export class View extends HTMLElement {
             this.renderer.goTo(resolved)
         })
     }
-    async open(book) {
+    async open(book, isCacheWarmer) {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
 
@@ -128,7 +128,7 @@ export class View extends HTMLElement {
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
         this.renderer.addEventListener('create-overlayer', e =>
             e.detail.attach(this.#createOverlayer(e.detail)))
-        this.renderer.open(book)
+        this.renderer.open(book, isCacheWarmer)
         this.#root.append(this.renderer)
     }
     close() {

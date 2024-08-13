@@ -118,8 +118,10 @@ const getView = async (file, isCacheWarmer) => {
     }
     if (!book) throw new Error('File type not supported')
     const view = document.createElement('foliate-view')
-    document.body.append(view)
-    await view.open(book)
+    if (!isCacheWarmer) {
+        document.body.append(view)
+    }
+    await view.open(book, isCacheWarmer)
     return view
 }
 
@@ -407,7 +409,6 @@ class CacheWarmer {
     }
     async open(file) {
         this.view = await getView(file, true)
-        this.view.style.display = 'none'
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
         const { book } = this.view
