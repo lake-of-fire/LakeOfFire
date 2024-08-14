@@ -216,6 +216,14 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
     let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
     doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
+    
+    // Migrate old cached versions
+    // TODO: Update cache, if this is a performance issue.
+    if try doc.getElementById("reader-content") == nil, let oldElement = try doc.getElementsByClass("reader-content").first() {
+        try oldElement.attr("id", "reader-content")
+        try oldElement.removeAttr("class")
+    }
+    
     if isEBook {
         try doc.attr("data-is-ebook", true)
     }
