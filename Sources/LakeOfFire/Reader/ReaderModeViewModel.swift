@@ -127,7 +127,6 @@ public class ReaderModeViewModel: ObservableObject {
             } else {
                 html = try doc.outerHtml()
             }
-            
             let transformedContent = html
             await Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -225,7 +224,7 @@ func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitl
     }
     
     if isEBook {
-        try doc.attr("data-is-ebook", true)
+        try doc.body()?.attr("data-is-ebook", true)
     }
     
     if let bodyTag = doc.body() {
