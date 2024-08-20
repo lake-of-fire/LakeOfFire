@@ -35,6 +35,35 @@ public extension WebViewNavigator {
     }
 }
 
+class NavigationTaskManager: ObservableObject {
+    @Published var onNavigationCommittedTask: Task<Void, Error>?
+    @Published var onNavigationFinishedTask: Task<Void, Error>?
+    
+    func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
+        onNavigationCommittedTask?.cancel()
+        onNavigationCommittedTask = Task { @MainActor in
+            do {
+                try await task()
+            } catch {
+                if !Task.isCancelled {
+                    print("Error during onNavigationCommitted: \(error)")
+                }
+            }
+        }
+    }
+    
+    func startOnNavigationFinished(task: @escaping () async -> Void) {
+        onNavigationFinishedTask?.cancel()
+        onNavigationFinishedTask = Task { @MainActor in
+            if let committedTask = onNavigationCommittedTask {
+                _ = try? await committedTask.value // Wait for the committed task to finish if it's still running
+            }
+            try Task.checkCancellation()
+            await task()
+        }
+    }
+}
+
 public struct Reader: View {
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
@@ -59,10 +88,10 @@ public struct Reader: View {
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+    @Environment(\.colorScheme) private var colorScheme
 
-//    var url: URL {
-//        return readerContent.content.url
-//    }
+    @StateObject private var navigationTaskManager = NavigationTaskManager()
+    
     private var navigationTitle: String? {
         guard !readerContent.content.isInvalidated else { return nil }
         return readerContent.content.titleForDisplay
@@ -79,9 +108,6 @@ public struct Reader: View {
     }
     
     public var body: some View {
-        // TODO: Capture segment identifier and use it for unique word tracking instead of element ID
-        // TODO: capture reading progress via sentence identifiers from a read section
-        //        let _ = Self._printChanges()
         VStack(spacing: 0) {
             WebView(
                 config: WebViewConfig(
@@ -109,37 +135,46 @@ public struct Reader: View {
                 ],
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
-                    debugPrint("!! on nav committed", state.pageURL)
-                    Task { @MainActor in
-                        readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
-                        try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
-                        try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
-                        try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
-                        if let onNavigationCommitted = onNavigationCommitted {
-                            debugPrint("!! on nav committed GONNA CALL NOW", state.pageURL)
-                            try await onNavigationCommitted(state)
+                    navigationTaskManager.startOnNavigationCommitted {
+                        do {
+                            try Task.checkCancellation()
+                            readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
+                            try Task.checkCancellation()
+                            try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                            try Task.checkCancellation()
+                            try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                            try Task.checkCancellation()
+                            try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                            try Task.checkCancellation()
+                            if let onNavigationCommitted = onNavigationCommitted {
+                                try await onNavigationCommitted(state)
+                            }
+                        } catch {
+                            if Task.isCancelled {
+                                print("onNavigationCommitted task was cancelled.")
+                            } else {
+                                print("Error during onNavigationCommitted: \(error)")
+                            }
                         }
                     }
                 },
                 onNavigationFinished: { state in
-                    debugPrint("!! on nav fin", state.pageURL)
-                    Task { @MainActor in
+                    navigationTaskManager.startOnNavigationFinished {
                         readerViewModel.onNavigationFinished(content: readerContent.content, newState: state) { newState in
                             if let onNavigationFinished = onNavigationFinished {
                                 onNavigationFinished(newState)
                             }
                         }
-                        
-                        debugPrint("!! on nav fin CHECK READER MODE", state.pageURL)
-                        await scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
-                            switch result {
-                            case .success(let response):
-                                if let isReaderMode = response as? Bool {
-                                    debugPrint("!! is ready mode???! sett: ", isReaderMode.description)
-                                    readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                        Task {
+                            await scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
+                                switch result {
+                                case .success(let response):
+                                    if let isReaderMode = response as? Bool {
+                                        readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                                    }
+                                case .failure(let error):
+                                    print(error)
                                 }
-                            case .failure(let error):
-                                print(error)
                             }
                         }
                     }
@@ -148,21 +183,18 @@ public struct Reader: View {
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
             .overlay {
-//                VStack {
-//                    Text(readerViewModel.content.isReaderModeByDefault.description)
-//                    Text(readerViewModel.state.pageURL.absoluteString)
-//                    Text(readerModeViewModel.isReaderMode.description)
-//                    if readerViewModel.state.isLoading && readerContent.content.isReaderModeByDefault {
-                    if (readerViewModel.state.isLoading || !readerModeViewModel.isReaderMode) && readerContent.content.isReaderModeByDefault {
-                        Rectangle()
-                            .fill(.ultraThickMaterial)
-                            .overlay {
-                                ProgressView()
-                            }
-                            .opacity(0.2)
-                            .allowsHitTesting(false)
-                    }
-//                }
+                if (readerViewModel.state.isLoading || !readerModeViewModel.isReaderMode) && readerContent.content.isReaderModeByDefault {
+                    Rectangle()
+                        .fill((colorScheme == .dark ? .black : .white).opacity(0.5))
+                        .overlay {
+                            Rectangle()
+                            //                        .background(colorScheme == .dark ? .black.opacity(0.25) : .white.opacity(0.25))
+                                .fill(.ultraThickMaterial)
+                                .overlay {
+                                    ProgressView()
+                                }
+                        }
+                }
             }
         }
         .onChange(of: readerViewModel.state) { state in
