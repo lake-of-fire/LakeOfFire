@@ -83,17 +83,6 @@ public struct Reader: View {
         // TODO: capture reading progress via sentence identifiers from a read section
         //        let _ = Self._printChanges()
         VStack(spacing: 0) {
-//#if os(macOS)
-//            if readerViewModel.isReaderModeButtonBarVisible {
-////                ReaderModeButtonBar(readerViewModel: readerViewModel)
-//                HStack {
-//                    Spacer()
-//                    Text("Hello")
-//                    Spacer()
-//                }
-//            }
-//#endif
-            
             WebView(
                 config: WebViewConfig(
                     contentRules: readerModeViewModel.contentRules,
@@ -120,17 +109,20 @@ public struct Reader: View {
                 ],
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
+                    debugPrint("!! on nav committed", state.pageURL)
                     Task { @MainActor in
                         readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
                         try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                         if let onNavigationCommitted = onNavigationCommitted {
+                            debugPrint("!! on nav committed GONNA CALL NOW", state.pageURL)
                             try await onNavigationCommitted(state)
                         }
                     }
                 },
                 onNavigationFinished: { state in
+                    debugPrint("!! on nav fin", state.pageURL)
                     Task { @MainActor in
                         readerViewModel.onNavigationFinished(content: readerContent.content, newState: state) { newState in
                             if let onNavigationFinished = onNavigationFinished {
@@ -138,10 +130,12 @@ public struct Reader: View {
                             }
                         }
                         
+                        debugPrint("!! on nav fin CHECK READER MODE", state.pageURL)
                         await scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
                             switch result {
                             case .success(let response):
                                 if let isReaderMode = response as? Bool {
+                                    debugPrint("!! is ready mode???! sett: ", isReaderMode.description)
                                     readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
                                 }
                             case .failure(let error):
@@ -153,6 +147,23 @@ public struct Reader: View {
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
+            .overlay {
+//                VStack {
+//                    Text(readerViewModel.content.isReaderModeByDefault.description)
+//                    Text(readerViewModel.state.pageURL.absoluteString)
+//                    Text(readerModeViewModel.isReaderMode.description)
+//                    if readerViewModel.state.isLoading && readerContent.content.isReaderModeByDefault {
+                    if (readerViewModel.state.isLoading || !readerModeViewModel.isReaderMode) && readerContent.content.isReaderModeByDefault {
+                        Rectangle()
+                            .fill(.ultraThickMaterial)
+                            .overlay {
+                                ProgressView()
+                            }
+                            .opacity(0.2)
+                            .allowsHitTesting(false)
+                    }
+//                }
+            }
         }
         .onChange(of: readerViewModel.state) { state in
             if let imageURL = state.pageImageURL, readerContent.content.realm != nil, readerContent.content.url == state.pageURL, readerContent.content.imageUrl == nil {
@@ -198,17 +209,6 @@ public struct Reader: View {
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
             ebookURLSchemeHandler.readerFileManager = readerFileManager
         }
-//#if os(iOS)
-//        .toolbar {
-//            ToolbarItem(placement: .automatic) {
-//                //        .safeAreaInset(edge: .top, spacing: 0) {
-//                if readerViewModel.isReaderModeButtonBarVisible {
-//                    ReaderModeButtonBar(readerViewModel: readerViewModel)
-//                }
-//                //        }
-//            }
-//        }
-//#endif
     }
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
