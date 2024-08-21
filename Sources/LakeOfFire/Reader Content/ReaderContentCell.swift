@@ -25,7 +25,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         let pk = item.compoundKey
         //        let url = item.url
         //        let item = item.freeze()
-        try await Task.detached(priority: .utility) { @ReaderContentCellActor in
+        async let task = { @ReaderContentCellActor in
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
                 try Task.checkCancellation()
@@ -34,7 +34,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let imageURL = item.imageURLToDisplay
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
                 
-                try await Task { @MainActor [weak self] in
+                async let task = { @MainActor [weak self] in
                     try Task.checkCancellation()
                     humanReadablePublicationDate
                     self?.title = title
@@ -44,9 +44,11 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         self?.readingProgress = progress
                         self?.isFullArticleFinished = finished
                     }
-                }.value
+                }()
+                try await task
             }
-        }.value
+        }()
+        try await task
     }
 }
 

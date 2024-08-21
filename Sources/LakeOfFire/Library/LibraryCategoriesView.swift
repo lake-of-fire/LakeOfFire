@@ -117,21 +117,23 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @MainActor
     func deleteCategory(_ category: FeedCategory) async throws {
         let ref = ThreadSafeReference(to: category)
-        try await Task { @RealmBackgroundActor in
+        async let task = { @RealmBackgroundActor in
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
             guard let category = realm.resolve(ref) else { return }
             try await LibraryDataManager.shared.deleteCategory(category)
-        }.value
+        }()
+        try await task
     }
     
     @MainActor
     func restoreCategory(_ category: FeedCategory) async throws {
         let ref = ThreadSafeReference(to: category)
-        try await Task { @RealmBackgroundActor in
+        async let task = { @RealmBackgroundActor in
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
             guard let category = realm.resolve(ref) else { return }
             try await LibraryDataManager.shared.restoreCategory(category)
-        }.value
+        }()
+        try await task
     }
     
     @MainActor

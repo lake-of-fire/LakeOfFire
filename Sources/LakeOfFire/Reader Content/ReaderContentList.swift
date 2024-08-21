@@ -99,12 +99,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             
             // TODO: Pagination
             let toSet = Array(sorted.prefix(3000))
-            try await Task { @MainActor [weak self] in
+            async let task = { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
                 //                self?.filteredContents = toSet
                 filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet as [any ReaderContentProtocol]) as? [C] ?? filteredContents
-            }.value
+            }()
+            try await task
         }
         try await loadContentsTask?.value
     }
@@ -408,28 +409,31 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             try Task.checkCancellation()
             do {
                 if !readerPageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = filteredContentKeys.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
-                    try await Task { @MainActor in
+                    async let task = { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = nil
-                    }.value
+                    }()
+                    try await task
                 }
                 
                 guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
                     if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
-                        try await Task { @MainActor in
+                        async let task = { @MainActor in
                             try Task.checkCancellation()
                             self.entrySelection = nil
-                        }.value
+                        }()
+                        try await task
                     }
                     return
                 }
 //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
                 if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
                     let contentKey = filteredContentKeys[idx]
-                    try await Task { @MainActor in
+                    async let task = { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = contentKey
-                    }.value
+                    }()
+                    try await task
                 }
             } catch { }
         }

@@ -102,7 +102,7 @@ public class ReaderModeViewModel: ObservableObject {
         let lightModeTheme = lightModeTheme
         let darkModeTheme = darkModeTheme
 
-        try await Task.detached { [weak self] in
+        async let task = { [weak self] in
             var doc: SwiftSoup.Document
             do {
                 doc = try processForReaderMode(
@@ -128,7 +128,7 @@ public class ReaderModeViewModel: ObservableObject {
                 html = try doc.outerHtml()
             }
             let transformedContent = html
-            await Task { @MainActor [weak self] in
+            async let task = { @MainActor [weak self] in
                 guard let self = self else { return }
 //                guard url == self.state.pageURL else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
@@ -170,8 +170,10 @@ public class ReaderModeViewModel: ObservableObject {
                     self.navigator?.loadHTML(transformedContent, baseURL: url)
                 }
                 self.isReaderMode = true
-            }.value
-        }.value
+            }()
+            try await task
+        }()
+        try await task
     }
     
     @MainActor

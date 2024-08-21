@@ -184,16 +184,13 @@ public struct Reader: View {
 #endif
             .overlay {
                 if (readerViewModel.state.isLoading || !readerModeViewModel.isReaderMode) && readerContent.content.isReaderModeByDefault {
-                    Rectangle()
-                        .fill((colorScheme == .dark ? .black : .white).opacity(0.5))
-                        .overlay {
-                            Rectangle()
-                            //                        .background(colorScheme == .dark ? .black.opacity(0.25) : .white.opacity(0.25))
-                                .fill(.ultraThickMaterial)
-                                .overlay {
-                                    ProgressView()
-                                }
-                        }
+                    ZStack {
+                        Rectangle()
+                            .fill(colorScheme == .dark ? .black.opacity(0.7) : .white.opacity(0.7))
+                        Rectangle()
+                            .fill(.ultraThickMaterial)
+                        ProgressView()
+                    }
                 }
             }
         }

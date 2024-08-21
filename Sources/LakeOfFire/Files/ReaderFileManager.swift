@@ -301,7 +301,7 @@ public class ReaderFileManager: ObservableObject {
                 }
                 
                 let discoveredFiles = files
-                try await Task { @MainActor [weak self] in
+                async let task = { @MainActor [weak self] in
                     try Task.checkCancellation()
                     guard let self = self else { return }
                     let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
@@ -311,7 +311,7 @@ public class ReaderFileManager: ObservableObject {
                     let discoveredURLs = files.map { $0.url }
 
                     // Delete orphans
-                    try await Task.detached { @RealmBackgroundActor in
+                    async let task = { @RealmBackgroundActor in
                         try Task.checkCancellation()
                         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
                         let existingURLs = discoveredURLs.map { $0.absoluteString }
@@ -321,8 +321,10 @@ public class ReaderFileManager: ObservableObject {
                                 orphan.isDeleted = true
                             }
                         }
-                    }.value
-                }.value
+                    }()
+                    try await task
+                }()
+                try await task
             } catch {
                 if !(error is CancellationError) {
                     Logger.shared.logger.error("\(error)")
