@@ -128,11 +128,10 @@ public class ReaderModeViewModel: ObservableObject {
                 html = try doc.outerHtml()
             }
             let transformedContent = html
-            async let task = { @MainActor [weak self] in
-                guard let self = self else { return }
+            async let task = { @MainActor in
 //                guard url == self.state.pageURL else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-                    await self.scriptCaller.evaluateJavaScript(
+                    await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
                         if (renderToSelector) {
@@ -167,9 +166,9 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
-                    self.navigator?.loadHTML(transformedContent, baseURL: url)
+                    navigator?.loadHTML(transformedContent, baseURL: url)
                 }
-                self.isReaderMode = true
+                isReaderMode = true
             }()
             try await task
         }()
@@ -183,18 +182,19 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContainerSelector = nil
         contentRules = nil
         isReaderMode = newState.pageURL.isEBookURL // Reset and confirm via JS later
-        debugPrint("!! reset reader mode commitit", newState.pageURL)
         
         if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
-                if content.isReaderModeByDefault && html.range(of: "<body.*?class=['\"]readability-mode['\"]>", options: .regularExpression) == nil {
-                    if let _ = html.range(of: "<body", options: .caseInsensitive) {
-                        html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
-                    } else {
-                        html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
-                    }
-                    contentRules = contentRulesForReadabilityLoading
-                    navigator?.loadHTML(html, baseURL: content.url)
+                if html.range(of: "<body.*?class=['\"]readability-mode['\"]>", options: .regularExpression) == nil {
+//                    if content.isReaderModeByDefault {
+                        if let _ = html.range(of: "<body", options: .caseInsensitive) {
+                            html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
+                        } else {
+                            html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
+                        }
+                        contentRules = contentRulesForReadabilityLoading
+                        navigator?.loadHTML(html, baseURL: content.url)
+//                    }
                 } else {
                     readabilityContent = html
                     showReaderView(content: content)

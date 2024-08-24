@@ -732,7 +732,12 @@ public class LibraryDataManager: NSObject {
             category.isDeleted = false
             didChange = true
         }
-        if category.isArchived {
+        if opmlEntry.attributeBoolValue("isCommented") ?? false {
+            if !category.isArchived {
+                category.isArchived = true
+                didChange = true
+            }
+        } else if category.isArchived {
             category.isArchived = false
             didChange = true
         }
@@ -808,7 +813,13 @@ public class LibraryDataManager: NSObject {
             feed.isDeleted = false
             didChange = true
         }
-        if feed.isArchived {
+        
+        if opmlEntry.attributeBoolValue("isCommented") ?? false {
+            if !feed.isArchived {
+                feed.isArchived = true
+                didChange = true
+            }
+        } else if feed.isArchived {
             feed.isArchived = false
             didChange = true
         }
