@@ -98,10 +98,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public static func getContent(forURL pageURL: URL) async throws -> (any ReaderContentProtocol)? {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
-            debugPrint("!! getContent")
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
-            debugPrint("!! getContent1")
             return content
         }
         return nil
