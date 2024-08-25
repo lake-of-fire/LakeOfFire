@@ -135,28 +135,7 @@ public struct Reader: View {
                 ],
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
-                    navigationTaskManager.startOnNavigationCommitted {
-                        do {
-                            try Task.checkCancellation()
-                            readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
-                            try Task.checkCancellation()
-                            try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
-                            try Task.checkCancellation()
-                            try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
-                            try Task.checkCancellation()
-                            try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
-                            try Task.checkCancellation()
-                            if let onNavigationCommitted = onNavigationCommitted {
-                                try await onNavigationCommitted(state)
-                            }
-                        } catch {
-                            if Task.isCancelled {
-                                print("onNavigationCommitted task was cancelled.")
-                            } else {
-                                print("Error during onNavigationCommitted: \(error)")
-                            }
-                        }
-                    }
+                    onNavigationCommitted(state: state)
                 },
                 onNavigationFinished: { state in
                     navigationTaskManager.startOnNavigationFinished {
@@ -194,8 +173,12 @@ public struct Reader: View {
                 }
             }
         }
-        .onChange(of: readerViewModel.state) { state in
-            if let imageURL = state.pageImageURL, readerContent.content.realm != nil, readerContent.content.url == state.pageURL, readerContent.content.imageUrl == nil {
+        .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
+            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
+                // May be from replaceState or pushState
+                // TODO: Improve replaceState support
+                onNavigationCommitted(state: state)
+            } else if let imageURL = state.pageImageURL, readerContent.content.realm != nil, readerContent.content.url == state.pageURL, readerContent.content.imageUrl == nil {
                 readerContent.content.updateImageUrl(imageURL: imageURL)
             }
         }
@@ -247,5 +230,30 @@ public struct Reader: View {
 #else
         EdgeInsets()
 #endif
+    }
+    
+    private func onNavigationCommitted(state: WebViewState) {
+        navigationTaskManager.startOnNavigationCommitted {
+            do {
+                try Task.checkCancellation()
+                readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
+                try Task.checkCancellation()
+                try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                try Task.checkCancellation()
+                try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                try Task.checkCancellation()
+                try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                try Task.checkCancellation()
+                if let onNavigationCommitted = onNavigationCommitted {
+                    try await onNavigationCommitted(state)
+                }
+            } catch {
+                if Task.isCancelled {
+                    print("onNavigationCommitted task was cancelled.")
+                } else {
+                    print("Error during onNavigationCommitted: \(error)")
+                }
+            }
+        }
     }
 }
