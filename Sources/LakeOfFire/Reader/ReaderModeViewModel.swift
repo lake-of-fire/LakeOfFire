@@ -185,7 +185,7 @@ public class ReaderModeViewModel: ObservableObject {
         
         if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
-                if html.range(of: "<body.*?class=['\"]readability-mode['\"]>", options: .regularExpression) == nil {
+                if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil {
 //                    if content.isReaderModeByDefault {
                         if let _ = html.range(of: "<body", options: .caseInsensitive) {
                             html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
