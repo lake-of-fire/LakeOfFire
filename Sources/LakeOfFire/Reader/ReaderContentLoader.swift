@@ -268,9 +268,12 @@ public struct ReaderContentLoader {
         let contentURL = content.url
         let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
             let allContents = try await loadAll(url: contentURL)
-            
+            debugPrint("!! ALL:", allContents.map { (type(of: $0), $0.url, $0.isReaderModeByDefault) })
             for candidateContent in allContents {
-                if !candidateContent.url.isReaderFileURL, candidateContent.isReaderModeByDefault, candidateContent.hasHTML {
+                guard candidateContent.isReaderModeByDefault else {
+                    break
+                }
+                if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
                     guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
                     //            debugPrint("!! load(content isREaderModebydefault", historyURL)
                     return historyURL
