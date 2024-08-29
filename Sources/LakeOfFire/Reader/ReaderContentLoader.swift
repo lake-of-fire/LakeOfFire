@@ -268,7 +268,6 @@ public struct ReaderContentLoader {
         let contentURL = content.url
         let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
             let allContents = try await loadAll(url: contentURL)
-            debugPrint("!! ALL:", allContents.map { (type(of: $0), $0.url, $0.isReaderModeByDefault) })
             for candidateContent in allContents {
                 guard candidateContent.isReaderModeByDefault else {
                     break

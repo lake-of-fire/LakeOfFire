@@ -542,20 +542,20 @@ public class LibraryDataManager: NSObject {
         
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
-                if feed.category?.opmlURL == download?.url || feed.isDeleted {
+                if feed.category?.opmlURL == download?.url || feed.isDeleted, Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category) {
                     try Task.checkCancellation()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, feed: feed, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
                         importedFeeds.append(feed)
                     }
                 }
             } else if opmlEntry.feedURL != nil {
                 let feed = Feed()
-                if let uuid = uuid, feed.realm == nil {
+                if let uuid = uuid, feed.realm == nil, Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category) {
                     feed.id = uuid
                     try Task.checkCancellation()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, feed: feed, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
                         realm.add(feed, update: .modified)
                     }
                     importedFeeds.append(feed)
@@ -563,25 +563,25 @@ public class LibraryDataManager: NSObject {
             }
         } else if !(opmlEntry.attributeStringValue("script")?.isEmpty ?? true) {
             if let uuid = uuid, let script = realm.objects(UserScript.self).filter({ $0.id == uuid }).first {
-                if script.opmlURL == download?.url || script.isDeleted {
+                if script.opmlURL == download?.url || script.isDeleted, Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
                     try Task.checkCancellation()
                     try await realm.asyncWrite {
                         try Task.checkCancellation()
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                         try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
                     importedScripts.append(script)
                 }
             } else {
                 let script = UserScript()
-                if let uuid = uuid, script.realm == nil {
+                if let uuid = uuid, script.realm == nil, Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
                     script.id = uuid
                     if let downloadURL = download?.url {
                         script.opmlURL = downloadURL
                     }
                     try Task.checkCancellation()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, script: script)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                         realm.add(script, update: .modified)
                         try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                     }
@@ -591,22 +591,22 @@ public class LibraryDataManager: NSObject {
         } else if !(opmlEntry.children?.isEmpty ?? true) {
 //            let opmlTitle = opmlEntry.title ?? opmlEntry.text
             if category == nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
-                if let uuid = uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
+                if let uuid = uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid), Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: existingCategory) {
                     category = existingCategory
                     //                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: existingCategory)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: existingCategory)
                     }
                     importedCategories.append(existingCategory)
                     //                        }
                 } else if let uuid = uuid {
                     category = FeedCategory()
-                    if let category = category {
+                    if let category = category, Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: category) {
                         category.id = uuid
                         if let downloadURL = download?.url {
                             category.opmlURL = downloadURL
                         }
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, download: download, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, category: category)
                         try await realm.asyncWrite {
                             realm.add(category, update: .modified)
                         }
@@ -651,7 +651,50 @@ public class LibraryDataManager: NSObject {
         }
         // TODO: Clean up orphan domain objects that appear due to some bug...
     }
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, script: UserScript) throws {
+    
+    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) -> Bool {
+        if script.title != opmlEntry.text {
+            return true
+        }
+        let newScript = opmlEntry.attributeStringValue("script")?.removingPercentEncoding ?? ""
+        if script.script != newScript {
+            return true
+        }
+        let newInjectAtStart = opmlEntry.attributeBoolValue("injectAtStart") ?? false
+        if script.injectAtStart != newInjectAtStart {
+            return true
+        }
+        let newMainFrameOnly = opmlEntry.attributeBoolValue("mainFrameOnly") ?? false
+        if script.mainFrameOnly != newMainFrameOnly {
+            return true
+        }
+        let newSandboxed = opmlEntry.attributeBoolValue("sandboxed") ?? false
+        if script.sandboxed != newSandboxed {
+            return true
+        }
+        let newIsArchived = opmlEntry.attributeBoolValue("isArchived") ?? true
+        if script.isArchived != newIsArchived {
+            return true
+        }
+        let newPreviewURL = URL(string: opmlEntry.attributeStringValue("previewURL") ?? "about:blank")
+        if script.previewURL != newPreviewURL {
+            return true
+        }
+        let newOpmlOwnerName = opml.ownerName ?? script.opmlOwnerName
+        if script.opmlOwnerName != newOpmlOwnerName {
+            return true
+        }
+        if script.isDeleted {
+            return true
+        }
+        if script.isArchived {
+            return true
+        }
+        return false
+    }
+    
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, script: UserScript) throws {
+        // Must be kept in sync with respective hasChanges
         var didChange = false
         
         if script.title != opmlEntry.text {
@@ -708,7 +751,34 @@ public class LibraryDataManager: NSObject {
         }
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, category: FeedCategory) throws {
+    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, category: FeedCategory) -> Bool {
+        let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
+        if category.title != newOpmlTitle {
+            return true
+        }
+        let newOpmlOwnerName = opml.ownerName ?? category.opmlOwnerName
+        if category.opmlOwnerName != newOpmlOwnerName {
+            return true
+        }
+        let newBackgroundImageURL = opmlEntry.attributeStringValue("backgroundImageUrl")
+        if let newBackgroundImageURL = newBackgroundImageURL, let newURL = URL(string: newBackgroundImageURL), category.backgroundImageUrl != newURL {
+            return true
+        }
+        if category.isDeleted {
+            return true
+        }
+        if opmlEntry.attributeBoolValue("isCommented") ?? false {
+            if !category.isArchived {
+                return true
+            }
+        } else if category.isArchived {
+            return true
+        }
+        return false
+    }
+    
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, category: FeedCategory) throws {
+        // Must be kept in sync with the respective hasChanges
         var didChange = false
         
         let newBackgroundImageURL = opmlEntry.attributeStringValue("backgroundImageUrl")
@@ -747,7 +817,67 @@ public class LibraryDataManager: NSObject {
         }
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, download: Downloadable?, feed: Feed, category: FeedCategory?) throws {
+    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) -> Bool {
+        guard let feedURL = opmlEntry.feedURL else { return false }
+        if feed.category == nil && category != nil {
+            return true
+        }
+        let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
+        if feed.title != newOpmlTitle {
+            return true
+        }
+        let newMarkdownDescription = opmlEntry.attributeStringValue("markdownDescription") ?? feed.markdownDescription
+        if feed.markdownDescription != newMarkdownDescription {
+            return true
+        }
+        if feed.rssUrl != feedURL {
+            return true
+        }
+        var newIconURL: URL?
+        if let iconURLRaw = opmlEntry.attributeStringValue("iconUrl") {
+            newIconURL = URL(string: iconURLRaw)
+        }
+        if let newIconURL = newIconURL, feed.iconUrl != newIconURL {
+            return true
+        }
+        let newIsReaderModeByDefault = opmlEntry.attributeBoolValue("isReaderModeByDefault") ?? true
+        if feed.isReaderModeByDefault != newIsReaderModeByDefault {
+            return true
+        }
+        let newRssContainsFullContent = opmlEntry.attributeBoolValue("rssContainsFullContent") ?? false
+        if feed.rssContainsFullContent != newRssContainsFullContent {
+            return true
+        }
+        let newInjectEntryImageIntoHeader = opmlEntry.attributeBoolValue("injectEntryImageIntoHeader") ?? false
+        if feed.injectEntryImageIntoHeader != newInjectEntryImageIntoHeader {
+            return true
+        }
+        let newDisplayPublicationDate = opmlEntry.attributeBoolValue("displayPublicationDate") ?? true
+        if feed.displayPublicationDate != newDisplayPublicationDate {
+            return true
+        }
+        if let newMeaningfulContentMinLength = opmlEntry.attributeStringValue("meaningfulContentMinLength"), let meaningfulContentMinLengthInt = Int(newMeaningfulContentMinLength), feed.meaningfulContentMinLength != meaningfulContentMinLengthInt {
+            return true
+        }
+        let newExtractImageFromContent = opmlEntry.attributeBoolValue("extractImageFromContent") ?? true
+        if feed.extractImageFromContent != newExtractImageFromContent {
+            return true
+        }
+        if feed.isDeleted {
+            return true
+        }
+        if opmlEntry.attributeBoolValue("isCommented") ?? false {
+            if !feed.isArchived {
+                return true
+            }
+        } else if feed.isArchived {
+            return true
+        }
+        return false
+    }
+    
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) throws {
+        // Must be kept in sync with the respective hasChanges
         guard let feedURL = opmlEntry.feedURL else { return }
         
         var didChange = false
