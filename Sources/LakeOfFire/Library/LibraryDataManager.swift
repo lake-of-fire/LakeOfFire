@@ -233,7 +233,8 @@ public class LibraryDataManager: NSObject {
     @RealmBackgroundActor
     private func refreshScripts() async throws {
         try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getOrCreate()), configuration: LibraryDataManager.realmConfiguration) { realm, configuration in
-            for script in realm.objects(UserScript.self) {
+            let scripts = Array(realm.objects(UserScript.self))
+            for script in scripts {
                 if script.isDeleted {
                     for (idx, candidate) in Array(configuration.userScripts).enumerated() {
                         if candidate.id == script.id {
@@ -381,7 +382,7 @@ public class LibraryDataManager: NSObject {
         // Delete orphan scripts
         try Task.checkCancellation()
         if let downloadURL = download?.url {
-            let filteredScripts = realm.objects(UserScript.self).filter({ $0.isDeleted == false && $0.opmlURL == downloadURL })
+            let filteredScripts = Array(realm.objects(UserScript.self).filter({ $0.isDeleted == false && $0.opmlURL == downloadURL }))
             for script in filteredScripts {
                 if !allImportedScriptIDs.contains(script.id) {
                     try await realm.asyncWrite {
@@ -442,7 +443,7 @@ public class LibraryDataManager: NSObject {
         // Delete orphan categories
         try Task.checkCancellation()
         if let downloadURL = download?.url {
-            let filteredCategories = realm.objects(FeedCategory.self).filter({ !$0.isDeleted && $0.opmlURL == downloadURL })
+            let filteredCategories = Array(realm.objects(FeedCategory.self).filter({ !$0.isDeleted && $0.opmlURL == downloadURL }))
             for category in filteredCategories {
                 if !allImportedCategoryIDs.contains(category.id) {
                     try await realm.asyncWrite {
@@ -456,7 +457,7 @@ public class LibraryDataManager: NSObject {
         // Delete orphan feeds
         try Task.checkCancellation()
         if let downloadURL = download?.url {
-            let filteredFeeds = realm.objects(Feed.self).filter({ !$0.isDeleted && $0.category?.opmlURL == downloadURL })
+            let filteredFeeds = Array(realm.objects(Feed.self).filter({ !$0.isDeleted && $0.category?.opmlURL == downloadURL }))
             for feed in filteredFeeds {
                 if !allImportedFeedIDs.contains(feed.id) {
                     try await realm.asyncWrite {
