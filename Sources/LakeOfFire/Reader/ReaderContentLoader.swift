@@ -200,9 +200,9 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static func load(urlString: String) async throws -> (any ReaderContentProtocol)? {
+    public static func load(urlString: String, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
         guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme ?? "") else { return nil }
-        return try await load(url: url)
+        return try await load(url: url, countsAsHistoryVisit: countsAsHistoryVisit)
     }
     
     @MainActor
@@ -351,7 +351,9 @@ public struct ReaderContentLoader {
         let text: String? = html
 #endif
         
-        if let html = html {
+        if let text, let url = URL(string: text), url.absoluteString == text {
+            match = try await load(url: url, countsAsHistoryVisit: true)
+        } else if let html {
             if let doc = try? SwiftSoup.parse(html) {
                 if docIsPlainText(doc: doc), let text = text {
                     match = try await load(html: textToHTML(text))
@@ -362,11 +364,11 @@ public struct ReaderContentLoader {
             } else {
                 match = try await load(html: textToHTML(html))
             }
-        } else if let text = text {
+        } else if let text {
             match = try await load(html: textToHTML(text))
         }
         
-        if let match = match, let realm = match.realm {
+        if let match, let realm = match.realm {
             let url = snippetURL(key: match.compoundKey) ?? match.url
             try await realm.asyncWrite {
                 match.isFromClipboard = true

@@ -5,15 +5,17 @@ import PackageDescription
 
 let package = Package(
     name: "LakeOfFire",
-    platforms: [.macOS(.v12), .iOS(.v15)],
+    platforms: [.macOS(.v13), .iOS(.v15)],
     products: [
         .library(
             name: "LakeOfFire",
+            type: .dynamic,
             targets: ["LakeOfFire"]),
     ],
     dependencies: [
         .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
 //        .package(path: "../swiftui-webview"),
+        .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/RealmSwiftGaps.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/BigSyncKit.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftUIDownloads.git", branch: "main"),
@@ -23,6 +25,7 @@ let package = Package(
 //        .package(url: "https://github.com/RomanEsin/RealmBinary.git", from: "10.53.0"),
         .package(url: "https://github.com/realm/realm-swift.git", from: "10.53.0"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
 //        .package(url: "https://github.com/techprimate/TPPDF.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/GRDB.swift.git", branch: "master"), // FTS5 fork
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
@@ -31,6 +34,7 @@ let package = Package(
         .package(url: "https://github.com/nmdias/FeedKit.git", branch: "master"),
 //        .package(url: "https://github.com/satoshi-takano/OpenGraph.git", branch: "main"),
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", from: "1.6.0"),
+        .package(url: "https://github.com/sushichop/Puppy.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/FaviconFinder.git", branch: "main"),
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.6.0"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
@@ -58,6 +62,7 @@ let package = Package(
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
                 .product(name: "OpenGraph", package: "OpenGraph"),
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "OPML", package: "OPML"),
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
@@ -68,7 +73,9 @@ let package = Package(
                 .product(name: "DebouncedOnChange", package: "DebouncedOnChange"),
                 .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "Puppy", package: "Puppy"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
+                .product(name: "ZIPFoundation", package: "ZipFoundation"),
                 .product(name: "LakeImage", package: "LakeImage"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "DSFStepperView", package: "DSFStepperView"),
