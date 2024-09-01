@@ -175,7 +175,9 @@ public class LibraryDataManager: NSObject {
                             do {
                                 try await self?.importOPML(download: download)
                             } catch {
-                                print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                                if error as? CancellationError == nil {
+                                    print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                                }
                             }
                         }
                     }
