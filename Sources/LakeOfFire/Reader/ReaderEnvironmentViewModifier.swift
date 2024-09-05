@@ -30,8 +30,14 @@ public extension EnvironmentValues {
         set { self[ReaderWebViewStateKey.self] = newValue }
     }
     var readerPageURL: URL {
-        get { self[ReaderPageURLKey.self] }
-        set { self[ReaderPageURLKey.self] = newValue }
+        get {
+//            debugPrint("!! GET readerPageURL", self[ReaderPageURLKey.self])
+            return self[ReaderPageURLKey.self]
+        }
+        set {
+            debugPrint("!! setting readerPageURL", newValue)
+            self[ReaderPageURLKey.self] = newValue
+        }
     }
     var isReaderLoading: Bool {
         get { self[IsReaderLoadingKey.self] }
