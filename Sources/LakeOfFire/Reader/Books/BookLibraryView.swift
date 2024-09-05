@@ -72,7 +72,7 @@ fileprivate struct EditorsPicksView: View {
     @ObservedObject private var downloadController = DownloadController.shared
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    @Environment(\.readerPageURL) private var readerPageURL
+    @EnvironmentObject private var readerContent: ReaderContent
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
@@ -91,7 +91,7 @@ fileprivate struct EditorsPicksView: View {
             isDownloadable: true) { selectedPublication, wasAlreadyDownloaded in
                 if wasAlreadyDownloaded {
                     Task { @MainActor in
-                        try await viewModel.open(publication: selectedPublication, readerFileManager: readerFileManager, readerPageURL: readerPageURL, navigator: navigator)
+                        try await viewModel.open(publication: selectedPublication, readerFileManager: readerFileManager, readerPageURL: readerContent.pageURL, navigator: navigator)
                     }
                 }
             }

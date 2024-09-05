@@ -8,20 +8,13 @@ struct ReaderWebViewStateKey: EnvironmentKey {
 struct IsReaderLoadingKey: EnvironmentKey {
     static let defaultValue = false
 }
-struct IsReaderProvisionallyNavigatingKey: EnvironmentKey {
-    static let defaultValue = false
-}
 
-struct ReaderPageURLKey: EnvironmentKey {
-    static let defaultValue: URL = URL(string: "about:blank")!
+struct RefreshSettingsInReaderKey: EnvironmentKey {
+    static let defaultValue: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void = { _, _ in }
 }
 
 struct IsReaderModeLoadPendingKey: EnvironmentKey {
     static let defaultValue: @MainActor (any ReaderContentProtocol) -> Bool = { _ in false }
-}
-
-struct RefreshSettingsInReaderKey: EnvironmentKey {
-    static let defaultValue: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void = { _, _ in }
 }
 
 public extension EnvironmentValues {
@@ -29,31 +22,17 @@ public extension EnvironmentValues {
         get { self[ReaderWebViewStateKey.self] }
         set { self[ReaderWebViewStateKey.self] = newValue }
     }
-    var readerPageURL: URL {
-        get {
-//            debugPrint("!! GET readerPageURL", self[ReaderPageURLKey.self])
-            return self[ReaderPageURLKey.self]
-        }
-        set {
-            debugPrint("!! setting readerPageURL", newValue)
-            self[ReaderPageURLKey.self] = newValue
-        }
-    }
     var isReaderLoading: Bool {
         get { self[IsReaderLoadingKey.self] }
         set { self[IsReaderLoadingKey.self] = newValue }
     }
-    var isReaderProvisionallyNavigating: Bool {
-        get { self[IsReaderProvisionallyNavigatingKey.self] }
-        set { self[IsReaderProvisionallyNavigatingKey.self] = newValue }
+    var refreshSettingsInReader: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void {
+        get { self[RefreshSettingsInReaderKey.self] }
+        set { self[RefreshSettingsInReaderKey.self] = newValue }
     }
     var isReaderModeLoadPending: @MainActor (any ReaderContentProtocol) -> Bool {
         get { self[IsReaderModeLoadPendingKey.self] }
         set { self[IsReaderModeLoadPendingKey.self] = newValue }
-    }
-    var refreshSettingsInReader: @MainActor (any ReaderContentProtocol, WebViewState?) -> Void {
-        get { self[RefreshSettingsInReaderKey.self] }
-        set { self[RefreshSettingsInReaderKey.self] = newValue }
     }
 }
 
@@ -75,9 +54,7 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
-            .environment(\.readerPageURL, readerViewModel.state.pageURL)
             .environment(\.isReaderLoading, readerViewModel.state.isLoading)
-            .environment(\.isReaderProvisionallyNavigating, readerViewModel.state.isProvisionallyNavigating)
             .environment(\.refreshSettingsInReader, readerViewModel.refreshSettingsInWebView)
             .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
             .environmentObject(readerViewModel.scriptCaller)

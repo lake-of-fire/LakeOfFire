@@ -23,7 +23,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     
     @State var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    @Environment(\.readerPageURL) private var readerPageURL
+    @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 
@@ -32,7 +32,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     
     @ViewBuilder var body: some View {
         Button {
-            guard !content.url.matchesReaderURL(readerPageURL) else { return }
+            guard !content.url.matchesReaderURL(readerContent.pageURL) else { return }
             Task { @MainActor in
                 try await navigator.load(content: content, readerFileManager: readerFileManager)
             }

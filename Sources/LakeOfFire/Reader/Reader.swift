@@ -174,6 +174,10 @@ public struct Reader: View {
             }
         }
         .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
+            if readerContent.isReaderProvisionallyNavigating != state.isProvisionallyNavigating {
+                readerContent.isReaderProvisionallyNavigating = state.isProvisionallyNavigating
+            }
+            
             if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
                 // May be from replaceState or pushState
                 // TODO: Improve replaceState support
@@ -236,7 +240,7 @@ public struct Reader: View {
         navigationTaskManager.startOnNavigationCommitted {
             do {
                 try Task.checkCancellation()
-                readerContent.content = try await ReaderViewModel.getContent(forURL: state.pageURL) ?? ReaderContentLoader.unsavedHome
+                try await readerContent.load(url: state.pageURL)
                 try Task.checkCancellation()
                 try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
                 try Task.checkCancellation()

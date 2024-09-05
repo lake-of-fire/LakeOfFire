@@ -351,15 +351,14 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
 //    var sortOrder = ReaderContentSortOrder.publicationDate
     
-    @Environment(\.readerPageURL) private var readerPageURL
-    @Environment(\.isReaderProvisionallyNavigating) private var isReaderProvisionallyNavigating
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-    
+
     public var body: some View {
         ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerPageURL) else { return }
+                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
                 Task { @MainActor in
                     try await navigator.load(content: content, readerFileManager: readerFileManager)
                     // TODO: This is crashy sadly.
@@ -368,18 +367,18 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     //                    }
                 }
             }
-            .onChange(of: readerPageURL) { [oldPageURL = readerPageURL] readerPageURL in
+            .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
                 if oldPageURL != readerPageURL {
-                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
+                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
                 }
             }
             .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
                 Task { @MainActor in
-                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: isReaderProvisionallyNavigating)
+                    refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
                 }
             }
             .task { @MainActor in
-                refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: isReaderProvisionallyNavigating)
+                refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
             }
         //            .onChange(of: contents) { contents in
         //                Task { @MainActor in
