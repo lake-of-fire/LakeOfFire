@@ -7,6 +7,7 @@ public class ReaderContent: ObservableObject {
     
     public init() { }
     
+    @MainActor
     internal func load(url: URL) async throws {
         content = try await ReaderViewModel.getContent(forURL: url) ?? ReaderContentLoader.unsavedHome
         pageURL = url
