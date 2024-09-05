@@ -82,7 +82,7 @@ public struct DataSettingsForm: View {
                                     record.isDeleted = true
                                 }
                             }
-                            realm.refresh() // ?
+//                            realm.refresh() // ?
                         }
                     }
                     Button("Cancel", role: .cancel) { }
@@ -102,7 +102,7 @@ public struct DataSettingsForm: View {
                                     entry.isDeleted = true
                                 }
                             }
-                            realm.refresh() // ?
+//                            realm.refresh() // ?
                         }
                     }
                     Button("Cancel", role: .cancel) { }

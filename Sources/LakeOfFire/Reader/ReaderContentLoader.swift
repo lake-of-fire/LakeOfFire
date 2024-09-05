@@ -143,7 +143,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
+        let content = try await { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
@@ -192,7 +192,7 @@ public struct ReaderContentLoader {
             }
 //            debugPrint("!! match", match?.url, match?.html)
             return match
-        }.value
+        }()
         if let content = content {
             return try await fromBackgroundActor(content: content)
         }
@@ -207,7 +207,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(html: String) async throws -> (any ReaderContentProtocol)? {
-        let content = try await Task.detached { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
+        let content = try await { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
             let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
             let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
@@ -245,7 +245,7 @@ public struct ReaderContentLoader {
                 historyRealm.add(historyRecord, update: .modified)
             }
             return historyRecord
-        }.value
+        }()
         
         if let content = content {
             return try await fromBackgroundActor(content: content)
@@ -368,13 +368,16 @@ public struct ReaderContentLoader {
             match = try await load(html: textToHTML(text))
         }
         
-        if let match, let realm = match.realm {
-            let url = snippetURL(key: match.compoundKey) ?? match.url
-            try await realm.asyncWrite {
-                match.isFromClipboard = true
-                match.rssContainsFullContent = true
-                match.url = url
-            }
+        if let match, let realmConfiguration = match.realm?.configuration {
+            try await { @RealmBackgroundActor in
+                let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+                let url = snippetURL(key: match.compoundKey) ?? match.url
+                try await realm.asyncWrite {
+                    match.isFromClipboard = true
+                    match.rssContainsFullContent = true
+                    match.url = url
+                }
+            }()
         }
         return match
     }

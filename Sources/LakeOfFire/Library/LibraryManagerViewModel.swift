@@ -246,13 +246,13 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             }
         }
         let assignRef = ThreadSafeReference(to: category)
-        try await Task { @MainActor in
+        try await { @MainActor in
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
             if let category = realm.resolve(assignRef) {
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)
             }
-        }.value
+        }()
     }
     
     @RealmBackgroundActor

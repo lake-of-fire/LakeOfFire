@@ -68,13 +68,13 @@ public extension ReaderContentProtocol {
         let config = realm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
-        try await Task.detached { @RealmBackgroundActor in
+        try await { @RealmBackgroundActor in
             let realm = try await Realm(configuration: config, actor: RealmBackgroundActor.shared)
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
             try await realm.asyncWrite {
                 block(realm, content)
             }
-        }.value
+        }()
     }
 }
 
@@ -279,7 +279,7 @@ public extension ReaderContentProtocol {
     func removeBookmark(realmConfiguration: Realm.Configuration) async throws -> Bool {
         let url = url
         let html = html
-        return try await Task.detached { @RealmBackgroundActor in
+        return try await { @RealmBackgroundActor in
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
             guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
                 return false
@@ -288,7 +288,7 @@ public extension ReaderContentProtocol {
                 bookmark.isDeleted = true
             }
             return true
-        }.value
+        }()
     }
     
     func bookmarkExists(realmConfiguration: Realm.Configuration) -> Bool {

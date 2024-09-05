@@ -343,7 +343,7 @@ public extension Feed {
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         // TODO: Optimize by only persisting changes if it's actually changed.
         let feedID = id
-        try await Task.detached { @RealmBackgroundActor in
+        try await { @RealmBackgroundActor in
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
             
             let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
@@ -396,13 +396,13 @@ public extension Feed {
                     realm.add(entriesToPersist, update: .modified)
                 }
             }
-        }.value
+        }()
     }
     
     @MainActor
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
-        try await Task.detached { @RealmBackgroundActor in
+        try await  { @RealmBackgroundActor in
             let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
             
             let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
@@ -483,7 +483,7 @@ public extension Feed {
                     realm.add(entriesToPersist, update: .modified)
                 }
             }
-        }.value
+        }()
     }
     
     @MainActor
