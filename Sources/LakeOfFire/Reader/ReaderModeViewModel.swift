@@ -182,7 +182,6 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContainerSelector = nil
         contentRules = nil
         isReaderMode = newState.pageURL.isEBookURL // Reset and confirm via JS later
-        
         if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil {
