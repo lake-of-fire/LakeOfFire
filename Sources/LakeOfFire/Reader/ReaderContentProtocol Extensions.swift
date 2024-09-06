@@ -21,24 +21,16 @@ public extension ReaderContentProtocol {
     }
     
     @MainActor
-    func updateImageUrl(imageURL: URL) {
-        if let content = self as? Bookmark {
-            guard let config = content.realm?.configuration else { return }
-            let contentRef = ThreadSafeReference(to: content)
-            Task.detached { @RealmBackgroundActor in
-                try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
+    func updateImageUrl(imageURL: URL) async throws {
+        let contents = try await ReaderContentLoader.loadAll(url: url)
+        try await { @RealmBackgroundActor in
+            for content in contents {
+                guard content.imageUrl == nil else { continue }
+                guard let config = content.realm?.configuration else { return }
+                try await Realm(configuration: config, actor: RealmBackgroundActor.shared).writeAsync {
                     content.imageUrl = imageURL
                 }
             }
-        } else if let content = self as? HistoryRecord {
-            guard let config = content.realm?.configuration else { return }
-            let contentRef = ThreadSafeReference(to: content)
-            Task.detached { @RealmBackgroundActor in
-                try await Realm.asyncWrite(contentRef, configuration: config) { _, content in
-                    content.imageUrl = imageURL
-                }
-            }
-        }
+        }()
     }
-    
 }

@@ -162,7 +162,7 @@ public struct Reader: View {
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
             .overlay {
-                if (readerViewModel.state.isLoading || !readerModeViewModel.isReaderMode) && readerContent.content.isReaderModeByDefault {
+                if !readerModeViewModel.isReaderMode && readerContent.content.isReaderModeByDefault {
                     ZStack {
                         Rectangle()
                             .fill(colorScheme == .dark ? .black.opacity(0.7) : .white.opacity(0.7))
@@ -182,8 +182,13 @@ public struct Reader: View {
                 // May be from replaceState or pushState
                 // TODO: Improve replaceState support
                 onNavigationCommitted(state: state)
-            } else if let imageURL = state.pageImageURL, readerContent.content.realm != nil, readerContent.content.url == state.pageURL, readerContent.content.imageUrl == nil {
-                readerContent.content.updateImageUrl(imageURL: imageURL)
+            }
+        }
+        .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
+            guard !readerContent.isReaderProvisionallyNavigating else { return }
+            guard let imageURL = pageImageURL, readerContent.content.realm != nil, readerContent.content.url == readerViewModel.state.pageURL else { return }
+            Task { @RealmBackgroundActor in
+                try await readerContent.content.updateImageUrl(imageURL: imageURL)
             }
         }
         .onChange(of: readerViewModel.state.pageTitle) { pageTitle in

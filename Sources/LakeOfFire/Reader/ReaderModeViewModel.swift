@@ -168,7 +168,6 @@ public class ReaderModeViewModel: ObservableObject {
                 } else {
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
-                isReaderMode = true
             }()
             try await task
         }()
