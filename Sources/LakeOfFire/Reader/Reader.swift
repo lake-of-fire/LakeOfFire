@@ -149,7 +149,9 @@ public struct Reader: View {
                                 switch result {
                                 case .success(let response):
                                     if let isReaderMode = response as? Bool {
-                                        readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                                        withAnimation {
+                                            readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                                        }
                                     }
                                 case .failure(let error):
                                     print(error)
