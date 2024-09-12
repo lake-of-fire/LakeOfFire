@@ -236,7 +236,7 @@ public extension ReaderContentProtocol {
 //        guard let bareHostURL = URL(string: "\(url.scheme ?? "https")://\(url.host ?? "")") else { return false }
 //        let exists = realm.objects(FeedEntry.self).contains { $0.url.absoluteString.starts(with: bareHostURL.absoluteString) && $0.isReaderModeByDefault } // not strict enough?
         guard let configuration = realm?.configuration else { return false }
-        let exists = try! !Realm(configuration: configuration).objects(FeedEntry.self).where { $0.url == url && $0.isReaderModeByDefault }.isEmpty
+        let exists = try! !Realm(configuration: configuration).objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", url.absoluteString)).where { $0.isReaderModeByDefault }.isEmpty
         return exists
     }
 }

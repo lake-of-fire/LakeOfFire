@@ -5,7 +5,7 @@ import BigSyncKit
 import FeedKit
 import RealmSwiftGaps
 
-public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable {
+public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, SoftDeletable {
     public var needsSyncToServer: Bool {
         return false
     }
@@ -37,7 +37,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     }
 }
 
-public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable {
+public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, SoftDeletable {
     public var needsSyncToServer: Bool {
         return false
     }
@@ -116,7 +116,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     }
 }
 
-public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol {
+public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, SoftDeletable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     public var keyPrefix: String? {
         return feed?.primaryKeyValue
@@ -133,7 +133,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol {
 //    @Persisted public var isFromClipboard = false
     @Persisted public var content: Data?
 //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
-    
+
     public var isFromClipboard = false
     
     public var imageURLToDisplay: URL? {

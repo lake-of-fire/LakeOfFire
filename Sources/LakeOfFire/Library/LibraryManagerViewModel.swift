@@ -186,7 +186,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         case .error(let error):
                             print("An error occurred: \(error)")
                         case .deleted:
-                            print("The object was deleted.")
+                            print("LibraryConfiguration object was deleted.")
                         }
                     }
                 self.libraryConfiguration = libraryConfiguration

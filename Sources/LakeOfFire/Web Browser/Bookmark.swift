@@ -2,8 +2,9 @@ import Foundation
 import RealmSwift
 import RealmSwiftGaps
 import SwiftCloudDrive
+import BigSyncKit
 
-public class Bookmark: Object, ReaderContentProtocol {
+public class Bookmark: Object, ReaderContentProtocol, SoftDeletable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
@@ -46,7 +47,7 @@ public class Bookmark: Object, ReaderContentProtocol {
         Task.detached { @RealmBackgroundActor in
             let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             try await realm.asyncWrite {
-                for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter({ $0.url == url }) {
+                for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
                     historyRecord.bookmark = bookmark
                 }
             }

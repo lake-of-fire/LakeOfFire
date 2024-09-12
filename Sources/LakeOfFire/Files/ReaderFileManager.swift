@@ -121,7 +121,7 @@ public class ReaderFileManager: ObservableObject {
     public func delete(readerFileURL: URL) async throws {
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
         try ReaderFileManager.validate(readerFileURL: readerFileURL)
-        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND url == %@", readerFileURL.absoluteString as CVarArg)).first {
+        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
             try await realm.asyncWrite {
                 existing.isDeleted = true
             }
@@ -137,7 +137,7 @@ public class ReaderFileManager: ObservableObject {
     public static func get(fileURL: URL) async throws -> ContentFile? {
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
         try validate(readerFileURL: fileURL)
-        let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND url == %@", fileURL.absoluteString as CVarArg)).first
+        let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), fileURL.absoluteString as CVarArg)).first
         return existing
     }
     
@@ -315,7 +315,7 @@ public class ReaderFileManager: ObservableObject {
                         try Task.checkCancellation()
                         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
                         let existingURLs = discoveredURLs.map { $0.absoluteString }
-                        let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == false AND NOT (url IN %@)", existingURLs))
+                        let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
                         try await realm.asyncWrite {
                             for orphan in orphans {
                                 orphan.isDeleted = true
