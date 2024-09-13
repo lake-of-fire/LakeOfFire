@@ -238,7 +238,7 @@ struct LibraryCategoryView: View {
                 }
                 
                 if viewModel.showRestoreButton {
-                    Section("Archived") {
+                    Section("Archive") {
                         Button {
                             Task {
                                 try await viewModel.restoreCategory()
