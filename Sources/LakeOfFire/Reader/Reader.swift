@@ -171,6 +171,7 @@ public struct Reader: View {
                         Rectangle()
                             .fill(.ultraThickMaterial)
                         ProgressView()
+                            .controlSize(.small)
                     }
                 }
             }
