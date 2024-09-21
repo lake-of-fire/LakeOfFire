@@ -5,7 +5,8 @@ public class ReaderContent: ObservableObject {
     @Published public var pageURL = URL(string: "about:blank")!
     @Published public var isReaderProvisionallyNavigating = false
     
-    public init() { }
+    public init() {
+    }
     
     @MainActor
     internal func load(url: URL) async throws {

@@ -118,7 +118,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     var showSeparators = false
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     
-    @State private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
+    @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
 #if os(macOS)

@@ -233,11 +233,11 @@ struct LibraryFeedFormSections: View {
 //    @State private var readerContent: (any ReaderContentProtocol) = ReaderContentLoader.unsavedHome
 //    @State private var readerState = WebViewState.empty
 //    @State private var readerAction = WebViewAction.idle
-    @State private var readerContent = ReaderContent()
+    @StateObject private var readerContent = ReaderContent()
     @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
-    @State private var readerModeViewModel = ReaderModeViewModel()
-    @State private var readerLocationBarViewModel = ReaderLocationBarViewModel()
-    @State private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
+    @StateObject private var readerModeViewModel = ReaderModeViewModel()
+    @StateObject private var readerLocationBarViewModel = ReaderLocationBarViewModel()
+    @StateObject private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
 
     @State private var readerFeedEntry: FeedEntry?
     

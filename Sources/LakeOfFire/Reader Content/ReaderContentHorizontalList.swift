@@ -21,7 +21,7 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
 fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol>: View {
     var content: C
     
-    @State var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
+    @StateObject var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerFileManager: ReaderFileManager

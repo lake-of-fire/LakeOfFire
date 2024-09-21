@@ -190,7 +190,7 @@ struct LibraryScriptFormSections: View {
     @ScaledMetric(relativeTo: .body) private var compactReaderPreviewHeight = 270
     
     @State private var webState = WebViewState.empty
-    @State private var webNavigator = WebViewNavigator()
+    @StateObject private var webNavigator = WebViewNavigator()
     @StateObject private var webViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     @StateObject private var readerModeViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     

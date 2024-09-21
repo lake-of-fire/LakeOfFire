@@ -47,7 +47,7 @@ public struct TeamChatButton: View {
 public struct TeamChat: View {
     public let url: URL
     
-    @State private var webNavigator = WebViewNavigator()
+    @StateObject private var webNavigator = WebViewNavigator()
     @State private var webState = WebViewState.empty
     
     public var body: some View {

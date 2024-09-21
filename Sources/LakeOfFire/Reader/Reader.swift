@@ -173,6 +173,7 @@ public struct Reader: View {
                         ProgressView()
                             .controlSize(.small)
                     }
+                    .ignoresSafeArea(.all)
                 }
             }
         }
