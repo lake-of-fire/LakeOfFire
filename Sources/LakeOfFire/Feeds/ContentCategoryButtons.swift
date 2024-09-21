@@ -124,7 +124,6 @@ public struct FeedCategoryButton: View {
     @Binding var categorySelection: String?
     var font = Font.title3
     var isCompact = false
-//    @SceneStorage("SidebarView.categorySelection") var categorySelection: String?
     
     public var body: some View {
         Button(action: {
