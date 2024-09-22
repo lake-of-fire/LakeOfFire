@@ -51,6 +51,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
 }
 
 public struct ContentCategoryButtons: View {
+    @Binding var feedSelection: String?
     @Binding var categorySelection: String?
     var font = Font.title3
     var isCompact = false
@@ -81,15 +82,27 @@ public struct ContentCategoryButtons: View {
     public var body: some View {
         if let categories = viewModel.libraryConfiguration?.categories {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
-                BooksCategoryButton(categorySelection: $categorySelection, font: font, isCompact: isCompact)
+                BooksCategoryButton(
+                    categorySelection: $categorySelection,
+                    font: font,
+                    isCompact: isCompact
+                )
+                
                 ForEach(categories) { category in
-                    FeedCategoryButton(category: category, categorySelection: $categorySelection, font: font, isCompact: isCompact)
+                    FeedCategoryButton(
+                        category: category,
+                        feedSelection: $feedSelection,
+                        categorySelection: $categorySelection,
+                        font: font,
+                        isCompact: isCompact
+                    )
                 }
             }
         }
     }
     
-    public init(categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool = false) {
+    public init(feedSelection: Binding<String?>, categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool = false) {
+        _feedSelection = feedSelection
         _categorySelection = categorySelection
         self.font = font
         self.isCompact = isCompact
@@ -121,12 +134,14 @@ public struct BooksCategoryButton: View {
 
 public struct FeedCategoryButton: View {
     let category: FeedCategory
+    @Binding var feedSelection: String?
     @Binding var categorySelection: String?
     var font = Font.title3
     var isCompact = false
     
     public var body: some View {
         Button(action: {
+            feedSelection = nil
             categorySelection = category.id.uuidString
         }) {
             FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, font: font, isCompact: isCompact)
@@ -134,8 +149,9 @@ public struct FeedCategoryButton: View {
         .buttonStyle(ReaderCategoryButtonStyle())
     }
     
-    public init(category: FeedCategory, categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
+    public init(category: FeedCategory, feedSelection: Binding<String?>, categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
         self.category = category
+        _feedSelection = feedSelection
         _categorySelection = categorySelection
         self.font = font
         self.isCompact = isCompact
