@@ -333,13 +333,9 @@ struct LibraryFeedFormSections: View {
                 ReaderContentCell(item: readerFeedEntry)
                 HStack(alignment: .center) {
                     GroupBox {
-                        Button(readerViewModel.state.pageURL.absoluteString) {
-                            openURL(readerViewModel.state.pageURL)
-                        }
-#if os(macOS)
-                        .buttonStyle(.link)
-#endif
-                        .padding(10)
+                        PageURLLinkButton()
+                            .environmentObject(readerViewModel)
+                            .padding(10)
                     }
                     Spacer()
                     if readerViewModel.state.isLoading || readerViewModel.state.isProvisionallyNavigating {
@@ -511,5 +507,20 @@ struct LibraryFeedFormSections: View {
                 readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             }
         }
+    }
+}
+
+fileprivate struct PageURLLinkButton: View {
+    @Environment(\.openURL) private var openURL
+    
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
+
+    var body: some View {
+        Button(readerViewModel.state.pageURL.absoluteString) {
+            openURL(readerViewModel.state.pageURL)
+        }
+#if os(macOS)
+        .buttonStyle(.link)
+#endif
     }
 }
