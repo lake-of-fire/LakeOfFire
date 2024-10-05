@@ -32,9 +32,9 @@ public struct FeedView: View {
     var isHorizontal = false
     
     @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
-    
+
     public var body: some View {
-        AsyncView(operation: {
+        AsyncView(operation: { forceRefreshRequested in
             try await feed.fetch()
         }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
             if let entries = viewModel.entries {

@@ -64,17 +64,20 @@ public struct AsyncView<Success, Content: View>: View {
                 } else {
                     ErrorView(error: error, reloadAction: {
                         Task {
-                            await model.load()
+                            await model.load(forceRefreshRequested: true)
                         }
                     })
                 }
             }
         }
-        .task {
-            await model.loadIfNeeded()
+        .onAppear {
+            debugPrint("!! load")
+            Task {
+                await model.loadIfNeeded()
+            }
         }
         .refreshable {
-            await model.load()
+            await model.load(forceRefreshRequested: true)
         }
     }
 }
