@@ -71,7 +71,6 @@ public struct AsyncView<Success, Content: View>: View {
             }
         }
         .onAppear {
-            debugPrint("!! load")
             Task {
                 await model.loadIfNeeded()
             }
