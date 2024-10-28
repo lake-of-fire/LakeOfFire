@@ -7,7 +7,10 @@ internal extension Reader {
     func readerMessageHandlers() -> [String: (WebViewMessage) async -> Void] {
         return [
             "readabilityFramePing": { @MainActor message in
-                guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else { return }
+                guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {
+                    debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
+                    return
+                }
                 guard !windowURL.isNativeReaderView, let content = try? await ReaderViewModel.getContent(forURL: windowURL) else { return }
                 if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                     readerViewModel.refreshSettingsInWebView(content: content)

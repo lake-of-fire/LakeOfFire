@@ -29,6 +29,7 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
                 guard let self = self else { return }
                 if self.isMediaPlayerPresented {
                     self.isMediaPlayerPresented = false
+                    audioURLs.removeAll()
                 }
             }
         }

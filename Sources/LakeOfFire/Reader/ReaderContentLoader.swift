@@ -369,17 +369,23 @@ public struct ReaderContentLoader {
         }
         
         if let match, let realmConfiguration = match.realm?.configuration {
+            let type = type(of: match)
+            let pk = match.primaryKeyValue
+            guard let url = URL(string: match.url.absoluteString) else { return nil }
             try await { @RealmBackgroundActor in
                 let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-                let url = snippetURL(key: match.compoundKey) ?? match.url
-                try await realm.asyncWrite {
-                    match.isFromClipboard = true
-                    match.rssContainsFullContent = true
-                    match.url = url
+                if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
+                    let url = snippetURL(key: content.compoundKey) ?? content.url
+                    try await realm.asyncWrite {
+                        content.isFromClipboard = true
+                        content.rssContainsFullContent = true
+                        content.url = url
+                    }
                 }
             }()
+            return match.realm?.object(ofType: type, forPrimaryKey: pk) as? (any ReaderContentProtocol)? ?? nil
         }
-        return match
+        return nil
     }
     
     @RealmBackgroundActor
