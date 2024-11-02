@@ -164,7 +164,7 @@ public class LibraryDataManager: NSObject {
             .sink(receiveValue: { [weak self] feedDownloads in
                 guard let self = self else { return }
                 importOPMLTask?.cancel()
-                importOPMLTask = Task.detached { @RealmBackgroundActor [weak self] in
+                importOPMLTask = Task { @RealmBackgroundActor [weak self] in
                     let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
 //                    let libraryConfiguration = try await LibraryConfiguration.get()
                     for download in opmlDownloads {
@@ -572,7 +572,6 @@ public class LibraryDataManager: NSObject {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, script: script) {
                         try Task.checkCancellation()
                         try await realm.asyncWrite {
-                            try Task.checkCancellation()
                             try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, script: script)
                             try Self.applyScriptDomains(opml: opml, opmlEntry: opmlEntry, script: script)
                         }

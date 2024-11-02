@@ -264,7 +264,7 @@ public extension ReaderContentProtocol {
         let rssContainsFullContent = rssContainsFullContent
         let isReaderModeAvailable = isReaderModeAvailable
         let isReaderModeOfferHidden = isReaderModeOfferHidden
-        try await Task.detached { @RealmBackgroundActor [weak self] in
+        try await Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, rssContainsFullContent: rssContainsFullContent, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: isReaderModeAvailable, isReaderModeOfferHidden: isReaderModeOfferHidden, realmConfiguration: realmConfiguration)
             await Task { @MainActor [weak self] in

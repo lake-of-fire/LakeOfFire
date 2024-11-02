@@ -59,7 +59,7 @@ class LibraryCategoryViewModel: ObservableObject {
         _selectedFeed = selectedFeed
         
         let ref = ThreadSafeReference(to: category)
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
             guard let category = realm.resolve(ref) else { return }
@@ -106,7 +106,7 @@ class LibraryCategoryViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             self?.objectNotificationToken?.invalidate()
         }
     }

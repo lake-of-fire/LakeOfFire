@@ -11,7 +11,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
             setCategories(from: libraryConfiguration)
-            Task.detached { @RealmBackgroundActor [weak self] in
+            Task { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
                 let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
                 libraryConfigurationObjectNotificationToken?.invalidate()
@@ -68,7 +68,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
         }
     }
     
-    @MainActor private var readerContentObjectNotificationToken: NotificationToken?
+    @RealmBackgroundActor private var readerContentObjectNotificationToken: NotificationToken?
     @RealmBackgroundActor private var libraryConfigurationObjectNotificationToken: NotificationToken?
     
     var isDisabled: Bool {
@@ -78,7 +78,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     init() {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -90,33 +90,43 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [readerContentObjectNotificationToken, libraryConfigurationObjectNotificationToken] in
+        Task { @RealmBackgroundActor [readerContentObjectNotificationToken, libraryConfigurationObjectNotificationToken] in
             readerContentObjectNotificationToken?.invalidate()
             libraryConfigurationObjectNotificationToken?.invalidate()
         }
     }
     
     func initialize(readerContent: C) {
-        readerContentObjectNotificationToken?.invalidate()
-        
         rssURLs = Array(readerContent.rssURLs)
         rssTitles = Array(readerContent.rssTitles)
-        
-        readerContentObjectNotificationToken = readerContent
-            .observe(keyPaths: ["rssURLs", "isRSSAvailable", "rssTitles"]) { [weak self] change in
-                guard let self = self else { return }
-                switch change {
-                case .change(let object, _):
-                    guard let readerContent = object as? C else { return }
-                    rssURLs = Array(readerContent.rssURLs)
-                    rssTitles = Array(readerContent.rssTitles)
-                case .deleted:
-                    rssURLs = nil
-                    rssTitles = nil
-                case .error(let error):
-                    print("An error occurred: \(error)")
+        let ref = ThreadSafeReference(to: readerContent)
+        guard let realmConfig = readerContent.realm?.configuration else { return }
+        Task { @RealmBackgroundActor in
+            readerContentObjectNotificationToken?.invalidate()
+            let realm = try await Realm(configuration: realmConfig, actor: RealmBackgroundActor.shared)
+            guard let readerContent = realm.resolve(ref) else { return }
+            readerContentObjectNotificationToken = readerContent
+                .observe(keyPaths: ["rssURLs", "isRSSAvailable", "rssTitles"]) { [weak self] change in
+                    guard let self = self else { return }
+                    switch change {
+                    case .change(let object, _):
+                        guard let readerContent = object as? C else { return }
+                        let rssURLs = Array(readerContent.rssURLs)
+                        let rssTitles = Array(readerContent.rssTitles)
+                        Task { @MainActor [weak self] in
+                            self?.rssURLs = rssURLs
+                            self?.rssTitles = rssTitles
+                        }
+                    case .deleted:
+                        Task { @MainActor [weak self] in
+                            self?.rssURLs = nil
+                            self?.rssTitles = nil
+                        }
+                    case .error(let error):
+                        print("An error occurred: \(error)")
+                    }
                 }
-            }
+        }
     }
     
     @MainActor

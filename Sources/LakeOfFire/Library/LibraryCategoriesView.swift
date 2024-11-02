@@ -19,7 +19,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
             setCategories(from: libraryConfiguration)
-            Task.detached { @RealmBackgroundActor [weak self] in
+            Task { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
                 let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
                 objectNotificationToken?.invalidate()
@@ -73,7 +73,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
             })
             .store(in: &cancellables)
         
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -85,7 +85,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [objectNotificationToken] in
+        Task { @RealmBackgroundActor [objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
     }

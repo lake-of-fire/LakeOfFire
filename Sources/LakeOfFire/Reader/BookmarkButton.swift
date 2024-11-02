@@ -47,7 +47,7 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
     @RealmBackgroundActor var cancellables = Set<AnyCancellable>()
     
     init() {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             realm.objects(Bookmark.self)

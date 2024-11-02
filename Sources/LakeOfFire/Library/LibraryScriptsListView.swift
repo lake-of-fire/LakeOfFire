@@ -10,7 +10,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
             objectNotificationToken = libraryConfiguration
@@ -45,7 +45,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             self?.objectNotificationToken?.invalidate()
         }
     }

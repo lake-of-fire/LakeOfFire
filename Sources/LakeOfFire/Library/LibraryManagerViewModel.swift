@@ -116,6 +116,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published public var navigationPath = NavigationPath()
     @Published var libraryConfiguration: LibraryConfiguration?
     
+    @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
     
     var exportableOPML: OPML {
@@ -124,7 +125,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
 
     public override init() {
         super.init()
-
+        
         let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
         
         let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
@@ -168,27 +169,29 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             }
             .store(in: &cancellables)
         
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
-                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
-                objectNotificationToken = libraryConfiguration
-                    .observe { [weak self] change in
-                        guard let self = self else { return }
-                        switch change {
-                        case .change(_, _):
-                            Task { @MainActor [weak self] in
-                                self?.objectWillChange.send()
-                            }
-                        case .error(let error):
-                            print("An error occurred: \(error)")
-                        case .deleted:
-                            print("LibraryConfiguration object was deleted.")
+            let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
+            objectNotificationToken = libraryConfiguration
+                .observe { [weak self] change in
+                    guard let self = self else { return }
+                    switch change {
+                    case .change(_, _):
+                        Task { @MainActor [weak self] in
+                            self?.objectWillChange.send()
                         }
+                    case .error(let error):
+                        print("An error occurred: \(error)")
+                    case .deleted:
+                        print("LibraryConfiguration object was deleted.")
                     }
+                }
+            
+            let ref = ThreadSafeReference(to: libraryConfiguration)
+            try await Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                guard let libraryConfiguration = realm.resolve(ref) else { return }
                 self.libraryConfiguration = libraryConfiguration
             }
         }

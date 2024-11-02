@@ -10,7 +10,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         didSet {
             guard let script = script else { return }
             let scriptRef = ThreadSafeReference(to: script)
-            Task.detached { @RealmBackgroundActor [weak self] in
+            Task { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
                 let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
                 guard let script = realm.resolve(scriptRef) else { return }
@@ -136,7 +136,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     }
     
     deinit {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             self?.objectNotificationToken?.invalidate()
         }
     }

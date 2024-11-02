@@ -6,35 +6,32 @@ import RealmSwift
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration? {
         didSet {
-            Task.detached { @RealmBackgroundActor [weak self] in
+            Task { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
-                    guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
-                    objectNotificationToken?.invalidate()
-                    objectNotificationToken = libraryConfiguration
-                        .observe(keyPaths: ["id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
-                            guard let self = self else { return }
-                            switch change {
-                            case .change(_, _), .deleted:
-                                Task { @MainActor [weak self] in
-                                    self?.objectWillChange.send()
-                                }
-                            case .error(let error):
-                                print("An error occurred: \(error)")
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
+                objectNotificationToken?.invalidate()
+                objectNotificationToken = libraryConfiguration
+                    .observe(keyPaths: ["id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
+                        guard let self = self else { return }
+                        switch change {
+                        case .change(_, _), .deleted:
+                            Task { @MainActor [weak self] in
+                                self?.objectWillChange.send()
                             }
+                        case .error(let error):
+                            print("An error occurred: \(error)")
                         }
-                }
+                    }
             }
         }
     }
     
+    @RealmBackgroundActor
     private var objectNotificationToken: NotificationToken?
 
     init() {
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }

@@ -27,7 +27,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         super.init()
         
-        Task.detached { @RealmBackgroundActor [weak self] in
+        Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let configuration = try await LibraryConfiguration.getOrCreate()
             let ref = ThreadSafeReference(to: configuration)
@@ -72,7 +72,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
-            Task.detached { @RealmBackgroundActor in
+            Task { @RealmBackgroundActor in
                 guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
                 try await realm.asyncWrite {
                     content.lastVisitedAt = Date()

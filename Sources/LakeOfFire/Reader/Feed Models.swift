@@ -140,7 +140,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, So
         if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
             let legacyHTMLContent = htmlContent
             let ref = ThreadSafeReference(to: self)
-            Task.detached { @RealmBackgroundActor in
+            Task { @RealmBackgroundActor in
                 let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
                 guard let entry = realm.resolve(ref) else { return }
 

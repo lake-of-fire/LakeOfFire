@@ -10,7 +10,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     @Published var errorMessage: String?
     private var cancellables = Set<AnyCancellable>()
     
-    // Use a Realm notification token to observe changes
+    @RealmBackgroundActor
     private var notificationToken: NotificationToken?
     
     init() {
@@ -18,21 +18,27 @@ class OPDSCatalogsViewModel: ObservableObject {
     }
     
     deinit {
-        notificationToken?.invalidate()
+        Task { @RealmBackgroundActor [weak notificationToken] in
+            notificationToken?.invalidate()
+        }
     }
     
     private func observeCatalogs() {
-        do {
-            let realm = try! Realm()
-            let results = realm.objects(OPDSCatalog.self)
-            notificationToken = results.observe { [weak self] (changes: RealmCollectionChange) in
-                switch changes {
-                case .initial, .update:
-                    Task { [weak self] in
-                        await self?.fetchAllData() // Refresh data whenever there's a change
+        Task { @RealmBackgroundActor in
+            do {
+                let realm = try await Realm(configuration: .defaultConfiguration, actor: RealmBackgroundActor.shared)
+                let results = realm.objects(OPDSCatalog.self)
+                notificationToken = results.observe { [weak self] (changes: RealmCollectionChange) in
+                    switch changes {
+                    case .initial, .update:
+                        Task { @MainActor [weak self] in
+                            await self?.fetchAllData() // Refresh data whenever there's a change
+                        }
+                    case .error(let error):
+                        Task { @MainActor [weak self] in
+                            self?.errorMessage = "Realm error: \(error.localizedDescription)"
+                        }
                     }
-                case .error(let error):
-                    self?.errorMessage = "Realm error: \(error.localizedDescription)"
                 }
             }
         }

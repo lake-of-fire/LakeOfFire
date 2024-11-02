@@ -44,7 +44,7 @@ public class Bookmark: Object, ReaderContentProtocol, SoftDeletable {
     
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
-        Task.detached { @RealmBackgroundActor in
+        Task { @RealmBackgroundActor in
             let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             try await realm.asyncWrite {
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
