@@ -68,12 +68,22 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     
     @MainActor
     func load(contents: [C], sortOrder: ReaderContentSortOrder, contentFilter: (@RealmBackgroundActor (C) async throws -> Bool)? = nil) async throws {
+        let realmConfig = contents.first?.realm?.configuration
+        let refs = contents.map { ThreadSafeReference(to: $0) }
         loadContentsTask?.cancel()
         loadContentsTask = Task { @RealmBackgroundActor in
             var filtered: [C] = []
             //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
             //                try await contentFilter($0)
             //            })
+            guard let realmConfig else {
+                await { @MainActor [weak self] in
+                    self?.filteredContents = []
+                }()
+                return
+            }
+            let realm = try await Realm(configuration: realmConfig, actor: RealmBackgroundActor.shared)
+            let contents = refs.compactMap { realm.resolve($0) }
             for content in contents {
                 try Task.checkCancellation()
                 if try await contentFilter?(content) ?? true {
@@ -98,14 +108,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try Task.checkCancellation()
             
             // TODO: Pagination
-            let toSet = Array(sorted.prefix(3000))
-            async let task = { @MainActor [weak self] in
+            let refs = Array(sorted.prefix(3000)).map { ThreadSafeReference(to: $0) }
+            try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
-                //                self?.filteredContents = toSet
-                filteredContents = try await ReaderContentLoader.fromBackgroundActor(contents: toSet as [any ReaderContentProtocol]) as? [C] ?? filteredContents
+                let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
+                let contents = refs.compactMap { realm.resolve($0) }
+                filteredContents = (contents as [any ReaderContentProtocol]) as? [C] ?? filteredContents
             }()
-            try await task
         }
         try await loadContentsTask?.value
     }

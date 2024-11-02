@@ -18,6 +18,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
+    @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
     public var allScripts: [WebViewUserScript] {
@@ -38,15 +39,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 self.webViewUserScripts = configuration.activeWebViewUserScripts
             }.value
             
-            Task { @MainActor [weak self] in
+            Task { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
-                let realm = try await Realm(configuration: realmConfiguration)
+                let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
                 realm.objects(UserScript.self)
                     .collectionPublisher
-                    .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
-                    .receive(on: DispatchQueue.main)
+                    .debounce(for: .seconds(1), scheduler: RunLoop.main)
                     .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                        Task { [weak self] in
+                        Task { @MainActor [weak self] in
                             try await self?.updateScripts()
                         }
                     })

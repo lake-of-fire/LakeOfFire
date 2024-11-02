@@ -50,21 +50,35 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                 feed = nil
                 return
             }
-            cancellables.forEach { $0.cancel() }
-            let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
-            realm.objects(Feed.self)
-                .where { !$0.isDeleted }
-                .collectionPublisher
-                .freeze()
-                .removeDuplicates()
-                .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
-                .receive(on: DispatchQueue.main)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] feeds in
-                    guard let self = self else { return }
-                    let feed = feeds.first(where: { rssURLs.contains($0.rssUrl) })
-                    self.feed = feed
-                })
-                .store(in: &cancellables)
+            
+            Task { @RealmBackgroundActor in
+                cancellables.forEach { $0.cancel() }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+                realm.objects(Feed.self)
+                    .where { !$0.isDeleted }
+                    .collectionPublisher
+                    .freeze()
+                    .removeDuplicates()
+                    .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
+                    .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] feeds in
+                        guard let self else { return }
+                        guard let feed = feeds.first(where: { rssURLs.contains($0.rssUrl) }) else {
+                            Task { @MainActor [weak self] in
+                                self?.feed = nil
+                            }
+                            return
+                        }
+                        let ref = ThreadSafeReference(to: feed)
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            if let feed = realm.resolve(ref) {
+                                self.feed = feed
+                            }
+                        }
+                    })
+                    .store(in: &cancellables)
+            }
         }
     }
     
@@ -75,6 +89,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
         return rssURLs?.isEmpty ?? true
     }
 
+    @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
     init() {

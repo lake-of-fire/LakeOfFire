@@ -152,21 +152,25 @@ public class LibraryDataManager: NSObject {
     public static var currentUsername: String? = nil
 
     private var importOPMLTask: Task<(), Error>?
-    var cancellables = Set<AnyCancellable>()
     
+    @RealmBackgroundActor
+    var realmCancellables = Set<AnyCancellable>()
+    var cancellables = Set<AnyCancellable>()
+
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
     
     public override init() {
         super.init()
+        
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
         DownloadController.shared.$finishedDownloads
-            .debounce(for: .seconds(0.25), scheduler: DispatchQueue.main)
+            .debounce(for: .seconds(0.25), scheduler: RunLoop.main)
             .sink(receiveValue: { [weak self] feedDownloads in
                 guard let self = self else { return }
                 importOPMLTask?.cancel()
                 importOPMLTask = Task { @RealmBackgroundActor [weak self] in
                     let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
-//                    let libraryConfiguration = try await LibraryConfiguration.get()
+                    //                    let libraryConfiguration = try await LibraryConfiguration.get()
                     for download in opmlDownloads {
                         try Task.checkCancellation()
                         //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
@@ -184,52 +188,52 @@ public class LibraryDataManager: NSObject {
                 }
             })
             .store(in: &cancellables)
-
-//        DownloadController.shared.finishedDownloads.publisher
-//            .print("FOOBAR ")
-//            .collect()
-//            .removeDuplicates()
-//            .combineLatest(DownloadController.shared.failedDownloads.publisher.collect().removeDuplicates())
-//            .compactMap { (finishedDownloads: [Downloadable], failedDownloads: [Downloadable]) -> [Downloadable]? in
-//                if LibraryConfiguration.getOrCreate().downloadables.allSatisfy({
-//                    finishedDownloads.contains($0) || failedDownloads.contains($0)
-//                }) {
-//                    return finishedDownloads.filter {
-//                        LibraryConfiguration.getOrCreate().downloadables.contains($0)
-//                    }
-//                }
-//                return nil
-//            }
-//            .removeDuplicates()
-//            .sink(receiveValue: { [weak self] feedDownloads in
-//                Task.detached { [weak self] in
-//                    for download in feedDownloads {
-//                        print(download.url)
-//                        do {
-//                            try self?.importOPML(download: download)
-//                        } catch {
-//                            print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
-//                        }
-//                    }
-//                }
-//            })
-//            .store(in: &cancellables)
         
-//        Task { @MainActor in
-            let realm = try! Realm(configuration: Self.realmConfiguration)
+        //        DownloadController.shared.finishedDownloads.publisher
+        //            .print("FOOBAR ")
+        //            .collect()
+        //            .removeDuplicates()
+        //            .combineLatest(DownloadController.shared.failedDownloads.publisher.collect().removeDuplicates())
+        //            .compactMap { (finishedDownloads: [Downloadable], failedDownloads: [Downloadable]) -> [Downloadable]? in
+        //                if LibraryConfiguration.getOrCreate().downloadables.allSatisfy({
+        //                    finishedDownloads.contains($0) || failedDownloads.contains($0)
+        //                }) {
+        //                    return finishedDownloads.filter {
+        //                        LibraryConfiguration.getOrCreate().downloadables.contains($0)
+        //                    }
+        //                }
+        //                return nil
+        //            }
+        //            .removeDuplicates()
+        //            .sink(receiveValue: { [weak self] feedDownloads in
+        //                Task.detached { [weak self] in
+        //                    for download in feedDownloads {
+        //                        print(download.url)
+        //                        do {
+        //                            try self?.importOPML(download: download)
+        //                        } catch {
+        //                            print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+        //                        }
+        //                    }
+        //                }
+        //            })
+        //            .store(in: &cancellables)
+        
+        Task { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: Self.realmConfiguration, actor: RealmBackgroundActor.shared)
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .removeDuplicates()
-                .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
-//                .receive(on: DispatchQueue.main)
+                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { [weak self] in
+                    Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
                         try await refreshScripts()
                     }
                 })
-                .store(in: &cancellables)
-//        }
+                .store(in: &realmCancellables)
+            //        }
+        }
     }
     
     @RealmBackgroundActor

@@ -110,6 +110,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @Published var selectedFeed: Feed?
     
     @Published private var exportOPMLTask: Task<Void, Never>?
+    
+    @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
     @Published var selectedScript: UserScript?
@@ -126,51 +128,59 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     public override init() {
         super.init()
         
-        let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
-        
-        let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
-        for objectType in exportableTypes {
-            guard let objectType = objectType as? Object.Type else { continue }
-            realm.objects(objectType)
+        Task { @RealmBackgroundActor [weak self] in
+            guard let self = self else { return }
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+            
+            let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
+            for objectType in exportableTypes {
+                guard let objectType = objectType as? Object.Type else { continue }
+                realm.objects(objectType)
+                    .changesetPublisher
+                    .handleEvents(receiveOutput: { [weak self] changes in
+                        Task { @MainActor [weak self] in
+                            self?.exportedOPML = nil
+                            self?.exportedOPMLFileURL = nil
+                            self?.exportOPMLTask?.cancel()
+                        }
+                    })
+                    .debounce(for: .seconds(0.05), scheduler: RunLoop.main)
+                    .sink { [weak self] changes in
+                        switch changes {
+                        case .initial(_):
+                            Task { @MainActor [weak self] in
+                                self?.refreshOPMLExport()
+                            }
+                        case .update(_, deletions: _, insertions: _, modifications: _):
+                            Task { @MainActor [weak self] in
+                                self?.refreshOPMLExport()
+                            }
+                        case .error(let error):
+                            print(error.localizedDescription)
+                        }
+                    }
+                    .store(in: &cancellables)
+            }
+            
+            realm.objects(UserScript.self)
                 .changesetPublisher
-                .handleEvents(receiveOutput: { [weak self] changes in
-                    self?.exportedOPML = nil
-                    self?.exportedOPMLFileURL = nil
-                    self?.exportOPMLTask?.cancel()
-                })
-                .debounce(for: .seconds(0.05), scheduler: DispatchQueue.main)
-                .receive(on: DispatchQueue.main)
+                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
                 .sink { [weak self] changes in
                     switch changes {
                     case .initial(_):
-                        self?.refreshOPMLExport()
+                        Task { @MainActor [weak self] in
+                            self?.objectWillChange.send()
+                        }
                     case .update(_, deletions: _, insertions: _, modifications: _):
-                        self?.refreshOPMLExport()
+                        Task { @MainActor [weak self] in
+                            self?.objectWillChange.send()
+                        }
                     case .error(let error):
                         print(error.localizedDescription)
                     }
                 }
                 .store(in: &cancellables)
-        }
-        
-        realm.objects(UserScript.self)
-            .changesetPublisher
-            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] changes in
-                switch changes {
-                case .initial(_):
-                    self?.objectWillChange.send()
-                case .update(_, deletions: _, insertions: _, modifications: _):
-                    self?.objectWillChange.send()
-                case .error(let error):
-                    print(error.localizedDescription)
-                }
-            }
-            .store(in: &cancellables)
-        
-        Task { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
+            
             let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
             objectNotificationToken = libraryConfiguration
                 .observe { [weak self] change in
@@ -197,6 +207,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
     }
     
+    @MainActor
     func refreshOPMLExport() {
         exportedOPML = nil
         exportedOPMLFileURL = nil

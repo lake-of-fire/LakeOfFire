@@ -57,9 +57,9 @@ public struct ReaderContentLoader {
         if content.realm == nil {
             return content
         }
-        guard let ref = await Task(operation: { @RealmBackgroundActor in
+        guard let ref = await { @RealmBackgroundActor in
             return ContentReference(content: content)
-        }).value else { return nil }
+        }() else { return nil }
         let realm = try await Realm(configuration: ref.realmConfiguration, actor: MainActor.shared)
         return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
     }
@@ -69,9 +69,9 @@ public struct ReaderContentLoader {
         if content.realm == nil {
             return content
         }
-        guard let ref = await Task(operation: { @MainActor in
+        guard let ref = await { @MainActor in
             return ContentReference(content: content)
-        }).value else { return nil }
+        }() else { return nil }
         let realm = try await Realm(configuration: ref.realmConfiguration, actor: RealmBackgroundActor.shared)
         return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
     }

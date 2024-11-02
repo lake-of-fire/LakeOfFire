@@ -14,6 +14,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @Published var categories: [FeedCategory]? = nil
     @Published var archivedCategories: [FeedCategory]? = nil
     
+    @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
     @Published var libraryConfiguration: LibraryConfiguration? {
@@ -52,28 +53,33 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
     
     init() {
-        let realm = try! Realm(configuration: LibraryDataManager.realmConfiguration)
-        realm.objects(FeedCategory.self)
-            .where { !$0.isDeleted }
-            .collectionPublisher
-            .freeze()
-            .removeDuplicates()
-            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] categories in
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    let libraryConfiguration = try await LibraryConfiguration.getOnMain()
-                    let activeCategoryIDs = libraryConfiguration?.categories.map { $0.id } ?? []
-                    self.archivedCategories = categories.filter { category in
-                        category.isArchived
-                        || !activeCategoryIDs.contains(category.id)
-                    }
-                }
-            })
-            .store(in: &cancellables)
-        
         Task { @RealmBackgroundActor [weak self] in
+            guard let self else { return }
+            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+            
+            realm.objects(FeedCategory.self)
+                .where { !$0.isDeleted }
+                .collectionPublisher
+                .freeze()
+                .removeDuplicates()
+                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] categories in
+                    let categoryRefs = categories.map { ThreadSafeReference(to: $0) }
+                    Task { @MainActor [weak self] in
+                        guard let self = self else { return }
+                        let libraryConfiguration = try await LibraryConfiguration.getOnMain()
+                        let activeCategoryIDs = libraryConfiguration?.categories.map { $0.id } ?? []
+                        
+                        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                        let categories = categoryRefs.compactMap { realm.resolve($0) }
+                        self.archivedCategories = categories.filter { category in
+                            category.isArchived
+                            || !activeCategoryIDs.contains(category.id)
+                        }
+                    }
+                })
+                .store(in: &cancellables)
+            
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }

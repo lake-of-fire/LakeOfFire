@@ -1,5 +1,6 @@
 import SwiftUI
 import RealmSwift
+import RealmSwiftGaps
 import AsyncView
 import Combine
 
@@ -7,23 +8,31 @@ import Combine
 public class FeedViewModel: ObservableObject {
     @Published var entries: [FeedEntry]? = nil
     
+    @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     private static var lastFetchTimes: [UUID: Date] = [:] // Tracks last fetch time for each feed
     
     public init(feed: Feed) {
-        let realm = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-        realm.objects(FeedEntry.self)
-            .where { $0.feed.id == feed.id }
-            .collectionPublisher
-            .freeze()
-            .removeDuplicates()
-            .debounce(for: .seconds(0.1), scheduler: DispatchQueue.main)
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] entries in
-                let undeletedEntries = Array(entries.where { !$0.isDeleted })
-                self?.entries = undeletedEntries
-            })
-            .store(in: &cancellables)
+        let ref = ThreadSafeReference(to: feed)
+        Task { @RealmBackgroundActor in
+            let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let feed = realm.resolve(ref) else { return }
+            realm.objects(FeedEntry.self)
+                .where { $0.feed.id == feed.id }
+                .collectionPublisher
+                .freeze()
+                .removeDuplicates()
+                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] entries in
+                    let undeletedEntries = Array(entries.where { !$0.isDeleted })
+                    let refs = undeletedEntries.map { ThreadSafeReference(to: $0) }
+                    Task { @MainActor in
+                        let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: MainActor.shared)
+                        self?.entries = refs.compactMap { realm.resolve($0) }
+                    }
+                })
+                .store(in: &cancellables)
+        }
     }
     
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
