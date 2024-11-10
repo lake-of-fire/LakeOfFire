@@ -108,7 +108,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try Task.checkCancellation()
             
             // TODO: Pagination
-            let refs = Array(sorted.prefix(3000)).map { ThreadSafeReference(to: $0) }
+            let refs = Array(sorted.prefix(10_000)).map { ThreadSafeReference(to: $0) }
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
@@ -328,11 +328,6 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
             try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
         }
         .onChange(of: contents) { contents in
-            Task { @MainActor in
-                try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
-            }
-        }
-        .onChange(of: readerFileManager.ebookFiles) { ebookFiles in
             Task { @MainActor in
                 try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
             }
