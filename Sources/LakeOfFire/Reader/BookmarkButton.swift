@@ -12,6 +12,8 @@ import SwiftUIWebView
 import RealmSwiftGaps
 import Combine
 
+let bookmarksQueue = DispatchQueue(label: "BookmarksQueue")
+
 @MainActor
 fileprivate class BookmarkButtonViewModel: ObservableObject {
     @Published var reloadTrigger = ""
@@ -52,6 +54,10 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
             let realm = try await Realm(configuration: ReaderContentLoader.bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
             realm.objects(Bookmark.self)
                 .collectionPublisher(keyPaths: ["isDeleted", "compoundKey"])
+                .subscribe(on: bookmarksQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.2), scheduler: bookmarksQueue)
+                .receive(on: bookmarksQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.refresh()

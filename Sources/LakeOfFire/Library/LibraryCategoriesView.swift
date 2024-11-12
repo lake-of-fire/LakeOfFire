@@ -10,6 +10,8 @@ import RealmSwiftGaps
 import SwiftUtilities
 import Combine
 
+let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
+
 fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @Published var categories: [FeedCategory]? = nil
     @Published var archivedCategories: [FeedCategory]? = nil
@@ -60,22 +62,22 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
             realm.objects(FeedCategory.self)
                 .where { !$0.isDeleted }
                 .collectionPublisher
-                .freeze()
+                .subscribe(on: libraryCategoriesQueue)
                 .removeDuplicates()
+                .map { _ in }
                 .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] categories in
-                    let categoryRefs = categories.map { ThreadSafeReference(to: $0) }
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self = self else { return }
                         let libraryConfiguration = try await LibraryConfiguration.getOnMain()
                         let activeCategoryIDs = libraryConfiguration?.categories.map { $0.id } ?? []
                         
                         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                        let categories = categoryRefs.compactMap { realm.resolve($0) }
-                        self.archivedCategories = categories.filter { category in
+                        let categories = realm.objects(FeedCategory.self).where { !$0.isDeleted }
+                        self.archivedCategories = Array(categories.filter { category in
                             category.isArchived
                             || !activeCategoryIDs.contains(category.id)
-                        }
+                        })
                     }
                 })
                 .store(in: &cancellables)

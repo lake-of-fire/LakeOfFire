@@ -4,6 +4,8 @@ import RealmSwiftGaps
 import AsyncView
 import Combine
 
+let feedQueue = DispatchQueue(label: "FeedQueue")
+
 @MainActor
 public class FeedViewModel: ObservableObject {
     @Published var entries: [FeedEntry]? = nil
@@ -13,22 +15,21 @@ public class FeedViewModel: ObservableObject {
     private static var lastFetchTimes: [UUID: Date] = [:] // Tracks last fetch time for each feed
     
     public init(feed: Feed) {
-        let ref = ThreadSafeReference(to: feed)
+        let feedID = feed.id
         Task { @RealmBackgroundActor in
             let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
-            guard let feed = realm.resolve(ref) else { return }
             realm.objects(FeedEntry.self)
-                .where { $0.feed.id == feed.id }
+                .where { $0.feed.id == feedID && !$0.isDeleted }
                 .collectionPublisher
-                .freeze()
+                .subscribe(on: feedQueue)
                 .removeDuplicates()
-                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] entries in
-                    let undeletedEntries = Array(entries.where { !$0.isDeleted })
-                    let refs = undeletedEntries.map { ThreadSafeReference(to: $0) }
+                .map { _ in }
+                .debounce(for: .seconds(0.1), scheduler: feedQueue)
+                .receive(on: feedQueue)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor in
                         let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: MainActor.shared)
-                        self?.entries = refs.compactMap { realm.resolve($0) }
+                        self?.entries = Array(realm.objects(FeedEntry.self).where { $0.feed.id == feedID && !$0.isDeleted })
                     }
                 })
                 .store(in: &cancellables)

@@ -9,6 +9,8 @@ import Collections
 import SwiftUIDownloads
 import RealmSwiftGaps
 
+let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
+
 //extension URL: FailableCustomPersistable {
 //    public typealias PersistedType = String
 //
@@ -223,7 +225,9 @@ public class LibraryDataManager: NSObject {
             let realm = try await Realm(configuration: Self.realmConfiguration, actor: RealmBackgroundActor.shared)
             realm.objects(UserScript.self)
                 .collectionPublisher
+                .subscribe(on: libraryDataQueue)
                 .removeDuplicates()
+                .map { _ in }
                 .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
