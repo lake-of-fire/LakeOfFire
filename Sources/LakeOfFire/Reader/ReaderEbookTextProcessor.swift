@@ -52,20 +52,31 @@ fileprivate func extractBlobUrls(from html: String) -> [String] {
 }
 
 fileprivate func replaceBlobUrls(in html: String, with blobUrls: [String]) -> String {
-    var updatedHtml = html
-    let extractedBlobUrls = extractBlobUrls(from: html)
-    let minCount = min(blobUrls.count, extractedBlobUrls.count)
+    let htmlData = Data(html.utf8)
+    let extractedBlobUrls = extractBlobUrls(from: html).map { Data($0.utf8) }
+    let replacementBlobUrls = blobUrls.map { Data($0.utf8) }
+    let minCount = min(replacementBlobUrls.count, extractedBlobUrls.count)
     
-    var currentIndex = html.startIndex
+    var newHtmlData = Data()
+    var currentIndex = 0
     
     for i in 0..<minCount {
-        if let range = updatedHtml.range(of: extractedBlobUrls[i], range: currentIndex ..< updatedHtml.endIndex) {
-            updatedHtml.replaceSubrange(range, with: blobUrls[i])
+        if let range = htmlData[currentIndex...].range(of: extractedBlobUrls[i]) {
+            // Append everything before the found range
+            newHtmlData.append(htmlData[currentIndex..<range.lowerBound])
+            // Append the replacement URL
+            newHtmlData.append(replacementBlobUrls[i])
+            // Move the current index past the end of the found range
             currentIndex = range.upperBound
         }
     }
     
-    return updatedHtml
+    // Append the remainder of the HTML if any exists beyond the last replacement
+    if currentIndex < htmlData.count {
+        newHtmlData.append(htmlData[currentIndex...])
+    }
+    
+    return String(data: newHtmlData, encoding: .utf8) ?? html
 }
 
 internal extension Reader {

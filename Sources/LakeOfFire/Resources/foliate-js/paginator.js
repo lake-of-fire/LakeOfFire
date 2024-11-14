@@ -179,7 +179,7 @@ class View {
         this.#isCacheWarmer = isCacheWarmer
         this.#debouncedExpand = debounce(() => {
             this.expand.bind(this)
-        }, 333)
+        }, 999)
         this.onExpand = onExpand
         this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
@@ -269,7 +269,7 @@ class View {
             [vertical ? 'maxHeight' : 'maxWidth']: `${columnWidth}px`,
             margin: 'auto',
         })
-        this.setImageSize()
+        //this.setImageSize()
         this.#debouncedExpand()
 //        this.expand()
     }
@@ -406,8 +406,17 @@ export class Paginator extends HTMLElement {
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
     #root = this.attachShadow({ mode: 'closed' })
+    #debouncedRender = debounce(() => {
+        this.render.bind(this)
+    }, 333)
+    #hasResizeObserverTriggered = false
     #resizeObserver = new ResizeObserver(() => {
-        this.render()
+        if (!this.#hasResizeObserverTriggered) {
+            // Skip initial observation on start
+            this.#hasResizeObserverTriggered = true
+            return
+        }
+        this.#debouncedRender()
     })
     #background
     #container
@@ -801,7 +810,6 @@ export class Paginator extends HTMLElement {
             return this.#scrollTo(offset, reason)
         }
         const offset = this.#getRectMapper()(rect).left
-            + this.#margin / 2
         return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
     }
     async #scrollTo(offset, reason, smooth) {
