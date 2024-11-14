@@ -311,25 +311,12 @@ class View {
         }
     }
     setImageSize() {
-        const { width, height, margin } = this.#layout
-        const vertical = this.#vertical
-        const doc = this.document
-        for (const el of doc.body.querySelectorAll('img, svg, video')) {
-            // preserve max size if they are already set
-            const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
-            Object.assign(el.style, {
-                maxHeight: vertical
-                    ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
-                    : `${height - margin * 2}px`,
-                maxWidth: vertical
-                    ? `${width - margin * 2}px`
-                    : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
-                objectFit: 'contain',
-                pageBreakInside: 'avoid',
-                breakInside: 'avoid',
-                boxSizing: 'border-box',
-            })
-        }
+        const { width, height, margin } = this.#layout;
+        const vertical = this.#vertical;
+        const doc = this.document;
+        const rootStyle = doc.documentElement.style;
+        rootStyle.setProperty('--maxImageWidth', vertical ? `${width - margin * 2}px` : '100%');
+        rootStyle.setProperty('--maxImageHeight', vertical ? '100%' : `${height - margin * 2}px`);
     }
     async expand() {
         if (this.#column) {
