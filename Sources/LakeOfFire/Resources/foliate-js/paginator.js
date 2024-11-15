@@ -918,6 +918,7 @@ export class Paginator extends HTMLElement {
         return index >= 0 && index <= this.sections.length - 1
     }
     async #goTo({ index, anchor, select }) {
+        this.dispatchEvent(new CustomEvent('goTo', {}))
         if (index === this.#index) {
             await this.#display({ index, anchor, select })
         } else {

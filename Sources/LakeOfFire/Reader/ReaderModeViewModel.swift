@@ -227,7 +227,7 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
     }
     
     if isEBook {
-        try doc.body()?.attr("data-is-ebook", true)
+        try doc.body()?.attr("data-is-ebook", "true")
     }
     
     if let bodyTag = doc.body() {

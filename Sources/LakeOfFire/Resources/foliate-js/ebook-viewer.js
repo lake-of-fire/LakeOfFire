@@ -218,6 +218,7 @@ class Reader {
 
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
+        this.view.addEventListener('goTo', this.#onGoTo.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
@@ -332,6 +333,9 @@ class Reader {
         const k = event.key
         if (k === 'ArrowLeft' || k === 'h') this.view.goLeft()
         else if(k === 'ArrowRight' || k === 'l') this.view.goRight()
+    }
+    #onGoTo({}) {
+        $('#loading-indicator').style.display = 'block'
     }
     #onLoad({ detail: { doc } }) {
         $('#loading-indicator').style.display = 'none'
