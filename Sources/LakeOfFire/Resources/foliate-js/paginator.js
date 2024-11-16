@@ -177,9 +177,7 @@ class View {
     constructor({ container, onExpand, isCacheWarmer }) {
         this.container = container
         this.#isCacheWarmer = isCacheWarmer
-        this.#debouncedExpand = debounce(() => {
-            this.expand.bind(this)
-        }, 999)
+        this.#debouncedExpand = debounce(this.expand.bind(this), 999)
         this.onExpand = onExpand
         this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
@@ -393,9 +391,7 @@ export class Paginator extends HTMLElement {
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
     #root = this.attachShadow({ mode: 'closed' })
-    #debouncedRender = debounce(() => {
-        this.render.bind(this)
-    }, 333)
+    #debouncedRender = debounce(this.render.bind(this), 333)
     #hasResizeObserverTriggered = false
     #resizeObserver = new ResizeObserver(() => {
         if (!this.#hasResizeObserverTriggered) {
