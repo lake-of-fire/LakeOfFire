@@ -1,5 +1,6 @@
 import SwiftUI
 import AsyncView
+import LakeKit
 
 fileprivate struct ErrorView: View {
     let error: Error
@@ -56,6 +57,7 @@ public struct AsyncView<Success, Content: View>: View {
             case (.inProgress, false):
                 ProgressView()
                     .padding()
+                    .delayedAppearance()
             case let (.success(value), _):
                 content(value)
             case let (.failure(error), showInitialContent):

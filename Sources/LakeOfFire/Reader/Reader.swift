@@ -1,5 +1,6 @@
 import SwiftUI
 import RealmSwift
+import LakeKit
 import SwiftUIWebView
 import WebKit
 import SwiftSoup
@@ -172,6 +173,7 @@ public struct Reader: View {
                             .fill(.ultraThickMaterial)
                         ProgressView()
                             .controlSize(.small)
+                            .delayedAppearance()
                     }
                     .ignoresSafeArea(.all)
                 }
