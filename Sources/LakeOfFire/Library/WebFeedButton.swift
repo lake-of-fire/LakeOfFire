@@ -58,7 +58,6 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                     .where { !$0.isDeleted }
                     .collectionPublisher
                     .freeze()
-                    .removeDuplicates()
                     .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
                     .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] feeds in
                         guard let self else { return }

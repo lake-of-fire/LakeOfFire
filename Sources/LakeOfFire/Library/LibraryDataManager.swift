@@ -226,7 +226,6 @@ public class LibraryDataManager: NSObject {
             realm.objects(UserScript.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
-                .removeDuplicates()
                 .map { _ in }
                 .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in

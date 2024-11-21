@@ -63,7 +63,6 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 .where { !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: libraryCategoriesQueue)
-                .removeDuplicates()
                 .map { _ in }
                 .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in

@@ -22,7 +22,6 @@ public class FeedViewModel: ObservableObject {
                 .where { $0.feed.id == feedID && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
-                .removeDuplicates()
                 .map { _ in }
                 .debounce(for: .seconds(0.1), scheduler: feedQueue)
                 .receive(on: feedQueue)
