@@ -26,7 +26,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     private func observeCatalogs() {
         Task { @RealmBackgroundActor in
             do {
-                let realm = try await Realm(configuration: .defaultConfiguration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) else { return }
                 let results = realm.objects(OPDSCatalog.self)
                 notificationToken = results.observe { [weak self] (changes: RealmCollectionChange) in
                     switch changes {

@@ -11,8 +11,8 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             guard let script = script else { return }
             let scriptRef = ThreadSafeReference(to: script)
             Task { @RealmBackgroundActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+                guard let self else { return }
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
                 guard let script = realm.resolve(scriptRef) else { return }
                 objectNotificationToken = script
                     .observe { [weak self] change in

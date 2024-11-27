@@ -25,7 +25,6 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var content: Data? { get set }
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
-    var imageURLToDisplay: URL? { get }
     var isReaderModeOfferHidden: Bool { get set }
 
     // Caches.
@@ -55,6 +54,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var createdAt: Date { get }
     var isDeleted: Bool { get }
     
+    func imageURLToDisplay() async throws -> URL?
     func configureBookmark(_ bookmark: Bookmark)
 }
 
@@ -69,7 +69,7 @@ public extension ReaderContentProtocol {
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
         try await { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: config, actor: RealmBackgroundActor.shared)
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: config) else { return }
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
             try await realm.asyncWrite {
                 block(realm, content)
@@ -280,7 +280,7 @@ public extension ReaderContentProtocol {
         let url = url
         let html = html
         return try await { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return false }
             guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
                 return false
             }
@@ -304,11 +304,12 @@ public extension ReaderContentProtocol {
 
     @RealmBackgroundActor
     func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
-        let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+        let imageURL = try await imageURLToDisplay()
+        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Can't get realm for addHistoryRecord") }
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
             try await realm.asyncWrite {
                 record.title = title
-                record.imageUrl = imageURLToDisplay
+                record.imageUrl = imageURL
                 record.isFromClipboard = isFromClipboard
                 record.rssContainsFullContent = rssContainsFullContent
                 if rssContainsFullContent {
@@ -335,7 +336,7 @@ public extension ReaderContentProtocol {
             let record = HistoryRecord()
             record.url = pageURL
             record.title = title
-            record.imageUrl = imageURLToDisplay
+            record.imageUrl = imageURL
             record.rssContainsFullContent = rssContainsFullContent
             if rssContainsFullContent {
                 record.content = content

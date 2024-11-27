@@ -25,13 +25,13 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         let pk = item.compoundKey
         //        let url = item.url
         //        let item = item.freeze()
+        let imageURL = try await item.imageURLToDisplay()
         try await { @ReaderContentCellActor in
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
                 try Task.checkCancellation()
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
-                let imageURL = item.imageURLToDisplay
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
                 
                 try await { @MainActor [weak self] in
@@ -190,7 +190,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             }
         }
         .onChange(of: item.imageUrl) { _ in
-            viewModel.imageURL = item.imageURLToDisplay
+            Task { @MainActor in
+                viewModel.imageURL = try await item.imageURLToDisplay()
+            }
         }
     }
 }

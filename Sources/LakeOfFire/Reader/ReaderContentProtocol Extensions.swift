@@ -27,7 +27,8 @@ public extension ReaderContentProtocol {
             for content in contents {
                 guard content.imageUrl == nil else { continue }
                 guard let config = content.realm?.configuration else { return }
-                try await Realm(configuration: config, actor: RealmBackgroundActor.shared).writeAsync {
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: config) else { return }
+                try await realm.writeAsync {
                     content.imageUrl = imageURL
                 }
             }

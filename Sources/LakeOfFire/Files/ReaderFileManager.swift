@@ -119,7 +119,7 @@ public class ReaderFileManager: ObservableObject {
     
     @RealmBackgroundActor
     public func delete(readerFileURL: URL) async throws {
-        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
         try ReaderFileManager.validate(readerFileURL: readerFileURL)
         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
             try await realm.asyncWrite {
@@ -313,7 +313,7 @@ public class ReaderFileManager: ObservableObject {
                     // Delete orphans
                     try await { @RealmBackgroundActor in
                         try Task.checkCancellation()
-                        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+                        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
                         let existingURLs = discoveredURLs.map { $0.absoluteString }
                         let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
                         try await realm.asyncWrite {
@@ -357,7 +357,7 @@ public class ReaderFileManager: ObservableObject {
     
     @RealmBackgroundActor
     private func refreshFileMetadata(drive: CloudDrive, relativePath: RootRelativePath) async throws -> ThreadSafeReference<ContentFile> {
-        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { fatalError("Couldn't get Realm for refreshFileMetadata") }
         let absoluteFileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
         guard let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) else {
             throw ReaderFileManagerError.invalidFileURL

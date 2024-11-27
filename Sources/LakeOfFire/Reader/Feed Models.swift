@@ -116,6 +116,11 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     }
 }
 
+@globalActor
+fileprivate actor FeedEntryActor {
+    static var shared = FeedEntryActor()
+}
+
 public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, SoftDeletable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     public var keyPrefix: String? {
@@ -135,24 +140,6 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, So
 //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
 
     public var isFromClipboard = false
-    
-    public var imageURLToDisplay: URL? {
-        if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
-            let legacyHTMLContent = htmlContent
-            let ref = ThreadSafeReference(to: self)
-            Task { @RealmBackgroundActor in
-                let realm = try await Realm(configuration: configuration, actor: RealmBackgroundActor.shared)
-                guard let entry = realm.resolve(ref) else { return }
-
-                if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html) {
-                    try await realm.asyncWrite {
-                        entry.imageUrl = url
-                    }
-                }
-            }
-        }
-        return imageUrl
-    }
         
     public var isReaderModeAvailable: Bool {
         get { return isReaderModeByDefault }
@@ -217,6 +204,26 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, So
     #warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
+    
+    public func imageURLToDisplay() async throws -> URL? {
+        if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
+            let legacyHTMLContent = htmlContent
+            let ref = ThreadSafeReference(to: self)
+            let existingImageURL = imageUrl
+            try await { @FeedEntryActor in
+                if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html), existingImageURL != url {
+                    try await { @RealmBackgroundActor in
+                        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
+                        guard let entry = realm.resolve(ref) else { return }
+                        try await realm.asyncWrite {
+                            entry.imageUrl = url
+                        }
+                    }()
+                }
+            }()
+        }
+        return imageUrl
+    }
     
     @MainActor
     public func configureBookmark(_ bookmark: Bookmark) {
@@ -303,7 +310,9 @@ fileprivate extension FeedEntry {
             if let imageUrl = imageUrlOptional {
                 return URL(string: imageUrl)
             }
-        } catch { }
+        } catch {
+            debugPrint("Error extracting image URL from content", error)
+        }
         return nil
     }
 }
@@ -344,8 +353,8 @@ public extension Feed {
         // TODO: Optimize by only persisting changes if it's actually changed.
         let feedID = id
         try await { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-            
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+
             let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
             
             var incomingIDs = [String]()
@@ -361,13 +370,15 @@ public extension Feed {
                 
                 var title = item.title
                 do {
-                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<"), let doc = try? SwiftSoup.parse(feedItemTitle) {
-                        doc.outputSettings().prettyPrint(pretty: false)
-                        try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                        title = try doc.text()
-                    } else {
-                        print("Failed to parse HTML in order to transform content.")
-                        throw FeedError.parserFailed
+                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
+                        if let doc = try? SwiftSoup.parse(feedItemTitle) {
+                            doc.outputSettings().prettyPrint(pretty: false)
+                            try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
+                            title = try doc.text()
+//                        } else {
+//                            print("Failed to parse HTML in order to transform content.")
+//                            throw FeedError.parserFailed
+                        }
                     }
                 } catch { }
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -403,8 +414,8 @@ public extension Feed {
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         try await  { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
-            
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+
             let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
             
             var incomingIDs = [String]()
@@ -445,12 +456,14 @@ public extension Feed {
                 
                 var title = item.title
                 do {
-                    if let feedItemTitle = item.title, let doc = try? SwiftSoup.parse(feedItemTitle) {
-                        doc.outputSettings().prettyPrint(pretty: false)
-                        try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                        title = try doc.text()
-                    } else {
-                        print("Failed to parse HTML in order to transform content.")
+                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
+                        if let doc = try? SwiftSoup.parse(feedItemTitle) {
+                            doc.outputSettings().prettyPrint(pretty: false)
+                            try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
+                            title = try doc.text()
+//                        } else {
+//                            print("Failed to parse HTML in order to transform content.")
+                        }
                     }
                 } catch { }
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)

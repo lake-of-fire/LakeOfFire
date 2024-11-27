@@ -6,6 +6,11 @@ import Combine
 import RealmSwiftGaps
 import WebKit
 
+@globalActor
+fileprivate actor ReaderViewModelActor {
+    static var shared = ReaderViewModelActor()
+}
+
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
@@ -77,6 +82,12 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     private func showReadabilityContent(content: (any ReaderContentProtocol), readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+        await scriptCaller.evaluateJavaScript("""
+            if (document.body) {
+                document.body.dataset.isNextLoadInReaderMode = 'true';
+            }
+            """)
+        
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
@@ -97,12 +108,12 @@ public class ReaderModeViewModel: ObservableObject {
         let defaultFontSize = defaultFontSize ?? 15
         let processReadabilityContent = processReadabilityContent
         let titleForDisplay = content.titleForDisplay
-        let imageURLToDisplay = content.imageURLToDisplay
+        let imageURLToDisplay = try await content.imageURLToDisplay()
         let url = content.url
         let lightModeTheme = lightModeTheme
         let darkModeTheme = darkModeTheme
-
-        async let task = { [weak self] in
+        
+        try await { @ReaderViewModelActor [weak self] in
             var doc: SwiftSoup.Document
             do {
                 doc = try processForReaderMode(
@@ -128,7 +139,7 @@ public class ReaderModeViewModel: ObservableObject {
                 html = try doc.outerHtml()
             }
             let transformedContent = html
-            async let task = { @MainActor in
+            try await { @MainActor in
 //                guard url == self.state.pageURL else { return }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     await scriptCaller.evaluateJavaScript(
@@ -169,9 +180,7 @@ public class ReaderModeViewModel: ObservableObject {
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
             }()
-            try await task
         }()
-        try await task
     }
     
     @MainActor

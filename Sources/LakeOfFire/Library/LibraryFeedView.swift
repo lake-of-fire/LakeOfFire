@@ -63,7 +63,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         let feedID = feed.id
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             objectNotificationToken = feed
                 .observe { [weak self] change in
@@ -81,7 +81,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         
         func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
             Task { @RealmBackgroundActor in
-                guard let realm = try? await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared), let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
                 try await realm.asyncWrite {
                     block(feed)
                 }

@@ -72,7 +72,7 @@ public struct ReaderContentLoader {
         guard let ref = await { @MainActor in
             return ContentReference(content: content)
         }() else { return nil }
-        let realm = try await Realm(configuration: ref.realmConfiguration, actor: RealmBackgroundActor.shared)
+        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ref.realmConfiguration) else { return nil }
         return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
     }
     
@@ -106,9 +106,9 @@ public struct ReaderContentLoader {
     
     @RealmBackgroundActor
     public static func loadAll(url: URL) async throws -> [(any ReaderContentProtocol)] {
-        let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
-        let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
-        let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+        guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return [] }
+        guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return [] }
+        guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return [] }
         
         let contentFile = historyRealm.objects(ContentFile.self)
             .where { !$0.isDeleted }
@@ -174,7 +174,7 @@ public struct ReaderContentLoader {
                 //        historyRecord.isReaderModeByDefault
                 historyRecord.updateCompoundKey()
                 if persist {
-                    let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
+                    guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return nil }
                     try await historyRealm.asyncWrite {
                         historyRealm.add(historyRecord, update: .modified)
                     }
@@ -208,9 +208,9 @@ public struct ReaderContentLoader {
     @MainActor
     public static func load(html: String) async throws -> (any ReaderContentProtocol)? {
         let content = try await { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
-            let bookmarkRealm = try await Realm(configuration: bookmarkRealmConfiguration, actor: RealmBackgroundActor.shared)
-            let historyRealm = try await Realm(configuration: historyRealmConfiguration, actor: RealmBackgroundActor.shared)
-            let feedRealm = try await Realm(configuration: feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return nil }
+            guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return nil }
+            guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return nil }
             
             let data = html.readerContentData
             
@@ -373,7 +373,7 @@ public struct ReaderContentLoader {
             let pk = match.primaryKeyValue
             guard let url = URL(string: match.url.absoluteString) else { return nil }
             try await { @RealmBackgroundActor in
-                let realm = try await Realm(configuration: realmConfiguration, actor: RealmBackgroundActor.shared)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
                 if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
                     let url = snippetURL(key: content.compoundKey) ?? content.url
                     try await realm.asyncWrite {

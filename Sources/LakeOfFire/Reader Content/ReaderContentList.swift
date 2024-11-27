@@ -82,7 +82,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 }()
                 return
             }
-            let realm = try await Realm(configuration: realmConfig, actor: RealmBackgroundActor.shared)
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfig) else { return }
             let contents = refs.compactMap { realm.resolve($0) }
             for content in contents {
                 try Task.checkCancellation()

@@ -10,8 +10,8 @@ public extension LibraryDataManager {
         }
         
         guard let libraryConfiguration = try await LibraryConfiguration.get() else { return }
-        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
-        
+        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+
         try await realm.asyncWrite {
             if let idx = libraryConfiguration.categories.firstIndex(of: category) {
                 libraryConfiguration.categories.remove(at: idx)
@@ -28,8 +28,8 @@ public extension LibraryDataManager {
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
         guard let libraryConfiguration = try await LibraryConfiguration.get() else { return }
-        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: RealmBackgroundActor.shared)
-        
+        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+
         try await realm.asyncWrite {
             category.isArchived = false
             if !libraryConfiguration.categories.contains(category) {

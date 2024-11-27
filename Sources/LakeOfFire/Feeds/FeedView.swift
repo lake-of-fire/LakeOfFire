@@ -17,7 +17,7 @@ public class FeedViewModel: ObservableObject {
     public init(feed: Feed) {
         let feedID = feed.id
         Task { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return }
             realm.objects(FeedEntry.self)
                 .where { $0.feed.id == feedID && !$0.isDeleted }
                 .collectionPublisher

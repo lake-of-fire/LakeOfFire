@@ -41,7 +41,18 @@ internal extension Reader {
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                     readerModeViewModel.showReaderView(content: content)
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
-                    await scriptCaller.evaluateJavaScript("document.body?.classList.add('manabi-reader-mode-available-confidently')")
+                    await scriptCaller.evaluateJavaScript("""
+                        document.body?.classList.add('manabi-reader-mode-available-confidently');
+                        if (document.body) {
+                            document.body.dataset.isNextLoadInReaderMode = 'false';
+                        }
+                        """)
+                } else {
+                    await scriptCaller.evaluateJavaScript("""
+                        if (document.body) {
+                            document.body.dataset.isNextLoadInReaderMode = 'false';
+                        }
+                        """)
                 }
                 
                 if !content.isReaderModeAvailable {
