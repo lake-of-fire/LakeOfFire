@@ -205,6 +205,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, So
     @Persisted public var createdAt = Date()
     @Persisted public var isDeleted = false
     
+    @MainActor
     public func imageURLToDisplay() async throws -> URL? {
         if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
             let legacyHTMLContent = htmlContent

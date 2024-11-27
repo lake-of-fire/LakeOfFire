@@ -304,7 +304,15 @@ public extension ReaderContentProtocol {
 
     @RealmBackgroundActor
     func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
-        let imageURL = try await imageURLToDisplay()
+        var imageURL: URL?
+        let ref = ThreadSafeReference(to: self)
+        if let config = realm?.configuration {
+            imageURL = try await { @MainActor in
+                let realm = try await Realm(configuration: config, actor: MainActor.shared)
+                let content = realm.resolve(ref)
+                return try await content?.imageURLToDisplay()
+            }()
+        }
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Can't get realm for addHistoryRecord") }
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
             try await realm.asyncWrite {
