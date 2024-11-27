@@ -8,7 +8,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
         didSet {
             Task { @RealmBackgroundActor [weak self] in
                 guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
                 let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
                 objectNotificationToken?.invalidate()
                 objectNotificationToken = libraryConfiguration
@@ -35,7 +35,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
             let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
                 guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
                 self.libraryConfiguration = libraryConfiguration
             }

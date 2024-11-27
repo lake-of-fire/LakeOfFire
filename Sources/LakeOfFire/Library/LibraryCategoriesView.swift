@@ -403,7 +403,7 @@ struct LibraryCategoriesView: View {
                 let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
                 let ref = ThreadSafeReference(to: category)
                 try await Task { @MainActor in
-                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
+                    guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
                     guard let category = realm.resolve(ref) else { return }
                     categoryIDNeedsScrollTo = category.id.uuidString
                     try await Task.sleep(nanoseconds: 100_000_000_000)
