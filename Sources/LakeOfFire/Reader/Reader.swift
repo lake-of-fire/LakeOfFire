@@ -150,8 +150,11 @@ public struct Reader: View {
                                 switch result {
                                 case .success(let response):
                                     if let isReaderMode = response as? Bool {
-                                        withAnimation {
-                                            readerModeViewModel.isReaderMode = state.pageURL.isEBookURL || isReaderMode
+                                        let isReaderModeVerified = state.pageURL.isEBookURL || isReaderMode
+                                        if readerModeViewModel.isReaderMode != isReaderModeVerified {
+                                            withAnimation {
+                                                readerModeViewModel.isReaderMode = isReaderModeVerified
+                                            }
                                         }
                                     }
                                 case .failure(let error):

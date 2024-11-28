@@ -21,7 +21,11 @@ public class ReaderModeViewModel: ObservableObject {
     public var defaultFontSize: Double?
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
-    @Published public var isReaderMode = false
+    @Published public var isReaderMode = false {
+        didSet {
+            debugPrint("# isReaderMode", isReaderMode)
+        }
+    }
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -189,9 +193,14 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContent = nil
         readabilityContainerSelector = nil
         contentRules = nil
-        withAnimation {
-            isReaderMode = newState.pageURL.isEBookURL // Reset and confirm via JS later
+        
+        let isReaderModeVerified = newState.pageURL.isEBookURL
+        if isReaderMode != isReaderModeVerified {
+            withAnimation {
+                isReaderMode = isReaderModeVerified // Reset and confirm via JS later
+            }
         }
+        
         if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil {
