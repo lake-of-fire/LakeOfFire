@@ -20,20 +20,18 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .alert(isPresented: $readerContentListModalsModel.confirmDelete && isActive) {
-                Alert(
-                    title: Text("Delete Confirmation"),
-                    message: Text("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")? Deletion cannot be undone."),
-                    primaryButton: .destructive(Text("Delete")) {
-                        Task { @MainActor in
-                            try await readerContentListModalsModel.confirmDeletionOf?.delete(readerFileManager: readerFileManager)
-                        }
-                    },
-                    secondaryButton: .cancel {
-                        readerContentListModalsModel.confirmDeletionOf = nil
+            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete && isActive, actions: {
+                Button("Cancel", role: .cancel) {
+                    readerContentListModalsModel.confirmDeletionOf = nil
+                }
+                Button("Delete", role: .destructive) {
+                    Task { @MainActor in
+                        try await readerContentListModalsModel.confirmDeletionOf?.delete(readerFileManager: readerFileManager)
                     }
-                )
-            }
+                }
+            }, message: {
+               Text("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")? Deletion cannot be undone.")
+            })
     }
 }
 
