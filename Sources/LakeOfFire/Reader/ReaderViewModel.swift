@@ -126,11 +126,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let newTitle = fixAnnoyingTitlesWithPipes(title: title)
         let contents = try await ReaderContentLoader.fromBackgroundActor(contents: ReaderContentLoader.loadAll(url: state.pageURL))
         for content in contents {
-            if !newTitle.isEmpty, state.pageURL.isEBookURL || content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !newTitle.isEmpty, content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != title || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
                     content.title = newTitle
                     content.author = author ?? ""
                 }
+                refreshTitleInWebView(content: content)
+            } else if state.pageURL.isEBookURL {
                 refreshTitleInWebView(content: content)
             }
         }
