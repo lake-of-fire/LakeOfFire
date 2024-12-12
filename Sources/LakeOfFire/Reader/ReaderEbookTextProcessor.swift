@@ -100,7 +100,7 @@ internal extension Reader {
             ebookProcessorCache.setValue(html, forKey: cacheKey)
             return html
         } catch {
-            print("Error processing readability content")
+            debugPrint("Error processing readability content for ebook", error)
         }
         return content
     }
