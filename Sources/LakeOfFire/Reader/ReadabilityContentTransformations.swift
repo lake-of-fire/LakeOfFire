@@ -2,6 +2,8 @@ import Foundation
 import SwiftSoup
 import JapaneseLanguageTools
 
+let emptySpaceRegex = try! NSRegularExpression(pattern: "[ \\u3000]")
+
 public func transformContentSpecificToFeed(doc: Document, url: URL) {
     guard let host = url.host else { return }
     
@@ -31,7 +33,7 @@ public func transformContentSpecificToFeed(doc: Document, url: URL) {
 private func matchaTravel(doc: Document) throws {
     // Collapse spaces.
     guard let articleTitle = try doc.getElementById("reader-title") else { return }
-    try articleTitle.text(articleTitle.text().replace(pattern: "　", template: ""))
+    try articleTitle.text(articleTitle.text().replace(regex: emptySpaceRegex, template: ""))
     
     // Collapse spaces. /*Remove (※) which reference Matcha vocab definitions that we remove.*/
     guard let articleDiv = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
@@ -40,7 +42,7 @@ private func matchaTravel(doc: Document) throws {
         for textNode in element.textNodes() {
             var text = textNode.getWholeText()
             if containsCJKCharacters(text: text) {
-                text = text.replace(pattern: "　", template: "")
+                text = text.replace(regex: emptySpaceRegex, template: "")
                 //text = text.replace(pattern: "\\(※\\)", template: "")
                 textNode.text(text)
             }
@@ -125,13 +127,11 @@ private func wataNoC(doc: Document) throws {
         guard containsCJKCharacters(text: element.ownText()) else { continue }
         
         for textNode in element.textNodes() {
-            var text = textNode.text()
+            let text = textNode.text()
             // Appears to sometimes contain either full-width or latin spaces.
-            for spaceChar in [" ", "　"] {
-                if text.contains(spaceChar) {
-                    text = text.replace(pattern: spaceChar, template: "")
-                    textNode.text(text)
-                }
+            let newText = text.replace(regex: emptySpaceRegex, template: "")
+            if text != newText {
+                textNode.text(newText)
             }
         }
     }
