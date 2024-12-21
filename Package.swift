@@ -58,7 +58,7 @@ let package = Package(
 //                .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "AsyncView", package: "AsyncView"),
-                .product(name: "Collections", package: "swift-collections"),
+                .product(name: "OrderedCollections", package: "swift-collections"),
                 .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
                 .product(name: "OpenGraph", package: "OpenGraph"),
                 .product(name: "Logging", package: "swift-log"),
