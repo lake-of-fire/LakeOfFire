@@ -20,7 +20,9 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
 //    var readerContentHTML: String?
     var readerContent: (any ReaderContentProtocol)? {
         didSet {
-            refresh()
+            Task {
+                try await refresh()
+            }
         }
     }
 //    
@@ -60,21 +62,22 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
                 .receive(on: bookmarksQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.refresh()
+                        try await self?.refresh()
                     }
                 })
                 .store(in: &cancellables)
         }
     }
     
-    private func refresh() {
+    @MainActor
+    private func refresh() async throws {
         guard let readerContent = readerContent else {
             Task { @MainActor in
                 self.bookmarkExists = false
             }
             return
         }
-        let bookmarkExists = readerContent.bookmarkExists(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
+        let bookmarkExists = await readerContent.bookmarkExists(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
         Task { @MainActor in
             self.bookmarkExists = bookmarkExists
             self.forceShowBookmark = false
