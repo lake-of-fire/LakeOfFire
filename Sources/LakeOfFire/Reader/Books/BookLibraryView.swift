@@ -175,7 +175,7 @@ public struct BookLibraryView: View {
 #endif
         .scrollContentBackgroundIfAvailable(.hidden)
 //        .listRowSeparatorIfAvailable(.visible)
-        .navigationTitle("Books")
+//        .navigationTitle("Books")
         .task { @MainActor in
             await viewModel.fetchAllData()
         }
