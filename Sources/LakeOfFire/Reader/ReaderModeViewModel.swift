@@ -258,17 +258,11 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
         _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
     }
     
-    if try! doc.html().contains("くもから") {
-        try! debugPrint("# mid2", doc.html().prefix(1500))
-    }
     if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
         let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
         do {
             try existing.html(escapedTitle)
         } catch { }
-    }
-    if try! doc.html().contains("くもから") {
-        try! debugPrint("# mid3", doc.html().prefix(1500))
     }
     do {
         try fixAnnoyingTitlesWithPipes(doc: doc)
@@ -280,17 +274,11 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
         } catch { }
     }
     
-    if try! doc.html().contains("くもから") {
-        try! debugPrint("# mid4", doc.html().prefix(1500))
-    }
     if let url = url {
         transformContentSpecificToFeed(doc: doc, url: url)
         do {
             try wireViewOriginalLinks(doc: doc, url: url)
         } catch { }
-    }
-    if try! doc.html().contains("くもから") {
-        try! debugPrint("# mid5", doc.html().prefix(1500))
     }
     return doc
 }
