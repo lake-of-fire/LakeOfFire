@@ -42,8 +42,8 @@ internal extension Reader {
                     readerModeViewModel.showReaderView(content: content)
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     await scriptCaller.evaluateJavaScript("""
-                        document.body?.classList.add('manabi-reader-mode-available-confidently');
                         if (document.body) {
+                            document.body.dataset.manabiReaderModeAvailableConfidently = 'true';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)

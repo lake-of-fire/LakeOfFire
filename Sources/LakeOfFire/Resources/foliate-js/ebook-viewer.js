@@ -1,6 +1,5 @@
 import './view.js'
 import { createTOCView } from './ui/tree.js'
-import { createMenu } from './ui/menu.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 
 // TODO: replaceText factory for setting isCacheWarmer and returning a function below
@@ -189,29 +188,6 @@ class Reader {
             $('#side-bar').classList.add('show')
         })
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
-
-        const menu = createMenu([
-            {
-                name: 'layout',
-                label: 'Layout',
-                type: 'radio',
-                items: [
-                    ['Paginated', 'paginated'],
-                    ['Scrolled', 'scrolled'],
-                ],
-                onclick: value => {
-                    this.view?.renderer.setAttribute('flow', value)
-                },
-            },
-        ])
-        menu.element.classList.add('menu')
-
-        $('#menu-button').append(menu.element)
-        $('#menu-button > button').addEventListener('click', () =>
-            menu.element.classList.toggle('show'))
-        
-        menu.groups.layout.select('paginated')
-//        menu.groups.layout.select('scrolled')
     }
     async open(file) {
         $('#loading-indicator').style.display = 'block'
@@ -223,8 +199,6 @@ class Reader {
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
         const { book } = this.view
-//        this.view.renderer.setAttribute('flow', 'scrolled')
-        this.view.renderer.setAttribute('flow', 'paginated')
         this.view.renderer.setStyles?.(getCSS(this.style))
 //        this.view.renderer.next()
         
@@ -416,8 +390,7 @@ class CacheWarmer {
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
         const { book } = this.view
-//        this.view.renderer.setAttribute('flow', 'scrolled')
-        this.view.renderer.setAttribute('flow', 'paginated')
+        this.view.renderer.setAttribute('flow', 'scrolled')
         //        this.view.renderer.next()
         
         await this.view.renderer.firstSection()
@@ -463,6 +436,11 @@ class CacheWarmer {
 //    .then(blob => open(new File([blob], new URL(url).pathname)))
 //    .catch(e => console.error(e))
 //else dropTarget.style.visibility = 'visible'
+
+
+window.setEbookViewerLayout = (layoutMode) => {
+    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+}
 
 window.loadNextCacheWarmerSection = async () => {
     await window.cacheWarmer.view.renderer.nextSection()
