@@ -278,7 +278,7 @@ public class ReaderFileManager: ObservableObject {
             try await drive.upload(from: fileURL, to: targetFilePath)
         }
         
-        let contentRef = try await refreshFileMetadata(drive: drive, relativePath: targetFilePath)
+        guard let contentRef = try await refreshFilesMetadata(drive: drive, relativePath: targetFilePath).first else { return nil }
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
         guard let content = realm.resolve(contentRef) else { return nil }
         Task.detached { [weak self] in
@@ -332,52 +332,62 @@ public class ReaderFileManager: ObservableObject {
         await refreshAllFilesMetadataTask?.value
     }
     
+    static let additionalFilePackageSuffixesToAvoidDescendingInto = [
+        ".epub",
+    ]
+    
     @MainActor
     func refreshFilesMetadata(drive: CloudDrive, relativePath: RootRelativePath? = nil) async throws -> [ThreadSafeReference<ContentFile>] {
         var files = [ThreadSafeReference<ContentFile>]()
+        var filesToUpdate: [(readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)] = []
+        
         for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
             try Task.checkCancellation()
             var tryRelativePath = RootRelativePath(path: url.relativePath)
             if let relativePath = relativePath {
                 tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
             }
-            if url.lastPathComponent.hasSuffix(".realm") || url.lastPathComponent.hasSuffix(".realm.lock") || url.lastPathComponent.hasSuffix(".realm.management") || url.lastPathComponent.hasSuffix(".realm.note") {
+            let lastPathComponent = url.lastPathComponent.lowercased()
+            if lastPathComponent.hasSuffix(".realm") || lastPathComponent.hasSuffix(".realm.lock") || lastPathComponent.hasSuffix(".realm.management") || lastPathComponent.hasSuffix(".realm.note") || lastPathComponent == "manabireaderlogs.zip" {
                 continue
             }
-            if !url.isFilePackage(), try await drive.directoryExists(at: tryRelativePath) {
+            if !url.isFilePackage(), !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }), try await drive.directoryExists(at: tryRelativePath) {
                 let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
                 files.append(contentsOf: discoveredFiles)
             } else {
-                let discoveredFile = try await refreshFileMetadata(drive: drive, relativePath: tryRelativePath)
-                files.append(discoveredFile)
+                let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
+                if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
+                    filesToUpdate.append((readerFileURL, tryRelativePath, drive))
+                }
             }
         }
-        return files
-    }
-    
-    @RealmBackgroundActor
-    private func refreshFileMetadata(drive: CloudDrive, relativePath: RootRelativePath) async throws -> ThreadSafeReference<ContentFile> {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { fatalError("Couldn't get Realm for refreshFileMetadata") }
-        let absoluteFileURL = try relativePath.fileURL(forRoot: drive.rootDirectory)
-        guard let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) else {
-            throw ReaderFileManagerError.invalidFileURL
-        }
-        let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first
         
-        if let existing = existing {
-            try await realm.asyncWrite {
-                setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
-            }
-            return ThreadSafeReference(to: existing)
-        } else {
-            let contentFile = ContentFile()
-            setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive)
-            contentFile.updateCompoundKey()
-            try await realm.asyncWrite {
-                realm.add(contentFile, update: .modified)
-            }
-            return ThreadSafeReference(to: contentFile)
+        if !filesToUpdate.isEmpty {
+            files = try await { @RealmBackgroundActor in
+                var updatedFiles = [ThreadSafeReference<ContentFile>]()
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else {
+                    fatalError("Couldn't get Realm for refreshFileMetadata")
+                }
+                
+                try await realm.asyncWrite {
+                    for (readerFileURL, _, drive) in filesToUpdate {
+                        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
+                            setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
+                            updatedFiles.append(ThreadSafeReference(to: existing))
+                        } else {
+                            let contentFile = ContentFile()
+                            setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive)
+                            contentFile.updateCompoundKey()
+                            realm.add(contentFile, update: .modified)
+                            updatedFiles.append(ThreadSafeReference(to: contentFile))
+                        }
+                    }
+                }
+                return updatedFiles
+            }()
         }
+        
+        return files
     }
     
     @RealmBackgroundActor
