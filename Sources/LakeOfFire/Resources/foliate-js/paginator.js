@@ -258,16 +258,35 @@ class View {
         const doc = this.document
         Object.assign(doc.documentElement.style, {
             boxSizing: 'border-box',
+//            padding: vertical ? `${gap}px 0` : `0 ${gap}px`,
             padding: vertical ? `${gap}px 0` : `0 ${gap}px`,
+//            border: `${gap}px solid transparent`,
+//            borderWidth: vertical ? `${gap}px 0` : `0 ${gap}px`,
             columnWidth: 'auto',
             height: 'auto',
             width: 'auto',
+            
+            // columnize parity
+            // columnGap: '0',
+            columnGap: `${gap}px`,
+            columnFill: 'auto',
+            overflow: 'hidden',
+            // force wrap long words
+            overflowWrap: 'anywhere',
+            // reset some potentially problematic props
+            position: 'static', border: '0', margin: '0',
+            maxHeight: 'none', maxWidth: 'none',
+            minHeight: 'none', minWidth: 'none',
+            // fix glyph clipping in WebKit
+            webkitLineBoxContain: 'block glyphs replaced',
         })
+        // columnize parity
+        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
         Object.assign(doc.body.style, {
             [vertical ? 'maxHeight' : 'maxWidth']: `${columnWidth}px`,
             margin: 'auto',
         })
-        //this.setImageSize()
+        this.setImageSize()
         this.#debouncedExpand()
 //        this.expand()
     }

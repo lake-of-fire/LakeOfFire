@@ -178,14 +178,20 @@ class Reader {
     }
     annotations = new Map()
     annotationsByValue = new Map()
+    openSideBar() {
+        $('#dimming-overlay').classList.add('show')
+        $('#side-bar').classList.add('show')
+    }
     closeSideBar() {
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
     }
     constructor() {
-        $('#side-bar-button').addEventListener('click', () => {
-            $('#dimming-overlay').classList.add('show')
-            $('#side-bar').classList.add('show')
+        $('#progress-button').addEventListener('click', () => {
+            this.openSideBar()
+        })
+        $('#side-bar-close-button').addEventListener('click', () => {
+            this.closeSideBar()
         })
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
     }
@@ -202,7 +208,6 @@ class Reader {
         this.view.renderer.setStyles?.(getCSS(this.style))
 //        this.view.renderer.next()
         
-        $('#header-bar').style.visibility = 'visible'
         $('#nav-bar').style.visibility = 'visible'
         $('#left-button').addEventListener('click', () => this.view.goLeft())
         $('#right-button').addEventListener('click', () => this.view.goRight())

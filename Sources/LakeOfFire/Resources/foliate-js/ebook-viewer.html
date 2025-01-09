@@ -79,21 +79,29 @@
                 background: rgba(0, 0, 0, .1);
                 color: currentcolor;
             }
-            #header-bar {
-                top: 0;
-            }
             #nav-bar {
                 bottom: 0;
                 -webkit-backdrop-filter: blur(30px);
             }
             #progress-button {
                 all: unset; /* Remove default styling */
-                /*flex-grow: 1;*/
-                margin: 0 8px;
+                margin: 0 5px;
+                padding: 1px 8px;
                 color: GrayText;
-                font-size: small;
+                border: 1px solid GrayText;
+                background: none;
+                font-size: x-small;
+                font-weight: 600;
                 -webkit-user-select: none;
                 visibility: hidden;
+                text-align: center;
+                border-radius: 9999px; /* Creates a capsule shape */
+                display: inline-block; /* Ensures proper rendering for pill shape */
+            }
+            #progress-button:hover {
+                background: rgba(0, 0, 0, .1);
+                color: currentcolor;
+                border-color: currentcolor;
             }
             #progress-slider {
                 flex-grow: 1;
@@ -112,7 +120,9 @@
                 transform: translateX(-320px);
                 display: flex;
                 flex-direction: column;
-                background: Canvas;
+                /*background: Canvas;*/
+                background-color: rgba(0, 0, 0, .5);
+                backdrop-filter: blur(20px);
                 color: CanvasText;
                 box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
                 transition: visibility 0s linear 300ms, transform 300ms ease;
@@ -121,6 +131,19 @@
                 visibility: visible;
                 transform: translateX(0);
                 transition-delay: 0s;
+            }
+            #side-bar-close-button {
+                all: unset;
+                position: absolute;
+                top: 0;
+                right: 1rem;
+                font-size: 20px;
+                font-weight: bold;
+                color: GrayText;
+                cursor: pointer;
+            }
+            #side-bar-close-button:hover {
+                color: currentcolor;
             }
             #dimming-overlay {
                 visibility: hidden;
@@ -313,19 +336,15 @@
         <div id="side-bar">
             <div id="side-bar-header">
                 <img id="side-bar-cover">
-                    <div>
-                        <h1 id="side-bar-title"></h1>
-                        <p id="side-bar-author"></p>
-                    </div>
+                <div>
+                    <h1 id="side-bar-title"></h1>
+                    <p id="side-bar-author"></p>
+                </div>
+                <button id="side-bar-close-button" aria-label="Close">
+                    &times;
+                </button>
             </div>
             <div id="toc-view"></div>
-        </div>
-        <div id="header-bar" class="toolbar">
-            <button id="side-bar-button" aria-label="Show sidebar">
-                <svg class="icon" width="24" height="24" aria-hidden="true">
-                    <path d="M 4 6 h 16 M 4 12 h 16 M 4 18 h 16"/>
-                </svg>
-            </button>
         </div>
         <div id="nav-bar" class="toolbar">
             <button id="left-button" aria-label="Go left">
@@ -333,9 +352,7 @@
                     <path d="M 15 6 L 9 12 L 15 18"/>
                 </svg>
             </button>
-            <button id="progress-button">
-                
-            </button>
+            <button id="progress-button"></button>
             <input id="progress-slider" type="range" min="0" max="1" step="any" list="tick-marks">
                 <datalist id="tick-marks"></datalist>
                 <button id="right-button" aria-label="Go right">
