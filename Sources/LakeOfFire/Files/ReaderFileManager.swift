@@ -310,7 +310,7 @@ public class ReaderFileManager: ObservableObject {
                     objectWillChange.send()
                     let discoveredURLs = files.map { $0.url }
 
-                    // Delete orphans
+                    // Delete orphans (objects with no corresponding file on disk)
                     try await { @RealmBackgroundActor in
                         try Task.checkCancellation()
                         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
@@ -363,7 +363,7 @@ public class ReaderFileManager: ObservableObject {
         }
         
         if !filesToUpdate.isEmpty {
-            files = try await { @RealmBackgroundActor in
+            let updatedFiles = try await { @RealmBackgroundActor in
                 var updatedFiles = [ThreadSafeReference<ContentFile>]()
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else {
                     fatalError("Couldn't get Realm for refreshFileMetadata")
@@ -385,6 +385,7 @@ public class ReaderFileManager: ObservableObject {
                 }
                 return updatedFiles
             }()
+            files.append(contentsOf: updatedFiles)
         }
         
         return files
