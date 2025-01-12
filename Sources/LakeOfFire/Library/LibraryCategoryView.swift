@@ -29,9 +29,9 @@ class LibraryCategoryViewModel: ObservableObject {
     
     var deleteButtonTitle: String {
         if category.isArchived {
-            return "Delete Category"
+            return "Delete"
         }
-        return "Archive Category"
+        return "Archive"
     }
     
     var deleteButtonImageName: String {

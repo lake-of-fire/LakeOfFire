@@ -393,7 +393,9 @@ struct LibraryCategoriesView: View {
 #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
+                    if viewModel.categories?.contains(where: { $0.isUserEditable }) ?? false {
+                        EditButton()
+                    }
                 }
                 ToolbarItemGroup(placement: addButtonPlacement) {
                     addCategoryButton(scrollProxy: scrollProxy)
