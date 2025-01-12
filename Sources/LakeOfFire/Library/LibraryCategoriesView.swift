@@ -253,7 +253,13 @@ struct LibraryCategoriesView: View {
     @ViewBuilder var libraryView: some View {
         ForEach(viewModel.categories ?? []) { category in
             NavigationLink(value: category) {
-                FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, font: .headline, isCompact: true)
+                FeedCategoryButtonLabel(
+                    title: category.title,
+                    backgroundImageURL: category.backgroundImageUrl,
+                    font: .headline,
+                    isCompact: true,
+                    showEditingDisabled: !category.isUserEditable
+                )
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .listRowSeparator(.hidden)
@@ -353,7 +359,7 @@ struct LibraryCategoriesView: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             List {
-                Section(header: Text("Import and Export"), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
+                Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
                 .labelStyle(.titleOnly)
@@ -389,8 +395,9 @@ struct LibraryCategoriesView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     EditButton()
                 }
-                ToolbarItem(placement: addButtonPlacement) {
+                ToolbarItemGroup(placement: addButtonPlacement) {
                     addCategoryButton(scrollProxy: scrollProxy)
+                    Spacer(minLength: 0)
                 }
             }
 #endif
@@ -403,7 +410,7 @@ struct LibraryCategoriesView: View {
                 let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
                 let ref = ThreadSafeReference(to: category)
                 try await Task { @MainActor in
-                    guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
                     guard let category = realm.resolve(ref) else { return }
                     categoryIDNeedsScrollTo = category.id.uuidString
                     try await Task.sleep(nanoseconds: 100_000_000_000)
@@ -413,8 +420,9 @@ struct LibraryCategoriesView: View {
             }
         } label: {
             Label("Add Category", systemImage: "plus.circle")
-                .labelStyle(.titleAndIcon)
         }
+        .labelStyle(.titleAndIcon)
+        .buttonStyle(.borderless)
         .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in
             guard let categoryIDNeedsScrollTo = categoryIDNeedsScrollTo else { return }
             Task { @MainActor in // Untested whether this is needed

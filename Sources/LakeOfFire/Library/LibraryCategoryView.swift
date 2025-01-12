@@ -223,9 +223,9 @@ struct LibraryCategoryView: View {
                 categoryLabel
                 
                 if let opmlURL = viewModel.category.opmlURL {
-                    Section(header: Label("Synced", systemImage: "lock.fill")) {
+                    Section(header: Label("Managed", systemImage: "lock.fill")) {
                         if LibraryConfiguration.opmlURLs.contains(opmlURL) {
-                            Text("Manabi Reader manages this category for you.")
+                            Text("Official Manabi Reader categories cannot be edited.")
                                 .foregroundStyle(.secondary)
                                 .lineLimit(9001)
                                 .fixedSize(horizontal: false, vertical: true)

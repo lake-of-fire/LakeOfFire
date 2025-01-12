@@ -187,6 +187,7 @@ public struct FeedCategoryButtonLabel: View {
     let backgroundImageURL: URL
     var font = Font.title3
     var isCompact = false
+    var showEditingDisabled: Bool = false
     
 #if os(iOS)
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 40
@@ -198,19 +199,29 @@ public struct FeedCategoryButtonLabel: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 #endif
     
+    private var titleToDisplay: String {
+        return title.isEmpty ? "Untitled" : title
+    }
+    
     public var body: some View {
         VStack(spacing: 0) {
-            Spacer()
-            Text(title.isEmpty ? "Untitled" : title)
-                .fontWeight(.bold)
-                .font(font)
-                .foregroundColor(.white)
-                .opacity(title.isEmpty ? 0.85 : 1)
-//                .shadow(color: .black.opacity(0.95), radius: 4)
-                .shadow(color: .black, radius: 1)
-                .shadow(color: .black, radius: 3)
-                .shadow(color: .black.opacity(0.5), radius: 15)
-            Spacer()
+            Spacer(minLength: 0)
+            HStack {
+                if showEditingDisabled {
+                    Image(systemName: "lock.fill")
+                }
+                Text(titleToDisplay)
+                    .bold()
+            }
+            .font(font)
+//            .foregroundColor(.white)
+            .foregroundStyle(.white)
+            .opacity(title.isEmpty ? 0.85 : 1)
+            //                .shadow(color: .black.opacity(0.95), radius: 4)
+            .shadow(color: .black, radius: 1)
+            .shadow(color: .black, radius: 3)
+            .shadow(color: .black.opacity(0.5), radius: 15)
+            Spacer(minLength: 0)
         }
         .frame(minHeight: isCompact ? nil : scaledCategoryHeight, alignment: .leading)
         //            .frame(maxWidth: isInSidebar || horizontalSizeClass == .compact ? .infinity : 190)
@@ -230,10 +241,18 @@ public struct FeedCategoryButtonLabel: View {
         .multilineTextAlignment(.leading)
     }
     
-    public init(title: String, backgroundImageURL: URL, font: Font = Font.title3, isCompact: Bool, scaledCategoryHeight: CGFloat? = nil) {
+    public init(
+        title: String,
+        backgroundImageURL: URL,
+        font: Font = Font.title3,
+        isCompact: Bool,
+        scaledCategoryHeight: CGFloat? = nil,
+        showEditingDisabled: Bool = false
+    ) {
         self.title = title
         self.backgroundImageURL = backgroundImageURL
         self.font = font
         self.isCompact = isCompact
+        self.showEditingDisabled = showEditingDisabled
     }
 }
