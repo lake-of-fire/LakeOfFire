@@ -367,7 +367,7 @@ public extension Feed {
                         imageUrl = URL(string: imageUrlRaw)
                     }
                 }
-                let content = item.content?.contentEncoded ?? item.description
+                let content = item.content?.encoded ?? item.description
                 
                 var title = item.title
                 do {
@@ -391,7 +391,7 @@ public extension Feed {
                 feedEntry.title = title ?? ""
                 feedEntry.author = item.author ?? ""
                 feedEntry.imageUrl = imageUrl
-                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.date
                 feedEntry.updateCompoundKey()
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
@@ -423,7 +423,7 @@ public extension Feed {
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
                 var url: URL?
                 var imageUrl: URL?
-                item.links?.forEach { (link: AtomFeedEntryLink) in
+                item.links?.forEach { (link: AtomFeedLink) in
                     guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else { return }
                     
                     if (link.attributes?.rel ?? "alternate") == "alternate" {
@@ -476,7 +476,7 @@ public extension Feed {
                 feedEntry.author = item.authors?.compactMap { $0.name } .joined(separator: ", ") ?? ""
                 feedEntry.imageUrl = imageUrl
                 feedEntry.publicationDate = item.published ?? item.updated
-                feedEntry.html = item.content?.value
+                feedEntry.html = item.content?.text
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
@@ -506,53 +506,29 @@ public extension Feed {
             throw FeedError.downloadFailed
         }
         rssData = cleanRssData(rssData)
-        let parser = FeedKit.FeedParser(data: rssData)
-        return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
-            parser.parseAsync { [weak self] parserResult in
-                guard let self = self else { return }
-                switch parserResult {
-                case .success(let feed):
-                    switch feed {
-                    case .rss(let rssFeed):
-                        guard let items = rssFeed.items else {
-                            continuation.resume(throwing: FeedError.parserFailed)
-                            return
-                        }
-                        Task { @MainActor [weak self] in
-                            guard let self = self else { return }
-                            do {
-                                try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-                                continuation.resume(returning: ())
-                            } catch {
-                                continuation.resume(throwing: error)
-                            }
-                        }
-                        return
-                    case .atom(let atomFeed):
-                        guard let items = atomFeed.entries else {
-                            continuation.resume(throwing: FeedError.parserFailed)
-                            return
-                        }
-                        Task { @MainActor [weak self] in
-                            guard let self = self else { return }
-                            do {
-                                try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-                                continuation.resume(returning: ())
-                            } catch {
-                                continuation.resume(throwing: error)
-                            }
-                        }
-                        return
-                    case .json(let jsonFeed):
-                        continuation.resume(throwing: FeedError.parserFailed)
-                        return
-                    }
-                case .failure(_):
-                    continuation.resume(throwing: FeedError.parserFailed)
-                    return
-                }
+        let feed = try await FeedKit.Feed(data: rssData)
+        switch feed {
+        case .rss(let rssFeed):
+            guard let items = rssFeed.channel?.items else {
+                throw FeedError.parserFailed
             }
-        })
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                try await persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+            }
+            return
+        case .atom(let atomFeed):
+            guard let items = atomFeed.entries else {
+                throw FeedError.parserFailed
+            }
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                try await persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+            }
+            return
+        case .json(let jsonFeed):
+            throw FeedError.parserFailed
+        }
     }
 }
 
