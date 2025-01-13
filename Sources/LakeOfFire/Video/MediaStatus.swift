@@ -4,12 +4,13 @@ import RealmSwiftGaps
 import BigSyncKit
 import SwiftUtilities
 
-public class MediaStatus: Object, UnownedSyncableObject {
+public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     @Persisted public var url = URL(string: "about:blank")!
     @Persisted public var providerMediaID: String?
 
-    @Persisted public var modifiedAt: Date
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
     @Persisted(originProperty: "mediaStatus") public var feeds: LinkingObjects<MediaTranscript>

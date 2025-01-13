@@ -85,6 +85,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
                 try await realm.asyncWrite {
                     block(feed)
+                    feed.modifiedAt = Date()
                 }
             }
         }
@@ -218,6 +219,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             guard let self = self else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: LibraryDataManager.realmConfiguration) { _, feed in
                 feed.rssUrl = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
+                feed.modifiedAt = Date()
             }
         }
     }

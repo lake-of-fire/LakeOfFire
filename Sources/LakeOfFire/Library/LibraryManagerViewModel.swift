@@ -251,6 +251,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         guard let category = category else { return }
         try await realm.asyncWrite {
             category.title = "User Library"
+            category.modifiedAt = Date()
         }
         guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
         try await realm.asyncWrite {
@@ -258,6 +259,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             if let title = title {
                 feed.title = title
             }
+            feed.modifiedAt = Date()
         }
         let assignRef = ThreadSafeReference(to: category)
         try await { @MainActor in

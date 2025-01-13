@@ -5,7 +5,7 @@ import BigSyncKit
 import FeedKit
 import RealmSwiftGaps
 
-public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, SoftDeletable {
+public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
     public var needsSyncToServer: Bool {
         return false
     }
@@ -17,9 +17,10 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     
     @Persisted public var title: String
     @Persisted public var backgroundImageUrl: URL
-    @Persisted public var createdAt: Date
-    @Persisted public var modifiedAt: Date
     @Persisted public var isArchived = false
+    
+    @Persisted public var createdAt: Date
+    @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     @Persisted(originProperty: "category") public var feeds: LinkingObjects<Feed>
     
@@ -37,7 +38,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     }
 }
 
-public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, SoftDeletable {
+public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
     public var needsSyncToServer: Bool {
         return false
     }
@@ -48,7 +49,6 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var markdownDescription = ""
     @Persisted public var rssUrl: URL
     @Persisted public var iconUrl: URL
-    @Persisted public var modifiedAt: Date
     
     @Persisted public var isReaderModeByDefault = true
     @Persisted public var rssContainsFullContent = false
@@ -60,6 +60,9 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
 
     @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
+    
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
     public enum CodingKeys: String, CodingKey, CaseIterable {
@@ -112,7 +115,6 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.displayPublicationDate = try container.decode(Bool.self, forKey: .displayPublicationDate)
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
-        self.modifiedAt = try container.decode(Date.self, forKey: .modifiedAt)
     }
 }
 

@@ -84,6 +84,7 @@ class LibraryCategoryViewModel: ObservableObject {
                 Task {
                     try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
                         category.title = categoryTitle
+                        category.modifiedAt = Date()
                     }
                 }
             }
@@ -96,8 +97,10 @@ class LibraryCategoryViewModel: ObservableObject {
                     try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
                         if categoryBackgroundImageURL.isEmpty {
                             category.backgroundImageUrl = URL(string: "about:blank")!
+                            category.modifiedAt = Date()
                         } else if let url = URL(string: categoryBackgroundImageURL) {
                             category.backgroundImageUrl = url
+                            category.modifiedAt = Date()
                         }
                     }
                 }
@@ -122,6 +125,7 @@ class LibraryCategoryViewModel: ObservableObject {
         guard feed.isUserEditable else { return }
         try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: ReaderContentLoader.feedEntryRealmConfiguration) { _, feed in
             feed.isDeleted = true
+            feed.modifiedAt = Date()
         }
     }
     

@@ -31,18 +31,20 @@ let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
 //    }
 //}
 
-public class LibraryConfiguration: Object, UnownedSyncableObject {
+public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadataRecordable {
     public static var securityApplicationGroupIdentifier = ""
     public static var downloadstDirectoryName = "library-configuration"
     public static var opmlURLs = [URL]()
 
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var opmlLastImportedAt: Date?
-    @Persisted public var modifiedAt: Date
-    @Persisted public var isDeleted = false
     
     @Persisted public var categories: RealmSwift.List<FeedCategory>
     @Persisted public var userScripts: RealmSwift.List<UserScript>
+    
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
+    @Persisted public var isDeleted = false
     
     public lazy var systemScripts: [WebViewUserScript] = {
         return [
@@ -248,10 +250,12 @@ public class LibraryDataManager: NSObject {
                     for (idx, candidate) in Array(configuration.userScripts).enumerated() {
                         if candidate.id == script.id {
                             configuration.userScripts.remove(at: idx)
+                            configuration.modifiedAt = Date()
                         }
                     }
                 } else if !configuration.userScripts.contains(script) {
                     configuration.userScripts.append(script)
+                    configuration.modifiedAt = Date()
                 }
             }
         }
@@ -268,6 +272,7 @@ public class LibraryDataManager: NSObject {
             let configuration = try await LibraryConfiguration.getOrCreate()
             try await realm.asyncWrite {
                 configuration.categories.append(category)
+                configuration.modifiedAt = Date()
             }
         }
         return category
@@ -298,6 +303,7 @@ public class LibraryDataManager: NSObject {
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
+                    feed.modifiedAt = Date()
                 }
             }
         } else {
@@ -343,6 +349,7 @@ public class LibraryDataManager: NSObject {
             let configuration = try await LibraryConfiguration.getOrCreate()
             try await realm.asyncWrite {
                 configuration.userScripts.append(script)
+                configuration.modifiedAt = Date()
             }
         }
         return script
@@ -412,6 +419,7 @@ public class LibraryDataManager: NSObject {
                 }
                 try await realm.asyncWrite {
                     configuration.userScripts.insert(script, at: lastNeighborIdx + 1)
+                    configuration.modifiedAt = Date()
                 }
             }
             try Task.checkCancellation()
@@ -426,6 +434,7 @@ public class LibraryDataManager: NSObject {
                 if let fromIdx = configuration.userScripts.firstIndex(where: { $0.id == desiredScript.id }), fromIdx != idx {
                     try await realm.asyncWrite {
                         configuration.userScripts.move(from: fromIdx, to: idx)
+                        configuration.modifiedAt = Date()
                     }
                 }
             }
@@ -446,6 +455,7 @@ public class LibraryDataManager: NSObject {
         if !scriptsToRemove.isEmpty {
             try await realm.asyncWrite {
                 configuration.userScripts.remove(atOffsets: scriptsToRemove)
+                configuration.modifiedAt = Date()
             }
         }
         
@@ -457,6 +467,7 @@ public class LibraryDataManager: NSObject {
                 if !allImportedCategoryIDs.contains(category.id) {
                     try await realm.asyncWrite {
                         category.isDeleted = true
+                        category.modifiedAt = Date()
                     }
                 }
             }
@@ -471,6 +482,7 @@ public class LibraryDataManager: NSObject {
                 if !allImportedFeedIDs.contains(feed.id) {
                     try await realm.asyncWrite {
                         feed.isDeleted = true
+                        feed.modifiedAt = Date()
                     }
                 }
             }
@@ -487,6 +499,7 @@ public class LibraryDataManager: NSObject {
                 }
                 try await realm.asyncWrite {
                     configuration.categories.insert(category, at: lastNeighborIdx + 1)
+                    configuration.modifiedAt = Date()
                 }
             }
             try Task.checkCancellation()
@@ -501,6 +514,7 @@ public class LibraryDataManager: NSObject {
                 if let fromIdx = configuration.categories.map({ $0.id }).firstIndex(of: desiredCategory.id), fromIdx != idx {
                     try await realm.asyncWrite {
                         configuration.categories.move(from: fromIdx, to: idx)
+                        configuration.modifiedAt = Date()
                     }
                 }
             }
@@ -521,6 +535,7 @@ public class LibraryDataManager: NSObject {
         if !toRemove.isEmpty {
             try await realm.asyncWrite {
                 configuration.categories.remove(atOffsets: toRemove)
+                configuration.modifiedAt = Date()
             }
         }
     }
@@ -534,6 +549,7 @@ public class LibraryDataManager: NSObject {
         if let realm = libraryConfiguration.realm {
             try await realm.asyncWrite {
                 libraryConfiguration.opmlLastImportedAt = Date()
+                libraryConfiguration.modifiedAt = Date()
             }
         }
     }

@@ -4,14 +4,15 @@ import RealmSwiftGaps
 import BigSyncKit
 import SwiftUtilities
 
-public class MediaTranscript: Object, UnownedSyncableObject {
+public class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadataRecordable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     @Persisted public var mediaStatus: MediaStatus?
     
     @Persisted public var languageCode: String
     @Persisted public var content: Data?
 
-    @Persisted public var modifiedAt: Date
+    @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
     public var needsSyncToServer: Bool {

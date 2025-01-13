@@ -62,6 +62,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
             if let idx = libraryConfiguration.userScripts.firstIndex(where: { $0.id == scriptID }) {
                 libraryConfiguration.userScripts.remove(at: idx)
+                libraryConfiguration.modifiedAt = Date()
             }
         }
         
@@ -107,6 +108,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
             guard let libraryConfiguration = libraryConfiguration else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
                 libraryConfiguration.userScripts.move(fromOffsets: fromOffsets, toOffset: toOffset)
+                libraryConfiguration.modifiedAt = Date()
             }
         }
     }

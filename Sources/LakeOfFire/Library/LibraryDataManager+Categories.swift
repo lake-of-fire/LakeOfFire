@@ -15,12 +15,15 @@ public extension LibraryDataManager {
         try await realm.asyncWrite {
             if let idx = libraryConfiguration.categories.firstIndex(of: category) {
                 libraryConfiguration.categories.remove(at: idx)
+                libraryConfiguration.modifiedAt = Date()
             }
             
             if category.isArchived && !LibraryConfiguration.opmlURLs.map({ $0 }).contains(category.opmlURL) {
                 category.isDeleted = true
+                category.modifiedAt = Date()
             } else if !category.isArchived {
                 category.isArchived = true
+                category.modifiedAt = Date()
             }
         }
     }
@@ -34,6 +37,7 @@ public extension LibraryDataManager {
             category.isArchived = false
             if !libraryConfiguration.categories.contains(category) {
                 libraryConfiguration.categories.append(category)
+                libraryConfiguration.modifiedAt = Date()
             }
         }
     }
