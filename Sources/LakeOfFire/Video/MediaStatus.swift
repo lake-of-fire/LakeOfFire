@@ -42,6 +42,7 @@ public class MediaStatus: Object, UnownedSyncableObject {
             if mediaStatus.isDeleted {
                 try await realm.asyncWrite {
                     mediaStatus.isDeleted = false
+                    mediaStatus.modifiedAt = Date()
                 }
             }
             return mediaStatus

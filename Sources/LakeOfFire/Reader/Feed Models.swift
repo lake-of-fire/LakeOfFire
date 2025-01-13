@@ -121,7 +121,7 @@ fileprivate actor FeedEntryActor {
     static var shared = FeedEntryActor()
 }
 
-public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, SoftDeletable {
+public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, ChangeMetadataRecordable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     public var keyPrefix: String? {
         return feed?.primaryKeyValue
@@ -203,6 +203,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, So
     
     #warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
     @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
     @MainActor
@@ -218,6 +219,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, So
                         guard let entry = realm.resolve(ref) else { return }
                         try await realm.asyncWrite {
                             entry.imageUrl = url
+                            entry.modifiedAt = Date()
                         }
                     }()
                 }
@@ -403,6 +405,7 @@ public extension Feed {
                         let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                         for orphan in orphans {
                             orphan.isDeleted = true
+                            orphan.modifiedAt = Date()
                         }
                     }
                     realm.add(entriesToPersist, update: .modified)
@@ -492,6 +495,7 @@ public extension Feed {
                         let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                         for orphan in orphans {
                             orphan.isDeleted = true
+                            orphan.modifiedAt = Date()
                         }
                     }
                     realm.add(entriesToPersist, update: .modified)

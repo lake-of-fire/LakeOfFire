@@ -68,10 +68,13 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     func hideReaderModeButtonBar(content: (any ReaderContentProtocol)) async throws {
-        try await content.asyncWrite { _, content in
-            content.isReaderModeOfferHidden = true
+        if !content.isReaderModeOfferHidden {
+            try await content.asyncWrite { _, content in
+                content.isReaderModeOfferHidden = true
+                content.modifiedAt = Date()
+            }
+            objectWillChange.send()
         }
-        objectWillChange.send()
     }
     
     @MainActor
@@ -105,6 +108,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 content.rssContainsFullContent = true
             }
+            content.modifiedAt = Date()
         }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader

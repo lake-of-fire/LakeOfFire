@@ -25,6 +25,7 @@ extension DeletableReaderContent {
         try await realm.asyncWrite {
 //            for videoStatus in realm.objects(VideoS)
             content.isDeleted = true
+            content.modifiedAt = Date()
         }
     }
     @RealmBackgroundActor
@@ -32,6 +33,7 @@ extension DeletableReaderContent {
         guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
         try await realm.asyncWrite {
             content.isDeleted = true
+            content.modifiedAt = Date()
         }
     }
 }

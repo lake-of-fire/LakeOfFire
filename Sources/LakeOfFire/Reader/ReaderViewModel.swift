@@ -81,6 +81,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
                 try await realm.asyncWrite {
                     content.lastVisitedAt = Date()
+                    content.modifiedAt = Date()
                 }
             }
         }
@@ -130,6 +131,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 try await content.asyncWrite { _, content in
                     content.title = newTitle
                     content.author = author ?? ""
+                    content.modifiedAt = Date()
                 }
                 refreshTitleInWebView(content: content)
             } else if state.pageURL.isEBookURL {

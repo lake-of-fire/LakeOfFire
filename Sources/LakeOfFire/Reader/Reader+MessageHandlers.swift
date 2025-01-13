@@ -30,6 +30,7 @@ internal extension Reader {
                 guard !result.outputHTML.isEmpty else {
                     try? await content.asyncWrite { _, content in
                         content.isReaderModeAvailable = false
+                        content.modifiedAt = Date()
                     }
                     return
                 }
@@ -58,6 +59,7 @@ internal extension Reader {
                 if !content.isReaderModeAvailable {
                     try? await content.asyncWrite { _, content in
                         content.isReaderModeAvailable = true
+                        content.modifiedAt = Date()
                     }
                 }
             },
@@ -92,6 +94,7 @@ internal extension Reader {
                         content.rssURLs.append(objectsIn: urls)
                         content.rssTitles.append(objectsIn: titles)
                         content.isRSSAvailable = !content.rssURLs.isEmpty
+                        content.modifiedAt = Date()
                     }
                 }
             },
@@ -111,6 +114,7 @@ internal extension Reader {
                         guard content.imageUrl != result.newImageURL else { continue }
                         try await content.realm?.asyncWrite {
                             content.imageUrl = result.newImageURL
+                            content.modifiedAt = Date()
                         }
                     }
                 }
@@ -146,8 +150,11 @@ fileprivate extension Reader {
     
     @MainActor
     func showOriginal() async throws {
-        try await readerContent.content.asyncWrite { _, content in
-            content.isReaderModeByDefault = false
+        if readerContent.content.isReaderModeByDefault {
+            try await readerContent.content.asyncWrite { _, content in
+                content.isReaderModeByDefault = false
+                content.modifiedAt = Date()
+            }
         }
         navigator.reload()
     }

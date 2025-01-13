@@ -4,7 +4,7 @@ import RealmSwiftGaps
 import SwiftCloudDrive
 import BigSyncKit
 
-public class Bookmark: Object, ReaderContentProtocol, SoftDeletable {
+public class Bookmark: Object, ReaderContentProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
@@ -38,6 +38,7 @@ public class Bookmark: Object, ReaderContentProtocol, SoftDeletable {
     @Persisted public var displayPublicationDate = true
     
     @Persisted public var createdAt = Date()
+    @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
     public func imageURLToDisplay() -> URL? {
@@ -51,6 +52,7 @@ public class Bookmark: Object, ReaderContentProtocol, SoftDeletable {
             try await realm.asyncWrite {
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
                     historyRecord.bookmark = bookmark
+                    historyRecord.modifiedAt = Date()
                 }
             }
         }
@@ -78,6 +80,7 @@ public extension Bookmark {
                 bookmark.rssContainsFullContent = rssContainsFullContent
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.isDeleted = false
+                bookmark.modifiedAt = Date()
             }
             return bookmark
         } else {
@@ -123,6 +126,7 @@ public extension Bookmark {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
         try await realm.asyncWrite {
             realm.objects(self).setValue(true, forKey: "isDeleted")
+            realm.objects(self).setValue(Date(), forKey: "modifiedAt")
         }
     }
 }

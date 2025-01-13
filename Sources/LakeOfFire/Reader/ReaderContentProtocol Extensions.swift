@@ -30,6 +30,7 @@ public extension ReaderContentProtocol {
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: config) else { return }
                 try await realm.writeAsync {
                     content.imageUrl = imageURL
+                    content.modifiedAt = Date()
                 }
             }
         }()

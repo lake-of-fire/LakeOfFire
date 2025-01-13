@@ -187,10 +187,12 @@ public struct ReaderContentLoader {
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
+                    match.modifiedAt = Date()
                 }
             } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
+                    match.modifiedAt = Date()
                 }
             }
 //            debugPrint("!! match", match?.url, match?.html)
@@ -383,6 +385,7 @@ public struct ReaderContentLoader {
                         content.isFromClipboard = true
                         content.rssContainsFullContent = true
                         content.url = url
+                        content.modifiedAt = Date()
                     }
                 }
             }()

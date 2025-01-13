@@ -124,6 +124,7 @@ public class ReaderFileManager: ObservableObject {
         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
             try await realm.asyncWrite {
                 existing.isDeleted = true
+                existing.modifiedAt = Date()
             }
         }
         let (drive, relativePath) = try await extract(fileURL: readerFileURL)
@@ -319,6 +320,7 @@ public class ReaderFileManager: ObservableObject {
                         try await realm.asyncWrite {
                             for orphan in orphans {
                                 orphan.isDeleted = true
+                                orphan.modifiedAt = Date()
                             }
                         }
                     }()
@@ -373,6 +375,7 @@ public class ReaderFileManager: ObservableObject {
                     for (readerFileURL, _, drive) in filesToUpdate {
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
+                            existing.modifiedAt = Date()
                             updatedFiles.append(ThreadSafeReference(to: existing))
                         } else {
                             let contentFile = ContentFile()

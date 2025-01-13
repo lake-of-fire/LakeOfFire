@@ -3,6 +3,7 @@ import RealmSwift
 import SwiftUIWebView
 import SwiftUtilities
 import RealmSwiftGaps
+import BigSyncKit
 
 @globalActor
 public actor ReaderContentReadingProgressLoader {
@@ -14,7 +15,7 @@ public actor ReaderContentReadingProgressLoader {
     public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
 }
 
-public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined {
+public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
     var compoundKey: String { get set }
     var keyPrefix: String? { get }
     
@@ -52,7 +53,8 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var displayPublicationDate: Bool { get set }
     
     var createdAt: Date { get }
-    var isDeleted: Bool { get }
+    var modifiedAt: Date { get set }
+    var isDeleted: Bool { get set }
     
     func imageURLToDisplay() async throws -> URL?
     func configureBookmark(_ bookmark: Bookmark)
@@ -286,6 +288,7 @@ public extension ReaderContentProtocol {
             }
             try await realm.asyncWrite {
                 bookmark.isDeleted = true
+                bookmark.modifiedAt = Date()
             }
             return true
         }()
@@ -338,6 +341,7 @@ public extension ReaderContentProtocol {
                 if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
                     record.configureBookmark(bookmark)
                 }
+                record.modifiedAt = Date()
             }
             return record
         } else {
