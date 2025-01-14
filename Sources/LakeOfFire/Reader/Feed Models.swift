@@ -518,19 +518,17 @@ public extension Feed {
             guard let items = rssFeed.channel?.items else {
                 throw FeedError.parserFailed
             }
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
+            try await { @MainActor [self] in
                 try await persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-            }
+            }()
             return
         case .atom(let atomFeed):
             guard let items = atomFeed.entries else {
                 throw FeedError.parserFailed
             }
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
+            try await { @MainActor [self] in
                 try await persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-            }
+            }()
             return
         case .json(let jsonFeed):
             throw FeedError.parserFailed
