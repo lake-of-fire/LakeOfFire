@@ -151,7 +151,7 @@ public struct ReaderContentLoader {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
                 return nil
-            } else if url.absoluteString == "about:blank" && !persist {
+            } else if url.absoluteString == "about:blank" { //}&& !persist {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 historyRecord.updateCompoundKey()
