@@ -400,16 +400,18 @@ public extension Feed {
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
-            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            if !entriesToPersist.isEmpty || deleteOrphans {
+            if deleteOrphans {
                 try await realm.asyncWrite {
-                    if deleteOrphans {
-                        let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                        for orphan in orphans {
-                            orphan.isDeleted = true
-                            orphan.modifiedAt = Date()
-                        }
+                    let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                    for orphan in orphans {
+                        orphan.isDeleted = true
+                        orphan.modifiedAt = Date()
                     }
+                }
+            }
+            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
+            if !entriesToPersist.isEmpty {
+                try await realm.asyncWrite {
                     realm.add(entriesToPersist, update: .modified)
                 }
             }
