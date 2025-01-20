@@ -407,15 +407,28 @@ public class LibraryDataManager: NSObject {
     public func getOrCreateAppFeed(rssURL: URL, isReaderModeByDefault: Bool, rssContainsFullContent: Bool) async throws -> Feed? {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return nil }
         var feed = Feed()
-        if let existing = realm.objects(Feed.self).where({ !$0.isDeleted && $0.category == nil }).first(where: { $0.rssUrl == rssURL }) {
+        let existingAppFeeds = realm.objects(Feed.self).where({ !$0.isDeleted && $0.category == nil }).filter { $0.rssUrl == rssURL }
+        if let existing = existingAppFeeds.first {
             feed = existing
             if feed.meaningfulContentMinLength != 0 || feed.isReaderModeByDefault != isReaderModeByDefault || feed.rssContainsFullContent != rssContainsFullContent || !feed.deleteOrphans {
                 try await realm.asyncWrite {
                     feed.deleteOrphans = true
+                    feed.isArchived = false
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
                     feed.modifiedAt = Date()
+                }
+            }
+            
+            // Delete any duplicate feeds perhaps synced from other devices via iCloud
+            let dupeFeeds = existingAppFeeds.filter { $0.id != existing.id }
+            if !dupeFeeds.isEmpty {
+                try await realm.asyncWrite {
+                    for dupeFeed in dupeFeeds {
+                        dupeFeed.isDeleted = true
+                        dupeFeed.modifiedAt = Date()
+                    }
                 }
             }
         } else {

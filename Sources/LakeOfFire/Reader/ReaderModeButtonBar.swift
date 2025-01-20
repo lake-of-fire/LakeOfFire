@@ -11,7 +11,6 @@ public struct ReaderModeButtonBar: View {
         ZStack {
             Group {
                 ReaderModeButton()
-                    .labelStyle(.titleOnly)
                     .padding(.horizontal, 44)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
