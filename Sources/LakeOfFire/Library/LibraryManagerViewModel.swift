@@ -136,74 +136,59 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             for objectType in exportableTypes {
                 guard let objectType = objectType as? Object.Type else { continue }
                 realm.objects(objectType)
-                    .changesetPublisher
+                    .collectionPublisher
+                    .subscribe(on: libraryDataQueue)
+                    .map { _ in }
+                    .receive(on: RunLoop.main)
                     .handleEvents(receiveOutput: { [weak self] changes in
+                        self?.exportedOPML = nil
+                        self?.exportedOPMLFileURL = nil
+                        self?.exportOPMLTask?.cancel()
+                    })
+                    .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
+                    .sink(receiveCompletion: { _ in }, receiveValue: { _ in
                         Task { @MainActor [weak self] in
-                            self?.exportedOPML = nil
-                            self?.exportedOPMLFileURL = nil
-                            self?.exportOPMLTask?.cancel()
+                            self?.refreshOPMLExport()
                         }
                     })
-                    .debounce(for: .seconds(0.05), scheduler: RunLoop.main)
-                    .sink { [weak self] changes in
-                        switch changes {
-                        case .initial(_):
-                            Task { @MainActor [weak self] in
-                                self?.refreshOPMLExport()
-                            }
-                        case .update(_, deletions: _, insertions: _, modifications: _):
-                            Task { @MainActor [weak self] in
-                                self?.refreshOPMLExport()
-                            }
-                        case .error(let error):
-                            print(error.localizedDescription)
-                        }
-                    }
                     .store(in: &cancellables)
             }
             
             realm.objects(UserScript.self)
-                .changesetPublisher
-                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
-                .sink { [weak self] changes in
-                    switch changes {
-                    case .initial(_):
-                        Task { @MainActor [weak self] in
-                            self?.objectWillChange.send()
-                        }
-                    case .update(_, deletions: _, insertions: _, modifications: _):
-                        Task { @MainActor [weak self] in
-                            self?.objectWillChange.send()
-                        }
-                    case .error(let error):
-                        print(error.localizedDescription)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.2), scheduler: RunLoop.main)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @MainActor [weak self] in
+                        self?.objectWillChange.send()
                     }
-                }
+                })
                 .store(in: &cancellables)
             
-            let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-            objectNotificationToken = libraryConfiguration
-                .observe { [weak self] change in
-                    guard let self = self else { return }
-                    switch change {
-                    case .change(_, _):
-                        Task { @MainActor [weak self] in
-                            self?.objectWillChange.send()
-                        }
-                    case .error(let error):
-                        print("An error occurred: \(error)")
-                    case .deleted:
-                        print("LibraryConfiguration object was deleted.")
+            realm.objects(LibraryConfiguration.self)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @MainActor [weak self] in
+                        let currentConfigurationID = libraryConfiguration?.id
+                        try await { @RealmBackgroundActor in
+                            let newLibraryConfigurationID = try await LibraryConfiguration.getConsolidatedOrCreate().id
+                            try await { @MainActor [weak self] in
+                                if newLibraryConfigurationID != currentConfigurationID {
+                                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                                    guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
+                                    self?.libraryConfiguration = libraryConfiguration
+                                } else {
+                                    self?.objectWillChange.send()
+                                }
+                            }()
+                        }()
                     }
-                }
-            
-            let ref = ThreadSafeReference(to: libraryConfiguration)
-            try await Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                guard let libraryConfiguration = realm.resolve(ref) else { return }
-                self.libraryConfiguration = libraryConfiguration
-            }
+                })
+                .store(in: &cancellables)
         }
     }
     

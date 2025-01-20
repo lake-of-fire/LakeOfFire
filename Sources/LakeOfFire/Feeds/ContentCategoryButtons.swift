@@ -1,49 +1,48 @@
 import SwiftUI
+import Combine
 import RealmSwiftGaps
 import RealmSwift
 
 @MainActor
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
-    @Published var libraryConfiguration: LibraryConfiguration? {
-        didSet {
-            Task { @RealmBackgroundActor [weak self] in
-                guard let self = self else { return }
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
-                let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-                objectNotificationToken?.invalidate()
-                objectNotificationToken = libraryConfiguration
-                    .observe(keyPaths: ["id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
-                        guard let self = self else { return }
-                        switch change {
-                        case .change(_, _), .deleted:
-                            Task { @MainActor [weak self] in
-                                self?.objectWillChange.send()
-                            }
-                        case .error(let error):
-                            print("An error occurred: \(error)")
-                        }
-                    }
-            }
-        }
-    }
-    
-    @RealmBackgroundActor
-    private var objectNotificationToken: NotificationToken?
+    @Published var libraryConfiguration: LibraryConfiguration?
 
+    @RealmBackgroundActor
+    private var cancellables = Set<AnyCancellable>()
+    
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration)
-                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
-                self.libraryConfiguration = libraryConfiguration
-            }
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            
+            realm.objects(LibraryConfiguration.self)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @RealmBackgroundActor in
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                        let libraryConfigurationID = libraryConfiguration.id
+                        
+                        try await { @MainActor [weak self] in
+                            guard let self else { return }
+                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
+                        }()
+                    }
+                })
+                .store(in: &cancellables)
+ 
+            realm.objects(FeedCategory.self)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    self?.objectWillChange.send() // Refresh view for LibraryConfiguration's categories
+                })
+                .store(in: &cancellables)
         }
-    }
-    
-    deinit {
-        objectNotificationToken?.invalidate()
     }
 }
 
@@ -77,7 +76,7 @@ public struct ContentCategoryButtons: View {
     }
     
     public var body: some View {
-        if let categories = viewModel.libraryConfiguration?.categories {
+        if let categories = viewModel.libraryConfiguration?.activeCategories {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
                 BooksCategoryButton(
                     categorySelection: $categorySelection,

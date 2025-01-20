@@ -19,85 +19,53 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
-    @Published var libraryConfiguration: LibraryConfiguration? {
-        didSet {
-            setCategories(from: libraryConfiguration)
-            Task { @RealmBackgroundActor [weak self] in
-                guard let self = self else { return }
-                let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-                objectNotificationToken?.invalidate()
-                objectNotificationToken = libraryConfiguration
-                    .observe(keyPaths: ["id", "isDeleted", "categories.id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
-                        guard let self = self else { return }
-                        switch change {
-                        case .change(let object, _):
-                            guard let libraryConfiguration = object as? LibraryConfiguration else { return }
-                            let ref = ThreadSafeReference(to: libraryConfiguration)
-                            Task { @MainActor [weak self] in
-                                guard let self = self else { return }
-                                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                                if let libraryConfiguration = realm.resolve(ref) {
-                                    setCategories(from: libraryConfiguration)
-                                }
-                            }
-                        case .deleted:
-                            Task { @MainActor [weak self] in
-                                self?.categories = nil
-                            }
-                        case .error(let error):
-                            print("An error occurred: \(error)")
-                        }
-                    }
-            }
-        }
-    }
-    
-    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    @Published var libraryConfiguration: LibraryConfiguration?
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            guard let self else { return }
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
 
-            realm.objects(FeedCategory.self)
-                .where { !$0.isDeleted }
+            realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryCategoriesQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        guard let self = self else { return }
-                        let libraryConfiguration = try await LibraryConfiguration.getOnMain()
-                        let activeCategoryIDs = libraryConfiguration?.categories.map { $0.id } ?? []
-                        
-                        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                        let categories = realm.objects(FeedCategory.self).where { !$0.isDeleted }
-                        self.archivedCategories = Array(categories.filter { category in
-                            category.isArchived
-                            || !activeCategoryIDs.contains(category.id)
-                        })
-                    }
+                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    self?.refreshData()
                 })
                 .store(in: &cancellables)
             
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
-                self.libraryConfiguration = libraryConfiguration
-            }
+            realm.objects(FeedCategory.self)
+                .collectionPublisher
+                .subscribe(on: libraryCategoriesQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: libraryCategoriesQueue)
+                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                    self?.refreshData()
+                })
+                .store(in: &cancellables)
         }
     }
-    
-    deinit {
-        Task { @RealmBackgroundActor [objectNotificationToken] in
-            objectNotificationToken?.invalidate()
-        }
-    }
-    
         
+    private func refreshData() {
+        Task { @RealmBackgroundActor in
+            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let libraryConfigurationID = libraryConfiguration.id
+            
+            try await { @MainActor [weak self] in
+                guard let self else { return }
+                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                
+                guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID) else { return }
+                self.libraryConfiguration = libraryConfiguration
+                self.categories = Array(libraryConfiguration.categories)
+
+                let activeCategoryIDs = libraryConfiguration.activeCategories.map { $0.id } ?? []
+                self.archivedCategories = Array(realm.objects(FeedCategory.self).where { ($0.isArchived || !$0.id.in(activeCategoryIDs)) && !$0.isDeleted })
+            }()
+        }
+    }
+    
     func deletionTitle(category: FeedCategory) -> String {
         if category.isArchived {
             return "Delete Category"
@@ -111,14 +79,6 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     
     func showRestoreButton(category: FeedCategory) -> Bool {
         return category.isUserEditable && category.isArchived
-    }
-    
-    private func setCategories(from libraryConfiguration: LibraryConfiguration?) {
-        guard let libraryConfiguration = libraryConfiguration else {
-            categories = nil
-            return
-        }
-        categories = Array(libraryConfiguration.categories).filter { !$0.isArchived && !$0.isDeleted }
     }
 
     @MainActor

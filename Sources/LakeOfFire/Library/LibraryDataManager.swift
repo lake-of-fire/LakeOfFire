@@ -64,6 +64,10 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return categories.where { $0.opmlURL == nil }
     }
     
+    public var activeCategories: Results<FeedCategory> {
+        return categories.where { !$0.isArchived && !$0.isDeleted }
+    }
+
     public var downloadables: Set<Downloadable> {
         guard !Self.securityApplicationGroupIdentifier.isEmpty else { fatalError("securityApplicationGroupIdentifier unset") }
         return Set(Self.opmlURLs.compactMap { url in
@@ -92,45 +96,140 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         let scripts = Array(userScripts.where { $0.isDeleted == false && $0.isArchived == false }.map { $0.webViewUserScript })
         return scripts
     }
-    
-    public static func get() throws -> LibraryConfiguration? {
-        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
-        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
-            return configuration
-        }
-        return nil
-    }
+//    
+//    public static func get() throws -> LibraryConfiguration? {
+//        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
+//        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
+//            return configuration
+//        }
+//        return nil
+//    }
+//    
+//    @RealmBackgroundActor
+//    public static func get() async throws -> LibraryConfiguration? {
+//        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return nil }
+//        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
+//            return configuration
+//        }
+//        return nil
+//    }
+//    
+//    @MainActor
+//    public static func getOnMain() async throws -> LibraryConfiguration? {
+//        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+//        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
+//            return configuration
+//        }
+//        return nil
+//    }
     
     @RealmBackgroundActor
-    public static func get() async throws -> LibraryConfiguration? {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return nil }
-        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
-            return configuration
-        }
-        return nil
-    }
-    
-    @MainActor
-    public static func getOnMain() async throws -> LibraryConfiguration? {
-        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
-            return configuration
-        }
-        return nil
-    }
-    
-    @RealmBackgroundActor
-    public static func getOrCreate() async throws -> LibraryConfiguration {
+    public static func getConsolidatedOrCreate() async throws -> LibraryConfiguration {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { fatalError("No Realm for LibraryDataManager getOrCreate") }
-        if let configuration = try await get() {
-            return configuration
+        
+        // Take oldest as primary. Consolidate newer ones into it.
+        let configurations = Array(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted } .sorted(by: \.modifiedAt, ascending: true))
+        if let primaryConfiguration = configurations.first {
+            let otherConfigurations = configurations.dropFirst()
+            
+            // Remove archived or deleted categories
+            let inactiveCategoryIDs = primaryConfiguration.categories.where({ $0.isArchived || $0.isDeleted }).map({ $0.id })
+            if !inactiveCategoryIDs.isEmpty {
+                try await realm.asyncWrite {
+                    // Remove items in reverse order to prevent index shifting
+                    var sortedIndexes = [Int]()
+                    for (index, category) in primaryConfiguration.categories.enumerated() {
+                        if inactiveCategoryIDs.contains(category.id) {
+                            sortedIndexes.append(index)
+                        }
+                    }
+                    sortedIndexes.sort(by: >)
+                    for index in sortedIndexes {
+                        primaryConfiguration.categories.remove(at: index)
+                    }
+                }
+            }
+
+            if !otherConfigurations.isEmpty {
+                let primaryCategoryIDs = Set(primaryConfiguration.categories.map { $0.id })
+                let primaryUserScriptIDs = Set(primaryConfiguration.userScripts.map { $0.id })
+                
+                try await realm.asyncWrite {
+                    // Consolidate categories
+                    for otherConfig in otherConfigurations {
+                        var newCategories: [FeedCategory] = []
+                        for category in otherConfig.categories where !category.isArchived && !category.isDeleted {
+                            if !primaryCategoryIDs.contains(category.id)
+                                && !newCategories.contains(where: { $0.id == category.id }) {
+                                newCategories.append(category)
+                            }
+                        }
+                        // Merge newCategories into primaryConfiguration.categories in the correct order
+                        for category in newCategories {
+                            // Find the index of the last matching category that exists in both primary and otherConfig
+                            if let lastMatchingIndex = primaryConfiguration.categories.lastIndex(where: { otherConfig.categories.firstIndex(of: $0) != nil }),
+                               let insertIndexInPrimary = primaryConfiguration.categories.index(of: primaryConfiguration.categories[lastMatchingIndex]) {
+                                primaryConfiguration.categories.insert(category, at: insertIndexInPrimary + 1)
+                            } else {
+                                // If no preceding category exists, append to the end
+                                primaryConfiguration.categories.append(category)
+                            }
+                        }
+                    }
+                    
+                    // Consolidate userScripts
+                    for otherConfig in otherConfigurations {
+                        var newScripts: [UserScript] = []
+                        for script in otherConfig.userScripts where !script.isArchived && !script.isDeleted {
+                            if !primaryUserScriptIDs.contains(script.id) &&
+                                !newScripts.contains(where: { $0.id == script.id }) {
+                                newScripts.append(script)
+                            }
+                        }
+                        // Merge newScripts into primaryConfiguration.userScripts in the correct order
+                        for script in newScripts {
+                            // Find the index of the last matching script that exists in both primary and otherConfig
+                            if let lastMatchingIndex = primaryConfiguration.userScripts.lastIndex(where: { otherConfig.userScripts.firstIndex(of: $0) != nil }),
+                               let insertIndexInPrimary = primaryConfiguration.userScripts.index(of: primaryConfiguration.userScripts[lastMatchingIndex]) {
+                                primaryConfiguration.userScripts.insert(script, at: insertIndexInPrimary + 1)
+                            } else {
+                                // If no preceding script exists, append to the end
+                                primaryConfiguration.userScripts.append(script)
+                            }
+                        }
+                    }
+                    
+                    // Delete consolidated configurations
+                    for otherConfig in otherConfigurations {
+                        otherConfig.isDeleted = true
+                        otherConfig.modifiedAt = Date()
+                    }
+                    primaryConfiguration.modifiedAt = Date()
+                }
+            }
+            
+            // Add orphaned categories
+            let updatedCategoryIDs = Array(primaryConfiguration.categories.map { $0.id })
+            let orphanCategories = Array(realm.objects(FeedCategory.self).where {
+                !$0.isDeleted && !$0.isArchived && !$0.id.in(updatedCategoryIDs)
+            })
+            if !orphanCategories.isEmpty {
+                try await realm.asyncWrite {
+                    for category in orphanCategories {
+                        primaryConfiguration.categories.append(category)
+                    }
+                    primaryConfiguration.modifiedAt = Date()
+                }
+            }
+            
+            return primaryConfiguration
         }
         
-        let configuration = LibraryConfiguration()
+        let newConfiguration = LibraryConfiguration()
         try await realm.asyncWrite {
-            realm.add(configuration, update: .modified)
+            realm.add(newConfiguration, update: .modified)
         }
-        return configuration
+        return newConfiguration
     }
     
     public override init() {
@@ -225,11 +324,12 @@ public class LibraryDataManager: NSObject {
         
         Task { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: Self.realmConfiguration) else { return }
-            realm.objects(UserScript.self)
+            
+            realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.1), scheduler: RunLoop.main)
+                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
@@ -237,13 +337,25 @@ public class LibraryDataManager: NSObject {
                     }
                 })
                 .store(in: &realmCancellables)
-            //        }
+            
+            realm.objects(UserScript.self)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    Task { @RealmBackgroundActor [weak self] in
+                        guard let self = self else { return }
+                        try await refreshScripts()
+                    }
+                })
+                .store(in: &realmCancellables)
         }
     }
     
     @RealmBackgroundActor
     private func refreshScripts() async throws {
-        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getOrCreate()), configuration: LibraryDataManager.realmConfiguration) { realm, configuration in
+        try await Realm.asyncWrite(ThreadSafeReference(to: LibraryConfiguration.getConsolidatedOrCreate()), configuration: LibraryDataManager.realmConfiguration) { realm, configuration in
             let scripts = Array(realm.objects(UserScript.self))
             for script in scripts {
                 if script.isDeleted {
@@ -269,7 +381,7 @@ public class LibraryDataManager: NSObject {
             realm.add(category, update: .modified)
         }
         if addToLibrary {
-            let configuration = try await LibraryConfiguration.getOrCreate()
+            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
             try await realm.asyncWrite {
                 configuration.categories.append(category)
                 configuration.modifiedAt = Date()
@@ -346,7 +458,7 @@ public class LibraryDataManager: NSObject {
             try await realm.asyncWrite {
                 realm.add(script, update: .modified)
             }
-            let configuration = try await LibraryConfiguration.getOrCreate()
+            let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
             try await realm.asyncWrite {
                 configuration.userScripts.append(script)
                 configuration.modifiedAt = Date()
@@ -358,7 +470,7 @@ public class LibraryDataManager: NSObject {
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
         Task.detached { @MainActor in
-            let downloadables = try await LibraryConfiguration.getOrCreate().downloadables
+            let downloadables = try await LibraryConfiguration.getConsolidatedOrCreate().downloadables
             await DownloadController.shared.ensureDownloaded(downloadables)
         }
     }
@@ -380,7 +492,7 @@ public class LibraryDataManager: NSObject {
         var allImportedCategories = OrderedSet<FeedCategory>()
         var allImportedFeeds = OrderedSet<Feed>()
         var allImportedScripts = OrderedSet<UserScript>()
-        let configuration = try await LibraryConfiguration.getOrCreate()
+        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
         guard let realm = configuration.realm else { return }
         
         for entry in opml.entries {
@@ -545,7 +657,7 @@ public class LibraryDataManager: NSObject {
         try Task.checkCancellation()
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
         download.finishedLoadingDuringCurrentLaunchAt = Date()
-        let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         if let realm = libraryConfiguration.realm {
             try await realm.asyncWrite {
                 libraryConfiguration.opmlLastImportedAt = Date()
@@ -991,7 +1103,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func exportUserOPML() async throws -> OPML {
-        let configuration = try await LibraryConfiguration.getOrCreate()
+        let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
         let userCategories = configuration.categories.where { $0.opmlOwnerName == nil && $0.opmlURL == nil && !$0.isDeleted }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [

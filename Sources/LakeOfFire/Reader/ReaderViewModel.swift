@@ -32,37 +32,49 @@ public class ReaderViewModel: NSObject, ObservableObject {
         
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let configuration = try await LibraryConfiguration.getOrCreate()
-            let ref = ThreadSafeReference(to: configuration)
-            try await Task { @MainActor [weak self] in
-                let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
-                guard let self = self, let configuration = realm.resolve(ref) else { return }
-                self.webViewSystemScripts = systemScripts + configuration.systemScripts
-                self.webViewUserScripts = configuration.activeWebViewUserScripts
-            }.value
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
             
-            Task { @RealmBackgroundActor [weak self] in
-                guard let self = self else { return }
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
-                realm.objects(UserScript.self)
-                    .collectionPublisher
-                    .subscribe(on: readerViewModelQueue)
-                    .map { _ in }
-                    .debounce(for: .seconds(1), scheduler: readerViewModelQueue)
-                    .receive(on: readerViewModelQueue)
-                    .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                        Task { @MainActor [weak self] in
-                            try await self?.updateScripts()
-                        }
-                    })
-                    .store(in: &self.cancellables)
-            }
+            realm.objects(LibraryConfiguration.self)
+                .collectionPublisher
+                .subscribe(on: readerViewModelQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: readerViewModelQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @RealmBackgroundActor in
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                        let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
+                        let webViewUserScripts = libraryConfiguration.activeWebViewUserScripts
+                        try await { @MainActor [weak self] in
+                            guard let self else { return }
+                            if self.webViewSystemScripts != webViewSystemScripts {
+                                self.webViewSystemScripts = webViewSystemScripts
+                            }
+                            if self.webViewUserScripts != webViewUserScripts {
+                                self.webViewUserScripts = webViewUserScripts
+                            }
+                        }()
+                    }
+                })
+                .store(in: &cancellables)
+            
+            realm.objects(UserScript.self)
+                .collectionPublisher
+                .subscribe(on: readerViewModelQueue)
+                .map { _ in }
+                .debounce(for: .seconds(1), scheduler: readerViewModelQueue)
+                .receive(on: readerViewModelQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        try await self?.updateScripts()
+                    }
+                })
+                .store(in: &self.cancellables)
         }
     }
     
     @RealmBackgroundActor
     private func updateScripts() async throws {
-        let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         let ref = ThreadSafeReference(to: libraryConfiguration)
         Task { @MainActor [weak self] in
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)

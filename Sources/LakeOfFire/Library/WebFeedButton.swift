@@ -8,38 +8,7 @@ import Combine
 
 @MainActor
 class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
-    @Published var libraryConfiguration: LibraryConfiguration? {
-        didSet {
-            setCategories(from: libraryConfiguration)
-            Task { @RealmBackgroundActor [weak self] in
-                guard let self = self else { return }
-                let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-                libraryConfigurationObjectNotificationToken?.invalidate()
-                libraryConfigurationObjectNotificationToken = libraryConfiguration
-                    .observe(keyPaths: ["id", "isDeleted", "categories.id", "categories.title", "categories.backgroundImageUrl", "categories.isArchived", "categories.isDeleted"]) { [weak self] change in
-                        guard let self = self else { return }
-                        switch change {
-                        case .change(let object, _):
-                            guard let libraryConfiguration = object as? LibraryConfiguration else { return }
-                            let ref = ThreadSafeReference(to: libraryConfiguration)
-                            Task { @MainActor [weak self] in
-                                guard let self = self else { return }
-                                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                                if let libraryConfiguration = realm.resolve(ref) {
-                                    setCategories(from: libraryConfiguration)
-                                }
-                            }
-                        case .deleted:
-                            Task { @MainActor [weak self] in
-                                self?.userCategories = nil
-                            }
-                        case .error(let error):
-                            print("An error occurred: \(error)")
-                        }
-                    }
-            }
-        }
-    }
+    @Published var libraryConfiguration: LibraryConfiguration?
     
     @Published var userCategories: [FeedCategory]? = nil
     @Published var feed: Feed?
@@ -52,7 +21,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
             }
             
             Task { @RealmBackgroundActor in
-                cancellables.forEach { $0.cancel() }
+                rssURLsCancellables.forEach { $0.cancel() }
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
                 realm.objects(Feed.self)
                     .where { !$0.isDeleted }
@@ -76,37 +45,53 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                             }
                         }
                     })
-                    .store(in: &cancellables)
+                    .store(in: &rssURLsCancellables)
             }
         }
     }
     
     @RealmBackgroundActor private var readerContentObjectNotificationToken: NotificationToken?
-    @RealmBackgroundActor private var libraryConfigurationObjectNotificationToken: NotificationToken?
     
     var isDisabled: Bool {
         return rssURLs?.isEmpty ?? true
     }
 
     @RealmBackgroundActor
+    private var rssURLsCancellables = Set<AnyCancellable>()
+    @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
-    
+
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            let libraryConfigurationRef = try await ThreadSafeReference(to: LibraryConfiguration.getOrCreate())
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                guard let libraryConfiguration = realm.resolve(libraryConfigurationRef) else { return }
-                self.libraryConfiguration = libraryConfiguration
-            }
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            
+            realm.objects(LibraryConfiguration.self)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @RealmBackgroundActor in
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                        let libraryConfigurationID = libraryConfiguration.id
+                        
+                        try await { @MainActor [weak self] in
+                            guard let self else { return }
+                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
+                            self.libraryConfiguration = libraryConfiguration
+                            setCategories(from: libraryConfiguration)
+
+                        }()
+                    }
+                })
+                .store(in: &cancellables)
         }
     }
     
     deinit {
-        Task { @RealmBackgroundActor [readerContentObjectNotificationToken, libraryConfigurationObjectNotificationToken] in
+        Task { @RealmBackgroundActor [readerContentObjectNotificationToken] in
             readerContentObjectNotificationToken?.invalidate()
-            libraryConfigurationObjectNotificationToken?.invalidate()
         }
     }
     

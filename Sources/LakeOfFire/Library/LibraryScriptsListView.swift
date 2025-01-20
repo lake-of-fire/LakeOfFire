@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import RealmSwift
 import RealmSwiftGaps
 
@@ -7,46 +8,33 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration?
     @Published var userScripts: [UserScript]? = nil
     
-    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    @RealmBackgroundActor
+    private var cancellables = Set<AnyCancellable>()
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
-            let libraryConfiguration = try await LibraryConfiguration.getOrCreate()
-            objectNotificationToken = libraryConfiguration
-                .observe { [weak self] change in
-                    guard let self = self else { return }
-                    switch change {
-                    case .change(_, _):
-                        let userScripts = Array(libraryConfiguration.userScripts)
-                        let refs = userScripts.map { ThreadSafeReference(to: $0) }
-                        Task { @MainActor [weak self] in
-                            guard let self = self else { return }
-                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                            let userScripts = refs.compactMap { realm.resolve($0) }
-                            self.userScripts = userScripts
-                        }
-                    case .error(let error):
-                        print("An error occurred: \(error)")
-                    case .deleted:
-                        print("The object was deleted.")
-                    }
-                }
+            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
             
-            let refs = Array(libraryConfiguration.userScripts).map { ThreadSafeReference(to: $0) }
-            try await Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-                let userScripts = refs.compactMap { realm.resolve($0) }
-                self.userScripts = userScripts
-                self.libraryConfiguration = libraryConfiguration
-            }.value
-        }
-    }
-    
-    deinit {
-        Task { @RealmBackgroundActor [weak self] in
-            self?.objectNotificationToken?.invalidate()
+            realm.objects(LibraryConfiguration.self)
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @RealmBackgroundActor in
+                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+                        let libraryConfigurationID = libraryConfiguration.id
+                        let userScriptIDs = Array(libraryConfiguration.userScripts).map { $0.id }
+                        
+                        try await { @MainActor [weak self] in
+                            guard let self else { return }
+                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            self.userScripts = userScriptIDs.compactMap { realm.object(ofType: UserScript.self, forPrimaryKey: $0) }
+                            self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
+                        }()
+                    }
+                })
+                .store(in: &cancellables)
         }
     }
     
@@ -218,10 +206,11 @@ struct LibraryScriptsListView: View {
     
     func addScriptButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
-            Task {
+            Task { @RealmBackgroundActor in
                 let script = try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
+                let scriptID = script.id
                 await Task { @MainActor in
-                    scrollProxy.scrollTo("library-sidebar-\(script.id.uuidString)")
+                    scrollProxy.scrollTo("library-sidebar-\(scriptID.uuidString)")
                 }.value
             }
         } label: {
