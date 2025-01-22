@@ -73,6 +73,12 @@ public struct Reader: View {
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
+    @Binding var textSelection: String?
+#if os(iOS)
+    var buildMenu: ((UIMenuBuilder) -> Void)?
+#elseif os(macOS)
+    var buildMenu: ((Any) -> Void)?
+#endif
     
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") internal var lightModeTheme: LightModeTheme = .white
@@ -98,7 +104,18 @@ public struct Reader: View {
         return readerContent.content.titleForDisplay
     }
     
-    public init(persistentWebViewID: String? = nil, forceReaderModeWhenAvailable: Bool = false, bounces: Bool = true, obscuredInsets: EdgeInsets? = nil, messageHandlers: [String: (WebViewMessage) async -> Void] = [:], onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil, onNavigationFinished: ((WebViewState) -> Void)? = nil) {
+#if os(iOS)
+    public init(
+        persistentWebViewID: String? = nil,
+        forceReaderModeWhenAvailable: Bool = false,
+        bounces: Bool = true,
+        obscuredInsets: EdgeInsets? = nil,
+        messageHandlers: [String: (WebViewMessage) async -> Void] = [:],
+        onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
+        onNavigationFinished: ((WebViewState) -> Void)? = nil,
+        textSelection: Binding<String?>? = nil,
+        buildMenu: ((UIMenuBuilder) -> Void)? = nil
+    ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
@@ -106,8 +123,33 @@ public struct Reader: View {
         self.messageHandlers = messageHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
+        _textSelection = textSelection ?? .constant(nil)
+        self.buildMenu = buildMenu
     }
-    
+#elseif os(macOS)
+    public init(
+        persistentWebViewID: String? = nil,
+        forceReaderModeWhenAvailable: Bool = false,
+        bounces: Bool = true,
+        obscuredInsets: EdgeInsets? = nil,
+        messageHandlers: [String: (WebViewMessage) async -> Void] = [:],
+        onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
+        onNavigationFinished: ((WebViewState) -> Void)? = nil,
+        textSelection: Binding<String?>? = nil,
+        buildMenu: ((Any) -> Void)? = nil
+    ) {
+        self.persistentWebViewID = persistentWebViewID
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.bounces = bounces
+        self.obscuredInsets = obscuredInsets
+        self.messageHandlers = messageHandlers
+        self.onNavigationCommitted = onNavigationCommitted
+        self.onNavigationFinished = onNavigationFinished
+        _textSelection = textSelection ?? .constant(nil)
+        self.buildMenu = buildMenu
+    }
+#endif
+
     public var body: some View {
         VStack(spacing: 0) {
             WebView(
@@ -163,7 +205,12 @@ public struct Reader: View {
                             }
                         }
                     }
-                })
+                },
+//                textSelection: $textSelection,
+                buildMenu: { builder in
+                    buildMenu?(builder)
+                }
+            )
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
