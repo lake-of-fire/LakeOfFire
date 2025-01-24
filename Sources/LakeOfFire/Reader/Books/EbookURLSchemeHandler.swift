@@ -26,8 +26,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
         
         guard let url = urlSchemeTask.request.url else { return }
-//        print("!! ebook handler for url \(url)")
-        //            guard url.scheme?.lowercased() == scheme, url.host?.lowercased() == scheme else { continue }
         
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
@@ -92,24 +90,9 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         return
                     }
                 } catch { }
-            }/* else if url.absoluteString.hasPrefix("\(scheme)-url://"),
-              let remoteURL = URL(string: "https://\(url.absoluteString.dropFirst("\(scheme)-url://".count))"),
-              urlSchemeTask.request.mainDocumentURL == url,
-              let mimeType = mimeType(ofFileAtUrl: remoteURL) {
-              do {
-              let data = try Data(contentsOf: remoteURL)
-              let response = HTTPURLResponse(
-              url: url,
-              mimeType: mimeType,
-              expectedContentLength: data.count, textEncodingName: nil)
-              urlSchemeTask.didReceive(response)
-              urlSchemeTask.didReceive(data)
-              urlSchemeTask.didFinish()
-              } catch { }
-              }*/ else if
+            } else if
                 let path = loadPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                 let fileURL = URL(string: "ebook://ebook/load\(path)"),
-                //                let currentURL = URL(string: "ebook://ebook/load\(path)"),
                 let readerFileManager = readerFileManager,
                 // Security check.
                 urlSchemeTask.request.mainDocumentURL == fileURL {
@@ -117,11 +100,9 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                       do {
                           // User file.
                           if try await readerFileManager.directoryExists(directoryURL: fileURL) {
-                              //                            if fileURL.hasDirectoryPath || fileURL.isFilePackage() {
                               let localFileURL = try await readerFileManager.localDirectoryURL(forReaderFileURL: fileURL)
                               await Task.detached {
-                                  //                                        let path = url.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-                                  guard let epubData = EPub.zipToEPub(directoryURL: localFileURL)/*, let zippedFileURL = URL(string: "ebook://ebook/\(path)")*/ else {
+                                  guard let epubData = EPub.zipToEPub(directoryURL: localFileURL) else {
                                       print("Failed to ZIP epub \(fileURL) for loading.")
                                       // TODO: Canceling/failed tasks
                                       return
@@ -166,7 +147,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                   return
               }
         }
-//                print("!! file not found \(url)")
+        
         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
     }
     
@@ -176,25 +157,12 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetExtension = url.pathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
         return Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
-//        return Bundle.module.url(
-//            forResource: assetName,
-//            withExtension: assetExtension,
-//            subdirectory: "Resources")
     }
 
     private func mimeType(ofFileAtUrl url: URL) -> String? {
         return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 }
-
-//public extension URL {
-//    var fileURLFromCustomSchemeLoaderURL: URL? {
-//        guard scheme == "ebook", pathComponents.starts(with: ["/", "load"]) else { return nil }
-//        let loadPath = "/" + pathComponents.dropFirst(2).joined(separator: "/")
-//        guard let path = loadPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return nil }
-//        return URL(string: "file://\(path)")
-//    }
-//}
 
 fileprivate extension String {
     func deletingPrefix(_ prefix: String) -> String {
