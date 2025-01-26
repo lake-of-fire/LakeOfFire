@@ -198,7 +198,7 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContainerSelector = nil
         contentRules = nil
         
-        let isReaderModeVerified = newState.pageURL.isEBookURL
+        let isReaderModeVerified = newState.pageURL.isEBookURL || content.isReaderModeByDefault
         if isReaderMode != isReaderModeVerified {
             withAnimation {
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
