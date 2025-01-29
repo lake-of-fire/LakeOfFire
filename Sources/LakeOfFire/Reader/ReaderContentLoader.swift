@@ -33,11 +33,8 @@ public struct ReaderContentLoader {
         }
     }
     
-    @RealmBackgroundActor
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    @RealmBackgroundActor
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
-    @RealmBackgroundActor
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
  
     public static var unsavedHome: (any ReaderContentProtocol) {
