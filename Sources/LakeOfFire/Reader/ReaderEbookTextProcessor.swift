@@ -83,16 +83,33 @@ fileprivate func replaceBlobUrls(in html: String, with blobUrls: [String]) -> St
 fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#
 fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: readerFontSizeStylePattern, options: .caseInsensitive)
 
+fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
+fileprivate let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
+
 fileprivate func rewriteManabiReaderFontSizeStyle(in html: String, newFontSize: Double) -> String {
-    debugPrint("# rewrite font", newFontSize)
-    if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..<html.endIndex, in: html)) {
-        let nsHTML = html as NSString
-        let replacement = readerFontSizeStyleRegex.replacementString(for: firstMatch, in: html, offset: 0, template: "$1font-size: \(newFontSize)")
+    let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
+    let nsHTML = html as NSString
+    // If a font-size exists in the style, replace it.
+    if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
+        let replacement = readerFontSizeStyleRegex.replacementString(
+            for: firstMatch,
+            in: html,
+            offset: 0,
+            template: "$1font-size: \(newFontSize)px"
+        )
         return nsHTML.replacingCharacters(in: firstMatch.range, with: replacement)
+    }
+    // Otherwise, if a <body ... style="..."> exists, insert the font-size.
+    if let styleMatch = bodyStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
+        let prefix = nsHTML.substring(with: styleMatch.range(at: 1))
+        let content = nsHTML.substring(with: styleMatch.range(at: 2))
+        let suffix = nsHTML.substring(with: styleMatch.range(at: 3))
+        let newContent = "font-size: \(newFontSize)px; " + content
+        let replacement = prefix + newContent + suffix
+        return nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
     }
     return html
 }
-
 internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, content: String, processReadabilityContent: ((SwiftSoup.Document) async -> String)?) async throws -> String {
     let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? 16
     let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
