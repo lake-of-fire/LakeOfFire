@@ -1,4 +1,5 @@
 import Foundation
+import SwiftSoup
 import LakeKit
 
 public struct EbookProcessorCacheKey: Encodable {
@@ -79,39 +80,59 @@ fileprivate func replaceBlobUrls(in html: String, with blobUrls: [String]) -> St
     return String(data: newHtmlData, encoding: .utf8) ?? html
 }
 
-internal extension Reader {
-    func ebookTextProcessor(contentURL: URL, sectionLocation: String, content: String) async throws -> String {
-        let cacheKey = EbookProcessorCacheKey(contentURL: contentURL, sectionLocation: sectionLocation)
-        if let cached = ebookProcessorCache.value(forKey: cacheKey) {
-            let blobs = extractBlobUrls(from: content)
-            let updatedCache = replaceBlobUrls(in: cached, with: blobs)
-            return updatedCache
-        }
-        
-        do {
-            let doc = try processForReaderMode(
-                content: content,
-                url: nil,
-                isEBook: true,
-                defaultTitle: nil,
-                imageURL: nil,
-                injectEntryImageIntoHeader: false,
-                fontSize: readerFontSize ?? readerModeViewModel.defaultFontSize ?? 16,
-                lightModeTheme: lightModeTheme,
-                darkModeTheme: darkModeTheme
-            )
-            doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
-            let html: String
-            if let processReadabilityContent = readerModeViewModel.processReadabilityContent {
-                html = await processReadabilityContent(doc)
-            } else {
-                html = try doc.outerHtml()
-            }
-            ebookProcessorCache.setValue(html, forKey: cacheKey)
-            return html
-        } catch {
-            debugPrint("Error processing readability content for ebook", error)
-        }
-        return content
+fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#
+fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: readerFontSizeStylePattern, options: .caseInsensitive)
+
+fileprivate func rewriteManabiReaderFontSizeStyle(in html: String, newFontSize: Double) -> String {
+    debugPrint("# rewrite font", newFontSize)
+    if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..<html.endIndex, in: html)) {
+        let nsHTML = html as NSString
+        let replacement = readerFontSizeStyleRegex.replacementString(for: firstMatch, in: html, offset: 0, template: "$1font-size: \(newFontSize)")
+        return nsHTML.replacingCharacters(in: firstMatch.range, with: replacement)
     }
+    return html
+}
+
+internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, content: String, processReadabilityContent: ((SwiftSoup.Document) async -> String)?) async throws -> String {
+    let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? 16
+    let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
+    let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
+
+    let cacheKey = EbookProcessorCacheKey(contentURL: contentURL, sectionLocation: sectionLocation)
+    if let cached = ebookProcessorCache.value(forKey: cacheKey) {
+        let blobs = extractBlobUrls(from: content)
+        var updatedCache = replaceBlobUrls(in: cached, with: blobs)
+        // TODO: Also overwrite the theme here
+        updatedCache = rewriteManabiReaderFontSizeStyle(
+            in: updatedCache,
+            newFontSize: readerFontSize
+        )
+        return updatedCache
+    }
+    
+    do {
+        let doc = try processForReaderMode(
+            content: content,
+            url: nil,
+            isEBook: true,
+            defaultTitle: nil,
+            imageURL: nil,
+            injectEntryImageIntoHeader: false,
+            fontSize: readerFontSize,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme
+        )
+        doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
+        let html: String
+        if let processReadabilityContent {
+            html = await processReadabilityContent(doc)
+        } else {
+            html = try doc.outerHtml()
+        }
+        ebookProcessorCache.setValue(html, forKey: cacheKey)
+        return html
+    } catch {
+        debugPrint("Error processing readability content for ebook", error)
+    }
+    return content
 }

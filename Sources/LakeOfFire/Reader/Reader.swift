@@ -281,6 +281,7 @@ public struct Reader: View {
         }
         .task { @MainActor in
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
+            ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
         }
         .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager

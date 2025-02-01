@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 import UniformTypeIdentifiers
+import SwiftSoup
 
 public extension URL {
     var isEBookURL: Bool {
@@ -9,8 +10,9 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessor: ((URL, String, String) async throws -> String)? = nil
+    var ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
+    var processReadabilityContent: ((SwiftSoup.Document) async -> String)?
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     
@@ -30,11 +32,17 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                 let ebookTextProcessor = ebookTextProcessor
+                let processReadabilityContent = processReadabilityContent
                 Task.detached(priority: .utility) {
                     var respText = text
-                    if let ebookTextProcessor = ebookTextProcessor {
+                    if let ebookTextProcessor {
                         do {
-                            respText = try await ebookTextProcessor(contentURL, replacedTextLocation, text)
+                            respText = try await ebookTextProcessor(
+                                contentURL,
+                                replacedTextLocation,
+                                text,
+                                processReadabilityContent
+                            )
                         } catch {
                             print("Error processing Ebook text: \(error)")
                         }
