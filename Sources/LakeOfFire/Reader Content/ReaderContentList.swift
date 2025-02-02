@@ -5,14 +5,6 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
-/// Warning: This can cause sheets to change identity rapidly upon presentation
-fileprivate extension Binding where Value == Bool {
-    static func &&(_ lhs: Binding<Bool>, _ rhs: Bool) -> Binding<Bool> {
-        return Binding<Bool>( get: { lhs.wrappedValue && rhs },
-                              set: { newValue in lhs.wrappedValue = newValue })
-    }
-}
-
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
     @Published var confirmDeletionOf: (any DeletableReaderContent)?
@@ -22,13 +14,13 @@ public class ReaderContentListModalsModel: ObservableObject {
 
 struct ReaderContentListSheetsModifier: ViewModifier {
     @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
-    let isActive: Bool
+    @Binding var isActive: Bool
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     func body(content: Content) -> some View {
         content
-            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete && isActive, actions: {
+            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete.gatedBy($isActive), actions: {
                 Button("Cancel", role: .cancel) {
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
@@ -44,7 +36,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel, isActive: Bool) -> some View {
+    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel, isActive: Binding<Bool>) -> some View {
         modifier(ReaderContentListSheetsModifier(readerContentListModalsModel: readerContentListModalsModel, isActive: isActive))
     }
 }

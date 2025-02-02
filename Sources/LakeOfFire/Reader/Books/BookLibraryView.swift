@@ -17,7 +17,7 @@ public class BookLibraryModalsModel: ObservableObject {
 
 struct BookLibrarySheetsModifier: ViewModifier {
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
-    let isActive: Bool
+    @Binding var isActive: Bool
     
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -38,7 +38,7 @@ struct BookLibrarySheetsModifier: ViewModifier {
             .background {
                 // Weird hack because stacking fileImporter breaks all of them
                 Color.clear
-                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: [.epub, .epubZip, .directory]) { result in
+                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile.gatedBy($isActive), allowedContentTypes: [.epub, .epubZip, .directory]) { result in
                         Task { @MainActor in
                             switch result {
                             case .success(let url):
@@ -61,7 +61,7 @@ struct BookLibrarySheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel, isActive: Bool) -> some View {
+    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel, isActive: Binding<Bool>) -> some View {
         modifier(BookLibrarySheetsModifier(bookLibraryModalsModel: bookLibraryModalsModel, isActive: isActive))
     }
 }
