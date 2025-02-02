@@ -5,6 +5,14 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
+/// Warning: This can cause sheets to change identity rapidly upon presentation
+fileprivate extension Binding where Value == Bool {
+    static func &&(_ lhs: Binding<Bool>, _ rhs: Bool) -> Binding<Bool> {
+        return Binding<Bool>( get: { lhs.wrappedValue && rhs },
+                              set: { newValue in lhs.wrappedValue = newValue })
+    }
+}
+
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
     @Published var confirmDeletionOf: (any DeletableReaderContent)?

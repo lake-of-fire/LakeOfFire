@@ -10,6 +10,14 @@ public enum LibraryRoute: Hashable, Codable {
     case userScripts
 }
 
+/// Warning: This can cause sheets to change identity rapidly upon presentation
+fileprivate extension Binding where Value == Bool {
+    static func &&(_ lhs: Binding<Bool>, _ rhs: Bool) -> Binding<Bool> {
+        return Binding<Bool>( get: { lhs.wrappedValue && rhs },
+                              set: { newValue in lhs.wrappedValue = newValue })
+    }
+}
+
 //
 //extension Array<LibraryRoute>: RawRepresentable {
 ////extension LibraryRoute: RawRepresentable {
