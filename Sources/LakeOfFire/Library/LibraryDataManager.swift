@@ -215,7 +215,8 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             })
             if !orphanCategories.isEmpty {
                 try await realm.asyncWrite {
-                    for category in orphanCategories {
+                    let existingCategoryIDs = Set(primaryConfiguration.categories.map { $0.id })
+                    for category in orphanCategories where !existingCategoryIDs.contains(category.id) {
                         primaryConfiguration.categories.append(category)
                     }
                     primaryConfiguration.modifiedAt = Date()
@@ -382,7 +383,9 @@ public class LibraryDataManager: NSObject {
         }
         if addToLibrary {
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let categoryID = category.id
             try await realm.asyncWrite {
+                guard !configuration.categories.contains(where: { $0.id == categoryID }) else { return }
                 configuration.categories.append(category)
                 configuration.modifiedAt = Date()
             }

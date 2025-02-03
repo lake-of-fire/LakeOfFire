@@ -260,7 +260,9 @@ struct LibraryCategoryView: View {
                 }
                     
                 Section {
-                    TextField("Image URL", text: $viewModel.categoryBackgroundImageURL, axis: .vertical)
+                    TextField("Image URL", text: Binding {
+                        viewModel.categoryBackgroundImageURL == "about:blank" ? "" : viewModel.categoryBackgroundImageURL
+                    } set: { viewModel.categoryBackgroundImageURL = $0 }, axis: .vertical)
                         .disabled(!viewModel.isUserEditable)
                 } header: {
                     Text("Category Image URL")
