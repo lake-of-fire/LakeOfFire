@@ -113,7 +113,7 @@ public class ReaderModeViewModel: ObservableObject {
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let readerFontSize = readerFontSize
-        let defaultFontSize = defaultFontSize ?? 15
+        let defaultFontSize = defaultFontSize ?? 17
         let processReadabilityContent = processReadabilityContent
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()

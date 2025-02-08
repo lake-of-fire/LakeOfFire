@@ -19,7 +19,7 @@ public enum DarkModeTheme: String, CaseIterable, Identifiable {
 }
 
 struct ReaderSettingsForm: View {
-    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black

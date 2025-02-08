@@ -56,10 +56,6 @@ public struct ContentCategoryButtons: View {
     
     @ScaledMetric(relativeTo: .headline) private var minWidth: CGFloat = 190
     
-#if os(iOS)
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-#endif
-    
 //    private var gridColumns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
     private var gridColumns: [GridItem] {
         get {
@@ -67,14 +63,6 @@ public struct ContentCategoryButtons: View {
         }
     }
 
-    private var isConsideredCompact: Bool {
-#if os(iOS)
-        return isCompact || horizontalSizeClass == .compact
-#else
-        return isCompact
-#endif
-    }
-    
     public var body: some View {
         if let categories = viewModel.libraryConfiguration?.activeCategories {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
@@ -223,7 +211,6 @@ public struct FeedCategoryButtonLabel: View {
             Spacer(minLength: 0)
         }
         .frame(minHeight: isCompact ? nil : scaledCategoryHeight, alignment: .leading)
-        //            .frame(maxWidth: isInSidebar || horizontalSizeClass == .compact ? .infinity : 190)
         .frame(maxWidth: .infinity)
 #if os(iOS)
         .frame(idealHeight: isCompact || horizontalSizeClass == .compact ? scaledCategoryHeight : scaledCategoryHeight * 2.4)

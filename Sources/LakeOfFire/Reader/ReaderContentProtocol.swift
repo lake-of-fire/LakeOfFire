@@ -77,6 +77,7 @@ public extension ReaderContentProtocol {
                 block(realm, content)
             }
         }()
+        await realm?.asyncRefresh()
     }
 }
 
