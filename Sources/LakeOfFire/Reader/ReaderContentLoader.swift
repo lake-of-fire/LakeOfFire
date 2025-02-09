@@ -175,6 +175,7 @@ public struct ReaderContentLoader {
                 historyRecord.updateCompoundKey()
                 if persist {
                     guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return nil }
+                    await historyRealm.asyncRefresh()
                     try await historyRealm.asyncWrite {
                         historyRealm.add(historyRecord, update: .modified)
                     }
@@ -182,11 +183,13 @@ public struct ReaderContentLoader {
                 match = historyRecord
             }
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
                     match.modifiedAt = Date()
                 }
             } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
                     match.modifiedAt = Date()
@@ -243,6 +246,7 @@ public struct ReaderContentLoader {
             historyRecord.updateCompoundKey()
             historyRecord.rssContainsFullContent = true
             historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
+            await historyRealm.asyncRefresh()
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
@@ -378,6 +382,7 @@ public struct ReaderContentLoader {
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
                 if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
                     let url = snippetURL(key: content.compoundKey) ?? content.url
+                    await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         content.isFromClipboard = true
                         content.rssContainsFullContent = true

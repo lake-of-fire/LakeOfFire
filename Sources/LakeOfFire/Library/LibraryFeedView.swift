@@ -83,6 +83,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             Task { @RealmBackgroundActor in
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     block(feed)
                     feed.modifiedAt = Date()

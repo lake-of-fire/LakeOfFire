@@ -73,6 +73,7 @@ public extension ReaderContentProtocol {
         try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: config) else { return }
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 block(realm, content)
             }
@@ -287,6 +288,7 @@ public extension ReaderContentProtocol {
             guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
                 return false
             }
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 bookmark.isDeleted = true
                 bookmark.modifiedAt = Date()
@@ -319,6 +321,7 @@ public extension ReaderContentProtocol {
         }
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Can't get realm for addHistoryRecord") }
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 record.title = title
                 record.imageUrl = imageURL
@@ -367,6 +370,7 @@ public extension ReaderContentProtocol {
                 record.configureBookmark(bookmark)
             }
             record.updateCompoundKey()
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(record, update: .modified)
             }

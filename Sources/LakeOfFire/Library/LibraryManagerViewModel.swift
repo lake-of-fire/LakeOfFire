@@ -234,11 +234,13 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
         }
         guard let category = category else { return }
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
             category.title = "User Library"
             category.modifiedAt = Date()
         }
         guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
             feed.rssUrl = rssURL
             if let title = title {

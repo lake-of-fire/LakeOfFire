@@ -212,13 +212,14 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     public func imageURLToDisplay() async throws -> URL? {
         if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
             let legacyHTMLContent = htmlContent
-            let ref = ThreadSafeReference(to: self)
+            let ref = compoundKey
             let existingImageURL = imageUrl
             try await { @FeedEntryActor in
                 if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html), existingImageURL != url {
                     try await { @RealmBackgroundActor in
                         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
-                        guard let entry = realm.resolve(ref) else { return }
+                        guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: ref) else { return }
+                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             entry.imageUrl = url
                             entry.modifiedAt = Date()
@@ -401,6 +402,7 @@ public extension Feed {
                 return feedEntry
             }
             if deleteOrphans {
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     for orphan in orphans {
@@ -411,6 +413,7 @@ public extension Feed {
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
             if !entriesToPersist.isEmpty {
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     realm.add(entriesToPersist, update: .modified)
                 }
@@ -494,6 +497,7 @@ public extension Feed {
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
             if !entriesToPersist.isEmpty || deleteOrphans {
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     if deleteOrphans {
                         let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }

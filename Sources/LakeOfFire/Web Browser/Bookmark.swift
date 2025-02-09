@@ -49,6 +49,7 @@ public class Bookmark: Object, ReaderContentProtocol {
         let url = url
         Task { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) else { return }
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
                     historyRecord.bookmark = bookmark
@@ -65,6 +66,7 @@ public extension Bookmark {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Couldn't get Realm for Bookmark.add") }
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
@@ -105,6 +107,7 @@ public extension Bookmark {
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
             bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)
             }
@@ -124,6 +127,7 @@ public extension Bookmark {
     @RealmBackgroundActor
     static func removeAll(realmConfiguration: Realm.Configuration) async throws {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.objects(self).setValue(true, forKey: "isDeleted")
             realm.objects(self).setValue(Date(), forKey: "modifiedAt")

@@ -12,6 +12,7 @@ public extension LibraryDataManager {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
 
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
             if let idx = libraryConfiguration.categories.firstIndex(of: category) {
                 libraryConfiguration.categories.remove(at: idx)
@@ -33,6 +34,7 @@ public extension LibraryDataManager {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
 
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
             category.isArchived = false
             if !libraryConfiguration.categories.contains(category) {

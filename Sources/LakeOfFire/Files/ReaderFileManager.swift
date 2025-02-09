@@ -122,6 +122,7 @@ public class ReaderFileManager: ObservableObject {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
         try ReaderFileManager.validate(readerFileURL: readerFileURL)
         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 existing.isDeleted = true
                 existing.modifiedAt = Date()
@@ -317,6 +318,7 @@ public class ReaderFileManager: ObservableObject {
                         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
                         let existingURLs = discoveredURLs.map { $0.absoluteString }
                         let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
+                        await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             for orphan in orphans {
                                 orphan.isDeleted = true
@@ -371,6 +373,7 @@ public class ReaderFileManager: ObservableObject {
                     fatalError("Couldn't get Realm for refreshFileMetadata")
                 }
                 
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     for (readerFileURL, _, drive) in filesToUpdate {
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {

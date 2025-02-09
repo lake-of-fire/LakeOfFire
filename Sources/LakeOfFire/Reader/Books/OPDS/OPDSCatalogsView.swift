@@ -58,6 +58,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         
         do {
             let realm = try await Realm(actor: RealmBackgroundActor.shared)
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)
             }
@@ -72,6 +73,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         let catalogIDsToDelete = offsets.map { catalogs[$0].id }
         Task { @RealmBackgroundActor [weak self] in
             let realm = try await Realm(actor: RealmBackgroundActor.shared)
+            await realm.asyncRefresh()
             try? await realm.asyncWrite {
                 for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
                     catalog.isDeleted = true
@@ -192,6 +194,7 @@ struct AddCatalogView: View {
         
         do {
             let realm = try await Realm(actor: RealmBackgroundActor.shared)
+            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)
             }

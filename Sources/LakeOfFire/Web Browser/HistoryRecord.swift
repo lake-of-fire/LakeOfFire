@@ -22,6 +22,7 @@ extension DeletableReaderContent {
     @RealmBackgroundActor
     public func deleteRealmData() async throws {
         guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
 //            for videoStatus in realm.objects(VideoS)
             content.isDeleted = true
@@ -31,6 +32,7 @@ extension DeletableReaderContent {
     @RealmBackgroundActor
     public func delete(readerFileManager: ReaderFileManager) async throws {
         guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
+        await realm.asyncRefresh()
         try await realm.asyncWrite {
             content.isDeleted = true
             content.modifiedAt = Date()

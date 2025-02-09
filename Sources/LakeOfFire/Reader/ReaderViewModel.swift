@@ -91,6 +91,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         if let historyRecord = content as? HistoryRecord {
             Task { @RealmBackgroundActor in
                 guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
+                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     content.lastVisitedAt = Date()
                     content.modifiedAt = Date()
