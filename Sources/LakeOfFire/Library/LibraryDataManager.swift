@@ -39,8 +39,8 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var opmlLastImportedAt: Date?
     
-    @Persisted public var categories: RealmSwift.List<FeedCategory>
-    @Persisted public var userScripts: RealmSwift.List<UserScript>
+    @Persisted public var categoryIDs: RealmSwift.List<UUID>
+    @Persisted public var userScriptIDs: RealmSwift.List<UUID>
     
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
@@ -60,12 +60,12 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return false
     }
     
-    public var userCategories: Results<FeedCategory> {
-        return categories.where { $0.opmlURL == nil }
+    public func getUserCategories() -> [FeedCategory]? {
+        return getCategories()?.filter { $0.opmlURL == nil }
     }
     
-    public var activeCategories: Results<FeedCategory> {
-        return categories.where { !$0.isArchived && !$0.isDeleted }
+    public func getActiveCategories() -> [FeedCategory]? {
+        return getCategories()?.filter { !$0.isArchived }
     }
 
     public var downloadables: Set<Downloadable> {
@@ -83,6 +83,26 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         })
     }
     
+    public func getCategories(includingDeleted: Bool = false) -> [FeedCategory]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        let categories = categoryIDs.compactMap { realm.object(ofType: FeedCategory.self, forPrimaryKey: $0) }
+        if includingDeleted {
+            return categories.map { $0 }
+        }
+        return categories.filter { !$0.isDeleted }
+    }
+    
+    public func getUserScripts() -> [UserScript]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return userScriptIDs.compactMap { realm.object(ofType: UserScript.self, forPrimaryKey: $0) } .filter { !$0.isDeleted }
+    }
+
     @available(macOS 13.0, iOS 16.1, *)
     public func pendingBackgroundAssetDownloads() -> Set<BADownload> {
         let downloadables = downloadables
@@ -92,9 +112,12 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
     }
     
-    public var activeWebViewUserScripts: [WebViewUserScript] {
-        let scripts = Array(userScripts.where { $0.isDeleted == false && $0.isArchived == false }.map { $0.webViewUserScript })
-        return scripts
+    public func getActiveWebViewUserScripts() -> [WebViewUserScript]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return Array(getUserScripts()?.filter { !$0.isArchived }.compactMap { $0.getWebViewUserScript() } ?? [])
     }
 //    
 //    public static func get() throws -> LibraryConfiguration? {
@@ -133,34 +156,34 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             let otherConfigurations = configurations.dropFirst()
             
             // Remove archived or deleted categories
-            let inactiveCategoryIDs = primaryConfiguration.categories.where({ $0.isArchived || $0.isDeleted }).map({ $0.id })
+            let inactiveCategoryIDs = primaryConfiguration.getCategories(includingDeleted: true)?.filter({ $0.isArchived || $0.isDeleted }).map({ $0.id }) ?? []
             if !inactiveCategoryIDs.isEmpty {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     // Remove items in reverse order to prevent index shifting
                     var sortedIndexes = [Int]()
-                    for (index, category) in primaryConfiguration.categories.enumerated() {
-                        if inactiveCategoryIDs.contains(category.id) {
+                    for (index, categoryID) in primaryConfiguration.categoryIDs.enumerated() {
+                        if inactiveCategoryIDs.contains(categoryID) {
                             sortedIndexes.append(index)
                         }
                     }
                     sortedIndexes.sort(by: >)
                     for index in sortedIndexes {
-                        primaryConfiguration.categories.remove(at: index)
+                        primaryConfiguration.categoryIDs.remove(at: index)
                     }
                 }
             }
 
             if !otherConfigurations.isEmpty {
-                let primaryCategoryIDs = Set(primaryConfiguration.categories.map { $0.id })
-                let primaryUserScriptIDs = Set(primaryConfiguration.userScripts.map { $0.id })
+                let primaryCategoryIDs = Set(primaryConfiguration.categoryIDs)
+                let primaryUserScriptIDs = Set(primaryConfiguration.userScriptIDs)
                 
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     // Consolidate categories
                     for otherConfig in otherConfigurations {
                         var newCategories: [FeedCategory] = []
-                        for category in otherConfig.categories where !category.isArchived && !category.isDeleted {
+                        for category in otherConfig.getCategories() ?? [] where !category.isArchived && !category.isDeleted {
                             if !primaryCategoryIDs.contains(category.id)
                                 && !newCategories.contains(where: { $0.id == category.id }) {
                                 newCategories.append(category)
@@ -169,12 +192,12 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                         // Merge newCategories into primaryConfiguration.categories in the correct order
                         for category in newCategories {
                             // Find the index of the last matching category that exists in both primary and otherConfig
-                            if let lastMatchingIndex = primaryConfiguration.categories.lastIndex(where: { otherConfig.categories.firstIndex(of: $0) != nil }),
-                               let insertIndexInPrimary = primaryConfiguration.categories.index(of: primaryConfiguration.categories[lastMatchingIndex]) {
-                                primaryConfiguration.categories.insert(category, at: insertIndexInPrimary + 1)
+                            if let lastMatchingIndex = primaryConfiguration.categoryIDs.lastIndex(where: { otherConfig.categoryIDs.firstIndex(of: $0) != nil }),
+                               let insertIndexInPrimary = primaryConfiguration.categoryIDs.index(of: primaryConfiguration.categoryIDs[lastMatchingIndex]) {
+                                primaryConfiguration.categoryIDs.insert(category.id, at: insertIndexInPrimary + 1)
                             } else {
                                 // If no preceding category exists, append to the end
-                                primaryConfiguration.categories.append(category)
+                                primaryConfiguration.categoryIDs.append(category.id)
                             }
                         }
                     }
@@ -182,7 +205,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     // Consolidate userScripts
                     for otherConfig in otherConfigurations {
                         var newScripts: [UserScript] = []
-                        for script in otherConfig.userScripts where !script.isArchived && !script.isDeleted {
+                        for script in otherConfig.getUserScripts() ?? [] where !script.isArchived && !script.isDeleted {
                             if !primaryUserScriptIDs.contains(script.id) &&
                                 !newScripts.contains(where: { $0.id == script.id }) {
                                 newScripts.append(script)
@@ -191,12 +214,12 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                         // Merge newScripts into primaryConfiguration.userScripts in the correct order
                         for script in newScripts {
                             // Find the index of the last matching script that exists in both primary and otherConfig
-                            if let lastMatchingIndex = primaryConfiguration.userScripts.lastIndex(where: { otherConfig.userScripts.firstIndex(of: $0) != nil }),
-                               let insertIndexInPrimary = primaryConfiguration.userScripts.index(of: primaryConfiguration.userScripts[lastMatchingIndex]) {
-                                primaryConfiguration.userScripts.insert(script, at: insertIndexInPrimary + 1)
+                            if let lastMatchingIndex = primaryConfiguration.userScriptIDs.lastIndex(where: { otherConfig.userScriptIDs.firstIndex(of: $0) != nil }),
+                               let insertIndexInPrimary = primaryConfiguration.userScriptIDs.index(of: primaryConfiguration.userScriptIDs[lastMatchingIndex]) {
+                                primaryConfiguration.userScriptIDs.insert(script.id, at: insertIndexInPrimary + 1)
                             } else {
                                 // If no preceding script exists, append to the end
-                                primaryConfiguration.userScripts.append(script)
+                                primaryConfiguration.userScriptIDs.append(script.id)
                             }
                         }
                     }
@@ -211,16 +234,16 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
             }
             
             // Add orphaned categories
-            let updatedCategoryIDs = Array(primaryConfiguration.categories.map { $0.id })
+            let updatedCategoryIDs: [UUID] = primaryConfiguration.categoryIDs.map { $0 }
             let orphanCategories = Array(realm.objects(FeedCategory.self).where {
                 !$0.isDeleted && !$0.isArchived && !$0.id.in(updatedCategoryIDs)
             })
             if !orphanCategories.isEmpty {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
-                    let existingCategoryIDs = Set(primaryConfiguration.categories.map { $0.id })
+                    let existingCategoryIDs = Set(primaryConfiguration.categoryIDs)
                     for category in orphanCategories where !existingCategoryIDs.contains(category.id) {
-                        primaryConfiguration.categories.append(category)
+                        primaryConfiguration.categoryIDs.append(category.id)
                     }
                     primaryConfiguration.modifiedAt = Date()
                 }
@@ -364,14 +387,14 @@ public class LibraryDataManager: NSObject {
             let scripts = Array(realm.objects(UserScript.self))
             for script in scripts {
                 if script.isDeleted {
-                    for (idx, candidate) in Array(configuration.userScripts).enumerated() {
-                        if candidate.id == script.id {
-                            configuration.userScripts.remove(at: idx)
+                    for (idx, candidateID) in Array(configuration.userScriptIDs).enumerated() {
+                        if candidateID == script.id {
+                            configuration.userScriptIDs.remove(at: idx)
                             configuration.modifiedAt = Date()
                         }
                     }
-                } else if !configuration.userScripts.contains(script) {
-                    configuration.userScripts.append(script)
+                } else if !configuration.userScriptIDs.contains(script.id) {
+                    configuration.userScriptIDs.append(script.id)
                     configuration.modifiedAt = Date()
                 }
             }
@@ -391,8 +414,8 @@ public class LibraryDataManager: NSObject {
             let categoryID = category.id
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                guard !configuration.categories.contains(where: { $0.id == categoryID }) else { return }
-                configuration.categories.append(category)
+                guard !configuration.categoryIDs.contains(where: { $0 == categoryID }) else { return }
+                configuration.categoryIDs.append(categoryID)
                 configuration.modifiedAt = Date()
             }
         }
@@ -404,7 +427,7 @@ public class LibraryDataManager: NSObject {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return nil }
         guard let category = realm.resolve(category) else { return nil }
         let feed = Feed()
-        feed.category = category
+        feed.categoryID = category.id
         feed.meaningfulContentMinLength = 0
         await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -417,7 +440,7 @@ public class LibraryDataManager: NSObject {
     public func getOrCreateAppFeed(rssURL: URL, isReaderModeByDefault: Bool, rssContainsFullContent: Bool) async throws -> Feed? {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return nil }
         var feed = Feed()
-        let existingAppFeeds = realm.objects(Feed.self).where({ !$0.isDeleted && $0.category == nil }).filter { $0.rssUrl == rssURL }
+        let existingAppFeeds = realm.objects(Feed.self).where({ !$0.isDeleted && $0.categoryID == nil }).filter { $0.rssUrl == rssURL }
         if let existing = existingAppFeeds.first {
             feed = existing
             if feed.meaningfulContentMinLength != 0 || feed.isReaderModeByDefault != isReaderModeByDefault || feed.rssContainsFullContent != rssContainsFullContent || !feed.deleteOrphans {
@@ -461,13 +484,13 @@ public class LibraryDataManager: NSObject {
     public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> Feed? {
         let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: RealmBackgroundActor.shared)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
-        let existing = category.feeds.where { !$0.isDeleted && $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
+        let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
         value.modifiedAt = Date()
         value.isDeleted = false
         value.isArchived = false
-        value.category = category
+        value.categoryID = category.id
         var new: Feed?
         await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -489,7 +512,7 @@ public class LibraryDataManager: NSObject {
             let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                configuration.userScripts.append(script)
+                configuration.userScriptIDs.append(script.id)
                 configuration.modifiedAt = Date()
             }
         }
@@ -554,14 +577,14 @@ public class LibraryDataManager: NSObject {
         // Add new scripts
         try Task.checkCancellation()
         for script in allImportedScripts {
-            if !configuration.userScripts.contains(where: { $0.id != script.id }) {
-                var lastNeighborIdx = configuration.userScripts.count - 1
-                if let downloadURL = download?.url {
-                    lastNeighborIdx = configuration.userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
+            if !configuration.userScriptIDs.contains(where: { $0 != script.id }) {
+                var lastNeighborIdx = configuration.userScriptIDs.count - 1
+                if let downloadURL = download?.url, let userScripts = configuration.getUserScripts() {
+                    lastNeighborIdx = userScripts.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
                 }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
-                    configuration.userScripts.insert(script, at: lastNeighborIdx + 1)
+                    configuration.userScriptIDs.insert(script.id, at: lastNeighborIdx + 1)
                     configuration.modifiedAt = Date()
                 }
             }
@@ -571,13 +594,13 @@ public class LibraryDataManager: NSObject {
         // Move scripts
         try Task.checkCancellation()
         var desiredScripts = allImportedScripts
-        for (idx, script) in configuration.userScripts.enumerated() {
+        for (idx, script) in (configuration.getUserScripts() ?? []).enumerated() {
             if let downloadURL = download?.url, script.opmlURL == downloadURL, !desiredScripts.isEmpty {
                 let desiredScript = desiredScripts.removeFirst()
-                if let fromIdx = configuration.userScripts.firstIndex(where: { $0.id == desiredScript.id }), fromIdx != idx {
+                if let fromIdx = configuration.userScriptIDs.firstIndex(where: { $0 == desiredScript.id }), fromIdx != idx {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        configuration.userScripts.move(from: fromIdx, to: idx)
+                        configuration.userScriptIDs.move(from: fromIdx, to: idx)
                         configuration.modifiedAt = Date()
                     }
                 }
@@ -589,17 +612,17 @@ public class LibraryDataManager: NSObject {
         try Task.checkCancellation()
         var scriptIDsSeen = Set<UUID>()
         var scriptsToRemove = IndexSet()
-        for (idx, script) in configuration.userScripts.enumerated() {
-            if scriptIDsSeen.contains(script.id) {
+        for (idx, scriptID) in configuration.userScriptIDs.enumerated() {
+            if scriptIDsSeen.contains(scriptID) {
                 scriptsToRemove.insert(idx)
             } else {
-                scriptIDsSeen.insert(script.id)
+                scriptIDsSeen.insert(scriptID)
             }
         }
         if !scriptsToRemove.isEmpty {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                configuration.userScripts.remove(atOffsets: scriptsToRemove)
+                configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
                 configuration.modifiedAt = Date()
             }
         }
@@ -623,7 +646,7 @@ public class LibraryDataManager: NSObject {
         // Delete orphan feeds
         try Task.checkCancellation()
         if let downloadURL = download?.url {
-            let filteredFeeds = Array(realm.objects(Feed.self).filter({ !$0.isDeleted && $0.category?.opmlURL == downloadURL }))
+            let filteredFeeds = Array(realm.objects(Feed.self).filter({ !$0.isDeleted && $0.getCategory()?.opmlURL == downloadURL }))
             for feed in filteredFeeds {
                 if !allImportedFeedIDs.contains(feed.id) {
                     await realm.asyncRefresh()
@@ -639,14 +662,14 @@ public class LibraryDataManager: NSObject {
         // Add new categories
         try Task.checkCancellation()
         for category in allImportedCategories {
-            if !configuration.categories.map({ $0.id }).contains(category.id) {
-                var lastNeighborIdx = configuration.categories.count - 1
+            if !configuration.categoryIDs.contains(category.id) {
+                var lastNeighborIdx = configuration.categoryIDs.count - 1
                 if let downloadURL = download?.url {
-                    lastNeighborIdx = configuration.categories.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
+                    lastNeighborIdx = configuration.getCategories()?.lastIndex(where: { $0.opmlURL == downloadURL }) ?? lastNeighborIdx
                 }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
-                    configuration.categories.insert(category, at: lastNeighborIdx + 1)
+                    configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
                     configuration.modifiedAt = Date()
                 }
             }
@@ -656,13 +679,13 @@ public class LibraryDataManager: NSObject {
         // Move categories
         try Task.checkCancellation()
         var desiredCategories = allImportedCategories
-        for (idx, category) in Array(configuration.categories).enumerated() {
-            if allImportedCategories.map({ $0.id }).contains(category.id), !desiredCategories.isEmpty {
+        for (idx, categoryID) in Array(configuration.categoryIDs).enumerated() {
+            if allImportedCategories.map({ $0.id }).contains(categoryID), !desiredCategories.isEmpty {
                 let desiredCategory = desiredCategories.removeFirst()
-                if let fromIdx = configuration.categories.map({ $0.id }).firstIndex(of: desiredCategory.id), fromIdx != idx {
+                if let fromIdx = configuration.categoryIDs.firstIndex(of: desiredCategory.id), fromIdx != idx {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        configuration.categories.move(from: fromIdx, to: idx)
+                        configuration.categoryIDs.move(from: fromIdx, to: idx)
                         configuration.modifiedAt = Date()
                     }
                 }
@@ -674,17 +697,17 @@ public class LibraryDataManager: NSObject {
         try Task.checkCancellation()
         var idsSeen = Set<UUID>()
         var toRemove = IndexSet()
-        for (idx, category) in configuration.categories.enumerated() {
-            if idsSeen.contains(category.id) {
+        for (idx, categoryID) in configuration.categoryIDs.enumerated() {
+            if idsSeen.contains(categoryID) {
                 toRemove.insert(idx)
             } else {
-                idsSeen.insert(category.id)
+                idsSeen.insert(categoryID)
             }
         }
         if !toRemove.isEmpty {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                configuration.categories.remove(atOffsets: toRemove)
+                configuration.categoryIDs.remove(atOffsets: toRemove)
                 configuration.modifiedAt = Date()
             }
         }
@@ -719,12 +742,12 @@ public class LibraryDataManager: NSObject {
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
-                if feed.category?.opmlURL == download?.url || feed.isDeleted {
+                if feed.categoryID == nil || feed.getCategory()?.opmlURL == download?.url || feed.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category) {
                         try Task.checkCancellation()
                         await realm.asyncRefresh()
                         try await realm.asyncWrite {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
+                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed)
                         }
                     }
                     importedFeeds.append(feed)
@@ -736,7 +759,7 @@ public class LibraryDataManager: NSObject {
                     try Task.checkCancellation()
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed)
                         realm.add(feed, update: .modified)
                     }
                     importedFeeds.append(feed)
@@ -819,21 +842,21 @@ public class LibraryDataManager: NSObject {
         guard let realm = script.realm else { return }
         let domains: [String] = opmlEntry.attributeStringValue("allowedDomains")?.split(separator: ",").compactMap { $0.removingPercentEncoding } ?? []
 //        script.allowedDomains.removeAll()
-        for (idx, existingDomain) in script.allowedDomains.enumerated() {
+        for (idx, existingDomain) in (script.getAllowedDomains() ?? []).enumerated() {
             if !domains.contains(existingDomain.domain) {
                 existingDomain.isDeleted = true
-                script.allowedDomains.remove(at: idx)
+                script.allowedDomainIDs.remove(at: idx)
             } else if existingDomain.isDeleted {
                 existingDomain.isDeleted = false
             }
         }
-        let existingDomains = script.allowedDomains.map { $0.domain }
+        let existingDomains = script.getAllowedDomains()?.map { $0.domain } ?? []
         for domain in domains {
             if !existingDomains.contains(domain) {
                 let newDomain = UserScriptAllowedDomain()
                 newDomain.domain = domain
                 realm.add(newDomain, update: .modified)
-                script.allowedDomains.append(newDomain)
+                script.allowedDomainIDs.append(newDomain.id)
             }
         }
         // TODO: Clean up orphan domain objects that appear due to some bug...
@@ -939,6 +962,9 @@ public class LibraryDataManager: NSObject {
     }
     
     static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, category: FeedCategory) -> Bool {
+        if opmlEntry.attributeUUIDValue("uuid") != category.id {
+            return true
+        }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
         if category.title != newOpmlTitle {
             return true
@@ -1006,7 +1032,7 @@ public class LibraryDataManager: NSObject {
     
     static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) -> Bool {
         guard let feedURL = opmlEntry.feedURL else { return false }
-        if feed.category == nil && category != nil {
+        if feed.categoryID != opmlEntry.attributeUUIDValue("uuid") {
             return true
         }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
@@ -1063,7 +1089,7 @@ public class LibraryDataManager: NSObject {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) throws {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed) throws {
         // Must be kept in sync with the respective hasChanges
         guard let feedURL = opmlEntry.feedURL else { return }
         
@@ -1073,9 +1099,9 @@ public class LibraryDataManager: NSObject {
         if let iconURLRaw = opmlEntry.attributeStringValue("iconUrl") {
             newIconURL = URL(string: iconURLRaw)
         }
-        
-        if feed.category == nil && category != nil {
-            feed.category = category
+        let newCategoryID = opmlEntry.attributeUUIDValue("uuid")
+        if feed.categoryID != newCategoryID {
+            feed.categoryID = newCategoryID
             didChange = true
         }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
@@ -1149,14 +1175,14 @@ public class LibraryDataManager: NSObject {
     @RealmBackgroundActor
     public func exportUserOPML() async throws -> OPML {
         let configuration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let userCategories = configuration.categories.where { $0.opmlOwnerName == nil && $0.opmlURL == nil && !$0.isDeleted }
+        let userCategories = (configuration.getCategories() ?? []).filter { $0.opmlOwnerName == nil && $0.opmlURL == nil }
         
         let scriptEntries = OPMLEntry(text: "User Scripts", attributes: [
             Attribute(name: "isUserScriptList", value: "true"),
-        ], children: configuration.userScripts.where({ $0.opmlURL == nil }).map({ script in
+        ], children: (configuration.getUserScripts() ?? []).filter({ $0.opmlURL == nil }).map({ script in
             return OPMLEntry(text: script.title, attributes: [
                 Attribute(name: "uuid", value: script.id.uuidString),
-                Attribute(name: "allowedDomains", value: script.allowedDomains.where { !$0.isDeleted } .compactMap { $0.domain.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) }.joined(separator: ",")),
+                Attribute(name: "allowedDomains", value: (script.getAllowedDomains()?.compactMap { $0.domain.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) }  ?? []).joined(separator: ",")),
                 Attribute(name: "script", value: script.script.addingPercentEncoding(withAllowedCharacters: Self.attributeCharacterSet) ?? script.script),
                 Attribute(name: "injectAtStart", value: script.injectAtStart ? "true" : "false"),
                 Attribute(name: "mainFrameOnly", value: script.mainFrameOnly ? "true" : "false"),
@@ -1169,7 +1195,7 @@ public class LibraryDataManager: NSObject {
         let opml = OPML(
             dateModified: Date(),
             ownerName: (Self.currentUsername?.isEmpty ?? true) ? nil : Self.currentUsername,
-            entries: try [scriptEntries] + userCategories.map { category in
+            entries: try [scriptEntries] + (userCategories ?? []).map { category in
                 try Task.checkCancellation()
                 
                 return OPMLEntry(
@@ -1179,7 +1205,7 @@ public class LibraryDataManager: NSObject {
                         Attribute(name: "backgroundImageUrl", value: category.backgroundImageUrl.absoluteString),
                         Attribute(name: "isFeedCategory", value: "true"),
                     ],
-                    children: try category.feeds.where({ $0.isDeleted == false && $0.isArchived == false }).sorted(by: \.title).map { feed in
+                    children: try (category.getFeeds() ?? []).filter({ !$0.isArchived }).map { feed in
                         try Task.checkCancellation()
                         
                         var attributes = [

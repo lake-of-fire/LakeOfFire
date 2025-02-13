@@ -14,8 +14,8 @@ public extension LibraryDataManager {
 
         await realm.asyncRefresh()
         try await realm.asyncWrite {
-            if let idx = libraryConfiguration.categories.firstIndex(of: category) {
-                libraryConfiguration.categories.remove(at: idx)
+            if let idx = libraryConfiguration.categoryIDs.firstIndex(of: category.id) {
+                libraryConfiguration.categoryIDs.remove(at: idx)
                 libraryConfiguration.modifiedAt = Date()
             }
             
@@ -37,8 +37,8 @@ public extension LibraryDataManager {
         await realm.asyncRefresh()
         try await realm.asyncWrite {
             category.isArchived = false
-            if !libraryConfiguration.categories.contains(category) {
-                libraryConfiguration.categories.append(category)
+            if !libraryConfiguration.categoryIDs.contains(category.id) {
+                libraryConfiguration.categoryIDs.append(category.id)
                 libraryConfiguration.modifiedAt = Date()
             }
         }

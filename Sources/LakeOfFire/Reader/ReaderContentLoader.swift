@@ -375,23 +375,27 @@ public struct ReaderContentLoader {
         }
         
         if let match, let realmConfiguration = match.realm?.configuration {
-            let type = type(of: match)
-            let pk = match.primaryKeyValue
-            guard let url = URL(string: match.url.absoluteString) else { return nil }
-            try await { @RealmBackgroundActor in
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
-                if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
-                    let url = snippetURL(key: content.compoundKey) ?? content.url
-                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        content.isFromClipboard = true
-                        content.rssContainsFullContent = true
-                        content.url = url
-                        content.modifiedAt = Date()
+            if match.url.isSnippetURL {
+                let type = type(of: match)
+                let pk = match.primaryKeyValue
+                guard let url = URL(string: match.url.absoluteString) else { return nil }
+                try await { @RealmBackgroundActor in
+                    guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+                    if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
+                        let url = snippetURL(key: content.compoundKey) ?? content.url
+                        await realm.asyncRefresh()
+                        try await realm.asyncWrite {
+                            content.isFromClipboard = true
+                            content.rssContainsFullContent = true
+                            content.url = url
+                            content.modifiedAt = Date()
+                        }
                     }
-                }
-            }()
-            return match.realm?.object(ofType: type, forPrimaryKey: pk) as? (any ReaderContentProtocol)? ?? nil
+                }()
+                return match.realm?.object(ofType: type, forPrimaryKey: pk) as? (any ReaderContentProtocol)? ?? nil
+            } else {
+                return match
+            }
         }
         return nil
     }

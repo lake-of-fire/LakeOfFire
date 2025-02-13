@@ -6,7 +6,7 @@ import SwiftUtilities
 
 public class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadataRecordable {
     @Persisted(primaryKey: true) public var compoundKey = ""
-    @Persisted public var mediaStatus: MediaStatus?
+    @Persisted public var mediaStatusID: String?
     
     @Persisted public var languageCode: String
     @Persisted public var content: Data?
@@ -20,9 +20,6 @@ public class MediaTranscript: Object, UnownedSyncableObject, ChangeMetadataRecor
     }
     
     public static func makeCompoundKey(mediaStatus: MediaStatus, languageCode: String) -> String? {
-        guard mediaStatus != nil else {
-            return nil
-        }
         return mediaStatus.compoundKey + "-" + languageCode
     }
     

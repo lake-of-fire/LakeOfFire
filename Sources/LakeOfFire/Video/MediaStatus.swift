@@ -13,7 +13,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
-    @Persisted(originProperty: "mediaStatus") public var feeds: LinkingObjects<MediaTranscript>
+//    @Persisted(originProperty: "mediaStatus") public var feeds: LinkingObjects<MediaTranscript>
     
     public var needsSyncToServer: Bool {
         return false

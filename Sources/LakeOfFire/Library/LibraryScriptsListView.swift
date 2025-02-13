@@ -24,7 +24,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                     Task { @RealmBackgroundActor in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
                         let libraryConfigurationID = libraryConfiguration.id
-                        let userScriptIDs = Array(libraryConfiguration.userScripts).map { $0.id }
+                        let userScriptIDs = Array(libraryConfiguration.getUserScripts() ?? []).map { $0.id }
                         
                         try await { @MainActor [weak self] in
                             guard let self else { return }
@@ -48,8 +48,8 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         
         let scriptID = script.id
         try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
-            if let idx = libraryConfiguration.userScripts.firstIndex(where: { $0.id == scriptID }) {
-                libraryConfiguration.userScripts.remove(at: idx)
+            if let idx = libraryConfiguration.userScriptIDs.firstIndex(where: { $0 == scriptID }) {
+                libraryConfiguration.userScriptIDs.remove(at: idx)
                 libraryConfiguration.modifiedAt = Date()
             }
         }
@@ -95,7 +95,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         Task { @MainActor in
             guard let libraryConfiguration = libraryConfiguration else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
-                libraryConfiguration.userScripts.move(fromOffsets: fromOffsets, toOffset: toOffset)
+                libraryConfiguration.userScriptIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
                 libraryConfiguration.modifiedAt = Date()
             }
         }
@@ -126,7 +126,7 @@ struct LibraryScriptsListView: View {
 #endif
     }
     
-    func list(libraryConfiguration: LibraryConfiguration, userScripts: [UserScript]) -> some View {
+    @ViewBuilder func list(libraryConfiguration: LibraryConfiguration, userScripts: [UserScript]) -> some View {
         ScrollViewReader { scrollProxy in
             List(selection: $selectedScript) {
                 ForEach(userScripts) { script in
@@ -149,7 +149,7 @@ struct LibraryScriptsListView: View {
                                     Text("Official Manabi Reader system script")
                                         .bold()
                                 } else {
-                                    if script.allowedDomains.isEmpty {
+                                    if script.allowedDomainIDs.isEmpty {
                                         Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
                                     }
                                 }

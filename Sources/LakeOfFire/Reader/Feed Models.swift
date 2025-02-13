@@ -22,7 +22,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     @Persisted public var createdAt: Date
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
-    @Persisted(originProperty: "category") public var feeds: LinkingObjects<Feed>
+//    @Persisted(originProperty: "category") public var feeds: LinkingObjects<Feed>
     
     public enum CodingKeys: String, CodingKey, CaseIterable {
         case id
@@ -36,6 +36,22 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     public var isUserEditable: Bool {
         return opmlURL == nil
     }
+    
+    public func getFeeds() -> [Feed]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(Feed.self).where { $0.categoryID == id && !$0.isDeleted } .sorted(by: \.title).map { $0 }
+    }
+    
+    public func isEmpty() -> Bool {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return true
+        }
+        return realm.objects(Feed.self).where { $0.categoryID == id && !$0.isDeleted }.first == nil
+    }
 }
 
 public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
@@ -45,7 +61,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var title: String
-    @Persisted public var category: FeedCategory?
+    @Persisted public var categoryID: UUID?
     @Persisted public var markdownDescription = ""
     @Persisted public var rssUrl: URL
     @Persisted public var iconUrl: URL
@@ -58,7 +74,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var extractImageFromContent = true
     @Persisted public var deleteOrphans = false
 
-    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
+//    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
     
     @Persisted public var createdAt = Date()
@@ -82,8 +98,13 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         case isArchived
     }
     
-    public var isUserEditable: Bool {
-        return category?.opmlURL == nil
+    public func isUserEditable() -> Bool {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return false
+        }
+        guard let categoryID else { return false }
+        return realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)?.opmlURL == nil
     }
     
         public func encode(to encoder: Encoder) throws {
@@ -116,6 +137,23 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         self.meaningfulContentMinLength = try container.decode(Int.self, forKey: .meaningfulContentMinLength)
         self.deleteOrphans = try container.decode(Bool.self, forKey: .deleteOrphans)
     }
+    
+    public func getCategory() -> FeedCategory? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        guard let categoryID else { return nil }
+        return realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)
+    }
+    
+    public func getEntries() -> [FeedEntry]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return realm.objects(FeedEntry.self).where { $0.feedID == id && !$0.isDeleted } .sorted(by: \.publicationDate) .map { $0 }
+    }
 }
 
 @globalActor
@@ -126,10 +164,10 @@ fileprivate actor FeedEntryActor {
 public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, ChangeMetadataRecordable {
     @Persisted(primaryKey: true) public var compoundKey = ""
     public var keyPrefix: String? {
-        return feed?.primaryKeyValue
+        return feedID?.uuidString
     }
     
-    @Persisted public var feed: Feed?
+    @Persisted public var feedID: UUID?
     
     @Persisted public var url: URL
     @Persisted public var title = ""
@@ -152,7 +190,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     public var rssURLs: List<URL> {
         get {
             let list = RealmSwift.List<URL>()
-            if let url = feed?.rssUrl {
+            if let url = getFeed()?.rssUrl {
                 list.append(url)
             }
             return list
@@ -161,7 +199,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     public var rssTitles: List<String> {
         get {
             let list = RealmSwift.List<String>()
-            if let title = feed?.title {
+            if let title = getFeed()?.title {
                 list.append(title)
             }
             return list
@@ -179,34 +217,43 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     // Feed options.
     public var isReaderModeByDefault: Bool {
 //        get { readerModeAvailabilityOverride ?? feed?.isReaderModeByDefault ?? true }
-        get { feed?.isReaderModeByDefault ?? true }
+        get { getFeed()?.isReaderModeByDefault ?? true }
         set { }
     }
     public var rssContainsFullContent: Bool {
-        get { feed?.rssContainsFullContent ?? false }
-        set { feed?.rssContainsFullContent = newValue }
+        get { getFeed()?.rssContainsFullContent ?? false }
+        set { getFeed()?.rssContainsFullContent = newValue }
     }
     public var meaningfulContentMinLength: Int {
-        get { feed?.meaningfulContentMinLength ?? 0 }
-        set { feed?.meaningfulContentMinLength = newValue }
+        get { getFeed()?.meaningfulContentMinLength ?? 0 }
+        set { getFeed()?.meaningfulContentMinLength = newValue }
     }
     public var injectEntryImageIntoHeader: Bool {
-        get { feed?.injectEntryImageIntoHeader ?? false }
-        set { feed?.injectEntryImageIntoHeader = newValue }
+        get { getFeed()?.injectEntryImageIntoHeader ?? false }
+        set { getFeed()?.injectEntryImageIntoHeader = newValue }
     }
     public var displayPublicationDate: Bool {
-        get { feed?.displayPublicationDate ?? true }
-        set { feed?.displayPublicationDate = newValue }
+        get { getFeed()?.displayPublicationDate ?? true }
+        set { getFeed()?.displayPublicationDate = newValue }
     }
     public var extractImageFromContent: Bool {
-        get { feed?.extractImageFromContent ?? false }
-        set { feed?.extractImageFromContent = newValue }
+        get { getFeed()?.extractImageFromContent ?? false }
+        set { getFeed()?.extractImageFromContent = newValue }
     }
     
     #warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
+    
+    public func getFeed() -> Feed? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        guard let feedID else { return nil }
+        return realm.object(ofType: Feed.self, forPrimaryKey: feedID)
+    }
     
     @MainActor
     public func imageURLToDisplay() async throws -> URL? {
@@ -233,6 +280,8 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     @MainActor
     public func configureBookmark(_ bookmark: Bookmark) {
+        let feed = getFeed()
+        
         // Feed options.
         bookmark.rssContainsFullContent = feed?.rssContainsFullContent ?? bookmark.rssContainsFullContent
         if bookmark.rssContainsFullContent {
@@ -361,7 +410,7 @@ public extension Feed {
         try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
 
-            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
+            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feedID == feedID } .map { $0.compoundKey })
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
@@ -390,7 +439,7 @@ public extension Feed {
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 let feedEntry = FeedEntry()
-                feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID)
+                feedEntry.feedID = feedID
                 feedEntry.html = content
                 feedEntry.url = url
                 feedEntry.title = title ?? ""
@@ -427,7 +476,7 @@ public extension Feed {
         try await  { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
 
-            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feed.id == feedID } .map { $0.compoundKey })
+            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feedID == feedID } .map { $0.compoundKey })
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
@@ -480,7 +529,7 @@ public extension Feed {
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 let feedEntry = FeedEntry()
-                feedEntry.feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID)
+                feedEntry.feedID = feedID
                 feedEntry.url = url
                 feedEntry.title = title ?? ""
                 feedEntry.author = item.authors?.compactMap { $0.name } .joined(separator: ", ") ?? ""

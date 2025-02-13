@@ -64,7 +64,7 @@ public struct ContentCategoryButtons: View {
     }
 
     public var body: some View {
-        if let categories = viewModel.libraryConfiguration?.activeCategories {
+        if let categories = viewModel.libraryConfiguration?.getActiveCategories() {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
                 BooksCategoryButton(
                     categorySelection: $categorySelection,

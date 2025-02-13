@@ -58,9 +58,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 
                 guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID) else { return }
                 self.libraryConfiguration = libraryConfiguration
-                self.categories = Array(libraryConfiguration.categories)
+                self.categories = Array(libraryConfiguration.getCategories() ?? [])
 
-                let activeCategoryIDs = libraryConfiguration.activeCategories.map { $0.id } ?? []
+                let activeCategoryIDs = libraryConfiguration.getActiveCategories()?.map { $0.id } ?? []
                 self.archivedCategories = Array(realm.objects(FeedCategory.self).where { ($0.isArchived || !$0.id.in(activeCategoryIDs)) && !$0.isDeleted })
             }()
         }
@@ -107,8 +107,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     func deleteCategory(at offsets: IndexSet) {
         Task { @MainActor in
             guard let libraryConfiguration = libraryConfiguration else { return }
+            guard let categories = libraryConfiguration.getCategories() else { return }
             for offset in offsets {
-                let category = libraryConfiguration.categories[offset]
+                let category = categories[offset]
                 guard category.isUserEditable else { continue }
                 let ref = ThreadSafeReference(to: category)
                 try await Task { @RealmBackgroundActor in
@@ -125,7 +126,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
         Task { @MainActor in
             guard let libraryConfiguration = libraryConfiguration else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
-                libraryConfiguration.categories.move(fromOffsets: fromOffsets, toOffset: toOffset)
+                libraryConfiguration.categoryIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
                 libraryConfiguration.modifiedAt = Date()
             }
         }

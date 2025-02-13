@@ -28,7 +28,7 @@ struct LibraryFeedView: View {
             if let libraryFeedFormSectionsViewModel = libraryFeedFormSectionsViewModel {
                 Form {
                     LibraryFeedFormSections(viewModel: libraryFeedFormSectionsViewModel)
-                        .disabled(!feed.isUserEditable)
+                        .disabled(!feed.isUserEditable())
                 }
                 .formStyle(.grouped)
             }
@@ -54,8 +54,14 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @Published var feedRssContainsFullContent = false
     @Published var feedDisplayPublicationDate = false
     
+    @Published var feedEntries: [FeedEntry]?
+
     var cancellables = Set<AnyCancellable>()
-    @RealmBackgroundActor private var objectNotificationToken: NotificationToken?
+    
+    @RealmBackgroundActor
+    var realmCancellables = Set<AnyCancellable>()
+    @RealmBackgroundActor
+    private var objectNotificationToken: NotificationToken?
     
     init(feed: Feed) {
         self.feed = feed
@@ -76,6 +82,22 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                         print("An error occurred: \(error)")
                     }
                 }
+            
+            realm.objects(FeedEntry.self)
+                .where { $0.feedID == feedID }
+                .collectionPublisher
+                .subscribe(on: libraryDataQueue)
+                .map { _ in }
+                .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
+                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                        self.feedEntries = realm.objects(FeedEntry.self).where { $0.feedID == feedID } .map { $0 }
+                    }
+                })
+                .store(in: &realmCancellables)
+
             await refresh()
         }
         
@@ -261,7 +283,7 @@ struct LibraryFeedFormSections: View {
                 TextField("", text: $viewModel.feedTitle, prompt: Text("Enter website title"))
                     .textCase(nil)
                     .font(.headline)
-                    .disabled(!viewModel.feed.isUserEditable)
+                    .disabled(!viewModel.feed.isUserEditable())
             } label: {
                 if !viewModel.feed.iconUrl.isNativeReaderView {
                     LakeImage(viewModel.feed.iconUrl)
@@ -277,7 +299,7 @@ struct LibraryFeedFormSections: View {
             Toggle("Enabled", isOn: $viewModel.feedEnabled)
             HStack {
                 TextField("Feed URL", text: $viewModel.feedURL, prompt: Text("Enter URL of RSS or Atom content"), axis: .vertical)
-                if viewModel.feed.isUserEditable {
+                if viewModel.feed.isUserEditable() {
                     PasteButton(payloadType: String.self) { strings in
                         viewModel.pasteRSSURL(strings: strings)
                     }
@@ -387,9 +409,9 @@ struct LibraryFeedFormSections: View {
                 refreshFromOpenGraph()
             }
         }
-        .onChange(of: viewModel.feed.entries) { [oldEntries = viewModel.feed.entries] entries in
+        .onChange(of: viewModel.feedEntries ?? []) { [oldEntries = viewModel.feedEntries] entries in
             let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
-            let oldEntry = oldEntries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
+            let oldEntry = oldEntries?.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
             Task { @MainActor in
                 if let entry = entry {
                     readerContent.content = entry
@@ -415,7 +437,7 @@ struct LibraryFeedFormSections: View {
     
     var body: some View {
         feedTitleSection
-        if let opmlURL = viewModel.feed.category?.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
+        if let opmlURL = viewModel.feed.getCategory()?.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
             synchronizationSection
         }
         feedLocationSection
@@ -429,13 +451,13 @@ struct LibraryFeedFormSections: View {
         readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
         
         refreshFromOpenGraph()
-        if viewModel.feed.entries.isEmpty {
+        if viewModel.feed.getEntries()?.isEmpty ?? true {
             refreshFeed()
         }
         if viewModel.feed.iconUrl.isNativeReaderView {
             refreshIcon()
         }
-        refresh(entries: Array(viewModel.feed.entries))
+        refresh(entries: Array(viewModel.feed.getEntries() ?? []))
     }
     
     private func refreshFeed() {
@@ -446,8 +468,8 @@ struct LibraryFeedFormSections: View {
     
     private func refreshFromOpenGraph() {
         Task { @MainActor in
-            guard viewModel.feed.isUserEditable, !viewModel.feed.rssUrl.isNativeReaderView else { return }
-            let url = viewModel.feed.entries.first?.url ?? viewModel.feed.rssUrl.domainURL
+            guard viewModel.feed.isUserEditable(), !viewModel.feed.rssUrl.isNativeReaderView else { return }
+            let url = viewModel.feed.getEntries()?.first?.url ?? viewModel.feed.rssUrl.domainURL
             do {
                 let og = try await OpenGraph.fetch(url: url)
                 guard let rawURL = og[.url], let url = URL(string: rawURL), url.domainURL == self.viewModel.feed.rssUrl.domainURL else { return }
@@ -496,7 +518,7 @@ struct LibraryFeedFormSections: View {
             return
         }
         
-        let entries: [FeedEntry] = entries ?? Array(feed.entries)
+        let entries: [FeedEntry] = entries ?? Array(feed.getEntries() ?? [])
         Task { @MainActor in
 //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
             if let entry = entries.last {

@@ -134,7 +134,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
             userCategories = nil
             return
         }
-        userCategories = Array(libraryConfiguration.categories.where { $0.opmlURL == nil && !$0.isArchived && !$0.isDeleted })
+        userCategories = Array(libraryConfiguration.getActiveCategories()?.filter { $0.opmlURL == nil } ?? [])
     }
 }
 
@@ -206,7 +206,7 @@ public struct WebFeedButton<C: ReaderContentProtocol>: View {
     
     public var body: some View {
         Menu {
-            if let feed = viewModel.feed, !feed.isDeleted, let category = feed.category {
+            if let feed = viewModel.feed, !feed.isDeleted, let category = feed.getCategory() {
                 Button("Edit Feed in Library") {
                     libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
                     libraryViewModel.navigationPath.append(category)

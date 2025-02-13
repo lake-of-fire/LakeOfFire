@@ -43,7 +43,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     Task { @RealmBackgroundActor in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
                         let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
-                        let webViewUserScripts = libraryConfiguration.activeWebViewUserScripts
+                        let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
                         try await { @MainActor [weak self] in
                             guard let self else { return }
                             if self.webViewSystemScripts != webViewSystemScripts {
@@ -78,7 +78,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let ref = ThreadSafeReference(to: libraryConfiguration)
         Task { @MainActor [weak self] in
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
-            guard let scripts = realm.resolve(ref)?.activeWebViewUserScripts else { return }
+            guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
             if self.webViewUserScripts != scripts {
                 self.webViewUserScripts = scripts

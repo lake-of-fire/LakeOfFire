@@ -24,7 +24,7 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var title = ""
     @Persisted public var script = ""
-    @Persisted public var allowedDomains = RealmSwift.List<UserScriptAllowedDomain>()
+    @Persisted public var allowedDomainIDs = RealmSwift.List<UUID>()
     
     @Persisted public var injectAtStart = true
     @Persisted public var mainFrameOnly = true
@@ -41,12 +41,27 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     
     @Persisted public var isDeleted = false
     
-    public var webViewUserScript: WebViewUserScript {
-        return WebViewUserScript(source: script, injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd, forMainFrameOnly: mainFrameOnly, in: WKContentWorld.world(name: id.uuidString), allowedDomains: Set(allowedDomains.where({ $0.isDeleted == false }).map({ $0.domain })))
+    public func getWebViewUserScript() -> WebViewUserScript? {
+        guard let allowedDomains = getAllowedDomains() else { return nil }
+        return WebViewUserScript(
+            source: script,
+            injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,
+            forMainFrameOnly: mainFrameOnly,
+            in: WKContentWorld.world(name: id.uuidString),
+            allowedDomains: Set(allowedDomains.map({ $0.domain }))
+        )
     }
     
     
     public var isUserEditable: Bool {
         return opmlURL == nil
+    }
+    
+    public func getAllowedDomains() -> [UserScriptAllowedDomain]? {
+        guard let realm else {
+            print("Warning: Unexpectedly unmanaged object")
+            return nil
+        }
+        return allowedDomainIDs.compactMap { realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: $0) } .filter { !$0.isDeleted }
     }
 }

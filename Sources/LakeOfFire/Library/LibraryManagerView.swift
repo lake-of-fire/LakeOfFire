@@ -52,7 +52,7 @@ struct LibraryCategoryViewContainer: View {
                 LibraryCategoryView()
                     .environmentObject(libraryCategoryViewModel)
                     .task {
-                        if let feed = libraryCategoryViewModel.selectedFeed, feed.category != category {
+                        if let feed = libraryCategoryViewModel.selectedFeed, feed.categoryID != category.id {
                             libraryCategoryViewModel.selectedFeed = nil
                         }
                         //                        let feedsToDeselect = viewModel.selectedFeed.filter { $0.category != category }

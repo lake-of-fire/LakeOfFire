@@ -157,7 +157,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self = self, let script = script else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-                script.allowedDomains.remove(atOffsets: offsets)
+                script.allowedDomainIDs.remove(atOffsets: offsets)
             }
         }
     }
@@ -165,8 +165,10 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     func addEmptyDomain() {
         Task { @MainActor [weak self] in
             guard let self = self, let script = script else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-                script.allowedDomains.append(UserScriptAllowedDomain())
+            try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
+                let allowedDomain = UserScriptAllowedDomain()
+                realm.add(allowedDomain, update: .modified)
+                script.allowedDomainIDs.append(allowedDomain.id)
             }
         }
     }
@@ -268,7 +270,8 @@ struct LibraryScriptFormSections: View {
             }
         }
         Section(header: Text("Allowed Domains"), footer: Text("Top-level hostnames of domains this script is allowed to run on. No support for wildcards or subdomains. All subdomains are matched against their top-level parent domain. Leave empty for access to all domains.").font(.footnote).foregroundColor(.secondary)) {
-            ForEach(script.allowedDomains.where({ $0.isDeleted == false })) { (domain: UserScriptAllowedDomain) in
+            // TODO: Cache allowedDomains in a subview struct
+            ForEach(script.getAllowedDomains() ?? []) { (domain: UserScriptAllowedDomain) in
                 let domain = domain.isFrozen ? domain.thaw() ?? domain : domain
                 UserScriptAllowedDomainCell(domain: domain)
                     .disabled(!script.isUserEditable)
@@ -278,8 +281,8 @@ struct LibraryScriptFormSections: View {
                             Button(role: .destructive) {
                                 Task { @MainActor in
                                     try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-                                        if let idx = script.allowedDomains.index(of: domain) {
-                                            script.allowedDomains.remove(at: idx)
+                                        if let idx = script.getAllowedDomains()?.index(of: domain) {
+                                            script.allowedDomainIDs.remove(at: idx)
                                         }
                                     }
                                 }
@@ -300,7 +303,7 @@ struct LibraryScriptFormSections: View {
                 Label("Add Domain", systemImage: "plus.circle")
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if script.allowedDomains.isEmpty {
+            if script.allowedDomainIDs.isEmpty {
                 Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
             }
         }
@@ -361,7 +364,7 @@ struct LibraryScriptFormSections: View {
                         .environmentObject(readerModeViewModel)
                     } else {
                         WebView(
-                            config: WebViewConfig(userScripts: [script.webViewUserScript]),
+                            config: WebViewConfig(userScripts: Array(ofNotNil: script.getWebViewUserScript())),
                             navigator: webNavigator,
                             state: $webState,
                             bounces: false)

@@ -122,7 +122,7 @@ class LibraryCategoryViewModel: ObservableObject {
     
     @MainActor
     func deleteFeed(_ feed: Feed) async throws {
-        guard feed.isUserEditable else { return }
+        guard feed.isUserEditable() else { return }
         try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: ReaderContentLoader.feedEntryRealmConfiguration) { _, feed in
             feed.isDeleted = true
             feed.modifiedAt = Date()
@@ -136,9 +136,9 @@ class LibraryCategoryViewModel: ObservableObject {
         }
         
         for offset in offsets {
-            let feed = category.feeds[offset]
-            guard feed.isUserEditable else { continue }
-            Task {
+            let feed = category.getFeeds()?[offset]
+            guard let feed, feed.isUserEditable() else { continue }
+            Task { @MainActor in
                 try await deleteFeed(feed)
             }
         }
@@ -183,12 +183,12 @@ struct LibraryCategoryView: View {
     }
     
     private func matchingDistinctFeed(category: FeedCategory, feed: Feed) -> Feed? {
-        return category.feeds.where { $0.isDeleted == false }.first(where: { $0.rssUrl == feed.rssUrl && $0.id != feed.id })
+        return category.getFeeds()?.first(where: { $0.rssUrl == feed.rssUrl && $0.id != feed.id })
     }
     
     @ViewBuilder func duplicationMenu(feed: Feed) -> some View {
         Menu("Duplicate In…") {
-            ForEach(viewModel.libraryConfiguration.categories.filter({ $0.isUserEditable })) { (category: FeedCategory) in
+            ForEach((viewModel.libraryConfiguration.getCategories() ?? []).filter({ $0.isUserEditable })) { (category: FeedCategory) in
                 if matchingDistinctFeed(category: category, feed: feed) != nil { //}, matchingFeed?.category.id != feed.category.id {
                     Menu(category.title) {
                         Button("Overwrite Existing Feed") {
@@ -269,14 +269,16 @@ struct LibraryCategoryView: View {
                 }
                 
                 Section("Feeds") {
-                    ForEach(viewModel.category.feeds.where({ $0.isDeleted == false }).sorted(by: \.title)) { feed in
+                    // TODO: Cache feeds in subview structs
+                    ForEach(viewModel.category.getFeeds() ?? []) { feed in
+                        let isFeedUserEditable = feed.isUserEditable()
                         NavigationLink(value: feed) {
                             FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
                         }
-                        .deleteDisabled(!feed.isUserEditable)
+                        .deleteDisabled(!isFeedUserEditable)
                         .contextMenu {
                             duplicationMenu(feed: feed)
-                            if feed.isUserEditable {
+                            if isFeedUserEditable {
                                 Divider()
                                 Button(role: .destructive) {
                                     Task {
@@ -318,7 +320,8 @@ struct LibraryCategoryView: View {
                 }
 #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if viewModel.isUserEditable && !viewModel.category.feeds.isEmpty {
+                    // TODO: Cache feeds in subview structs
+                    if viewModel.isUserEditable && !viewModel.category.isEmpty() {
                         EditButton()
                     }
                 }

@@ -19,16 +19,16 @@ public class FeedViewModel: ObservableObject {
         Task { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return }
             realm.objects(FeedEntry.self)
-                .where { $0.feed.id == feedID && !$0.isDeleted }
+                .where { $0.feedID == feedID && !$0.isDeleted }
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.1), scheduler: feedQueue)
+                .debounce(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
-                    Task { @MainActor in
+                    Task { @MainActor [weak self] in
                         let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: MainActor.shared)
-                        self?.entries = Array(realm.objects(FeedEntry.self).where { $0.feed.id == feedID && !$0.isDeleted })
+                        self?.entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted } .map { $0 }
                     }
                 })
                 .store(in: &cancellables)
