@@ -742,12 +742,13 @@ public class LibraryDataManager: NSObject {
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
-                if feed.categoryID == nil || feed.getCategory()?.opmlURL == download?.url || feed.isDeleted {
+                let feedCategory = feed.getCategory()
+                if feedCategory == nil || feedCategory?.opmlURL == download?.url || feed.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category) {
                         try Task.checkCancellation()
                         await realm.asyncRefresh()
                         try await realm.asyncWrite {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed)
+                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
                         }
                     }
                     importedFeeds.append(feed)
@@ -759,7 +760,7 @@ public class LibraryDataManager: NSObject {
                     try Task.checkCancellation()
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
                         realm.add(feed, update: .modified)
                     }
                     importedFeeds.append(feed)
@@ -798,7 +799,8 @@ public class LibraryDataManager: NSObject {
         } else if !(opmlEntry.children?.isEmpty ?? true) {
 //            let opmlTitle = opmlEntry.title ?? opmlEntry.text
             if category == nil, !(opmlEntry.attributes?.contains(where: { $0.name == "isUserScriptList" }) ?? false) {
-                if let uuid = uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
+                if let uuid, let existingCategory = realm.object(ofType: FeedCategory.self, forPrimaryKey: uuid) {
+                    category = existingCategory
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, category: existingCategory) {
                         //                        if existingCategory.opmlURL == download?.url || existingCategory.isDeleted {
                         await realm.asyncRefresh()
@@ -830,7 +832,15 @@ public class LibraryDataManager: NSObject {
         
         for childEntry in (opmlEntry.children ?? []) {
             try Task.checkCancellation()
-            let (newCategories, newFeeds, newScripts) = try await importOPMLEntry(childEntry, opml: opml, download: download, category: category, importedCategories: importedCategories, importedFeeds: importedFeeds, importedScripts: importedScripts)
+            let (newCategories, newFeeds, newScripts) = try await importOPMLEntry(
+                childEntry,
+                opml: opml,
+                download: download,
+                category: category,
+                importedCategories: importedCategories,
+                importedFeeds: importedFeeds,
+                importedScripts: importedScripts
+            )
             importedCategories.append(contentsOf: newCategories)
             importedFeeds.append(contentsOf: newFeeds)
             importedScripts.append(contentsOf: newScripts)
@@ -1032,7 +1042,7 @@ public class LibraryDataManager: NSObject {
     
     static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) -> Bool {
         guard let feedURL = opmlEntry.feedURL else { return false }
-        if feed.categoryID != opmlEntry.attributeUUIDValue("uuid") {
+        if feed.categoryID != category?.id {
             return true
         }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
@@ -1089,7 +1099,7 @@ public class LibraryDataManager: NSObject {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed) throws {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) throws {
         // Must be kept in sync with the respective hasChanges
         guard let feedURL = opmlEntry.feedURL else { return }
         
@@ -1099,9 +1109,9 @@ public class LibraryDataManager: NSObject {
         if let iconURLRaw = opmlEntry.attributeStringValue("iconUrl") {
             newIconURL = URL(string: iconURLRaw)
         }
-        let newCategoryID = opmlEntry.attributeUUIDValue("uuid")
-        if feed.categoryID != newCategoryID {
-            feed.categoryID = newCategoryID
+        
+        if feed.categoryID != category?.id {
+            feed.categoryID = category?.id
             didChange = true
         }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
