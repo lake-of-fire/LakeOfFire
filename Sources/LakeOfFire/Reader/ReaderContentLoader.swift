@@ -61,6 +61,7 @@ public struct ReaderContentLoader {
             return ContentReference(content: content)
         }() else { return nil }
         let realm = try await Realm(configuration: ref.realmConfiguration, actor: MainActor.shared)
+        await realm.asyncRefresh() // Ensure exists from other thread
         return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
     }
     
@@ -195,10 +196,9 @@ public struct ReaderContentLoader {
                     match.modifiedAt = Date()
                 }
             }
-//            debugPrint("!! match", match?.url, match?.html)
             return match
         }()
-        if let content = content {
+        if let content {
             return try await fromBackgroundActor(content: content)
         }
         return nil
