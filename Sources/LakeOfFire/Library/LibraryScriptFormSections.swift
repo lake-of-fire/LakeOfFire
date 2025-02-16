@@ -136,8 +136,8 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [weak self] in
-            self?.objectNotificationToken?.invalidate()
+        Task { @RealmBackgroundActor in
+            objectNotificationToken?.invalidate()
         }
     }
     

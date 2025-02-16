@@ -18,7 +18,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [weak notificationToken] in
+        Task { @RealmBackgroundActor [notificationToken] in
             notificationToken?.invalidate()
         }
     }
