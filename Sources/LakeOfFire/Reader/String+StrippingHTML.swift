@@ -11,7 +11,7 @@ public extension String {
             do {
                 doc.outputSettings().prettyPrint(pretty: false)
                 for rubyTag in try (doc.body() ?? doc).getElementsByTag("ruby") {
-                    for tagName in ["rp", "rt", "rtc"] {
+                    for tagName in [UTF8Arrays.rp, UTF8Arrays.rt, UTF8Arrays.rtc] {
                         try rubyTag.getElementsByTag(tagName).remove()
                     }
                     let surface = try rubyTag.text(trimAndNormaliseWhitespace: false)

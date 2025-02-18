@@ -21,34 +21,52 @@ public struct EbookProcessorCacheKey: Encodable {
 public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000, countLimit: 2_000)
 
 fileprivate func extractBlobUrls(from html: String) -> [String] {
-    let prefix = "blob:"
-    let quotes: Set<Character> = ["'", "\""]
-    
+    let bytes = ArraySlice(html.utf8)
+    let prefixBytes = UTF8Arrays.blobColon
+    let prefixBytesCount = prefixBytes.count
+    let quote1: UInt8 = 0x22 // '
+    let quote2: UInt8 = 0x27 // "
+    let bytesCount = bytes.count
     var blobUrls: [String] = []
-//    var index = html.startIndex
-//    while let startIndex = html.range(of: "\(prefix)", range: index..<html.endIndex)?.upperBound {
-//        let endIndex = html[startIndex...].firstIndex(where: { quotes.contains($0) })
-//        if let endIndex = endIndex {
-//            blobUrls.append(String(html[startIndex..<endIndex]))
-//            index = html.index(after: endIndex)
-//        } else {
-//            break
-//        }
-//    }
-    
-    // TODO: Faster but maybe not working yet?
-    var searchRange = html.startIndex..<html.endIndex
-    
-    while let prefixRange = html.range(of: prefix, options: [], range: searchRange) {
-        let startIndex = prefixRange.upperBound
-        let endIndex = html[startIndex...].firstIndex(where: { quotes.contains($0) }) ?? html.endIndex
-        let blobUrl = String(html[startIndex..<endIndex])
-        blobUrls.append(blobUrl)
+    var i = 0
+    while i < bytesCount {
+        // Skip continuation bytes
+        if (bytes[i] & 0b11000000) == 0b10000000 {
+            i += 1
+            continue
+        }
         
-        // Move the search range past the current blob URL
-        searchRange = endIndex..<html.endIndex
+        // Determine length of current UTF-8 character
+        let charLen = bytes[i] < 0x80 ? 1 : bytes[i] < 0xE0 ? 2 : bytes[i] < 0xF0 ? 3 : 4
+        
+        // Check for prefix match
+        if i + prefixBytesCount <= bytesCount {
+            var match = true
+            for k in 0..<prefixBytesCount {
+                if bytes[i + k] != prefixBytes[k] {
+                    match = false
+                    break
+                }
+            }
+            if match {
+                let urlStart = i + prefixBytesCount
+                var j = urlStart
+                while j < bytesCount {
+                    // Ensure we're at a character boundary
+                    if bytes[j] & 0b11000000 == 0b10000000 {
+                        j += 1
+                        continue
+                    }
+                    if bytes[j] == 0x22 || bytes[j] == 0x27 { break } // " or '
+                    j += bytes[j] < 0x80 ? 1 : bytes[j] < 0xE0 ? 2 : bytes[j] < 0xF0 ? 3 : 4
+                }
+                blobUrls.append(String(decoding: bytes[urlStart..<j], as: UTF8.self))
+                i = j
+                continue
+            }
+        }
+        i += charLen
     }
-    
     return blobUrls
 }
 
@@ -110,6 +128,7 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in html: String, newFontSize: 
     }
     return html
 }
+
 internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, content: String, processReadabilityContent: ((SwiftSoup.Document) async -> String)?) async throws -> String {
     let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? 16
     let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
