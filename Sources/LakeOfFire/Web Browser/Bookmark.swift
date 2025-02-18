@@ -45,14 +45,17 @@ public class Bookmark: Object, ReaderContentProtocol {
         return imageUrl
     }
     
+    /// Used by subclasses of Bookmark
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
+        let targetBookmarkID = bookmark.compoundKey
         Task { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) else { return }
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmark == nil || $0.bookmark.isDeleted) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
-                    historyRecord.bookmark = bookmark
+                let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
+                for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs)) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
+                    historyRecord.bookmarkID = targetBookmarkID
                     historyRecord.modifiedAt = Date()
                 }
             }

@@ -15,7 +15,7 @@ public enum DefaultRealmConfiguration {
 //
 //            // Compact if the file is over size and less than some % 'used'
 //            let targetBytes = 40 * 1024 * 1024
-//            return (totalBytes > targetBytes) && (Double(usedBytes) / Double(totalBytes)) < 0.6
+//            return (totalBytes > targetBytes) && (Double(usedBytes) / Double(totalBytes)) < 0.8
 //        }
         config.objectTypes = [
             FeedCategory.self,

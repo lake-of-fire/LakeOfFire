@@ -5,7 +5,7 @@ import RealmSwiftGaps
 public class HistoryRecord: Bookmark {
     @Persisted public var lastVisitedAt = Date()
     
-    @Persisted public var bookmark: Bookmark?
+    @Persisted public var bookmarkID: String?
     
     public override func configureBookmark(_ bookmark: Bookmark) {
         super.configureBookmark(bookmark)

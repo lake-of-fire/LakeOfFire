@@ -151,7 +151,7 @@ public extension ReaderContentProtocol {
         if let legacyHtml = legacyHTMLContent {
             return legacyHtml
         }
-        guard let content = content else { return nil }
+        guard let content else { return nil }
         let nsContent: NSData = content as NSData
         guard let data = try? nsContent.decompressed(using: .lzfse) as Data? else {
             return nil
