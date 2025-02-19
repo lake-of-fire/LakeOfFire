@@ -184,14 +184,14 @@ private func hukumusume(doc: Document) throws {
     
     // Remove empty paragraphs.
     for p in try doc.getElementsByTag("p") {
-        if !p.hasText() && p.childNodeSize() == 0 {
+        if !p.hasText() && !p.hasChildNodes() {
             try p.remove()
         }
     }
     
     // Remove <br> at start or end of paragraph nodes.
     for br in try doc.getElementsByTag("br") {
-        if let parent = br.parent(), parent.tagNameNormal() == "p" && (br.previousSibling() == nil || br.nextSibling() == nil) {
+        if let parent = br.parent(), parent.tagNameNormalUTF8() == UTF8Arrays.p && (br.previousSibling() == nil || !br.hasNextSibling()) {
             try br.remove()
         }
     }
