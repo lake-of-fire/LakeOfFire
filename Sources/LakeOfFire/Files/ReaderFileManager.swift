@@ -144,7 +144,7 @@ public class ReaderFileManager: ObservableObject {
     }
     
     private static func validate(readerFileURL: URL) throws {
-        guard (readerFileURL.scheme == "reader-file" && readerFileURL.host == "local") || (readerFileURL.scheme == "ebook" && readerFileURL.host == "ebook") else {
+        guard (readerFileURL.scheme == "reader-file" && readerFileURL.host == "file") || (readerFileURL.scheme == "ebook" && readerFileURL.host == "ebook") else {
             throw ReaderFileManagerError.invalidFileURL
         }
     }
@@ -152,6 +152,7 @@ public class ReaderFileManager: ObservableObject {
     @MainActor
     private func extract(fileURL: URL) async throws -> (CloudDrive, RootRelativePath) {
         let relativePath = try Self.extractRelativePath(fileURL: fileURL)
+        // Assumes /<host>/load/<local/icloud>/...
         guard let driveLocation = fileURL.pathComponents.dropFirst(2).first else { throw ReaderFileManagerError.invalidFileURL }
         switch driveLocation {
         case "local":
@@ -212,7 +213,7 @@ public class ReaderFileManager: ObservableObject {
                 if fileURL.isEBookURL {
                     return URL(string: "ebook://ebook/load/\(encodedPath)")
                 } else {
-                    return URL(string: "reader-file://local/\(encodedPath)")
+                    return URL(string: "reader-file://file/load/\(encodedPath)")
                 }
             }
         }
@@ -384,6 +385,7 @@ public class ReaderFileManager: ObservableObject {
                             let contentFile = ContentFile()
                             setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive)
                             contentFile.updateCompoundKey()
+                            contentFile.isReaderModeByDefault = ["htm", "html", "txt"].contains(readerFileURL.pathExtension.lowercased())
                             realm.add(contentFile, update: .modified)
                             updatedFiles.append(ThreadSafeReference(to: contentFile))
                         }
