@@ -272,7 +272,7 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
         try fixAnnoyingTitlesWithPipes(doc: doc)
     } catch { }
     
-    if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag("img").isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+    if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
         do {
             try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
         } catch { }
