@@ -281,13 +281,24 @@ public class ReaderFileManager: ObservableObject {
             try await drive.upload(from: fileURL, to: targetFilePath)
         }
         
-        guard let contentRef = try await refreshFilesMetadata(drive: drive, relativePath: targetFilePath).first else { return nil }
-        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
-        guard let content = realm.resolve(contentRef) else { return nil }
-        Task.detached { [weak self] in
-            try await self?.refreshAllFilesMetadata()
+        do {
+            guard let contentRef = try await refreshFilesMetadata(
+                drive: drive,
+                relativePath: targetDirectory
+            ).first else {
+                debugPrint("Warning: No file metadata returned for import")
+                return nil
+            }
+            let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+            guard let content = realm.resolve(contentRef) else { return nil }
+            Task.detached { [weak self] in
+                try await self?.refreshAllFilesMetadata()
+            }
+            return content.url
+        } catch {
+            debugPrint("Error importing file:", error)
+            throw error
         }
-        return content.url
     }
     
     @MainActor
@@ -346,25 +357,30 @@ public class ReaderFileManager: ObservableObject {
         var files = [ThreadSafeReference<ContentFile>]()
         var filesToUpdate: [(readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)] = []
         
-        for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
-            try Task.checkCancellation()
-            var tryRelativePath = RootRelativePath(path: url.relativePath)
-            if let relativePath = relativePath {
-                tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
-            }
-            let lastPathComponent = url.lastPathComponent.lowercased()
-            if lastPathComponent.hasSuffix(".realm") || lastPathComponent.hasSuffix(".realm.lock") || lastPathComponent.hasSuffix(".realm.management") || lastPathComponent.hasSuffix(".realm.note") || lastPathComponent == "manabireaderlogs.zip" {
-                continue
-            }
-            if !url.isFilePackage(), !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }), try await drive.directoryExists(at: tryRelativePath) {
-                let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
-                files.append(contentsOf: discoveredFiles)
-            } else {
-                let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
-                if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
-                    filesToUpdate.append((readerFileURL, tryRelativePath, drive))
+        do {
+            for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
+                try Task.checkCancellation()
+                var tryRelativePath = RootRelativePath(path: url.relativePath)
+                if let relativePath, !relativePath.path.isEmpty {
+                    tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
+                }
+                let lastPathComponent = url.lastPathComponent.lowercased()
+                if lastPathComponent.hasSuffix(".realm") || lastPathComponent.hasSuffix(".realm.lock") || lastPathComponent.hasSuffix(".realm.management") || lastPathComponent.hasSuffix(".realm.note") || lastPathComponent == "manabireaderlogs.zip" {
+                    continue
+                }
+                if !url.isFilePackage(), !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }), try await drive.directoryExists(at: tryRelativePath) {
+                    let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
+                    files.append(contentsOf: discoveredFiles)
+                } else {
+                    let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
+                    if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
+                        filesToUpdate.append((readerFileURL, tryRelativePath, drive))
+                    }
                 }
             }
+        } catch {
+            debugPrint(error)
+            throw error
         }
         
         if !filesToUpdate.isEmpty {
