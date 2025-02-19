@@ -388,7 +388,7 @@ fileprivate func getRssData(rssUrl: URL) async throws -> Data? {
 }
 
 fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderContentElement: Bool = true) throws {
-    let pageElement = try doc.getElementById("reader-content")?.getElementsByClass(UTF8Arrays.page).first()
+    let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first()
     guard !restrictToReaderContentElement || pageElement != nil else { return }
     
     for rubyTag in try (pageElement ?? doc).getElementsByTag(UTF8Arrays.ruby) {
