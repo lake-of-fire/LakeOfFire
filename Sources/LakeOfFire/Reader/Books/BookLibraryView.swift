@@ -110,7 +110,12 @@ fileprivate struct EditorsPicksView: View {
 
 @available(macOS 13.0, iOS 16.0, *)
 public struct BookLibraryView: View {
-    @StateObject private var viewModel = BookLibraryViewModel()
+    @ObservedObject private var viewModel: BookLibraryViewModel
+
+    public init (viewModel: BookLibraryViewModel) {
+        self.viewModel = viewModel
+    }
+    
     @SceneStorage("bookFileEntrySelection") private var entrySelection: String?
     
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
@@ -122,11 +127,11 @@ public struct BookLibraryView: View {
     
     @ViewBuilder private var myBooksHeader: some View {
         VStack(alignment: .leading) {
-            Text("My Books")
+            Text("My \(viewModel.mediaTypeTitle)")
             Button {
                 bookLibraryModalsModel.isImportingBookFile.toggle()
             } label: {
-                Label("Add EPUB", systemImage: "plus.circle")
+                Label("Add \(viewModel.mediaFileTypeTitle)", systemImage: "plus.circle")
                     .foregroundStyle(.primary)
             }
             .buttonStyle(.bordered)
@@ -134,7 +139,12 @@ public struct BookLibraryView: View {
     }
 
     @ViewBuilder private var myBooksSection: some View {
-        ReaderContentListItems(viewModel: readerContentListViewModel, entrySelection: $entrySelection, alwaysShowThumbnails: false, showSeparators: false)
+        ReaderContentListItems(
+            viewModel: readerContentListViewModel,
+            entrySelection: $entrySelection,
+            alwaysShowThumbnails: false,
+            showSeparators: false
+        )
             .listRowSeparatorIfAvailable(.hidden)
     }
 
@@ -202,12 +212,24 @@ public struct BookLibraryView: View {
     public var body: some View {
         list
     }
-    
-    public init() { }
 }
 
 @MainActor
-class BookLibraryViewModel: ObservableObject {
+public class BookLibraryViewModel: ObservableObject {
+    let mediaTypeTitle: String
+    let mediaFileTypeTitle: String
+    let opdsURL: URL
+
+    public init(
+        mediaTypeTitle: String = "Books",
+        mediaFileTypeTitle: String = "EPUB",
+        opdsURL: URL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
+    ) {
+        self.mediaTypeTitle = mediaTypeTitle
+        self.mediaFileTypeTitle = mediaFileTypeTitle
+        self.opdsURL = opdsURL
+    }
+ 
     @Published var editorsPicks: [Publication] = []
     @Published var errorMessage: String?
     private var cancellables = Set<AnyCancellable>()
@@ -217,16 +239,8 @@ class BookLibraryViewModel: ObservableObject {
     }
     
     func fetchEditorsPicks() {
-        let urlString = "https://reader.manabi.io/static/reader/books/opds/index.xml"
-        guard let url = URL(string: urlString) else {
-            Task { @MainActor in
-                self.errorMessage = "Invalid URL"
-            }
-            return
-        }
-        
         Task {
-            await fetchOPDSFeed(from: url)
+            await fetchOPDSFeed(from: opdsURL)
         }
     }
     

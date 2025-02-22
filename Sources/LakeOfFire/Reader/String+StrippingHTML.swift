@@ -10,7 +10,8 @@ public extension String {
         if let doc = try? SwiftSoup.parse(self) {
             do {
                 doc.outputSettings().prettyPrint(pretty: false)
-                for rubyTag in try (doc.body() ?? doc).getElementsByTag(UTF8Arrays.ruby) {
+                let rubyTags = try (doc.body() ?? doc).getElementsByTag(UTF8Arrays.ruby)
+                for rubyTag in rubyTags {
                     for tagName in [UTF8Arrays.rp, UTF8Arrays.rt, UTF8Arrays.rtc] {
                         try rubyTag.getElementsByTag(tagName).remove()
                     }
@@ -21,6 +22,7 @@ public extension String {
                 }
                 return try doc.text(trimAndNormaliseWhitespace: true)
             } catch {
+                debugPrint("Error stripping HTML", error)
                 return escapeHtml()
             }
         } else {

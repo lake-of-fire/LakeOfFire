@@ -79,7 +79,8 @@ public struct Reader: View {
 #elseif os(macOS)
     var buildMenu: ((Any) -> Void)?
 #endif
-    
+    var isReaderModeState: ((WebViewState) -> Bool?)?
+
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") internal var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") internal var darkModeTheme: DarkModeTheme = .black
@@ -114,7 +115,8 @@ public struct Reader: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
-        buildMenu: ((UIMenuBuilder) -> Void)? = nil
+        buildMenu: ((UIMenuBuilder) -> Void)? = nil,
+        isReaderModeState: ((WebViewState) -> Bool?)? = nil
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -125,6 +127,7 @@ public struct Reader: View {
         self.onNavigationFinished = onNavigationFinished
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
+        self.isReaderModeState = isReaderModeState
     }
 #elseif os(macOS)
     public init(
@@ -136,7 +139,8 @@ public struct Reader: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
-        buildMenu: ((Any) -> Void)? = nil
+        buildMenu: ((Any) -> Void)? = nil,
+        isReaderModeState: ((WebViewState) -> Bool?)? = nil
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -147,6 +151,7 @@ public struct Reader: View {
         self.onNavigationFinished = onNavigationFinished
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
+        self.isReaderModeState = isReaderModeState
     }
 #endif
 
@@ -181,30 +186,7 @@ public struct Reader: View {
                     onNavigationCommitted(state: state)
                 },
                 onNavigationFinished: { state in
-                    navigationTaskManager.startOnNavigationFinished {
-                        readerViewModel.onNavigationFinished(content: readerContent.content, newState: state) { newState in
-                            if let onNavigationFinished = onNavigationFinished {
-                                onNavigationFinished(newState)
-                            }
-                        }
-                        Task {
-                            await scriptCaller.evaluateJavaScript("return document.body?.classList.contains('readability-mode')") { @MainActor result in
-                                switch result {
-                                case .success(let response):
-                                    if let isReaderMode = response as? Bool {
-                                        let isReaderModeVerified = state.pageURL.isEBookURL || isReaderMode
-                                        if readerModeViewModel.isReaderMode != isReaderModeVerified {
-                                            withAnimation {
-                                                readerModeViewModel.isReaderMode = isReaderModeVerified
-                                            }
-                                        }
-                                    }
-                                case .failure(let error):
-                                    print(error)
-                                }
-                            }
-                        }
-                    }
+                    onNavigationFinished(state: state)
                 },
 //                textSelection: $textSelection,
                 buildMenu: { builder in
@@ -320,6 +302,44 @@ public struct Reader: View {
                     print("Error during onNavigationCommitted: \(error)")
                 }
             }
+        }
+    }
+    
+    private func onNavigationFinished(state: WebViewState) {
+        navigationTaskManager.startOnNavigationFinished {
+            readerViewModel.onNavigationFinished(content: readerContent.content, newState: state) { newState in
+                if let onNavigationFinished = onNavigationFinished {
+                    onNavigationFinished(newState)
+                }
+            }
+//            if !state.pageURL.isReaderURLLoaderURL {
+//                Task {
+//                    await scriptCaller.evaluateJavaScript("return [document.body?.classList.contains('readability-mode') || document.body?.dataset.isNextLoadInReaderMode === 'true', document.body?.dataset.manabiReaderModeAvailable !== 'false']") { @MainActor result in
+//                        switch result {
+//                        case .success(let response):
+//                            if let respArray = response as? [Bool], respArray.count == 2, let isReaderMode = respArray.first, let isReaderModeMaybeAvailable = respArray.last {
+//                                let isReaderModeVerified = state.pageURL.isEBookURL || isReaderMode || (readerContent.content.isReaderModeByDefault && isReaderModeMaybeAvailable) || (isReaderModeState?(state) ?? false)
+//                                if !isReaderModeVerified {
+//                                    debugPrint("#", readerContent.content.isReaderModeByDefault, isReaderModeMaybeAvailable)
+//                                    await scriptCaller.evaluateJavaScript("return document.outerHTML + window.location.href") { @MainActor result in
+//                                        debugPrint("#", result, state.pageURL)
+//                                        debugPrint("#")
+//                                    }
+//                                    debugPrint("#")
+//                                }
+//                                if readerModeViewModel.isReaderMode != isReaderModeVerified {
+//                                    withAnimation {
+//                                        debugPrint("# set", isReaderModeVerified, state.pageURL)
+//                                        readerModeViewModel.isReaderMode = isReaderModeVerified
+//                                    }
+//                                }
+//                            }
+//                        case .failure(let error):
+//                            print(error)
+//                        }
+//                    }
+//                }
+//            }
         }
     }
 }

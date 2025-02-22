@@ -233,16 +233,16 @@ public extension ReaderContentProtocol {
         }
     }*/
     
-    var isReaderModeByDefault: Bool {
-        if isFromClipboard {
-            return true
-        }
-//        guard let bareHostURL = URL(string: "\(url.scheme ?? "https")://\(url.host ?? "")") else { return false }
-//        let exists = realm.objects(FeedEntry.self).contains { $0.url.absoluteString.starts(with: bareHostURL.absoluteString) && $0.isReaderModeByDefault } // not strict enough?
-        guard let configuration = realm?.configuration else { return false }
-        let exists = try! !Realm(configuration: configuration).objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", url.absoluteString)).where { $0.isReaderModeByDefault }.isEmpty
-        return exists
-    }
+//    var isReaderModeByDefault: Bool {
+//        if isFromClipboard {
+//            return true
+//        }
+////        guard let bareHostURL = URL(string: "\(url.scheme ?? "https")://\(url.host ?? "")") else { return false }
+////        let exists = realm.objects(FeedEntry.self).contains { $0.url.absoluteString.starts(with: bareHostURL.absoluteString) && $0.isReaderModeByDefault } // not strict enough?
+//        guard let configuration = realm?.configuration else { return false }
+//        let exists = try! !Realm(configuration: configuration).objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", url.absoluteString)).where { $0.isReaderModeByDefault }.isEmpty
+//        return exists
+//    }
 }
 
 public extension ReaderContentProtocol {
@@ -307,7 +307,7 @@ public extension ReaderContentProtocol {
         let realm = try! Realm(configuration: realmConfiguration)
         return Array(realm.objects(Bookmark.self).where({ $0.isDeleted == false }).sorted(by: \.createdAt)).reversed()
     }
-
+    
     @RealmBackgroundActor
     func addHistoryRecord(realmConfiguration: Realm.Configuration, pageURL: URL) async throws -> HistoryRecord {
         var imageURL: URL?

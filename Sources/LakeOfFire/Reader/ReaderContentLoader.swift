@@ -18,6 +18,12 @@ fileprivate extension URL {
     }
 }
 
+public extension URL {
+    var isReaderURLLoaderURL: Bool {
+        return scheme == "internal" && host == "local" && path == "/load/reader"
+    }
+}
+
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
     public struct ContentReference {
@@ -280,7 +286,7 @@ public struct ReaderContentLoader {
                 }
                 if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
                     guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
-                    //            debugPrint("!! load(content isREaderModebydefault", historyURL)
+//                                debugPrint("!! load(content isREaderModebydefault", historyURL)
                     return historyURL
                 }
             }

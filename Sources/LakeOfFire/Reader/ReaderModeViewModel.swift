@@ -111,6 +111,10 @@ public class ReaderModeViewModel: ObservableObject {
             content.modifiedAt = Date()
         }
         
+        if !isReaderMode {
+            isReaderMode = true
+        }
+        
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let readerFontSize = readerFontSize
         let defaultFontSize = defaultFontSize ?? 17
@@ -205,7 +209,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
         
-        if newState.pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url=") {
+        if newState.pageURL.isReaderURLLoaderURL {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {

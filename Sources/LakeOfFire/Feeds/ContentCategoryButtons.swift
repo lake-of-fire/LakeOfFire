@@ -66,6 +66,12 @@ public struct ContentCategoryButtons: View {
     public var body: some View {
         if let categories = viewModel.libraryConfiguration?.getActiveCategories() {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
+                MangaCategoryButton(
+                    categorySelection: $categorySelection,
+                    font: font,
+                    isCompact: isCompact
+                )
+                
                 BooksCategoryButton(
                     categorySelection: $categorySelection,
                     font: font,
@@ -87,6 +93,29 @@ public struct ContentCategoryButtons: View {
     
     public init(feedSelection: Binding<String?>, categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool = false) {
         _feedSelection = feedSelection
+        _categorySelection = categorySelection
+        self.font = font
+        self.isCompact = isCompact
+    }
+}
+
+public struct MangaCategoryButton: View {
+    @Binding var categorySelection: String?
+    var font = Font.title3
+    var isCompact = false
+    
+    public var body: some View {
+        Button(action: {
+            withAnimation {
+                categorySelection = "manga"
+            }
+        }) {
+            FeedCategoryButtonLabel(title: "Manga", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/manga.jpg")!, font: font, isCompact: isCompact)
+        }
+        .buttonStyle(ReaderCategoryButtonStyle())
+    }
+    
+    public init(categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
         _categorySelection = categorySelection
         self.font = font
         self.isCompact = isCompact

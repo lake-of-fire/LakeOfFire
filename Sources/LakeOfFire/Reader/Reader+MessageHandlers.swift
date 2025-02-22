@@ -16,6 +16,22 @@ internal extension Reader {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
             },
+            "readabilityModeUnavailable": { message in
+                guard let result = ReaderModeUnavailableMessage(fromMessage: message) else {
+                    return
+                }
+                // TODO: Reuse guard code across this and readabilityParsed
+                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                    return
+                }
+                if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
+                    // Don't override a parent window readability result.
+                    return
+                }
+                if readerModeViewModel.isReaderMode && !url.isReaderURLLoaderURL {
+                    readerModeViewModel.isReaderMode = false
+                }
+            },
             "readabilityParsed": { message in
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
