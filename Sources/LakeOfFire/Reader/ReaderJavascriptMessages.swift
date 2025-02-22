@@ -40,7 +40,7 @@ public struct ReadabilityParsedMessage {
     public let outputHTML: String
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any], let autoLoadedReadabilityContent = body["autoLoadedReadabilityContent"] as? Bool else { return nil }
+        guard let body = message.body as? [String: Any] else { return nil }
         pageURL = URL(string: body["pageURL"] as! String)
         windowURL = URL(string: body["windowURL"] as! String)
         

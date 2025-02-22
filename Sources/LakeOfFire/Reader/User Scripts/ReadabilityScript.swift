@@ -12,6 +12,7 @@ public struct Readability {
     
     public let userScriptSource: String
     public let css: String
+    public let scripts: String
     
     public init(meaningfulContentMinChars: Int = 1) {
         var readabilityJS: String
@@ -35,7 +36,7 @@ public struct Readability {
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }
-        let scripts = readabilityImagesJS + readabilityOriginalJS
+        scripts = readabilityImagesJS + readabilityOriginalJS
 //        let regex = try! NSRegularExpression(pattern: "(\\|`|[$])", options: [])
 //        let range = NSRange(location: 0, length: scripts.utf16.count)
 //        let escapedScripts = regex.stringByReplacingMatches(in: scripts, options: [], range: range, withTemplate: "\\$1")

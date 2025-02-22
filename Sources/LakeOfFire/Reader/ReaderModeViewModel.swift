@@ -79,7 +79,7 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     internal func showReaderView(content: any ReaderContentProtocol) {
-        guard let readabilityContent = readabilityContent else { return }
+        guard let readabilityContent else { return }
         Task { @MainActor in
             do {
                 try await showReadabilityContent(content: content, readabilityContent: readabilityContent, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
@@ -217,6 +217,7 @@ public class ReaderModeViewModel: ObservableObject {
                     } else {
                         html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
                     }
+                    // TODO: Fix content rules... images still load...
                     contentRules = contentRulesForReadabilityLoading
                     Task { @MainActor in
                         navigator?.loadHTML(html, baseURL: content.url)
