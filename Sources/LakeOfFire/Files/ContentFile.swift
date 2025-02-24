@@ -4,7 +4,9 @@ import RealmSwiftGaps
 
 public class ContentFile: Bookmark {
     @Persisted public var mimeType = "application/octet-stream"
-    
+    @Persisted public var packageFilePaths = RealmSwift.MutableSet<String>()
+    @Persisted public var fileMetadataRefreshedAt: Date?
+
     public override func configureBookmark(_ bookmark: Bookmark) {
         super.configureBookmark(bookmark)
     }

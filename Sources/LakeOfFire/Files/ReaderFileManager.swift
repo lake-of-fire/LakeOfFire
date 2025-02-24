@@ -6,6 +6,7 @@ import SwiftUIDownloads
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
+import ZIPFoundation
 
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
@@ -65,18 +66,22 @@ public enum CloudDriveSyncStatus {
 }
 
 public class ReaderFileManager: ObservableObject {
+    public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
+    public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
+    public static var fileProcessors = [@RealmBackgroundActor ([ContentFile]) async throws -> Void]()
+
+    public static var shared = ReaderFileManager()
+    
+    @Published public var readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip, .directory, .zip]
+    
     @MainActor @Published public var files: [ContentFile]?
     
-    private let readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip]
     @MainActor public var readerContentFiles: [ContentFile]? {
         return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
     }
-    @MainActor public var ebookFiles: [ContentFile]? {
-        return files?.filter { [UTType.epub, UTType.epubZip].compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
-    }
     
-    @MainActor @Published private var cloudDrive: CloudDrive?
-    @MainActor @Published private var localDrive: CloudDrive?
+    /*@MainActor*/ @Published private var cloudDrive: CloudDrive?
+    /*@MainActor*/ @Published private var localDrive: CloudDrive?
     public var ubiquityContainerIdentifier: String? = nil
     
     private var refreshAllFilesMetadataTask: Task<Void, Never>?
@@ -93,9 +98,13 @@ public class ReaderFileManager: ObservableObject {
         }
     }
     
+    @MainActor public func files(ofTypes types: [UTType]) -> [ContentFile]? {
+        return files?.filter { types.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
+    }
+    
     @MainActor
     public func cloudDriveSyncStatus(readerFileURL: URL) async throws -> CloudDriveSyncStatus {
-        try Self.validate(readerFileURL: readerFileURL)
+//        try Self.validate(readerFileURL: readerFileURL)
         let relativePath = try Self.extractRelativePath(fileURL: readerFileURL)
         guard try await cloudDrive?.fileExists(at: relativePath) ?? false else {
             guard try await localDrive?.fileExists(at: relativePath) ?? false else {
@@ -120,7 +129,7 @@ public class ReaderFileManager: ObservableObject {
     @RealmBackgroundActor
     public func delete(readerFileURL: URL) async throws {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
-        try ReaderFileManager.validate(readerFileURL: readerFileURL)
+//        try ReaderFileManager.validate(readerFileURL: readerFileURL)
         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
@@ -128,7 +137,7 @@ public class ReaderFileManager: ObservableObject {
                 existing.modifiedAt = Date()
             }
         }
-        let (drive, relativePath) = try await extract(fileURL: readerFileURL)
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
         try await drive.removeFile(at: relativePath)
         Task.detached { [weak self] in
             try await self?.refreshAllFilesMetadata()
@@ -138,19 +147,19 @@ public class ReaderFileManager: ObservableObject {
     @MainActor
     public static func get(fileURL: URL) async throws -> ContentFile? {
         let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
-        try validate(readerFileURL: fileURL)
+//        try validate(readerFileURL: fileURL)
         let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), fileURL.absoluteString as CVarArg)).first
         return existing
     }
     
-    private static func validate(readerFileURL: URL) throws {
-        guard (readerFileURL.scheme == "reader-file" && readerFileURL.host == "file") || (readerFileURL.scheme == "ebook" && readerFileURL.host == "ebook") else {
-            throw ReaderFileManagerError.invalidFileURL
-        }
-    }
+//    private static func validate(readerFileURL: URL) throws {
+//        guard (readerFileURL.scheme == "reader-file" && readerFileURL.host == "file") || (readerFileURL.scheme == "ebook" && readerFileURL.host == "ebook") else {
+//            throw ReaderFileManagerError.invalidFileURL
+//        }
+//    }
     
-    @MainActor
-    private func extract(fileURL: URL) async throws -> (CloudDrive, RootRelativePath) {
+//    @MainActor
+    private func extractCloudDrivePath(fromReaderFileURL fileURL: URL) throws -> (CloudDrive, RootRelativePath) {
         let relativePath = try Self.extractRelativePath(fileURL: fileURL)
         // Assumes /<host>/load/<local/icloud>/...
         guard let driveLocation = fileURL.pathComponents.dropFirst(2).first else { throw ReaderFileManagerError.invalidFileURL }
@@ -171,17 +180,17 @@ public class ReaderFileManager: ObservableObject {
     }
     
     public func fileExists(fileURL: URL) async throws -> Bool {
-        let (drive, relativePath) = try await extract(fileURL: fileURL)
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: fileURL)
         return try await drive.fileExists(at: relativePath)
     }
     
     public func directoryExists(directoryURL: URL) async throws -> Bool {
-        let (drive, relativePath) = try await extract(fileURL: directoryURL)
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: directoryURL)
         return try await drive.directoryExists(at: relativePath)
     }
     
     public func read(fileURL: URL) async throws -> Data? {
-        let (drive, relativePath) = try await extract(fileURL: fileURL)
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: fileURL)
         return try await drive.readFile(at: relativePath)
     }
     
@@ -210,10 +219,15 @@ public class ReaderFileManager: ObservableObject {
                 normalizedPath = String(normalizedPath.dropFirst(2))
             }
             if let encodedPath = "\(drive.ubiquityContainerIdentifier == nil ? "local" : "icloud")/\(normalizedPath)".addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
+                for readerFileURLProcessor in Self.readerFileURLProcessors {
+                    if let url = try await readerFileURLProcessor(fileURL, encodedPath) {
+                        return url
+                    }
+                }
                 if fileURL.isEBookURL {
-                    return URL(string: "ebook://ebook/load/\(encodedPath)")
+                    return URL(string: "ebook://ebook/load/" + encodedPath)
                 } else {
-                    return URL(string: "reader-file://file/load/\(encodedPath)")
+                    return URL(string: "reader-file://file/load/" + encodedPath)
                 }
             }
         }
@@ -221,17 +235,10 @@ public class ReaderFileManager: ObservableObject {
     }
 
     @MainActor
-    public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?, restrictToReaderContentMimeTypes: Bool) async throws -> URL? {
+    public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
-        if restrictToReaderContentMimeTypes {
-            let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            guard readerContentMimeTypes.compactMap({ $0.preferredMIMEType }).contains(mimeType) else {
-                print("Invalid MIME type: \(mimeType) for path extension \(fileURL.pathExtension)")
-                return nil
-            }
-        }
         
-        let targetDirectory = Self.rootRelativePath(forURLExtension: downloadURL ?? fileURL)
+        let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL)
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
@@ -385,7 +392,8 @@ public class ReaderFileManager: ObservableObject {
         
         if !filesToUpdate.isEmpty {
             let updatedFiles = try await { @RealmBackgroundActor in
-                var updatedFiles = [ThreadSafeReference<ContentFile>]()
+                var updatedFileRefs = [ThreadSafeReference<ContentFile>]()
+                var updatedFiles = [ContentFile]()
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else {
                     fatalError("Couldn't get Realm for refreshFileMetadata")
                 }
@@ -396,18 +404,24 @@ public class ReaderFileManager: ObservableObject {
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
                             existing.modifiedAt = Date()
-                            updatedFiles.append(ThreadSafeReference(to: existing))
+                            updatedFileRefs.append(ThreadSafeReference(to: existing))
+                            updatedFiles.append(existing)
                         } else {
                             let contentFile = ContentFile()
+                            contentFile.url = readerFileURL
                             setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive)
                             contentFile.updateCompoundKey()
-                            contentFile.isReaderModeByDefault = ["htm", "html", "txt"].contains(readerFileURL.pathExtension.lowercased())
+                            contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain" || ["htm", "html", "txt"].contains(readerFileURL.pathExtension.lowercased())
                             realm.add(contentFile, update: .modified)
-                            updatedFiles.append(ThreadSafeReference(to: contentFile))
+                            updatedFileRefs.append(ThreadSafeReference(to: contentFile))
+                            updatedFiles.append(contentFile)
                         }
                     }
                 }
-                return updatedFiles
+                for fileProcessor in Self.fileProcessors {
+                    try await fileProcessor(updatedFiles)
+                }
+                return updatedFileRefs
             }()
             files.append(contentsOf: updatedFiles)
         }
@@ -417,28 +431,44 @@ public class ReaderFileManager: ObservableObject {
     
     @RealmBackgroundActor
     private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) {
-        contentFile.url = fileURL
-        if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            contentFile.title = fileURL.deletingPathExtension().lastPathComponent
-        }
-        contentFile.isDeleted = false
-        contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain"
         contentFile.publicationDate = Self.fileModificationDate(url: fileURL, drive: drive) ?? Date()
+        if contentFile.isDeleted {
+            contentFile.isDeleted = false
+            contentFile.fileMetadataRefreshedAt = nil
+        }
+
+        if fileURL.pathExtension == "zip" {
+            debugPrint("#")
+        }
+        if contentFile.fileMetadataRefreshedAt ?? .distantPast <= contentFile.publicationDate ?? .distantPast {
+            if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                contentFile.title = fileURL.deletingPathExtension().lastPathComponent
+            }
+            contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            
+            // contentFile.url replace with on-disk url (make a new computed var for that?)
+            if fileURL.pathExtension.lowercased() == "zip", let systemFileURL = try? localFileURL(forReaderFileURL: fileURL), let archive = try? Archive(url: systemFileURL, accessMode: .read) {
+                let filePaths = RealmSwift.MutableSet<String>()
+                filePaths.insert(objectsIn: archive.map { $0.path })
+                contentFile.packageFilePaths = filePaths
+            }
+            
+            contentFile.fileMetadataRefreshedAt = Date()
+        }
     }
     
-    public func localFileURL(forReaderFileURL readerFileURL: URL) async throws -> URL {
-        let (drive, relativePath) = try await extract(fileURL: readerFileURL)
+    public func localFileURL(forReaderFileURL readerFileURL: URL) throws -> URL {
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
         return try relativePath.fileURL(forRoot: drive.rootDirectory)
     }
     
-    public func localDirectoryURL(forReaderFileURL readerFileURL: URL) async throws -> URL {
-        let (drive, relativePath) = try await extract(fileURL: readerFileURL)
+    public func localDirectoryURL(forReaderFileURL readerFileURL: URL) throws -> URL {
+        let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
         return try relativePath.directoryURL(forRoot: drive.rootDirectory)
     }
     
     private static func extractRelativePath(fileURL: URL) throws -> RootRelativePath {
-        try ReaderFileManager.validate(readerFileURL: fileURL)
+//        try ReaderFileManager.validate(readerFileURL: fileURL)
         let relativePath = RootRelativePath(path: String(fileURL.pathComponents.dropFirst(3).joined(separator: "/")))
         return relativePath
     }
@@ -462,7 +492,7 @@ public extension ReaderFileManager {
     func downloadable(url: URL, name: String) async throws -> Downloadable? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
-        let targetDirectory = Self.rootRelativePath(forURLExtension: url)
+        let targetDirectory = try await Self.rootRelativePath(forImportedURL: url)
         let targetFilePath = targetDirectory.appending(url.lastPathComponent)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         
@@ -483,10 +513,16 @@ extension ReaderFileManager: CloudDriveObserver {
 }
 
 private extension ReaderFileManager {
-    static func rootRelativePath(forURLExtension url: URL) -> RootRelativePath {
+    static func rootRelativePath(forImportedURL url: URL) async throws -> RootRelativePath {
         switch url.pathExtension.lowercased() {
         case "epub": return .ebooks.appending(url.host ?? "")
-        default: return .root
+        default:
+            for fileDestinationProcessor in fileDestinationProcessors {
+                if let destination = try await fileDestinationProcessor(url) {
+                    return destination
+                }
+            }
+            return .root
         }
     }
     

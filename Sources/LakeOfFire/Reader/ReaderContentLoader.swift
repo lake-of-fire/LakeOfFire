@@ -162,11 +162,6 @@ public struct ReaderContentLoader {
                 return historyRecord
             }
             
-//            var url = url
-//            if url.isFileURL, url.isEBookURL {
-//                url = URL(string: "ebook://ebook/load" + url.path) ?? url
-//            }
-            
             var match: (any ReaderContentProtocol)?
             let candidates = try await loadAll(url: url)
             match = candidates.max(by: {
@@ -269,31 +264,27 @@ public struct ReaderContentLoader {
     /// or an internal "local" URL for loading HTML content in Reader Mode.
     @MainActor
     public static func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws -> URL? {
-        if content.url.isEBookURL {
-            //            guard let absoluteStringWithoutScheme = content.url.absoluteStringWithoutScheme, let loadURL = URL(string: "ebook://ebook/load" + absoluteStringWithoutScheme) else {
-            //                print("Invalid ebook URL \(content.url)")
-            //                return
-            //            }
-            return content.url
+        let contentURL = content.url
+        if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
+            let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
+                let allContents = try await loadAll(url: contentURL)
+                for candidateContent in allContents {
+                    guard candidateContent.isReaderModeByDefault else {
+                        break
+                    }
+                    if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
+                        guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
+                        //                                debugPrint("!! load(content isREaderModebydefault", historyURL)
+                        return historyURL
+                    }
+                }
+                return nil
+            }.value
+            
+            return matchingURL ?? content.url
         }
         
-        let contentURL = content.url
-        let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
-            let allContents = try await loadAll(url: contentURL)
-            for candidateContent in allContents {
-                guard candidateContent.isReaderModeByDefault else {
-                    break
-                }
-                if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
-                    guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
-//                                debugPrint("!! load(content isREaderModebydefault", historyURL)
-                    return historyURL
-                }
-            }
-            return nil
-        }.value
-        
-        return matchingURL ?? content.url
+        return content.url
     }
     
 //    @MainActor

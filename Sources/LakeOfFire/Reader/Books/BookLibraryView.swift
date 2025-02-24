@@ -5,13 +5,14 @@ import RealmSwift
 import RealmSwiftGaps
 import SwiftUIDownloads
 import Combine
+import UniformTypeIdentifiers
 import LakeKit
 
 public class BookLibraryModalsModel: ObservableObject {
     @Published var showingEbookCatalogs = false
     @Published var showingAddCatalog = false
     @Published var isImportingBookFile = false
-    
+
     public init() { }
 }
 
@@ -38,12 +39,12 @@ struct BookLibrarySheetsModifier: ViewModifier {
             .background {
                 // Weird hack because stacking fileImporter breaks all of them
                 Color.clear
-                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile.gatedBy($isActive), allowedContentTypes: [.epub, .epubZip, .directory]) { result in
+                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile.gatedBy($isActive), allowedContentTypes: readerFileManager.readerContentMimeTypes) { result in
                         Task { @MainActor in
                             switch result {
                             case .success(let url):
                                 do {
-                                    guard let importedFileURL = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil, restrictToReaderContentMimeTypes: true) else {
+                                    guard let importedFileURL = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil) else {
                                         print("Couldn't import \(url.absoluteString)")
                                         return
                                     }
@@ -76,12 +77,10 @@ fileprivate struct EditorsPicksView: View {
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
-        Group {
-            if let errorMessage = viewModel.errorMessage {
-                errorView(errorMessage: errorMessage)
-            } else {
-                editorsPicksView
-            }
+        if let errorMessage = viewModel.errorMessage {
+            errorView(errorMessage: errorMessage)
+        } else {
+            editorsPicksView
         }
     }
     
@@ -196,15 +195,26 @@ public struct BookLibraryView: View {
             try? await readerFileManager.refreshAllFilesMetadata()
         }
         .task { @MainActor in
-            if let ebookFiles = readerFileManager.ebookFiles {
-                try? await readerContentListViewModel.load(contents: ebookFiles, sortOrder: .createdAt)
+            if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
+                try? await readerContentListViewModel.load(contents: files, sortOrder: .createdAt, contentFilter: { contentFile in
+                    guard let fileFilter = viewModel.fileFilter else { return true }
+                    return try fileFilter(contentFile)
+                })
             }
         }
-        .onChange(of: readerFileManager.ebookFiles) { ebookFiles in
+        .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
             Task { @MainActor in
-                if let ebookFiles = readerFileManager.ebookFiles {
+                if let ebookFiles {
                     try? await readerContentListViewModel.load(contents: ebookFiles, sortOrder: .createdAt)
                 }
+            }
+        }
+        .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
+            guard let loadedFiles = viewModel.loadedFiles else { return }
+            Task { @RealmBackgroundActor in
+                guard !filteredFileIDs.isEmpty, let realmConfiguration = readerContentListViewModel.realmConfiguration else { return }
+                let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                try await loadedFiles(filteredFileIDs.compactMap { realm?.object(ofType: ContentFile.self, forPrimaryKey: $0) })
             }
         }
     }
@@ -219,15 +229,25 @@ public class BookLibraryViewModel: ObservableObject {
     let mediaTypeTitle: String
     let mediaFileTypeTitle: String
     let opdsURL: URL
+    let fileTypes: [UTType]
+    let fileFilter: ((ContentFile) throws -> Bool)?
+    /// Loaded in RealmBackgroundActor
+    let loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)?
 
     public init(
         mediaTypeTitle: String = "Books",
         mediaFileTypeTitle: String = "EPUB",
-        opdsURL: URL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
+        opdsURL: URL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!,
+        fileTypes: [UTType] = [.epub, .epubZip],
+        fileFilter: ((ContentFile) throws -> Bool)? = nil,
+        loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)? = nil
     ) {
         self.mediaTypeTitle = mediaTypeTitle
         self.mediaFileTypeTitle = mediaFileTypeTitle
         self.opdsURL = opdsURL
+        self.fileTypes = fileTypes
+        self.fileFilter = fileFilter
+        self.loadedFiles = loadedFiles
     }
  
     @Published var editorsPicks: [Publication] = []
@@ -294,7 +314,7 @@ public class BookLibraryViewModel: ObservableObject {
         if await downloadable.existsLocally() {
             importedURL = try await readerFileManager.readerFileURL(for: downloadable)
         } else {
-            guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url, restrictToReaderContentMimeTypes: true) else {
+            guard let importedFileURL = try await readerFileManager.importFile(fileURL: downloadable.localDestination, fromDownloadURL: downloadable.url) else {
                 print("Couldn't import \(publication.title) file URL")
                 return
             }

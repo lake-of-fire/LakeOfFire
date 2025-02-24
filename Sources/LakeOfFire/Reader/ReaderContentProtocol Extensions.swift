@@ -9,10 +9,10 @@ public extension ReaderContentProtocol {
             return "Home"
         } else if url.isNativeReaderView {
             return nil
-        } else if url.isEBookURL || url.isSnippetURL || url.isReaderFileURL {
-            return titleForDisplay
-        } else {
+        } else if ["http", "https"].contains(url.scheme?.lowercased()) {
             return url.host
+        } else {
+            return titleForDisplay
         }
     }
 

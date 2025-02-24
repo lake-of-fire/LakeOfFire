@@ -61,12 +61,15 @@ public enum ReaderContentSortOrder {
 
 public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
     @Published var filteredContents: [C] = []
+    var filteredContentIDs: [String] = []
+    var realmConfiguration: Realm.Configuration?
     var refreshSelectionTask: Task<Void, Error>?
     var loadContentsTask: Task<Void, Error>?
     
     @MainActor
     func load(contents: [C], sortOrder: ReaderContentSortOrder, contentFilter: (@RealmBackgroundActor (C) async throws -> Bool)? = nil) async throws {
         let realmConfig = contents.first?.realm?.configuration
+        self.realmConfiguration = realmConfig
         let refs = contents.map { ThreadSafeReference(to: $0) }
         loadContentsTask?.cancel()
         loadContentsTask = Task { @RealmBackgroundActor in
@@ -76,7 +79,8 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             //            })
             guard let realmConfig else {
                 await { @MainActor [weak self] in
-                    self?.filteredContents = []
+                    self?.filteredContentIDs.removeAll()
+                    self?.filteredContents.removeAll()
                 }()
                 return
             }
@@ -106,12 +110,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             try Task.checkCancellation()
             
             // TODO: Pagination
-            let refs = Array(sorted.prefix(10_000)).map { ThreadSafeReference(to: $0) }
+            let ids = Array(sorted.prefix(10_000)).map { $0.compoundKey }
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
                 let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                let contents = refs.compactMap { realm.resolve($0) }
+                let contents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
+                filteredContentIDs = ids
                 filteredContents = (contents as [any ReaderContentProtocol]) as? [C] ?? filteredContents
             }()
         }
@@ -188,7 +193,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
 
-            if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
+            if showSeparators, content.compoundKey != viewModel.filteredContentIDs.last {
                 Divider()
                     .padding(.top, 4)
             }
@@ -405,12 +410,11 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         
 //        let readerContentCompoundKey = readerContent.compoundKey
         let entrySelection = entrySelection
-        let filteredContentKeys = viewModel.filteredContents.map { $0.compoundKey }
         let filteredContentURLs = viewModel.filteredContents.map { $0.url }
         viewModel.refreshSelectionTask = Task.detached {
             try Task.checkCancellation()
             do {
-                if !readerPageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = filteredContentKeys.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
+                if !readerPageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = viewModel.filteredContentIDs.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     async let task = { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = nil
@@ -430,7 +434,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                 }
 //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
                 if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
-                    let contentKey = filteredContentKeys[idx]
+                    let contentKey = viewModel.filteredContentIDs[idx]
                     async let task = { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = contentKey
