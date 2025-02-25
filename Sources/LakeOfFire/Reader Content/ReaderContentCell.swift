@@ -1,7 +1,6 @@
 import SwiftUI
 import RealmSwift
 import RealmSwiftGaps
-import LakeImage
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
@@ -135,7 +134,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: cellHeight)
 //                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
                 } else {
-                    LakeImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
+                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
                         .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
                 }
             }

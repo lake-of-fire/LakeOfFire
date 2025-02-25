@@ -139,7 +139,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
 #endif
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
-        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: viewModel.filteredContents.allSatisfy { $0.url.isEBookURL })
+        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: (item as? ContentFile)?.isPhysicalMedia ?? false)
     }
     
     @ViewBuilder private func cell(item: C) -> some View {

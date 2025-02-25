@@ -16,7 +16,7 @@ struct BookThumbnail: View { //, Equatable {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
 //            LakeImage(imageURL, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight)
-            LakeImage(imageURL, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight, cornerRadius: scaledImageWidth / 28)
+            ReaderImage(imageURL, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight, cornerRadius: scaledImageWidth / 28)
             //                        .frame(maxWidth: scaledImageWidth)
         }
 //        .frame(idealHeight: cellHeight)

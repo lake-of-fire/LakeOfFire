@@ -401,11 +401,13 @@ public class ReaderFileManager: ObservableObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     for (readerFileURL, _, drive) in filesToUpdate {
+                        var matchedContentFile: ContentFile?
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
                             existing.modifiedAt = Date()
                             updatedFileRefs.append(ThreadSafeReference(to: existing))
                             updatedFiles.append(existing)
+                            matchedContentFile = existing
                         } else {
                             let contentFile = ContentFile()
                             contentFile.url = readerFileURL
@@ -415,7 +417,9 @@ public class ReaderFileManager: ObservableObject {
                             realm.add(contentFile, update: .modified)
                             updatedFileRefs.append(ThreadSafeReference(to: contentFile))
                             updatedFiles.append(contentFile)
+                            matchedContentFile = contentFile
                         }
+                        matchedContentFile?.isPhysicalMedia = readerFileURL.isEBookURL
                     }
                 }
                 for fileProcessor in Self.fileProcessors {
@@ -437,9 +441,6 @@ public class ReaderFileManager: ObservableObject {
             contentFile.fileMetadataRefreshedAt = nil
         }
 
-        if fileURL.pathExtension == "zip" {
-            debugPrint("#")
-        }
         if contentFile.fileMetadataRefreshedAt ?? .distantPast <= contentFile.publicationDate ?? .distantPast {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 contentFile.title = fileURL.deletingPathExtension().lastPathComponent
