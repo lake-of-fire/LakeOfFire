@@ -1,4 +1,6 @@
 import SwiftUI
+import ZIPFoundation
+import Nuke
 import LakeImage
 
 fileprivate extension URL {
@@ -36,7 +38,7 @@ public struct ReadaerImage: View {
     public var body: some View {
         LakeImage(
             url,
-            contentMode: ContentMode,
+            contentMode: contentMode,
             maxWidth: maxWidth,
             minHeight: minHeight,
             maxHeight: maxHeight,
