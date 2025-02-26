@@ -60,6 +60,8 @@ public enum ReaderContentSortOrder {
 }
 
 public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
+    public init() { }
+    
     @Published var filteredContents: [C] = []
     var filteredContentIDs: [String] = []
     var realmConfiguration: Realm.Configuration?
@@ -67,7 +69,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     var loadContentsTask: Task<Void, Error>?
     
     @MainActor
-    func load(contents: [C], sortOrder: ReaderContentSortOrder, contentFilter: (@RealmBackgroundActor (C) async throws -> Bool)? = nil) async throws {
+    public func load(contents: [C], sortOrder: ReaderContentSortOrder? = nil, contentFilter: (@RealmBackgroundActor (C) async throws -> Bool)? = nil) async throws {
+        if sortOrder == nil && contentFilter == nil {
+            filteredContentIDs = contents.map { $0.compoundKey }
+            filteredContents = contents
+            return
+        }
+        
         let realmConfig = contents.first?.realm?.configuration
         self.realmConfiguration = realmConfig
         let refs = contents.map { ThreadSafeReference(to: $0) }
@@ -93,24 +101,24 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 }
             }
             
-            let sorted: [C]
-            switch sortOrder {
-            case .publicationDate:
-                sorted = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
-            case .createdAt:
-                sorted = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
-            case .lastVisitedAt:
-                if let filtered = filtered as? [HistoryRecord] {
-                    sorted = filtered.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)]) as? [C] ?? []
-                } else {
-                    sorted = filtered
-                    print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
+            if let sortOrder {
+                switch sortOrder {
+                case .publicationDate:
+                    filtered = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
+                case .createdAt:
+                    filtered = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
+                case .lastVisitedAt:
+                    if let filteredHistoryRecords = filtered as? [HistoryRecord] {
+                        filtered = filteredHistoryRecords.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)]) as? [C] ?? []
+                    } else {
+                        print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
+                    }
                 }
             }
             try Task.checkCancellation()
-            
+
             // TODO: Pagination
-            let ids = Array(sorted.prefix(10_000)).map { $0.compoundKey }
+            let ids = Array(filtered.prefix(10_000)).map { $0.compoundKey }
             try await { @MainActor [weak self] in
                 try Task.checkCancellation()
                 guard let self = self else { return }
@@ -139,7 +147,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
 #endif
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
-        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: (item as? ContentFile)?.isPhysicalMedia ?? false)
+        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: (item as? PhysicalMediaCapableProtocol)?.isPhysicalMedia ?? false)
     }
     
     @ViewBuilder private func cell(item: C) -> some View {

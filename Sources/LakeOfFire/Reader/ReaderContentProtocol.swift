@@ -16,6 +16,8 @@ public actor ReaderContentReadingProgressLoader {
 }
 
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
+    var realm: Realm? { get }
+    
     var compoundKey: String { get set }
     var keyPrefix: String? { get }
     
@@ -249,12 +251,12 @@ public extension ReaderContentProtocol {
         }
     }
     
-    static func makePrimaryKey(keyPrefix: String? = nil, url: URL? = nil, html: String? = nil) -> String? {
-        return makeReaderContentCompoundKey(keyPrefix: keyPrefix, url: url, html: html)
+    static func makePrimaryKey(url: URL? = nil, html: String? = nil) -> String? {
+        return makeReaderContentCompoundKey(url: url, html: html)
     }
     
     func updateCompoundKey() {
-        compoundKey = makeReaderContentCompoundKey(keyPrefix: keyPrefix, url: url, html: html) ?? compoundKey
+        compoundKey = makeReaderContentCompoundKey(url: url, html: html) ?? compoundKey
     }
 }
 
@@ -415,15 +417,12 @@ public extension ReaderContentProtocol {
     }
 }
 
-public func makeReaderContentCompoundKey(keyPrefix: String?, url: URL?, html: String?) -> String? {
+public func makeReaderContentCompoundKey(url: URL?, html: String?) -> String? {
     guard url != nil || html != nil else {
 //        fatalError("Needs either url or htmlContent.")
         return nil
     }
     var key = ""
-    if let keyPrefix = keyPrefix {
-        key.append(keyPrefix + "-")
-    }
     if let url = url, !(url.absoluteString.hasPrefix("about:") || url.absoluteString.hasPrefix("internal://local")) || html == nil {
         key.append(String(format: "%02X", stableHash(url.absoluteString)))
     } else if let html = html {

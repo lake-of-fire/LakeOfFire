@@ -10,7 +10,10 @@ import SplitView
 
 public extension URL {
     var isNativeReaderView: Bool {
-        return absoluteString == "about:blank" || (scheme == "internal" && host == "local" && path != "/snippet")
+        if scheme == "internal" && host == "local" && path == "/snippet" {
+            return false
+        }
+        return absoluteString == "about:blank" || !["https", "http"].contains(scheme)
     }
 }
 
@@ -70,6 +73,7 @@ public struct Reader: View {
     var forceReaderModeWhenAvailable = false
     var bounces = true
     var obscuredInsets: EdgeInsets? = nil
+    let schemeHandlers: [(WKURLSchemeHandler, String)]
     var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
@@ -111,6 +115,7 @@ public struct Reader: View {
         forceReaderModeWhenAvailable: Bool = false,
         bounces: Bool = true,
         obscuredInsets: EdgeInsets? = nil,
+        schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         messageHandlers: [String: (WebViewMessage) async -> Void] = [:],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -122,6 +127,7 @@ public struct Reader: View {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
         self.obscuredInsets = obscuredInsets
+        self.schemeHandlers = schemeHandlers
         self.messageHandlers = messageHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -135,6 +141,7 @@ public struct Reader: View {
         forceReaderModeWhenAvailable: Bool = false,
         bounces: Bool = true,
         obscuredInsets: EdgeInsets? = nil,
+        schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         messageHandlers: [String: (WebViewMessage) async -> Void] = [:],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -146,6 +153,7 @@ public struct Reader: View {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
         self.obscuredInsets = obscuredInsets
+        self.schemeHandlers = schemeHandlers
         self.messageHandlers = messageHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -180,7 +188,7 @@ public struct Reader: View {
                     (internalURLSchemeHandler, "internal"),
                     (readerFileURLSchemeHandler, "reader-file"),
                     (ebookURLSchemeHandler, "ebook"),
-                ],
+                ] + schemeHandlers,
                 messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
                     onNavigationCommitted(state: state)

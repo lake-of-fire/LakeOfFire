@@ -66,13 +66,11 @@ public struct ContentCategoryButtons: View {
     public var body: some View {
         if let categories = viewModel.libraryConfiguration?.getActiveCategories() {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
-                /*
                 MangaCategoryButton(
                     categorySelection: $categorySelection,
                     font: font,
                     isCompact: isCompact
                 )
-                 */
                 
                 BooksCategoryButton(
                     categorySelection: $categorySelection,

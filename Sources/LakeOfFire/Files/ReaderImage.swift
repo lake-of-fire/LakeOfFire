@@ -11,7 +11,7 @@ fileprivate extension URL {
     }
 }
 
-public struct ReadaerImage: View {
+public struct ReaderImage: View {
     let url: URL
     let contentMode: ContentMode
     var maxWidth: CGFloat? = nil
@@ -50,7 +50,7 @@ public struct ReadaerImage: View {
                       let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
                 
                 
-                guard url.pathExtension.lowercased() == "zip", let readerFileURL = url.deletingQuery, let archive = Archive(url: readerFileURL, accessMode: .read), let entry = archive[subpathValue], entry.type == .file else { return nil }
+                guard url.pathExtension.lowercased() == "zip", let readerFileURL = url.deletingQuery, let archive = try Archive(url: ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL), accessMode: .read), let entry = archive[subpathValue], entry.type == .file else { return nil }
                 
                 var imageData = Data()
                 try archive.extract(entry, consumer: { imageData.append($0) })
