@@ -21,11 +21,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var defaultFontSize: Double?
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
-    @Published public var isReaderMode = false {
-        didSet {
-            debugPrint("# isReaderMode", isReaderMode)
-        }
-    }
+    @Published public var isReaderMode = false
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil

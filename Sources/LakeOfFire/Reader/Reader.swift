@@ -10,10 +10,10 @@ import SplitView
 
 public extension URL {
     var isNativeReaderView: Bool {
-        if scheme == "internal" && host == "local" && path == "/snippet" {
-            return false
+        if absoluteString == "about:blank" {
+            return true
         }
-        return absoluteString == "about:blank" || !["https", "http"].contains(scheme)
+        return ReaderProtocolRegistry.shared.get(forURL: self)?.providesNativeReaderView(forURL: self) ?? false
     }
 }
 
