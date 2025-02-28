@@ -35,6 +35,7 @@ public class FeedViewModel: ObservableObject {
         }
     }
     
+    @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
         let now = Date()
         let feedID = feed.id
