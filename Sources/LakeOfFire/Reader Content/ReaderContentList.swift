@@ -142,9 +142,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
-#if os(macOS)
-    @Environment(\.readerWebViewState) private var readerWebViewState
-#endif
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
         item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: (item as? PhysicalMediaCapableProtocol)?.isPhysicalMedia ?? false)
@@ -178,7 +175,8 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             Toggle(isOn: Binding<Bool>(
                 get: {
                     //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                    readerWebViewState.matches(content: content)
+                    entrySelection == content.compoundKey
+//                    readerWebViewState.matches(content: content)
                 },
                 set: {
                     let newValue = $0 ? content.compoundKey : nil
@@ -276,22 +274,32 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     
     var body: some View {
         Group {
+            ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
+                ReaderContentInnerListItem(
+                    content: content,
+                    entrySelection: $entrySelection,
+                    alwaysShowThumbnails: alwaysShowThumbnails,
+                    showSeparators: showSeparators,
+                    viewModel: viewModel
+                )
+            }
+            .modifier {
 #if os(macOS)
-            ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
-                ReaderContentInnerListItem(content: content, entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
-            }
-            .headerProminence(.increased)
+                $0.headerProminence(.increased)
 #else
-            ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
-                ReaderContentInnerListItem(content: content, entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
-                    .listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
-            }
+                $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
 #endif
+            }
         }
         .frame(minHeight: 10) // Needed so ScrollView doesn't collapse at start...
    }
     
-    init(entrySelection: Binding<String?>, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false, viewModel: ReaderContentListViewModel<C>) {
+    init(
+        entrySelection: Binding<String?>,
+        alwaysShowThumbnails: Bool = true,
+        showSeparators: Bool = false,
+        viewModel: ReaderContentListViewModel<C>
+    ) {
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.showSeparators = showSeparators
@@ -372,7 +380,12 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     public var body: some View {
-        ReaderContentInnerListItems(entrySelection: $entrySelection, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: showSeparators, viewModel: viewModel)
+        ReaderContentInnerListItems(
+            entrySelection: $entrySelection,
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            showSeparators: showSeparators,
+            viewModel: viewModel
+        )
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
                 Task { @MainActor in

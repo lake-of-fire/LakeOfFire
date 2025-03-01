@@ -3,7 +3,28 @@ import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 
-internal extension Reader {
+internal struct ReaderMessageHandlersViewModifier: ViewModifier {
+    var forceReaderModeWhenAvailable = false
+    
+    @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
+    @EnvironmentObject internal var readerViewModel: ReaderViewModel
+    @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject internal var readerContent: ReaderContent
+    @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+    @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
+    
+    func body(content: Content) -> some View {
+        content
+            .environment(\.webViewMessageHandlers, webViewMessageHandlers.merging(readerMessageHandlers()) { (current, new) in
+                return { message in
+                    await current(message)
+                    await new(message)
+                }
+            })
+    }
+}
+
+internal extension ReaderMessageHandlersViewModifier {
     func readerMessageHandlers() -> [String: (WebViewMessage) async -> Void] {
         return [
             "readabilityFramePing": { @MainActor message in
@@ -153,16 +174,11 @@ internal extension Reader {
                     }
                 }
             }
-        ].merging(messageHandlers) { (current, new) in
-            return { message in
-                await current(message)
-                await new(message)
-            }
-        }
+        ]
     }
 }
 
-fileprivate extension Reader {
+fileprivate extension ReaderMessageHandlersViewModifier {
     // MARK: Readability
     
     @MainActor

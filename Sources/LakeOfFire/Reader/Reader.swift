@@ -72,9 +72,7 @@ public struct Reader: View {
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
     var bounces = true
-    var obscuredInsets: EdgeInsets? = nil
     let schemeHandlers: [(WKURLSchemeHandler, String)]
-    var messageHandlers: [String: (WebViewMessage) async -> Void] = [:]
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     @Binding var textSelection: String?
@@ -83,12 +81,12 @@ public struct Reader: View {
 #elseif os(macOS)
     var buildMenu: ((Any) -> Void)?
 #endif
-    var isReaderModeState: ((WebViewState) -> Bool?)?
 
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") internal var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") internal var darkModeTheme: DarkModeTheme = .black
     
+    @State private var obscuredInsets: EdgeInsets? = nil
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
@@ -114,52 +112,40 @@ public struct Reader: View {
         persistentWebViewID: String? = nil,
         forceReaderModeWhenAvailable: Bool = false,
         bounces: Bool = true,
-        obscuredInsets: EdgeInsets? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
-        messageHandlers: [String: (WebViewMessage) async -> Void] = [:],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
-        buildMenu: ((UIMenuBuilder) -> Void)? = nil,
-        isReaderModeState: ((WebViewState) -> Bool?)? = nil
+        buildMenu: ((UIMenuBuilder) -> Void)? = nil
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
-        self.obscuredInsets = obscuredInsets
         self.schemeHandlers = schemeHandlers
-        self.messageHandlers = messageHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
-        self.isReaderModeState = isReaderModeState
     }
 #elseif os(macOS)
     public init(
         persistentWebViewID: String? = nil,
         forceReaderModeWhenAvailable: Bool = false,
         bounces: Bool = true,
-        obscuredInsets: EdgeInsets? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
-        messageHandlers: [String: (WebViewMessage) async -> Void] = [:],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
-        buildMenu: ((Any) -> Void)? = nil,
-        isReaderModeState: ((WebViewState) -> Bool?)? = nil
+        buildMenu: ((Any) -> Void)? = nil
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.bounces = bounces
-        self.obscuredInsets = obscuredInsets
         self.schemeHandlers = schemeHandlers
-        self.messageHandlers = messageHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
-        self.isReaderModeState = isReaderModeState
     }
 #endif
 
@@ -189,7 +175,6 @@ public struct Reader: View {
                     (readerFileURLSchemeHandler, "reader-file"),
                     (ebookURLSchemeHandler, "ebook"),
                 ] + schemeHandlers,
-                messageHandlers: readerMessageHandlers(),
                 onNavigationCommitted: { state in
                     onNavigationCommitted(state: state)
                 },
@@ -219,6 +204,16 @@ public struct Reader: View {
                 }
             }
         }
+        .geometryReader { geometry in
+            Task { @MainActor in
+                obscuredInsets = geometry.safeAreaInsets
+            }
+        }
+        .modifier(
+            ReaderMessageHandlersViewModifier(
+                forceReaderModeWhenAvailable: forceReaderModeWhenAvailable
+            )
+        )
         .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
             if readerContent.isReaderProvisionallyNavigating != state.isProvisionallyNavigating {
                 readerContent.isReaderProvisionallyNavigating = state.isProvisionallyNavigating

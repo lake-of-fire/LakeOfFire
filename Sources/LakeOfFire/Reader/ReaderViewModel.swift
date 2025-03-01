@@ -26,7 +26,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public var allScripts: [WebViewUserScript] {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
-
+    
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         super.init()
         

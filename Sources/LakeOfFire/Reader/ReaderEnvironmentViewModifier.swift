@@ -5,6 +5,14 @@ struct ReaderWebViewStateKey: EnvironmentKey {
     static let defaultValue: WebViewState = .empty
 }
 
+struct ReaderCanGoBackKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+struct ReaderCanGoForwardKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 struct IsReaderLoadingKey: EnvironmentKey {
     static let defaultValue = false
 }
@@ -22,6 +30,14 @@ public extension EnvironmentValues {
         get { self[ReaderWebViewStateKey.self] }
         set { self[ReaderWebViewStateKey.self] = newValue }
     }
+    var readerCanGoBack: Bool {
+        get { self[ReaderCanGoBackKey.self] }
+        set { self[ReaderCanGoBackKey.self] = newValue }
+    }
+    var readerCanGoForward: Bool {
+        get { self[ReaderCanGoForwardKey.self] }
+        set { self[ReaderCanGoForwardKey.self] = newValue }
+    }
     var isReaderLoading: Bool {
         get { self[IsReaderLoadingKey.self] }
         set { self[IsReaderLoadingKey.self] = newValue }
@@ -36,34 +52,65 @@ public extension EnvironmentValues {
     }
 }
 
-public struct ReaderEnvironmentViewModifier: ViewModifier {
-    let ubiquityContainerIdentifier: String
-    
-    public init(ubiquityContainerIdentifier: String) {
-        self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
-    }
-    
-    @ScaledMetric(relativeTo: .body) internal var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2 // Keep in sync with ReaderSettings defaultFontSize
-    
+fileprivate struct ReaderViewModelModifier: ViewModifier {
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
-    @EnvironmentObject private var scriptCaller: WebViewScriptCaller
-    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     
-    public func body(content: Content) -> some View {
+    func body(content: Content) -> some View {
         content
             .environment(\.readerWebViewState, readerViewModel.state)
+            .environment(\.readerCanGoBack, readerViewModel.state.canGoBack)
+            .environment(\.readerCanGoForward, readerViewModel.state.canGoForward)
             .environment(\.isReaderLoading, readerViewModel.state.isLoading)
             .environment(\.refreshSettingsInReader, readerViewModel.refreshSettingsInWebView)
-            .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
             .environmentObject(readerViewModel.scriptCaller)
+    }
+}
+
+fileprivate struct ReaderModeViewModelModifier: ViewModifier {
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    
+    func body(content: Content) -> some View {
+        content
+            .environment(\.isReaderModeLoadPending, readerModeViewModel.isReaderModeLoadPending)
+    }
+}
+
+fileprivate struct ReaderFileManagerModifier: ViewModifier {
+    let ubiquityContainerIdentifier: String
+    
+    @EnvironmentObject private var readerFileManager: ReaderFileManager
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    
+    func body(content: Content) -> some View {
+        content
             .task { @MainActor in
                 try? await readerFileManager.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
                 readerModeViewModel.readerFileManager = readerFileManager
+            }
+    }
+}
+
+fileprivate struct ReaderNavigatorModifier: ViewModifier {
+    @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    
+    func body(content: Content) -> some View {
+        content
+            .task { @MainActor in
                 readerViewModel.navigator = navigator
                 readerModeViewModel.navigator = navigator
-                readerModeViewModel.scriptCaller = readerViewModel.scriptCaller
+            }
+    }
+}
+
+fileprivate struct ReaderFontSizeModifier: ViewModifier {
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    
+    func body(content: Content) -> some View {
+        content
+            .task { @MainActor in
                 readerModeViewModel.defaultFontSize = defaultFontSize
             }
     }
@@ -71,6 +118,11 @@ public struct ReaderEnvironmentViewModifier: ViewModifier {
 
 public extension View {
     func readerEnvironment(ubiquityContainerIdentifier: String) -> some View {
-        modifier(ReaderEnvironmentViewModifier(ubiquityContainerIdentifier: ubiquityContainerIdentifier))
+        self
+            .modifier(ReaderViewModelModifier())
+            .modifier(ReaderModeViewModelModifier())
+            .modifier(ReaderFileManagerModifier(ubiquityContainerIdentifier: ubiquityContainerIdentifier))
+            .modifier(ReaderNavigatorModifier())
+        .modifier(ReaderFontSizeModifier())
     }
 }
