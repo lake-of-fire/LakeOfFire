@@ -18,28 +18,37 @@ public struct EbookProcessorCacheKey: Encodable {
     }
 }
 
-public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, String>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000, countLimit: 2_000)
+public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, [UInt8]>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000, countLimit: 2_000)
 
-fileprivate func extractBlobUrls(from html: String) -> [String] {
-    let bytes = ArraySlice(html.utf8)
+fileprivate func extractBlobUrls(from bytes: [UInt8]) -> [ArraySlice<UInt8>] {
     let prefixBytes = UTF8Arrays.blobColon
     let prefixBytesCount = prefixBytes.count
-    let quote1: UInt8 = 0x22 // '
-    let quote2: UInt8 = 0x27 // "
+    let quote1: UInt8 = 0x22 // "
+    let quote2: UInt8 = 0x27 // '
     let bytesCount = bytes.count
-    var blobUrls: [String] = []
+    var blobUrls: [ArraySlice<UInt8>] = []
     var i = 0
+    
     while i < bytesCount {
-        // Skip continuation bytes
+        // Skip continuation bytes (i.e. bytes that are not the start of a new UTF-8 scalar)
         if (bytes[i] & 0b11000000) == 0b10000000 {
             i += 1
             continue
         }
         
         // Determine length of current UTF-8 character
-        let charLen = bytes[i] < 0x80 ? 1 : bytes[i] < 0xE0 ? 2 : bytes[i] < 0xF0 ? 3 : 4
+        let charLen: Int
+        if bytes[i] < 0x80 {
+            charLen = 1
+        } else if bytes[i] < 0xE0 {
+            charLen = 2
+        } else if bytes[i] < 0xF0 {
+            charLen = 3
+        } else {
+            charLen = 4
+        }
         
-        // Check for prefix match
+        // Check for prefix match.
         if i + prefixBytesCount <= bytesCount {
             var match = true
             for k in 0..<prefixBytesCount {
@@ -51,16 +60,32 @@ fileprivate func extractBlobUrls(from html: String) -> [String] {
             if match {
                 let urlStart = i + prefixBytesCount
                 var j = urlStart
+                // Scan until we hit a quote or the end of the bytes.
                 while j < bytesCount {
-                    // Ensure we're at a character boundary
-                    if bytes[j] & 0b11000000 == 0b10000000 {
+                    // Make sure we are at a character boundary
+                    if (bytes[j] & 0b11000000) == 0b10000000 {
                         j += 1
                         continue
                     }
-                    if bytes[j] == 0x22 || bytes[j] == 0x27 { break } // " or '
-                    j += bytes[j] < 0x80 ? 1 : bytes[j] < 0xE0 ? 2 : bytes[j] < 0xF0 ? 3 : 4
+                    // Break if we hit a quote character.
+                    if bytes[j] == quote1 || bytes[j] == quote2 {
+                        break
+                    }
+                    // Move j by the character length at this position.
+                    let len: Int
+                    if bytes[j] < 0x80 {
+                        len = 1
+                    } else if bytes[j] < 0xE0 {
+                        len = 2
+                    } else if bytes[j] < 0xF0 {
+                        len = 3
+                    } else {
+                        len = 4
+                    }
+                    j += len
                 }
-                blobUrls.append(String(decoding: bytes[urlStart..<j], as: UTF8.self))
+                // Create a String from the slice and add it.
+                blobUrls.append(bytes[urlStart..<j])
                 i = j
                 continue
             }
@@ -70,32 +95,46 @@ fileprivate func extractBlobUrls(from html: String) -> [String] {
     return blobUrls
 }
 
-fileprivate func replaceBlobUrls(in html: String, with blobUrls: [String]) -> String {
-    let htmlData = Data(html.utf8)
-    let extractedBlobUrls = extractBlobUrls(from: html).map { Data($0.utf8) }
-    let replacementBlobUrls = blobUrls.map { Data($0.utf8) }
-    let minCount = min(replacementBlobUrls.count, extractedBlobUrls.count)
+@inlinable
+internal func range(of subArray: ArraySlice<UInt8>, in array: [UInt8], startingAt start: Int) -> Range<Int>? {
+    guard !subArray.isEmpty, start < array.count else { return nil }
     
-    var newHtmlData = Data()
+    for i in start...(array.count - subArray.count) {
+        if array[i..<i+subArray.count] == subArray[0..<subArray.count] {
+            return i..<i+subArray.count
+        }
+    }
+    return nil
+}
+
+fileprivate func replaceBlobUrls(in htmlBytes: [UInt8], with blobUrls: [ArraySlice<UInt8>]) -> [UInt8] {
+    let extractedBlobUrlStrings = extractBlobUrls(from: htmlBytes)
+    
+    // Only replace as many as the lesser of the two counts.
+    let minCount = min(blobUrls.count, extractedBlobUrlStrings.count)
+    
+    var newBytes: [UInt8] = []
     var currentIndex = 0
+    var workingBytes = htmlBytes
     
+    // For each replacement, search for the extracted blob URL bytes in the workingBytes starting from currentIndex.
     for i in 0..<minCount {
-        if let range = htmlData[currentIndex...].range(of: extractedBlobUrls[i]) {
-            // Append everything before the found range
-            newHtmlData.append(htmlData[currentIndex..<range.lowerBound])
-            // Append the replacement URL
-            newHtmlData.append(replacementBlobUrls[i])
-            // Move the current index past the end of the found range
-            currentIndex = range.upperBound
+        if let rangeFound = range(of: extractedBlobUrlStrings[i], in: workingBytes, startingAt: currentIndex) {
+            // Append everything before the found range.
+            newBytes.append(contentsOf: workingBytes[currentIndex..<rangeFound.lowerBound])
+            // Append the replacement blob URL bytes.
+            newBytes.append(contentsOf: blobUrls[i])
+            // Move currentIndex past the found blob URL.
+            currentIndex = rangeFound.upperBound
         }
     }
     
-    // Append the remainder of the HTML if any exists beyond the last replacement
-    if currentIndex < htmlData.count {
-        newHtmlData.append(htmlData[currentIndex...])
+    // Append the remainder of the bytes if any exists.
+    if currentIndex < workingBytes.count {
+        newBytes.append(contentsOf: workingBytes[currentIndex...])
     }
     
-    return String(data: newHtmlData, encoding: .utf8) ?? html
+    return newBytes
 }
 
 fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#
@@ -104,29 +143,41 @@ fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: rea
 fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
 fileprivate let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
 
-fileprivate func rewriteManabiReaderFontSizeStyle(in html: String, newFontSize: Double) -> String {
+fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
+    // Convert the UTF8 bytes to a String.
+    guard let html = String(bytes: htmlBytes, encoding: .utf8) else {
+        return htmlBytes
+    }
+    
     let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
     let nsHTML = html as NSString
+    var updatedHtml: String
+    let newFontSizeStr = "font-size: " + String(newFontSize) + "px"
     // If a font-size exists in the style, replace it.
     if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
         let replacement = readerFontSizeStyleRegex.replacementString(
             for: firstMatch,
             in: html,
             offset: 0,
-            template: "$1font-size: \(newFontSize)px"
+            template: "$1" + newFontSizeStr
         )
-        return nsHTML.replacingCharacters(in: firstMatch.range, with: replacement)
+        updatedHtml = nsHTML.replacingCharacters(in: firstMatch.range, with: replacement)
     }
     // Otherwise, if a <body ... style="..."> exists, insert the font-size.
-    if let styleMatch = bodyStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
+    else if let styleMatch = bodyStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
         let prefix = nsHTML.substring(with: styleMatch.range(at: 1))
         let content = nsHTML.substring(with: styleMatch.range(at: 2))
         let suffix = nsHTML.substring(with: styleMatch.range(at: 3))
-        let newContent = "font-size: \(newFontSize)px; " + content
+        let newContent = newFontSizeStr + "; " + content
         let replacement = prefix + newContent + suffix
-        return nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
+        updatedHtml = nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
     }
-    return html
+    else {
+        updatedHtml = html
+    }
+    
+    // Convert the updated HTML string back to UTF8 bytes.
+    return Array(updatedHtml.utf8)
 }
 
 internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, content: String, processReadabilityContent: ((SwiftSoup.Document) async -> String)?) async throws -> String {
@@ -136,14 +187,14 @@ internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, conte
 
     let cacheKey = EbookProcessorCacheKey(contentURL: contentURL, sectionLocation: sectionLocation)
     if let cached = ebookProcessorCache.value(forKey: cacheKey) {
-        let blobs = extractBlobUrls(from: content)
+        let blobs = extractBlobUrls(from: content.utf8Array)
         var updatedCache = replaceBlobUrls(in: cached, with: blobs)
         // TODO: Also overwrite the theme here
         updatedCache = rewriteManabiReaderFontSizeStyle(
             in: updatedCache,
             newFontSize: readerFontSize
         )
-        return updatedCache
+        return String(decoding: updatedCache, as: UTF8.self)
     }
     
     do {
@@ -165,7 +216,7 @@ internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, conte
         } else {
             html = try doc.outerHtml()
         }
-        ebookProcessorCache.setValue(html, forKey: cacheKey)
+        ebookProcessorCache.setValue(html.utf8Array, forKey: cacheKey)
         return html
     } catch {
         debugPrint("Error processing readability content for ebook", error)
