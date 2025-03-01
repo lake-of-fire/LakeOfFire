@@ -1,8 +1,9 @@
 import Foundation
 import SwiftSoup
+import LRUCache
 import LakeKit
 
-public struct EbookProcessorCacheKey: Encodable {
+public struct EbookProcessorCacheKey: Encodable, Hashable {
     public let contentURL: URL
     public let sectionLocation: String
     
@@ -18,7 +19,25 @@ public struct EbookProcessorCacheKey: Encodable {
     }
 }
 
-public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, [UInt8]>(namespace: "ReaderEbookTextProcessor", totalBytesLimit: 30_000_000, countLimit: 2_000)
+//public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, [UInt8]>(
+public let ebookProcessorCache = LRUCache<EbookProcessorCacheKey, [UInt8]>(
+//    namespace: "ReaderEbookTextProcessor",
+    totalCostLimit: 30_000_000,
+    countLimit: 2_000
+)
+
+@inlinable
+internal func range(of subArray: ArraySlice<UInt8>, in arraySlice: ArraySlice<UInt8>, startingAt start: ArraySlice<UInt8>.Index) -> Range<ArraySlice<UInt8>.Index>? {
+    guard !subArray.isEmpty, start < arraySlice.endIndex else { return nil }
+    let subCount = subArray.count
+    // Ensure that we iterate within bounds.
+    for i in start...(arraySlice.endIndex - subCount) {
+        if arraySlice[i..<i+subCount] == subArray {
+            return i..<i+subCount
+        }
+    }
+    return nil
+}
 
 fileprivate func extractBlobUrls(from bytes: [UInt8]) -> [ArraySlice<UInt8>] {
     let prefixBytes = UTF8Arrays.blobColon
@@ -84,7 +103,6 @@ fileprivate func extractBlobUrls(from bytes: [UInt8]) -> [ArraySlice<UInt8>] {
                     }
                     j += len
                 }
-                // Create a String from the slice and add it.
                 blobUrls.append(bytes[urlStart..<j])
                 i = j
                 continue
@@ -95,46 +113,35 @@ fileprivate func extractBlobUrls(from bytes: [UInt8]) -> [ArraySlice<UInt8>] {
     return blobUrls
 }
 
-@inlinable
-internal func range(of subArray: ArraySlice<UInt8>, in array: [UInt8], startingAt start: Int) -> Range<Int>? {
-    guard !subArray.isEmpty, start < array.count else { return nil }
-    
-    for i in start...(array.count - subArray.count) {
-        if array[i..<i+subArray.count] == subArray[0..<subArray.count] {
-            return i..<i+subArray.count
-        }
-    }
-    return nil
-}
-
 fileprivate func replaceBlobUrls(in htmlBytes: [UInt8], with blobUrls: [ArraySlice<UInt8>]) -> [UInt8] {
-    let extractedBlobUrlStrings = extractBlobUrls(from: htmlBytes)
+    let extractedBlobUrlSlices = extractBlobUrls(from: htmlBytes)
     
     // Only replace as many as the lesser of the two counts.
-    let minCount = min(blobUrls.count, extractedBlobUrlStrings.count)
+    let minCount = min(blobUrls.count, extractedBlobUrlSlices.count)
     
-    var newBytes: [UInt8] = []
-    var currentIndex = 0
-    var workingBytes = htmlBytes
+    // Work with an ArraySlice for performance.
+    let workingSlice = htmlBytes[htmlBytes.startIndex..<htmlBytes.endIndex]
+    var result = [UInt8]()
+    var currentIndex = workingSlice.startIndex
     
-    // For each replacement, search for the extracted blob URL bytes in the workingBytes starting from currentIndex.
+    // For each replacement, search for the extracted blob URL slice in workingSlice starting from currentIndex.
     for i in 0..<minCount {
-        if let rangeFound = range(of: extractedBlobUrlStrings[i], in: workingBytes, startingAt: currentIndex) {
+        if let rangeFound = range(of: extractedBlobUrlSlices[i], in: workingSlice, startingAt: currentIndex) {
             // Append everything before the found range.
-            newBytes.append(contentsOf: workingBytes[currentIndex..<rangeFound.lowerBound])
+            result.append(contentsOf: workingSlice[currentIndex..<rangeFound.lowerBound])
             // Append the replacement blob URL bytes.
-            newBytes.append(contentsOf: blobUrls[i])
+            result.append(contentsOf: blobUrls[i])
             // Move currentIndex past the found blob URL.
             currentIndex = rangeFound.upperBound
         }
     }
     
     // Append the remainder of the bytes if any exists.
-    if currentIndex < workingBytes.count {
-        newBytes.append(contentsOf: workingBytes[currentIndex...])
+    if currentIndex < workingSlice.endIndex {
+        result.append(contentsOf: workingSlice[currentIndex..<workingSlice.endIndex])
     }
     
-    return newBytes
+    return result
 }
 
 fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#
@@ -184,7 +191,7 @@ internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, conte
     let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? 16
     let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
     let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
-
+    
     let cacheKey = EbookProcessorCacheKey(contentURL: contentURL, sectionLocation: sectionLocation)
     if let cached = ebookProcessorCache.value(forKey: cacheKey) {
         let blobs = extractBlobUrls(from: content.utf8Array)
@@ -216,7 +223,8 @@ internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, conte
         } else {
             html = try doc.outerHtml()
         }
-        ebookProcessorCache.setValue(html.utf8Array, forKey: cacheKey)
+        let value = html.utf8Array
+        ebookProcessorCache.setValue(value, forKey: cacheKey, cost: value.count)
         return html
     } catch {
         debugPrint("Error processing readability content for ebook", error)
