@@ -59,6 +59,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var isDeleted: Bool { get set }
     
     func imageURLToDisplay() async throws -> URL?
+    @RealmBackgroundActor
     func configureBookmark(_ bookmark: Bookmark)
 }
 
@@ -295,6 +296,7 @@ public extension ReaderContentProtocol {
     
     @MainActor
     func addBookmark(realmConfiguration: Realm.Configuration) async throws {
+        let compoundKey = compoundKey
         let url = url
         let title = title
         let html = html
@@ -306,14 +308,14 @@ public extension ReaderContentProtocol {
         let rssContainsFullContent = rssContainsFullContent
         let isReaderModeAvailable = isReaderModeAvailable
         let isReaderModeOfferHidden = isReaderModeOfferHidden
-        try await Task { @RealmBackgroundActor [weak self] in
+        try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, rssContainsFullContent: rssContainsFullContent, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: isReaderModeAvailable, isReaderModeOfferHidden: isReaderModeOfferHidden, realmConfiguration: realmConfiguration)
-            await Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                configureBookmark(bookmark)
-            }.value
-        }.value
+            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+            if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
+                content.configureBookmark(bookmark)
+            }
+        }()
     }
     
     /// Returns whether a matching bookmark was found and deleted.

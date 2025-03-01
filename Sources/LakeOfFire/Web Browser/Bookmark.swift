@@ -46,6 +46,7 @@ public class Bookmark: Object, ReaderContentProtocol {
     }
     
     /// Used by subclasses of Bookmark
+    @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         let url = url
         let targetBookmarkID = bookmark.compoundKey

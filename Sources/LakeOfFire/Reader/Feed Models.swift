@@ -278,7 +278,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         return imageUrl
     }
     
-    @MainActor
+    @RealmBackgroundActor
     public func configureBookmark(_ bookmark: Bookmark) {
         let feed = getFeed()
         
