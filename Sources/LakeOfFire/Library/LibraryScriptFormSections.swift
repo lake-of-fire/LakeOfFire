@@ -8,7 +8,7 @@ import SwiftUIWebView
 class LibraryScriptFormSectionsViewModel: ObservableObject {
     var script: UserScript? {
         didSet {
-            guard let script = script else { return }
+            guard let script else { return }
             let scriptRef = ThreadSafeReference(to: script)
             Task { @RealmBackgroundActor [weak self] in
                 guard let self else { return }
@@ -136,7 +136,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor in
+        Task { @RealmBackgroundActor [weak objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
     }
@@ -155,7 +155,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     @MainActor
     func onDeleteOfAllowedDomains(at offsets: IndexSet) {
         Task { @MainActor [weak self] in
-            guard let self = self, let script = script else { return }
+            guard let self = self, let script else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
                 script.allowedDomainIDs.remove(atOffsets: offsets)
             }
@@ -164,7 +164,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     
     func addEmptyDomain() {
         Task { @MainActor [weak self] in
-            guard let self = self, let script = script else { return }
+            guard let self = self, let script else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { realm, script in
                 let allowedDomain = UserScriptAllowedDomain()
                 realm.add(allowedDomain, update: .modified)
@@ -272,7 +272,6 @@ struct LibraryScriptFormSections: View {
         Section(header: Text("Allowed Domains"), footer: Text("Top-level hostnames of domains this script is allowed to run on. No support for wildcards or subdomains. All subdomains are matched against their top-level parent domain. Leave empty for access to all domains.").font(.footnote).foregroundColor(.secondary)) {
             // TODO: Cache allowedDomains in a subview struct
             ForEach(script.getAllowedDomains() ?? []) { (domain: UserScriptAllowedDomain) in
-                let domain = domain.isFrozen ? domain.thaw() ?? domain : domain
                 UserScriptAllowedDomainCell(domain: domain)
                     .disabled(!script.isUserEditable)
                     .deleteDisabled(!script.isUserEditable)
@@ -387,6 +386,9 @@ struct LibraryScriptFormSections: View {
         .onChange(of: script.previewURL, debounceTime: 0.5) { url in
             guard let url = url else { return }
             refresh(url: url)
+        }
+        .task(id: script.id) { @MainActor in
+            viewModel.script = script
         }
     }
     

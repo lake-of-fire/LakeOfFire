@@ -218,8 +218,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [weak self] in
-            self?.objectNotificationToken?.invalidate()
+        Task { @RealmBackgroundActor [weak objectNotificationToken] in
+            objectNotificationToken?.invalidate()
         }
     }
     

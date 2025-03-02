@@ -182,7 +182,7 @@ public extension ReaderContentProtocol {
                             <title>\(titleForDisplay)</title>
                         </head>
                         
-                        <body class="readability-mode">
+                        <body data-is-next-load-in-reader-mode="true">
                             <div id="reader-header" class="header">
                                 <h1 id="reader-title">\(titleForDisplay)</h1>
                                 <div id="reader-byline-container">
@@ -194,6 +194,33 @@ public extension ReaderContentProtocol {
                                 \(html)
                             </div>
                             <script>
+                                (function () {
+                                    var loc = document.location;
+                                    var uri = {
+                                        spec: loc.href,
+                                        host: loc.host,
+                                        prePath: loc.protocol + "//" + loc.host,
+                                        scheme: loc.protocol.substr(0, loc.protocol.indexOf(":")),
+                                        pathBase: loc.protocol + "//" + loc.host + loc.pathname.substr(0, loc.pathname.lastIndexOf("/") + 1)
+                                    };
+                                    var documentClone = document.cloneNode(true);
+                                    var article = new Readability(uri, documentClone, {
+                                        classesToPreserve: [
+                                        "caption", "emoji", "hidden", "invisible", "sr-only", "visually-hidden", "visuallyhidden", "wp-caption", "wp-caption-text", "wp-smiley"
+                                        ],
+                                        charThreshold: 1}).parse();
+                                    
+                                    if (article) {
+                                        var content = DOMPurify.sanitize(article.content);
+                                        var readerContentDiv = document.getElementById("reader-content");
+                                        if (readerContentDiv) {
+                                            readerContentDiv.innerHTML = content;
+                                        } 
+                                    }
+                    
+                                    document.body.classList.add('readability-mode');
+                                })();
+                    
                                 \(Readability.shared.scripts)
                             </script>
                         </body>

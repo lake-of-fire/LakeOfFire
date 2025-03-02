@@ -4,6 +4,7 @@ import SwiftUIDownloads
 import SwiftUtilities
 import SwiftUIBackports
 import RealmSwiftGaps
+import SwiftUIWebView
 
 public enum LightModeTheme: String, CaseIterable, Identifiable {
     case white

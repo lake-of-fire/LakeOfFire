@@ -731,6 +731,7 @@ public class LibraryDataManager: NSObject {
     @RealmBackgroundActor
     func importOPMLEntry(_ opmlEntry: OPMLEntry, opml: OPML, download: Downloadable?, category: FeedCategory? = nil, importedCategories: OrderedSet<FeedCategory> = OrderedSet(), importedFeeds: OrderedSet<Feed> = OrderedSet(), importedScripts: OrderedSet<UserScript> = OrderedSet()) async throws -> (OrderedSet<FeedCategory>, OrderedSet<Feed>, OrderedSet<UserScript>) {
         var category = category
+        let categoryID = category?.id
         var importedCategories = importedCategories
         var importedFeeds = importedFeeds
         var importedScripts = importedScripts
@@ -744,11 +745,12 @@ public class LibraryDataManager: NSObject {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
                 let feedCategory = feed.getCategory()
                 if feedCategory == nil || feedCategory?.opmlURL == download?.url || feed.isDeleted {
-                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category) {
+                    if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID) {
                         try Task.checkCancellation()
+                        let categoryID = feedCategory?.id
                         await realm.asyncRefresh()
                         try await realm.asyncWrite {
-                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
+                            try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID)
                         }
                     }
                     importedFeeds.append(feed)
@@ -760,7 +762,7 @@ public class LibraryDataManager: NSObject {
                     try Task.checkCancellation()
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
-                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, category: category)
+                        try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID)
                         realm.add(feed, update: .modified)
                     }
                     importedFeeds.append(feed)
@@ -1040,9 +1042,9 @@ public class LibraryDataManager: NSObject {
         }
     }
     
-    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) -> Bool {
+    static func hasChanges(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, categoryID: UUID?) -> Bool {
         guard let feedURL = opmlEntry.feedURL else { return false }
-        if feed.categoryID != category?.id {
+        if feed.categoryID != categoryID {
             return true
         }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
@@ -1099,7 +1101,7 @@ public class LibraryDataManager: NSObject {
         return false
     }
     
-    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, category: FeedCategory?) throws {
+    static func applyAttributes(opml: OPML, opmlEntry: OPMLEntry, feed: Feed, categoryID: UUID?) throws {
         // Must be kept in sync with the respective hasChanges
         guard let feedURL = opmlEntry.feedURL else { return }
         
@@ -1110,8 +1112,8 @@ public class LibraryDataManager: NSObject {
             newIconURL = URL(string: iconURLRaw)
         }
         
-        if feed.categoryID != category?.id {
-            feed.categoryID = category?.id
+        if feed.categoryID != categoryID {
+            feed.categoryID = categoryID
             didChange = true
         }
         let newOpmlTitle = opmlEntry.title ?? opmlEntry.text
