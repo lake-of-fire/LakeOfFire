@@ -132,8 +132,8 @@ const getVisibleRange = (doc, start, end, mapRect) => {
         })
     const endOffset = to.nodeType === 1 ? 0
         : bisectNode(doc, to, (a, b) => {
-            const p = mapRect(a.getBoundingClientRect())
-            const q = mapRect(b.getBoundingClientRect())
+            const p = mapRect(getBoundingClientRect(a))
+            const q = mapRect(getBoundingClientRect(b))
             if (p.right < end && q.left > end) return 0
             return q.left > end ? -1 : 1
         })
@@ -180,8 +180,8 @@ class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
     #resizeObserver = new ResizeObserver(async () => {
-        this.#debouncedExpand()
-//        this.expand()
+//        this.#debouncedExpand()
+        this.expand()
     })
     #mutationObserver = new MutationObserver(async () => {
         return ;
@@ -190,7 +190,7 @@ class View {
 //            this.needsRenderForMutation = true
 //        }
     })
-    needsRenderForMutation = false
+//    needsRenderForMutation = false
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
     #contentRange = document.createRange()
@@ -292,29 +292,29 @@ class View {
             'height': 'auto',
             'width': 'auto',
             
-            // columnize parity
-            // columnGap: '0',
-            'column-gap': `${gap}px`,
-            'column-fill': 'auto',
-            'overflow': 'hidden',
-            // force wrap long words
-            'overflow-wrap': 'anywhere',
-            // reset some potentially problematic props
-            'position': 'static', 'border': '0', 'margin': '0',
-            'max-height': 'none', 'max-width': 'none',
-            'min-height': 'none', 'min-width': 'none',
-            // fix glyph clipping in WebKit
-            'webkit-line-box-contain': 'block glyphs replaced',
+//            // columnize parity
+//            // columnGap: '0',
+//            'column-gap': `${gap}px`,
+//            'column-fill': 'auto',
+//            'overflow': 'hidden',
+//            // force wrap long words
+//            'overflow-wrap': 'anywhere',
+//            // reset some potentially problematic props
+//            'position': 'static', 'border': '0', 'margin': '0',
+//            'max-height': 'none', 'max-width': 'none',
+//            'min-height': 'none', 'min-width': 'none',
+//            // fix glyph clipping in WebKit
+//            '-webkit-line-box-contain': 'block glyphs replaced',
         })
         // columnize parity
-        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
+//        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
         setStylesImportant(doc.body, {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
         this.setImageSize()
-        this.#debouncedExpand()
-//        this.expand()
+//        this.#debouncedExpand()
+        this.expand()
     }
     columnize({ width, height, gap, columnWidth }) {
         const vertical = this.#vertical
@@ -327,18 +327,18 @@ class View {
             'column-gap': `${gap}px`,
             'column-fill': 'auto',
             ...(vertical
-                ? { width: `${width}px` }
-                : { height: `${height}px` }),
+                ? { 'width': `${width}px` }
+                : { 'height': `${height}px` }),
             'padding': vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
             'overflow': 'hidden',
             // force wrap long words
-            'overflow-wrap': 'anywhere',
+            'overflow-wrap': 'break-word', // TODO: anywhere, for japanese?
             // reset some potentially problematic props
             'position': 'static', 'border': '0', 'margin': '0',
             'max-height': 'none', 'max-width': 'none',
             'min-height': 'none', 'min-width': 'none',
             // fix glyph clipping in WebKit
-            'webkit-line-box-contain': 'block glyphs replaced',
+            '-webkit-line-box-contain': 'block glyphs replaced',
         })
         doc.documentElement.style.setProperty('--paginator-margin', `30px`)
         setStylesImportant(doc.body, {
@@ -348,35 +348,44 @@ class View {
         })
         this.setImageSize()
         // Don't infinite loop.
-        if (!this.needsRenderForMutation) {
+//        if (!this.needsRenderForMutation) {
             this.expand()
 //            this.#debouncedExpand()
-        }
+//        }
     }
     setImageSize() {
-        const { width, height, margin } = this.#layout;
-        const vertical = this.#vertical;
-        const doc = this.document;
-        const rootStyle = doc.documentElement.style;
-        rootStyle.setProperty('--maxImageWidth', vertical ? `${width - margin * 2}px` : '100%');
-        rootStyle.setProperty('--maxImageHeight', vertical ? '100%' : `${height - margin * 2}px`);
+        const { width, height, margin } = this.#layout
+        const vertical = this.#vertical
+        const doc = this.document
+        for (const el of doc.body.querySelectorAll('img, svg, video')) {
+            // preserve max size if they are already set
+            const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
+            setStylesImportant(el, {
+                'max-height': vertical
+                ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
+                : `${height - margin * 2}px`,
+                'max-width': vertical
+                ? `${width - margin * 2}px`
+                : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+                'object-fit': 'contain',
+                'page-break-inside': 'avoid',
+                'break-inside': 'avoid',
+                'box-sizing': 'border-box',
+            })
+        }
     }
-    async expand() {
+    expand() {
+        const { documentElement } = this.document
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
             const contentRect = this.#contentRange.getBoundingClientRect()
-            let contentSize
-            if (this.document) {
-                const rootRect = this.document.documentElement.getBoundingClientRect()
-                // offset caused by column break at the start of the page
-                // which seem to be supported only by WebKit and only for horizontal writing
-                const contentStart = this.#vertical ? 0
-                : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                contentSize = contentStart + contentRect[side]
-            } else {
-                contentSize = this.#contentRange.getBoundingClientRect()[side]
-            }
+            const rootRect = documentElement.getBoundingClientRect()
+            // offset caused by column break at the start of the page
+            // which seem to be supported only by WebKit and only for horizontal writing
+            const contentStart = this.#vertical ? 0
+            : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+            const contentSize = contentStart + contentRect[side]
             const pageCount = Math.ceil(contentSize / this.#size)
             const expandedSize = pageCount * this.#size
             this.#element.style.padding = '0'
@@ -384,8 +393,7 @@ class View {
             this.#element.style[side] = `${expandedSize + this.#size * 2}px`
             this.#iframe.style[otherSide] = '100%'
             this.#element.style[otherSide] = '100%'
-            if (this.document)
-                this.document.documentElement.style[side] = `${this.#size}px`
+            documentElement.style[side] = `${this.#size}px`
             if (this.#overlayer) {
                 this.#overlayer.element.style.margin = '0'
                 this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
@@ -396,14 +404,12 @@ class View {
         } else {
             const side = this.#vertical ? 'width' : 'height'
             const otherSide = this.#vertical ? 'height' : 'width'
-            const doc = this.document
-            const contentSize = doc?.documentElement?.getBoundingClientRect()?.[side]
+            const contentSize = documentElement.getBoundingClientRect()[side]
             const expandedSize = contentSize
-            const expandedSizeFix = 0 // HACK: TODO: Let's figure this out... had to add this to fix "なぜどうしてかがくのお話１年生" cover drift
             const { margin } = this.#layout
             const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
             this.#element.style.padding = padding
-            this.#iframe.style[side] = `${expandedSize + expandedSizeFix}px`
+            this.#iframe.style[side] = `${expandedSize}px`
             this.#element.style[side] = `${expandedSize}px`
             this.#iframe.style[otherSide] = '100%'
             this.#element.style[otherSide] = '100%'
@@ -415,7 +421,7 @@ class View {
                 this.#overlayer.redraw()
             }
         }
-        /*await*/ this.onExpand()
+        this.onExpand()
     }
     set overlayer(overlayer) {
         this.#overlayer = overlayer
@@ -630,7 +636,7 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    /*async*/ #onExpand() {
+    #onExpand() {
         this.#scrollToAnchor(this.#anchor)
         //                this.#scrollToAnchor.bind(this),
 //        await this.#scrollToAnchor(this.#anchor);
@@ -1077,7 +1083,7 @@ export class Paginator extends HTMLElement {
 
         // NOTE: needs `requestAnimationFrame` in Chromium
         requestAnimationFrame(() =>
-                              this.#background.style.background = getBackground(this.#view.document))
+            this.#background.style.background = getBackground(this.#view.document))
             
         // needed because the resize observer doesn't work in Firefox
         this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
