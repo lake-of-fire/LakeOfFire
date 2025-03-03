@@ -33,7 +33,11 @@ const animate = (a, b, duration, ease, render) => new Promise(resolve => {
 const uncollapse = range => {
     if (!range?.collapsed) return range
     const { endOffset, endContainer } = range
-    if (endContainer.nodeType === 1) return endContainer
+    if (endContainer.nodeType === 1) {
+        const node = endContainer.childNodes[endOffset]
+        if (node?.nodeType === 1) return node
+        return endContainer
+    }
     if (endOffset + 1 < endContainer.length) range.setEnd(endContainer, endOffset + 1)
     else if (endOffset > 1) range.setStart(endContainer, endOffset - 1)
     else return endContainer.parentNode
@@ -373,10 +377,11 @@ class View {
             const doc = this.document
             const contentSize = doc?.documentElement?.getBoundingClientRect()?.[side]
             const expandedSize = contentSize
+            const expandedSizeFix = -50 // HACK: TODO: Let's figure this out... had to add this to fix "なぜどうしてかがくのお話１年生" cover drift
             const { margin } = this.#layout
             const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
             this.#element.style.padding = padding
-            this.#iframe.style[side] = `${expandedSize}px`
+            this.#iframe.style[side] = `${expandedSize + expandedSizeFix}px`
             this.#element.style[side] = `${expandedSize}px`
             this.#iframe.style[otherSide] = '100%'
             this.#element.style[otherSide] = '100%'
@@ -650,7 +655,7 @@ export class Paginator extends HTMLElement {
             this.#header.replaceChildren()
             this.#footer.replaceChildren()
 
-            return { flow, margin, gap, columnWidth }
+            return { height, width, flow, margin, gap, columnWidth }
         }
 
         const divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))

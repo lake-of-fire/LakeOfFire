@@ -52,7 +52,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //            ManabiReaderUserScript().userScript,
 //            YoutubeAdBlockUserScript.userScript,
 //            YoutubeAdSkipUserScript.userScript,
-            YoutubeCaptionsUserScript.userScript,
+//            YoutubeCaptionsUserScript.userScript,
         ]
     }()
     
