@@ -179,10 +179,11 @@ const setStylesImportant = (el, styles) => {
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
-    #resizeObserver = new ResizeObserver(async () => {
-//        this.#debouncedExpand()
-        this.expand()
-    })
+    #resizeObserver = new ResizeObserver(() => this.expand())
+//    #resizeObserver = new ResizeObserver(async () => {
+////        this.#debouncedExpand()
+//        this.expand()
+//    })
     #mutationObserver = new MutationObserver(async () => {
         return ;
         // TODO: Needed still?
@@ -358,8 +359,10 @@ class View {
         const vertical = this.#vertical
         const doc = this.document
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
-            // preserve max size if they are already set
-            const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
+            // preserve max size if they are already set, avoiding ebook stylesheet values
+            //const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
+            const maxHeight = el.style.maxHeight || 'none';
+            const maxWidth = el.style.maxWidth || 'none';
             setStylesImportant(el, {
                 'max-height': vertical
                 ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
@@ -444,15 +447,16 @@ export class Paginator extends HTMLElement {
     ]
     #root = this.attachShadow({ mode: 'closed' })
     #debouncedRender = debounce(this.render.bind(this), 333)
-    #hasResizeObserverTriggered = false
+//    #hasResizeObserverTriggered = false
+//    #resizeObserver = new ResizeObserver(() => this.render())
     #resizeObserver = new ResizeObserver(() => {
-//        if (!this.#hasResizeObserverTriggered) {
-//            // Skip initial observation on start
-//            this.#hasResizeObserverTriggered = true
-//            return
-//        }
-//        this.#debouncedRender()
-        this.render()
+////        if (!this.#hasResizeObserverTriggered) {
+////            // Skip initial observation on start
+////            this.#hasResizeObserverTriggered = true
+////            return
+////        }
+        this.#debouncedRender()
+//        this.render()
     })
     #top
     #background
@@ -629,9 +633,9 @@ export class Paginator extends HTMLElement {
         }
         this.#view = new View({
             container: this,
-            onExpand: this.#onExpand.bind(this),
+//            onExpand: this.#onExpand.bind(this),
             isCacheWarmer: this.#isCacheWarmer,
-//            onExpand: debounce(() => this.#onExpand.bind(this), 500),
+            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
         this.#container.append(this.#view.element)
         return this.#view
