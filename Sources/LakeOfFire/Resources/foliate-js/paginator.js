@@ -300,9 +300,9 @@ class View {
             // force wrap long words
             'overflow-wrap': 'anywhere',
             // reset some potentially problematic props
-            'position': 'static', border: '0', margin: '0',
-            'max-height': 'none', maxWidth: 'none',
-            'min-height': 'none', minWidth: 'none',
+            'position': 'static', 'border': '0', 'margin': '0',
+            'max-height': 'none', 'max-width': 'none',
+            'min-height': 'none', 'min-width': 'none',
             // fix glyph clipping in WebKit
             'webkit-line-box-contain': 'block glyphs replaced',
         })
@@ -334,9 +334,9 @@ class View {
             // force wrap long words
             'overflow-wrap': 'anywhere',
             // reset some potentially problematic props
-            'position': 'static', border: '0', margin: '0',
-            'max-height': 'none', maxWidth: 'none',
-            'min-height': 'none', minWidth: 'none',
+            'position': 'static', 'border': '0', 'margin': '0',
+            'max-height': 'none', 'max-width': 'none',
+            'min-height': 'none', 'min-width': 'none',
             // fix glyph clipping in WebKit
             'webkit-line-box-contain': 'block glyphs replaced',
         })
