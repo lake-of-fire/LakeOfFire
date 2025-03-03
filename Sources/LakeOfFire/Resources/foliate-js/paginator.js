@@ -1,3 +1,5 @@
+// TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
+
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 const debounce = (f, wait, immediate) => {
@@ -68,6 +70,21 @@ const { SHOW_ELEMENT, SHOW_TEXT, SHOW_CDATA_SECTION,
 
 const filter = SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION
 
+// needed cause there seems to be a bug in `getBoundingClientRect()` in Firefox
+// where it fails to include rects that have zero width and non-zero height
+// (CSSOM spec says "rectangles [...] of which the height or width is not zero")
+// which makes the visible range include an extra space at column boundaries
+const getBoundingClientRect = target => {
+    let top = Infinity, right = -Infinity, left = Infinity, bottom = -Infinity
+    for (const rect of target.getClientRects()) {
+        left = Math.min(left, rect.left)
+        top = Math.min(top, rect.top)
+        right = Math.max(right, rect.right)
+        bottom = Math.max(bottom, rect.bottom)
+    }
+    return new DOMRect(left, top, right - left, bottom - top)
+}
+
 const getVisibleRange = (doc, start, end, mapRect) => {
     // first get all visible nodes
     const acceptNode = node => {
@@ -108,8 +125,8 @@ const getVisibleRange = (doc, start, end, mapRect) => {
     // find the offset at which visibility changes
     const startOffset = from.nodeType === 1 ? 0
         : bisectNode(doc, from, (a, b) => {
-            const p = mapRect(a.getBoundingClientRect())
-            const q = mapRect(b.getBoundingClientRect())
+            const p = mapRect(getBoundingClientRect(a))
+            const q = mapRect(getBoundingClientRect(b))
             if (p.right < start && q.left > start) return 0
             return q.left > start ? -1 : 1
         })
@@ -129,8 +146,7 @@ const getVisibleRange = (doc, start, end, mapRect) => {
 
 const getDirection = doc => {
     const { defaultView } = doc
-    const firstElement = doc.body.firstElementChild
-    const { writingMode, direction } = defaultView.getComputedStyle(firstElement || doc.body)
+    const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
     const vertical = writingMode === 'vertical-rl'
         || writingMode === 'vertical-lr'
     const rtl = doc.body.dir === 'rtl'
@@ -155,6 +171,11 @@ const makeMarginals = (length, part) => Array.from({ length }, () => {
     return div
 })
 
+const setStylesImportant = (el, styles) => {
+    const { style } = el
+    for (const [k, v] of Object.entries(styles)) style.setProperty(k, v, 'important')
+}
+
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
@@ -163,9 +184,11 @@ class View {
 //        this.expand()
     })
     #mutationObserver = new MutationObserver(async () => {
-        if (this.#column) {
-            this.needsRenderForMutation = true
-        }
+        return ;
+        // TODO: Needed still?
+//        if (this.#column) {
+//            this.needsRenderForMutation = true
+//        }
     })
     needsRenderForMutation = false
     #element = document.createElement('div')
@@ -260,35 +283,34 @@ class View {
     scrolled({ gap, columnWidth }) {
         const vertical = this.#vertical
         const doc = this.document
-        Object.assign(doc.documentElement.style, {
-            boxSizing: 'border-box',
-//            padding: vertical ? `${gap}px 0` : `0 ${gap}px`,
-            padding: vertical ? `${gap}px 0` : `0 ${gap}px`,
+        setStylesImportant(doc.documentElement, {
+            'box-sizing': 'border-box',
+            'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
 //            border: `${gap}px solid transparent`,
 //            borderWidth: vertical ? `${gap}px 0` : `0 ${gap}px`,
-            columnWidth: 'auto',
-            height: 'auto',
-            width: 'auto',
+            'column-width': 'auto',
+            'height': 'auto',
+            'width': 'auto',
             
             // columnize parity
             // columnGap: '0',
-            columnGap: `${gap}px`,
-            columnFill: 'auto',
-            overflow: 'hidden',
+            'column-gap': `${gap}px`,
+            'column-fill': 'auto',
+            'overflow': 'hidden',
             // force wrap long words
-            overflowWrap: 'anywhere',
+            'overflow-wrap': 'anywhere',
             // reset some potentially problematic props
-            position: 'static', border: '0', margin: '0',
-            maxHeight: 'none', maxWidth: 'none',
-            minHeight: 'none', minWidth: 'none',
+            'position': 'static', border: '0', margin: '0',
+            'max-height': 'none', maxWidth: 'none',
+            'min-height': 'none', minWidth: 'none',
             // fix glyph clipping in WebKit
-            webkitLineBoxContain: 'block glyphs replaced',
+            'webkit-line-box-contain': 'block glyphs replaced',
         })
         // columnize parity
         doc.documentElement.style.setProperty('--paginator-margin', `30px`)
-        Object.assign(doc.body.style, {
-            [vertical ? 'maxHeight' : 'maxWidth']: `${columnWidth}px`,
-            margin: 'auto',
+        setStylesImportant(doc.body, {
+            [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
+            'margin': 'auto',
         })
         this.setImageSize()
         this.#debouncedExpand()
@@ -299,30 +321,30 @@ class View {
         this.#size = vertical ? height : width
 
         const doc = this.document
-        Object.assign(doc.documentElement.style, {
-            boxSizing: 'border-box',
-            columnWidth: `${Math.trunc(columnWidth)}px`,
-            columnGap: `${gap}px`,
-            columnFill: 'auto',
+        setStylesImportant(doc.documentElement, {
+            'box-sizing': 'border-box',
+            'column-width': `${Math.trunc(columnWidth)}px`,
+            'column-gap': `${gap}px`,
+            'column-fill': 'auto',
             ...(vertical
                 ? { width: `${width}px` }
                 : { height: `${height}px` }),
-            padding: vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
-            overflow: 'hidden',
+            'padding': vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
+            'overflow': 'hidden',
             // force wrap long words
-            overflowWrap: 'anywhere',
+            'overflow-wrap': 'anywhere',
             // reset some potentially problematic props
-            position: 'static', border: '0', margin: '0',
-            maxHeight: 'none', maxWidth: 'none',
-            minHeight: 'none', minWidth: 'none',
+            'position': 'static', border: '0', margin: '0',
+            'max-height': 'none', maxWidth: 'none',
+            'min-height': 'none', minWidth: 'none',
             // fix glyph clipping in WebKit
-            webkitLineBoxContain: 'block glyphs replaced',
+            'webkit-line-box-contain': 'block glyphs replaced',
         })
         doc.documentElement.style.setProperty('--paginator-margin', `30px`)
-        Object.assign(doc.body.style, {
-            maxHeight: 'none',
-            maxWidth: 'none',
-            margin: '0',
+        setStylesImportant(doc.body, {
+            'max-height': 'none',
+            'max-width': 'none',
+            'margin': '0',
         })
         this.setImageSize()
         // Don't infinite loop.
@@ -377,7 +399,7 @@ class View {
             const doc = this.document
             const contentSize = doc?.documentElement?.getBoundingClientRect()?.[side]
             const expandedSize = contentSize
-            const expandedSizeFix = -50 // HACK: TODO: Let's figure this out... had to add this to fix "なぜどうしてかがくのお話１年生" cover drift
+            const expandedSizeFix = 0 // HACK: TODO: Let's figure this out... had to add this to fix "なぜどうしてかがくのお話１年生" cover drift
             const { margin } = this.#layout
             const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
             this.#element.style.padding = padding
@@ -446,10 +468,11 @@ export class Paginator extends HTMLElement {
     pageAnimation = true
     constructor() {
         super()
+         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
         this.#root.innerHTML = `<style>
         :host {
-            --_gap: 5%;
-            --_margin: 30px;
+            --_gap: 7%;
+            --_margin: 48px;
             --_max-inline-size: 720px;
             --_max-block-size: 1440px;
             --_max-column-count: 2;
@@ -466,7 +489,9 @@ export class Paginator extends HTMLElement {
             display: grid;
             grid-template-columns:
                 minmax(var(--_half-gap), 1fr)
-                minmax(0, var(--_max-width))
+                var(--_half-gap)
+                minmax(0, calc(var(--_max-width) - var(--_gap)))
+                var(--_half-gap)
                 minmax(var(--_half-gap), 1fr);
             grid-template-rows:
                 minmax(var(--_margin), 1fr)
@@ -479,30 +504,26 @@ export class Paginator extends HTMLElement {
             height: 100%;
         }
         #background {
-            grid-column-start: 1;
-            grid-column-end: 4;
-            grid-row-start: 1;
-            grid-row-end: 4;
+            grid-column: 1 / -1;
+            grid-row: 1 / -1;
         }
         #container {
-            grid-column-start: 2;
-            grid-row-start: 2;
+            grid-column: 2 / 5;
+            grid-row: 2;
             overflow: hidden;
         }
         :host([flow="scrolled"]) #container {
-            grid-column-start: 1;
-            grid-column-end: 4;
-            grid-row-start: 1;
-            grid-row-end: 4;
+            grid-column: 1 / -1;
+            grid-row: 1 / -1;
             overflow: auto;
         }
         #header {
-            grid-column-start: 2;
-            grid-row-start: 1;
+            grid-column: 3 / 4;
+            grid-row: 1;
         }
         #footer {
-            grid-column-start: 2;
-            grid-row-start: 3;
+            grid-column: 3 / 4;
+            grid-row: 3;
             align-self: end;
         }
         #header, #footer {
@@ -536,6 +557,7 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#resizeObserver.observe(this.#container)
+        this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
                 if (this.#justAnchored) {
@@ -544,7 +566,7 @@ export class Paginator extends HTMLElement {
                     this.#afterScroll('scroll')
                 }
             }
-        }, 200))
+        }, 250))
 
         const opts = { passive: false }
         this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
@@ -595,7 +617,7 @@ export class Paginator extends HTMLElement {
     }
     async #onExpand() {
         //                this.#scrollToAnchor.bind(this),
-        await this.#scrollToAnchor();
+        await this.#scrollToAnchor(this.#anchor);
         if (this.#view.needsRenderForMutation) {
             this.#view.render(this.#beforeRender({
                 vertical: this.#vertical,
@@ -668,7 +690,6 @@ export class Paginator extends HTMLElement {
         const marginalStyle = {
             gridTemplateColumns: `repeat(${marginalDivisor}, 1fr)`,
             gap: `${gap}px`,
-            padding: vertical ? '0' : `0 ${gap / 2}px`,
             direction: this.bookDir === 'rtl' ? 'rtl' : 'ltr',
         }
         Object.assign(this.#header.style, marginalStyle)
