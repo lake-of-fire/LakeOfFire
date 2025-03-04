@@ -747,7 +747,7 @@ public class LibraryDataManager: NSObject {
                 if feedCategory == nil || feedCategory?.opmlURL == download?.url || feed.isDeleted {
                     if Self.hasChanges(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID) {
                         try Task.checkCancellation()
-                        let categoryID = feedCategory?.id
+                        let categoryID = categoryID ?? feedCategory?.id
                         await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             try Self.applyAttributes(opml: opml, opmlEntry: opmlEntry, feed: feed, categoryID: categoryID)
