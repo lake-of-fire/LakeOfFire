@@ -76,27 +76,27 @@ public class ReaderViewModel: NSObject, ObservableObject {
     private func updateScripts() async throws {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         let ref = ThreadSafeReference(to: libraryConfiguration)
-        Task { @MainActor [weak self] in
+        try await { @MainActor [weak self] in
             let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
             guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
             if self.webViewUserScripts != scripts {
                 self.webViewUserScripts = scripts
             }
-        }
+        }()
     }
     
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
-            Task { @RealmBackgroundActor in
+            try await { @RealmBackgroundActor in
                 guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     content.lastVisitedAt = Date()
                     content.modifiedAt = Date()
                 }
-            }
+            }()
         }
     }
     

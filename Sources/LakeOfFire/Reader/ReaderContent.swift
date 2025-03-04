@@ -24,7 +24,9 @@ public class ReaderContent: ObservableObject {
             debugPrint("# readerContent.load(...)", url)
             try Task.checkCancellation()
             let content = try await ReaderViewModel.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
-            guard content.url.matchesReaderURL(url) else { return nil }
+            guard content.url.matchesReaderURL(url) else {
+                return nil
+            }
             self?.content = content
             return content
         }

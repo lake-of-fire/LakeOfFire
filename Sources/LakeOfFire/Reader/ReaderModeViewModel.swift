@@ -94,7 +94,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func showReadabilityContent(readerContent: ReaderContent, readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
         debugPrint("# showReadabilityContent content", readerContent.content?.url, "pageurl", readerContent.pageURL)
-        guard let content = readerContent.content else {
+        guard let content = try await readerContent.getContent() else {
             print("No content set to show in reader mode")
             return
         }
@@ -236,7 +236,7 @@ public class ReaderModeViewModel: ObservableObject {
         if newState.pageURL.isReaderURLLoaderURL {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 let currentURL = readerContent.pageURL
-                guard currentURL.matchesReaderURL(committedURL) else {
+                guard committedURL.matchesReaderURL(currentURL) else {
                     print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
                     return
                 }
