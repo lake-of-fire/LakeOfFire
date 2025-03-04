@@ -94,7 +94,7 @@ public protocol DeletableReaderContent: ReaderContentProtocol {
 public extension URL {
     func matchesReaderURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }
-        if url.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = url.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(url.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
+        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) {
             return contentURL == self
         }
         return url == self
@@ -162,6 +162,7 @@ public extension ReaderContentProtocol {
         return String(decoding: data, as: UTF8.self)
     }
     
+    // TODO: Refactor to put on background thread
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
         // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)

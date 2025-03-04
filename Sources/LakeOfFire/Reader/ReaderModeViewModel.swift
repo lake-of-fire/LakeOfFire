@@ -17,7 +17,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var scriptCaller = WebViewScriptCaller()
-
+    
     public var defaultFontSize: Double?
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
@@ -74,17 +74,32 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    internal func showReaderView(content: any ReaderContentProtocol) {
+    internal func showReaderView(readerContent: ReaderContent) {
         guard let readabilityContent else { return }
+        let contentURL = readerContent.pageURL
         Task { @MainActor in
+            guard contentURL == readerContent.pageURL else { return }
             do {
-                try await showReadabilityContent(content: content, readabilityContent: readabilityContent, renderToSelector: readabilityContainerSelector, in: readabilityContainerFrameInfo)
+                try await showReadabilityContent(
+                    readerContent: readerContent,
+                    readabilityContent: readabilityContent,
+                    renderToSelector: readabilityContainerSelector,
+                    in: readabilityContainerFrameInfo
+                )
             } catch { }
         }
     }
     
+    /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
-    private func showReadabilityContent(content: (any ReaderContentProtocol), readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+    private func showReadabilityContent(readerContent: ReaderContent, readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+        debugPrint("# showReadabilityContent content", readerContent.content?.url, "pageurl", readerContent.pageURL)
+        guard let content = readerContent.content else {
+            print("No content set to show in reader mode")
+            return
+        }
+        let url = content.url
+
         await scriptCaller.evaluateJavaScript("""
             if (document.body) {
                 document.body.dataset.isNextLoadInReaderMode = 'true';
@@ -95,8 +110,8 @@ public class ReaderModeViewModel: ObservableObject {
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
             content.isReaderModeOfferHidden = false
-            if !content.url.isEBookURL && !content.url.isFileURL && !content.url.isNativeReaderView {
-                if !content.url.isReaderFileURL && (content.content?.isEmpty ?? true) {
+            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                if !url.isReaderFileURL && (content.content?.isEmpty ?? true) {
                     content.html = readabilityContent
                 }
                 if content.title.isEmpty {
@@ -117,7 +132,6 @@ public class ReaderModeViewModel: ObservableObject {
         let processReadabilityContent = processReadabilityContent
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()
-        let url = content.url
         let lightModeTheme = lightModeTheme
         let darkModeTheme = darkModeTheme
         
@@ -148,7 +162,10 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let transformedContent = html
             try await { @MainActor in
-//                guard url == self.state.pageURL else { return }
+                guard url.matchesReaderURL(readerContent.pageURL) else {
+                    print("Readability content URL mismatch", url, readerContent.pageURL)
+                    return
+                }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     await scriptCaller.evaluateJavaScript(
                         """
@@ -185,6 +202,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
+                    debugPrint("# load html from showReada", url, readerContent.content?.url)
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
             }()
@@ -192,11 +210,21 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+    public func onNavigationCommitted(readerContent: ReaderContent, newState: WebViewState) async throws {
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil
         contentRules = nil
+        
+        guard let content = readerContent.content else {
+            print("No content to display in ReaderModeViewModel onNavigationCommitted")
+            return
+        }
+        let committedURL = content.url
+        guard committedURL.matchesReaderURL(newState.pageURL) else {
+            print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
+            return
+        }
         
         let isReaderModeVerified = newState.pageURL.isEBookURL || content.isReaderModeByDefault
         if isReaderMode != isReaderModeVerified {
@@ -207,6 +235,11 @@ public class ReaderModeViewModel: ObservableObject {
         
         if newState.pageURL.isReaderURLLoaderURL {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
+                let currentURL = readerContent.pageURL
+                guard currentURL.matchesReaderURL(committedURL) else {
+                    print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
+                    return
+                }
                 if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
@@ -215,21 +248,23 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     // TODO: Fix content rules... images still load...
                     contentRules = contentRulesForReadabilityLoading
-                    Task { @MainActor in
-                        navigator?.loadHTML(html, baseURL: content.url)
-                    }
+//                    Task { @MainActor in
+//                        debugPrint("# load html from onNavCommit")
+                    navigator?.loadHTML(html, baseURL: committedURL)
+//                    }
                 } else {
                     readabilityContent = html
-                    showReaderView(content: content)
+                    debugPrint("#  onNavCommit gonna show reader view for loader url")
+                    showReaderView(readerContent: readerContent)
                 }
             } else {
-                navigator?.load(URLRequest(url: content.url))
+                navigator?.load(URLRequest(url: committedURL))
             }
         } else {
             if content.isReaderModeByDefault {
                 contentRules = contentRulesForReadabilityLoading
                 if content.isReaderModeAvailable {
-                    showReaderView(content: content)
+                    showReaderView(readerContent: readerContent)
                 }
             }
         }

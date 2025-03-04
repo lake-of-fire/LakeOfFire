@@ -174,8 +174,10 @@ public struct CurrentWebViewBookmarkButton: View {
     @EnvironmentObject private var readerContent: ReaderContent
 
     public var body: some View {
-        AnyView(readerContent.content.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
-            .disabled(readerContent.isReaderProvisionallyNavigating || readerContent.pageURL.isNativeReaderView)
+        if let content = readerContent.content {
+            AnyView(content.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
+                .disabled(readerContent.isReaderProvisionallyNavigating || readerContent.pageURL.isNativeReaderView)
+        }
     }
     
     public init(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool) {

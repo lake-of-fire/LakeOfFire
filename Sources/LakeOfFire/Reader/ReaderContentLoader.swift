@@ -111,12 +111,20 @@ public struct ReaderContentLoader {
         return mapped
     }
     
+    public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
+        if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
+            return contentURL
+        }
+        return nil
+    }
+    
     @RealmBackgroundActor
     public static func loadAll(url: URL) async throws -> [(any ReaderContentProtocol)] {
         guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return [] }
         guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return [] }
         guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return [] }
-        
+        try Task.checkCancellation()
+ 
         let contentFile = historyRealm.objects(ContentFile.self)
             .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
@@ -151,6 +159,8 @@ public struct ReaderContentLoader {
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
         let content = try await { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
+            try Task.checkCancellation()
+            
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
@@ -184,6 +194,8 @@ public struct ReaderContentLoader {
                 }
                 match = historyRecord
             }
+            
+            try Task.checkCancellation()
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -199,6 +211,8 @@ public struct ReaderContentLoader {
             }
             return match
         }()
+        try Task.checkCancellation()
+        
         if let content {
             return try await fromBackgroundActor(content: content)
         }

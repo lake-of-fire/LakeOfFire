@@ -115,12 +115,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     // TODO: Move to Loader probably
     @MainActor
-    public static func getContent(forURL pageURL: URL) async throws -> (any ReaderContentProtocol)? {
-        if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: true) {
+    public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
+            try Task.checkCancellation()
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
+            try Task.checkCancellation()
             return content
         }
+        try Task.checkCancellation()
         return nil
     }
     

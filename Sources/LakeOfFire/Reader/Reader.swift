@@ -103,8 +103,9 @@ public struct Reader: View {
     @StateObject private var navigationTaskManager = NavigationTaskManager()
     
     private var navigationTitle: String? {
-        guard !readerContent.content.isInvalidated else { return nil }
-        return readerContent.content.titleForDisplay
+        guard let content = readerContent.content else { return nil }
+        guard !content.isInvalidated else { return nil }
+        return content.titleForDisplay
     }
     
 #if os(iOS)
@@ -190,7 +191,7 @@ public struct Reader: View {
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
             .overlay {
-                if !readerModeViewModel.isReaderMode && readerContent.content.isReaderModeByDefault {
+                if let content = readerContent.content, !readerModeViewModel.isReaderMode && content.isReaderModeByDefault {
                     ZStack {
                         Rectangle()
                             .fill(colorScheme == .dark ? .black.opacity(0.7) : .white.opacity(0.7))
@@ -219,17 +220,23 @@ public struct Reader: View {
                 readerContent.isReaderProvisionallyNavigating = state.isProvisionallyNavigating
             }
             
-            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
+//            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
                 // May be from replaceState or pushState
                 // TODO: Improve replaceState support
-                onNavigationCommitted(state: state)
-            }
+//                onNavigationCommitted(state: state)
+//            }
         }
         .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
             guard !readerContent.isReaderProvisionallyNavigating else { return }
-            guard let imageURL = pageImageURL, readerContent.content.realm != nil, readerContent.content.url == readerViewModel.state.pageURL else { return }
+            guard let imageURL = pageImageURL, let content = readerContent.content, content.realm != nil, let contentURL = readerContent.content?.url, contentURL == readerViewModel.state.pageURL else { return }
             Task { @RealmBackgroundActor in
-                try await readerContent.content.updateImageUrl(imageURL: imageURL)
+                let contents = try await ReaderContentLoader.loadAll(url: contentURL)
+                for content in contents where content.imageUrl == nil {
+                    try await content.realm?.asyncWrite {
+                        content.imageUrl = imageURL
+                        content.modifiedAt = Date()
+                    }
+                }
             }
         }
         .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
@@ -284,16 +291,19 @@ public struct Reader: View {
     }
     
     private func onNavigationCommitted(state: WebViewState) {
+        debugPrint("# Reader.onNAvCommit", state.pageURL)
         navigationTaskManager.startOnNavigationCommitted {
             do {
                 try Task.checkCancellation()
                 try await readerContent.load(url: state.pageURL)
                 try Task.checkCancellation()
-                try await readerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                guard let content = readerContent.content else { return }
+                try await readerViewModel.onNavigationCommitted(content: content, newState: state)
                 try Task.checkCancellation()
-                try await readerModeViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                try await readerModeViewModel.onNavigationCommitted(readerContent: readerContent, newState: state)
                 try Task.checkCancellation()
-                try await readerMediaPlayerViewModel.onNavigationCommitted(content: readerContent.content, newState: state)
+                guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
+                try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
                 try Task.checkCancellation()
                 if let onNavigationCommitted = onNavigationCommitted {
                     try await onNavigationCommitted(state)
@@ -310,7 +320,8 @@ public struct Reader: View {
     
     private func onNavigationFinished(state: WebViewState) {
         navigationTaskManager.startOnNavigationFinished {
-            readerViewModel.onNavigationFinished(content: readerContent.content, newState: state) { newState in
+            guard let content = readerContent.content else { return }
+            readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
                 if let onNavigationFinished = onNavigationFinished {
                     onNavigationFinished(newState)
                 }

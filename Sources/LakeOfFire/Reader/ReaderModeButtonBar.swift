@@ -18,7 +18,8 @@ public struct ReaderModeButtonBar: View {
             
             DismissButton(.xMark) {
                 Task { @MainActor in
-                    try await readerModeViewModel.hideReaderModeButtonBar(content: readerContent.content)
+                    guard let content = readerContent.content else { return }
+                    try await readerModeViewModel.hideReaderModeButtonBar(content: content)
                 }
             }
         }

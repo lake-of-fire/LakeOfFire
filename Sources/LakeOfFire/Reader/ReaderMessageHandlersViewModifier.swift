@@ -37,7 +37,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
             },
-            "readabilityModeUnavailable": { message in
+            "readabilityModeUnavailable": { @MainActor message in
                 guard let result = ReaderModeUnavailableMessage(fromMessage: message) else {
                     return
                 }
@@ -53,7 +53,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     readerModeViewModel.isReaderMode = false
                 }
             },
-            "readabilityParsed": { message in
+            "readabilityParsed": { @MainActor message in
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
@@ -77,7 +77,8 @@ internal extension ReaderMessageHandlersViewModifier {
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                    readerModeViewModel.showReaderView(content: content)
+                    debugPrint("# reader msg handler gonna show reader view", readerContent.content?.url, readerContent.pageURL)
+                    readerModeViewModel.showReaderView(readerContent: readerContent)
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -100,14 +101,18 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                 }
             },
-            "showReaderView": { _ in
-                guard readerContent.content.url == readerViewModel.state.pageURL else {
-                    print("ERROR: showReaderView called with mismatched content URL (\(readerContent.content.url.absoluteString) vs \(readerViewModel.state.pageURL.absoluteString)")
-                    return
-                }
-                Task { @MainActor in readerModeViewModel.showReaderView(content: readerContent.content) }
+            "showReaderView": { @MainActor _ in
+//                let contentURL = readerContent.pageURL
+//                Task { @MainActor in
+                    guard readerContent.pageURL == readerViewModel.state.pageURL else {
+                        print("ERROR: showReaderView called with mismatched content URL (\(readerContent.content?.url.absoluteString) vs \(readerViewModel.state.pageURL.absoluteString)")
+                        return
+                    }
+//                    guard readerContent.pageURL == contentURL else { return }
+                    readerModeViewModel.showReaderView(readerContent: readerContent)
+//                }
             },
-            "showOriginal": { _ in
+            "showOriginal": { @MainActor _ in
                 Task { @MainActor in
                     try await showOriginal()
                 }
@@ -118,7 +123,7 @@ internal extension ReaderMessageHandlersViewModifier {
 //                    debugPrint(result)
 //                }
 //            },
-            "rssURLs": { message in
+            "rssURLs": { @MainActor message in
                 Task { @MainActor in
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
                     guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let content = try await ReaderViewModel.getContent(forURL: windowURL) else { return }
@@ -135,14 +140,14 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                 }
             },
-            "pageMetadataUpdated": { message in
+            "pageMetadataUpdated": { @MainActor message in
                 Task { @MainActor in
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
                     guard result.url == readerViewModel.state.pageURL else { return }
                     try await readerViewModel.pageMetadataUpdated(title: result.title, author: result.author)
                 }
             },
-            "imageUpdated": { message in
+            "imageUpdated": { @MainActor message in
                 Task(priority: .utility) { @RealmBackgroundActor in
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
                     guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
@@ -157,7 +162,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                 }
             },
-            "ebookViewerInitialized": { message in
+            "ebookViewerInitialized": { @MainActor message in
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme, scheme == "ebook" || scheme == "ebook-url", url.absoluteString.hasPrefix("\(url.scheme ?? "")://"), url.isEBookURL, let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(url.scheme ?? "")://".count))") {
                     Task { @MainActor in
@@ -165,7 +170,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                 }
             },
-            "videoStatus": { message in
+            "videoStatus": { @MainActor message in
                 Task(priority: .utility) { @RealmBackgroundActor in
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
                     debugPrint("!!", result)
@@ -183,8 +188,8 @@ fileprivate extension ReaderMessageHandlersViewModifier {
     
     @MainActor
     func showOriginal() async throws {
-        if readerContent.content.isReaderModeByDefault {
-            try await readerContent.content.asyncWrite { _, content in
+        if readerContent.content?.isReaderModeByDefault ?? false {
+            try await readerContent.content?.asyncWrite { _, content in
                 content.isReaderModeByDefault = false
                 content.modifiedAt = Date()
             }

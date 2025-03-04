@@ -6,7 +6,7 @@ public struct ReaderModeButton: View {
 
     public var body: some View {
         Button {
-            readerModeViewModel.showReaderView(content: readerContent.content)
+            readerModeViewModel.showReaderView(readerContent: readerContent)
         } label: {
             Label("Show Reader", systemImage: "doc.plaintext")
         }
