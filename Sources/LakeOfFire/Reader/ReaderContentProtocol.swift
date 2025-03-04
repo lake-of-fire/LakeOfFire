@@ -219,6 +219,7 @@ public extension ReaderContentProtocol {
                                         } 
                                     }
                     
+                                    document.body.removeAttribute('data-is-next-load-in-reader-mode');
                                     document.body.classList.add('readability-mode');
                                 })();
                     
