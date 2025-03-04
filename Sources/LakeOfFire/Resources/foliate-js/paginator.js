@@ -294,28 +294,28 @@ class View {
             'width': 'auto',
             
 //            // columnize parity
-//            // columnGap: '0',
-//            'column-gap': `${gap}px`,
-//            'column-fill': 'auto',
-//            'overflow': 'hidden',
-//            // force wrap long words
-//            'overflow-wrap': 'anywhere',
-//            // reset some potentially problematic props
-//            'position': 'static', 'border': '0', 'margin': '0',
-//            'max-height': 'none', 'max-width': 'none',
-//            'min-height': 'none', 'min-width': 'none',
-//            // fix glyph clipping in WebKit
-//            '-webkit-line-box-contain': 'block glyphs replaced',
+            // columnGap: '0',
+            'column-gap': `${gap}px`,
+            'column-fill': 'auto',
+            'overflow': 'hidden',
+            // force wrap long words
+            'overflow-wrap': 'anywhere',
+            // reset some potentially problematic props
+            'position': 'static', 'border': '0', 'margin': '0',
+            'max-height': 'none', 'max-width': 'none',
+            'min-height': 'none', 'min-width': 'none',
+            // fix glyph clipping in WebKit
+            '-webkit-line-box-contain': 'block glyphs replaced',
         })
         // columnize parity
-//        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
+        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
         setStylesImportant(doc.body, {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
         this.setImageSize()
-//        this.#debouncedExpand()
-        this.expand()
+        this.#debouncedExpand()
+        //this.expand()
     }
     columnize({ width, height, gap, columnWidth }) {
         const vertical = this.#vertical
@@ -350,8 +350,8 @@ class View {
         this.setImageSize()
         // Don't infinite loop.
 //        if (!this.needsRenderForMutation) {
-            this.expand()
-//            this.#debouncedExpand()
+            //this.expand()
+            this.#debouncedExpand()
 //        }
     }
     setImageSize() {
@@ -493,8 +493,10 @@ export class Paginator extends HTMLElement {
             height: 100%;
         }
         #top {
-            --_gap: 7%;
-            --_margin: 48px;
+            /*--_gap: 7%;
+            --_margin: 48px;*/
+            --_gap: 5%;
+            --_margin: 30px;
             --_max-inline-size: 720px;
             --_max-block-size: 1440px;
             --_max-column-count: 2;
