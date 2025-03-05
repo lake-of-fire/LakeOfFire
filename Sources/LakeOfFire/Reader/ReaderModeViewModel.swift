@@ -304,7 +304,11 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     public func onNavigationFinished() {
-//        isReaderModeLoading = false
+    }
+    
+    @MainActor
+    public func onNavigationFailed(newState: WebViewState) {
+        isReaderModeLoading = false
     }
 }
 

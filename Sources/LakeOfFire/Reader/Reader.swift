@@ -49,7 +49,8 @@ public extension WebViewNavigator {
 class NavigationTaskManager: ObservableObject {
     @Published var onNavigationCommittedTask: Task<Void, Error>?
     @Published var onNavigationFinishedTask: Task<Void, Error>?
-    
+    @Published var onNavigationFailedTask: Task<Void, Error>?
+
     func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
         onNavigationCommittedTask?.cancel()
         onNavigationCommittedTask = Task { @MainActor in
@@ -73,6 +74,17 @@ class NavigationTaskManager: ObservableObject {
             await task()
         }
     }
+    
+    func startOnNavigationFailed(task: @escaping () async -> Void) {
+        onNavigationFailedTask?.cancel()
+        onNavigationFailedTask = Task { @MainActor in
+            if let failedTask = onNavigationFailedTask {
+                _ = try? await failedTask.value
+            }
+            try Task.checkCancellation()
+            await task()
+        }
+    }
 }
 
 public struct Reader: View {
@@ -82,6 +94,7 @@ public struct Reader: View {
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
+    var onNavigationFailed: ((WebViewState) -> Void)?
     @Binding var textSelection: String?
 #if os(iOS)
     var buildMenu: ((UIMenuBuilder) -> Void)?
@@ -123,6 +136,7 @@ public struct Reader: View {
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
+        onNavigationFailed: ((WebViewState) -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
         buildMenu: ((UIMenuBuilder) -> Void)? = nil
     ) {
@@ -132,6 +146,7 @@ public struct Reader: View {
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
+        self.onNavigationFailed = onNavigationFailed
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
@@ -143,6 +158,7 @@ public struct Reader: View {
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
+        onNavigationFailed: ((WebViewState) -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
         buildMenu: ((Any) -> Void)? = nil
     ) {
@@ -152,6 +168,7 @@ public struct Reader: View {
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
+        self.onNavigationFailed = onNavigationFailed
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
@@ -188,6 +205,9 @@ public struct Reader: View {
                 },
                 onNavigationFinished: { state in
                     onNavigationFinished(state: state)
+                },
+                onNavigationFailed: { state in
+                    onNavigationFailed(state: state)
                 },
 //                textSelection: $textSelection,
                 buildMenu: { builder in
@@ -366,6 +386,12 @@ public struct Reader: View {
 //                    }
 //                }
 //            }
+        }
+    }
+    
+    private func onNavigationFailed(state: WebViewState) {
+        navigationTaskManager.startOnNavigationFailed { @MainActor in
+            readerModeViewModel.onNavigationFailed(newState: state)
         }
     }
 }
