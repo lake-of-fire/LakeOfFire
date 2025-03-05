@@ -23,7 +23,7 @@ public class ReaderModeViewModel: ObservableObject {
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false {
         didSet {
-            debugPrint("# isReadeerMode LOADING", isReaderModeLoading)
+            debugPrint("# isReaderModeLoading =", isReaderModeLoading)
         }
     }
     @Published var readabilityContent: String? = nil
@@ -223,7 +223,9 @@ public class ReaderModeViewModel: ObservableObject {
                             "html": transformedContent,
                         ])
                 }
-                isReaderModeLoading = false
+                Task { @MainActor in
+                    isReaderModeLoading = false
+                }
             }()
         }()
     }

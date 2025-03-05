@@ -217,20 +217,7 @@ public struct Reader: View {
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
-            .overlay {
-                if readerModeViewModel.isReaderModeLoading {
-                    ZStack {
-                        Rectangle()
-                            .fill(colorScheme == .dark ? .black.opacity(0.7) : .white.opacity(0.7))
-                        Rectangle()
-                            .fill(.ultraThickMaterial)
-                        ProgressView()
-//                            .controlSize(.small)
-                            .delayedAppearance()
-                    }
-                    .ignoresSafeArea(.all)
-                }
-            }
+            .modifier(ReaderLoadingOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading))
         }
         .geometryReader { geometry in
             Task { @MainActor in
