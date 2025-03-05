@@ -50,6 +50,7 @@ class NavigationTaskManager: ObservableObject {
     @Published var onNavigationCommittedTask: Task<Void, Error>?
     @Published var onNavigationFinishedTask: Task<Void, Error>?
     @Published var onNavigationFailedTask: Task<Void, Error>?
+    @Published var onURLChangedTask: Task<Void, Error>?
 
     func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
         onNavigationCommittedTask?.cancel()
@@ -85,6 +86,17 @@ class NavigationTaskManager: ObservableObject {
             await task()
         }
     }
+    
+    func startOnURLChanged(task: @escaping () async -> Void) {
+        onURLChangedTask?.cancel()
+        onURLChangedTask = Task { @MainActor in
+            if let urlTask = onURLChangedTask {
+                _ = try? await urlTask.value
+            }
+            try Task.checkCancellation()
+            await task()
+        }
+    }
 }
 
 public struct Reader: View {
@@ -95,6 +107,7 @@ public struct Reader: View {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
+    var onURLChanged: ((WebViewState) async throws -> Void)?
     @Binding var textSelection: String?
 #if os(iOS)
     var buildMenu: ((UIMenuBuilder) -> Void)?
@@ -137,6 +150,7 @@ public struct Reader: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
         buildMenu: ((UIMenuBuilder) -> Void)? = nil
     ) {
@@ -147,6 +161,7 @@ public struct Reader: View {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onURLChanged = onURLChanged
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
@@ -159,6 +174,7 @@ public struct Reader: View {
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
         onNavigationFailed: ((WebViewState) -> Void)? = nil,
+        onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         textSelection: Binding<String?>? = nil,
         buildMenu: ((Any) -> Void)? = nil
     ) {
@@ -169,6 +185,7 @@ public struct Reader: View {
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
         self.onNavigationFailed = onNavigationFailed
+        self.onURLChanged = onURLChanged
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
@@ -208,6 +225,9 @@ public struct Reader: View {
                 },
                 onNavigationFailed: { state in
                     onNavigationFailed(state: state)
+                },
+                onURLChanged: { state in
+                    onURLChanged(state: state)
                 },
 //                textSelection: $textSelection,
                 buildMenu: { builder in
@@ -305,27 +325,10 @@ public struct Reader: View {
     }
     
     private func onNavigationCommitted(state: WebViewState) {
-        debugPrint("# Reader.onNAvCommit", state.pageURL)
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try Task.checkCancellation()
-                try await readerContent.load(url: state.pageURL)
-                try Task.checkCancellation()
-                guard let content = readerContent.content else { return }
-                try await readerViewModel.onNavigationCommitted(content: content, newState: state)
-                try Task.checkCancellation()
-                try await readerModeViewModel.onNavigationCommitted(
-                    readerContent: readerContent,
-                    newState: state,
-                    scriptCaller: scriptCaller
-                )
-                try Task.checkCancellation()
-                guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
-                try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
-                try Task.checkCancellation()
-                if let onNavigationCommitted = onNavigationCommitted {
-                    try await onNavigationCommitted(state)
-                }
+                try await handleNewURL(state: state)
+                try await onNavigationCommitted?(state)
             } catch {
                 if Task.isCancelled {
                     print("onNavigationCommitted task was cancelled.")
@@ -341,44 +344,49 @@ public struct Reader: View {
             readerModeViewModel.onNavigationFinished()
             guard let content = readerContent.content else { return }
             readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
-                if let onNavigationFinished = onNavigationFinished {
-                    onNavigationFinished(newState)
-                }
+                onNavigationFinished?(newState)
             }
-//            if !state.pageURL.isReaderURLLoaderURL {
-//                Task {
-//                    await scriptCaller.evaluateJavaScript("return [document.body?.classList.contains('readability-mode') || document.body?.dataset.isNextLoadInReaderMode === 'true', document.body?.dataset.manabiReaderModeAvailable !== 'false']") { @MainActor result in
-//                        switch result {
-//                        case .success(let response):
-//                            if let respArray = response as? [Bool], respArray.count == 2, let isReaderMode = respArray.first, let isReaderModeMaybeAvailable = respArray.last {
-//                                let isReaderModeVerified = state.pageURL.isEBookURL || isReaderMode || (readerContent.content.isReaderModeByDefault && isReaderModeMaybeAvailable) || (isReaderModeState?(state) ?? false)
-//                                if !isReaderModeVerified {
-//                                    debugPrint("#", readerContent.content.isReaderModeByDefault, isReaderModeMaybeAvailable)
-//                                    await scriptCaller.evaluateJavaScript("return document.outerHTML + window.location.href") { @MainActor result in
-//                                        debugPrint("#", result, state.pageURL)
-//                                        debugPrint("#")
-//                                    }
-//                                    debugPrint("#")
-//                                }
-//                                if readerModeViewModel.isReaderMode != isReaderModeVerified {
-//                                    withAnimation {
-//                                        debugPrint("# set", isReaderModeVerified, state.pageURL)
-//                                        readerModeViewModel.isReaderMode = isReaderModeVerified
-//                                    }
-//                                }
-//                            }
-//                        case .failure(let error):
-//                            print(error)
-//                        }
-//                    }
-//                }
-//            }
         }
     }
     
     private func onNavigationFailed(state: WebViewState) {
         navigationTaskManager.startOnNavigationFailed { @MainActor in
             readerModeViewModel.onNavigationFailed(newState: state)
+            onNavigationFailed?(state)
         }
+    }
+    
+    private func onURLChanged(state: WebViewState) {
+        navigationTaskManager.startOnURLChanged { @MainActor in
+            do {
+                try await handleNewURL(state: state)
+                try await onURLChanged?(state)
+            } catch {
+                if Task.isCancelled {
+                    print("onURLChanged task was cancelled.")
+                } else {
+                    print("Error during onURLChanged: \(error)")
+                }
+            }
+        }
+    }
+    
+    private func handleNewURL(state: WebViewState) async throws {
+        try Task.checkCancellation()
+        try await readerContent.load(url: state.pageURL)
+        try Task.checkCancellation()
+        guard let content = readerContent.content else { return }
+        // TODO: Add onURLChanged or rename these view model methods to be more generic...
+        try await readerViewModel.onNavigationCommitted(content: content, newState: state)
+        try Task.checkCancellation()
+        try await readerModeViewModel.onNavigationCommitted(
+            readerContent: readerContent,
+            newState: state,
+            scriptCaller: scriptCaller
+        )
+        try Task.checkCancellation()
+        guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
+        try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
+        try Task.checkCancellation()
     }
 }
