@@ -2,11 +2,7 @@ import SwiftUI
 
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
-    @Published public var pageURL = URL(string: "about:blank")! {
-        didSet {
-            debugPrint("# readerContent pageURL didSet", pageURL)
-        }
-    }
+    @Published public var pageURL = URL(string: "about:blank")!
     @Published public var isReaderProvisionallyNavigating = false
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
@@ -21,7 +17,6 @@ public class ReaderContent: ObservableObject {
         
         loadingTask?.cancel()
         loadingTask = Task { @MainActor [weak self] in
-            debugPrint("# readerContent.load(...)", url)
             try Task.checkCancellation()
             let content = try await ReaderViewModel.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(url) else {

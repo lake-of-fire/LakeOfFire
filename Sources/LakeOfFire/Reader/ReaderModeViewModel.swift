@@ -21,11 +21,7 @@ public class ReaderModeViewModel: ObservableObject {
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     @Published public var isReaderMode = false
-    @Published public var isReaderModeLoading = false {
-        didSet {
-            debugPrint("# isReaderModeLoading =", isReaderModeLoading)
-        }
-    }
+    @Published public var isReaderModeLoading = false
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -105,7 +101,6 @@ public class ReaderModeViewModel: ObservableObject {
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
     private func showReadabilityContent(readerContent: ReaderContent, readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?, scriptCaller: WebViewScriptCaller) async throws {
-        debugPrint("# showReadabilityContent content", readerContent.content?.url, "pageurl", readerContent.pageURL)
         guard let content = try await readerContent.getContent() else {
             print("No content set to show in reader mode")
             isReaderModeLoading = false
@@ -211,17 +206,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                 } else {
-                    debugPrint("# load html from showReada", url, readerContent.content?.url)
-//                    navigator?.loadHTML(transformedContent, baseURL: url)
-                    await scriptCaller.evaluateJavaScript(
-                        """
-                        document.open();
-                        document.write(html);
-                        document.close();
-                        """,
-                        arguments: [
-                            "html": transformedContent,
-                        ])
+                    navigator?.loadHTML(transformedContent, baseURL: url)
                 }
                 Task { @MainActor in
                     isReaderModeLoading = false
@@ -267,6 +252,7 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil, html.range(of: "<body.*?data-is-next-load-in-reader-mode=['\"]true['\"]>", options: .regularExpression) == nil {
+                    // TODO: is this code path still used at all?
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
                     } else {
@@ -274,13 +260,9 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     // TODO: Fix content rules... images still load...
                     contentRules = contentRulesForReadabilityLoading
-//                    Task { @MainActor in
-//                        debugPrint("# load html from onNavCommit")
                     navigator?.loadHTML(html, baseURL: committedURL)
-//                    }
                 } else {
                     readabilityContent = html
-                    debugPrint("#  onNavCommit gonna show reader view for loader url")
                     showReaderView(
                         readerContent: readerContent,
                         scriptCaller: scriptCaller

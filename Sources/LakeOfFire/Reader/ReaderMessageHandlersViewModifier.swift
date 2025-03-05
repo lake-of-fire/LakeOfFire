@@ -77,7 +77,6 @@ internal extension ReaderMessageHandlersViewModifier {
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                    debugPrint("# reader msg handler gonna show reader view", readerContent.content?.url, readerContent.pageURL)
                     readerModeViewModel.showReaderView(
                         readerContent: readerContent,
                         scriptCaller: scriptCaller
