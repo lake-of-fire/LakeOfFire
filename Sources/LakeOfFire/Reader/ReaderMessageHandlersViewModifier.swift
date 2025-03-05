@@ -78,7 +78,10 @@ internal extension ReaderMessageHandlersViewModifier {
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                     debugPrint("# reader msg handler gonna show reader view", readerContent.content?.url, readerContent.pageURL)
-                    readerModeViewModel.showReaderView(readerContent: readerContent)
+                    readerModeViewModel.showReaderView(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller
+                    )
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -109,7 +112,10 @@ internal extension ReaderMessageHandlersViewModifier {
                         return
                     }
 //                    guard readerContent.pageURL == contentURL else { return }
-                    readerModeViewModel.showReaderView(readerContent: readerContent)
+                readerModeViewModel.showReaderView(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller
+                )
 //                }
             },
             "showOriginal": { @MainActor _ in

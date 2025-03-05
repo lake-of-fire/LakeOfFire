@@ -378,6 +378,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerFileManager: ReaderFileManager
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
 
     public var body: some View {
         ReaderContentInnerListItems(
@@ -389,7 +390,11 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
                 Task { @MainActor in
-                    try await navigator.load(content: content, readerFileManager: readerFileManager)
+                    try await navigator.load(
+                        content: content,
+                        readerFileManager: readerFileManager,
+                        readerModeViewModel: readerModeViewModel
+                    )
                     // TODO: This is crashy sadly.
                     //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     //                        scrollViewProxy.scrollTo(entrySelection)

@@ -25,6 +25,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerFileManager: ReaderFileManager
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
@@ -34,7 +35,11 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         Button {
             guard !content.url.matchesReaderURL(readerContent.pageURL) else { return }
             Task { @MainActor in
-                try await navigator.load(content: content, readerFileManager: readerFileManager)
+                try await navigator.load(
+                    content: content,
+                    readerFileManager: readerFileManager,
+                    readerModeViewModel: readerModeViewModel
+                )
             }
         } label: {
             AnyView(content.readerContentCellView(alwaysShowThumbnails: true))

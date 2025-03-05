@@ -89,14 +89,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
-            try await { @RealmBackgroundActor in
+            Task { @RealmBackgroundActor in
                 guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     content.lastVisitedAt = Date()
                     content.modifiedAt = Date()
                 }
-            }()
+            }
         }
     }
     

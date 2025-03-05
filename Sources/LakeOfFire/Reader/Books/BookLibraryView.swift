@@ -74,6 +74,7 @@ fileprivate struct EditorsPicksView: View {
     
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     var body: some View {
@@ -87,10 +88,18 @@ fileprivate struct EditorsPicksView: View {
     @ViewBuilder private var editorsPicksView: some View {
         HorizontalBooks(
             publications: viewModel.editorsPicks,
-            isDownloadable: true) { selectedPublication, wasAlreadyDownloaded in
+            isDownloadable: true) {
+                selectedPublication,
+                wasAlreadyDownloaded in
                 if wasAlreadyDownloaded {
                     Task { @MainActor in
-                        try await viewModel.open(publication: selectedPublication, readerFileManager: readerFileManager, readerPageURL: readerContent.pageURL, navigator: navigator)
+                        try await viewModel.open(
+                            publication: selectedPublication,
+                            readerFileManager: readerFileManager,
+                            readerPageURL: readerContent.pageURL,
+                            navigator: navigator,
+                            readerModeViewModel: readerModeViewModel
+                        )
                     }
                 }
             }
@@ -306,7 +315,13 @@ public class BookLibraryViewModel: ObservableObject {
     }
     
     @RealmBackgroundActor
-    func open(publication: Publication, readerFileManager: ReaderFileManager, readerPageURL: URL, navigator: WebViewNavigator) async throws {
+    func open(
+        publication: Publication,
+        readerFileManager: ReaderFileManager,
+        readerPageURL: URL,
+        navigator: WebViewNavigator,
+        readerModeViewModel: ReaderModeViewModel
+    ) async throws {
         guard let downloadURL = publication.downloadURL else { return }
         guard let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title) else { return }
 
@@ -324,7 +339,11 @@ public class BookLibraryViewModel: ObservableObject {
         guard let toLoad = importedURL else { return }
         try await Task { @MainActor in
             guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
-            try await navigator.load(content: content, readerFileManager: readerFileManager)
+            try await navigator.load(
+                content: content,
+                readerFileManager: readerFileManager,
+                readerModeViewModel: readerModeViewModel
+            )
         }.value
     }
 }

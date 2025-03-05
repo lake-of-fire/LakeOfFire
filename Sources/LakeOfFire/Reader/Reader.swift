@@ -32,8 +32,15 @@ public extension EnvironmentValues {
 public extension WebViewNavigator {
     /// Injects browser history (unlike loadHTMLWithBaseURL)
     @MainActor
-    func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws {
+    func load(
+        content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager,
+        readerModeViewModel: ReaderModeViewModel?
+    ) async throws {
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            if let readerModeViewModel {
+                readerModeViewModel.isReaderModeLoading = content.isReaderModeByDefault
+            }
             load(URLRequest(url: url))
         }
     }
@@ -191,14 +198,14 @@ public struct Reader: View {
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
             .overlay {
-                if let content = readerContent.content, !readerModeViewModel.isReaderMode && content.isReaderModeByDefault {
+                if readerModeViewModel.isReaderModeLoading {
                     ZStack {
                         Rectangle()
                             .fill(colorScheme == .dark ? .black.opacity(0.7) : .white.opacity(0.7))
                         Rectangle()
                             .fill(.ultraThickMaterial)
                         ProgressView()
-                            .controlSize(.small)
+//                            .controlSize(.small)
                             .delayedAppearance()
                     }
                     .ignoresSafeArea(.all)
@@ -300,7 +307,11 @@ public struct Reader: View {
                 guard let content = readerContent.content else { return }
                 try await readerViewModel.onNavigationCommitted(content: content, newState: state)
                 try Task.checkCancellation()
-                try await readerModeViewModel.onNavigationCommitted(readerContent: readerContent, newState: state)
+                try await readerModeViewModel.onNavigationCommitted(
+                    readerContent: readerContent,
+                    newState: state,
+                    scriptCaller: scriptCaller
+                )
                 try Task.checkCancellation()
                 guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
                 try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
@@ -319,7 +330,8 @@ public struct Reader: View {
     }
     
     private func onNavigationFinished(state: WebViewState) {
-        navigationTaskManager.startOnNavigationFinished {
+        navigationTaskManager.startOnNavigationFinished { @MainActor in
+            readerModeViewModel.onNavigationFinished()
             guard let content = readerContent.content else { return }
             readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
                 if let onNavigationFinished = onNavigationFinished {

@@ -525,7 +525,11 @@ struct LibraryFeedFormSections: View {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
                     if let content = readerContent.content, content != entry {
-                        try await readerViewModel.navigator?.load(content: entry, readerFileManager: readerFileManager)
+                        try await readerViewModel.navigator?.load(
+                            content: entry,
+                            readerFileManager: readerFileManager,
+                            readerModeViewModel: readerModeViewModel
+                        )
                     }
                 }
             } else {

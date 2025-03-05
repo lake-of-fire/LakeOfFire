@@ -16,12 +16,16 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     public var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
     public var navigator: WebViewNavigator?
-    public var scriptCaller = WebViewScriptCaller()
     
     public var defaultFontSize: Double?
     @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     @Published public var isReaderMode = false
+    @Published public var isReaderModeLoading = false {
+        didSet {
+            debugPrint("# isReadeerMode LOADING", isReaderModeLoading)
+        }
+    }
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -74,32 +78,41 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    internal func showReaderView(readerContent: ReaderContent) {
+    internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         guard let readabilityContent else { return }
         let contentURL = readerContent.pageURL
+        isReaderModeLoading = true
         Task { @MainActor in
-            guard contentURL == readerContent.pageURL else { return }
+            guard contentURL == readerContent.pageURL else {
+                isReaderModeLoading = false
+                return
+            }
             do {
                 try await showReadabilityContent(
                     readerContent: readerContent,
                     readabilityContent: readabilityContent,
                     renderToSelector: readabilityContainerSelector,
-                    in: readabilityContainerFrameInfo
+                    in: readabilityContainerFrameInfo,
+                    scriptCaller: scriptCaller
                 )
-            } catch { }
+            } catch {
+                print(error)
+                isReaderModeLoading = false
+            }
         }
     }
     
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
-    private func showReadabilityContent(readerContent: ReaderContent, readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?) async throws {
+    private func showReadabilityContent(readerContent: ReaderContent, readabilityContent: String, renderToSelector: String?, in frameInfo: WKFrameInfo?, scriptCaller: WebViewScriptCaller) async throws {
         debugPrint("# showReadabilityContent content", readerContent.content?.url, "pageurl", readerContent.pageURL)
         guard let content = try await readerContent.getContent() else {
             print("No content set to show in reader mode")
+            isReaderModeLoading = false
             return
         }
         let url = content.url
-
+        
         await scriptCaller.evaluateJavaScript("""
             if (document.body) {
                 document.body.dataset.isNextLoadInReaderMode = 'true';
@@ -137,22 +150,17 @@ public class ReaderModeViewModel: ObservableObject {
         
         try await { @ReaderViewModelActor [weak self] in
             var doc: SwiftSoup.Document
-            do {
-                doc = try processForReaderMode(
-                    content: readabilityContent,
-                    url: url,
-                    isEBook: false,
-                    defaultTitle: titleForDisplay,
-                    imageURL: imageURLToDisplay,
-                    injectEntryImageIntoHeader: injectEntryImageIntoHeader,
-                    fontSize: readerFontSize ?? defaultFontSize,
-                    lightModeTheme: lightModeTheme,
-                    darkModeTheme: darkModeTheme
-                )
-            } catch {
-                print(error.localizedDescription)
-                return
-            }
+            doc = try processForReaderMode(
+                content: readabilityContent,
+                url: url,
+                isEBook: false,
+                defaultTitle: titleForDisplay,
+                imageURL: imageURLToDisplay,
+                injectEntryImageIntoHeader: injectEntryImageIntoHeader,
+                fontSize: readerFontSize ?? defaultFontSize,
+                lightModeTheme: lightModeTheme,
+                darkModeTheme: darkModeTheme
+            )
             
             var html: String
             if let processReadabilityContent = processReadabilityContent {
@@ -164,6 +172,7 @@ public class ReaderModeViewModel: ObservableObject {
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
                     print("Readability content URL mismatch", url, readerContent.pageURL)
+                    isReaderModeLoading = false
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
@@ -203,14 +212,24 @@ public class ReaderModeViewModel: ObservableObject {
                         ], in: frameInfo)
                 } else {
                     debugPrint("# load html from showReada", url, readerContent.content?.url)
-                    navigator?.loadHTML(transformedContent, baseURL: url)
+//                    navigator?.loadHTML(transformedContent, baseURL: url)
+                    await scriptCaller.evaluateJavaScript(
+                        """
+                        document.open();
+                        document.write(html);
+                        document.close();
+                        """,
+                        arguments: [
+                            "html": transformedContent,
+                        ])
                 }
+                isReaderModeLoading = false
             }()
         }()
     }
     
     @MainActor
-    public func onNavigationCommitted(readerContent: ReaderContent, newState: WebViewState) async throws {
+    public func onNavigationCommitted(readerContent: ReaderContent, newState: WebViewState, scriptCaller: WebViewScriptCaller) async throws {
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil
@@ -218,17 +237,21 @@ public class ReaderModeViewModel: ObservableObject {
         
         guard let content = readerContent.content else {
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
+            isReaderModeLoading = false
             return
         }
         let committedURL = content.url
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
+            isReaderModeLoading = false
             return
         }
         
+        // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
         let isReaderModeVerified = newState.pageURL.isEBookURL || content.isReaderModeByDefault
         if isReaderMode != isReaderModeVerified {
             withAnimation {
+                isReaderModeLoading = isReaderModeVerified
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
             }
         }
@@ -238,9 +261,10 @@ public class ReaderModeViewModel: ObservableObject {
                 let currentURL = readerContent.pageURL
                 guard committedURL.matchesReaderURL(currentURL) else {
                     print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
+                    isReaderModeLoading = false
                     return
                 }
-                if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil {
+                if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil, html.range(of: "<body.*?data-is-next-load-in-reader-mode=['\"]true['\"]>", options: .regularExpression) == nil {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
                     } else {
@@ -255,19 +279,32 @@ public class ReaderModeViewModel: ObservableObject {
                 } else {
                     readabilityContent = html
                     debugPrint("#  onNavCommit gonna show reader view for loader url")
-                    showReaderView(readerContent: readerContent)
+                    showReaderView(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller
+                    )
                 }
             } else {
                 navigator?.load(URLRequest(url: committedURL))
             }
         } else {
             if content.isReaderModeByDefault {
-                contentRules = contentRulesForReadabilityLoading
                 if content.isReaderModeAvailable {
-                    showReaderView(readerContent: readerContent)
+                    contentRules = contentRulesForReadabilityLoading
+                    showReaderView(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller
+                    )
+                } else {
+                    isReaderModeLoading = false
                 }
             }
         }
+    }
+    
+    @MainActor
+    public func onNavigationFinished() {
+//        isReaderModeLoading = false
     }
 }
 
@@ -279,7 +316,7 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
     
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
-    if try doc.getElementById("reader-content") == nil, let oldElement = try doc.getElementsByClass("reader-content").first() {
+    if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")
     }

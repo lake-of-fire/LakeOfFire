@@ -167,70 +167,7 @@ public extension ReaderContentProtocol {
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
         // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
         if rssContainsFullContent || isFromClipboard {
-            if isReaderModeByDefault, let html {
-                // TODO: Consolidate with manabi readability init user script
-                let titleForDisplay = titleForDisplay
-                return """
-                    <!DOCTYPE html>
-                        <html>
-                        <head>
-                            <meta content="text/html; charset=UTF-8" http-equiv="content-type">
-                            <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
-                            <meta name="referrer" content="never">
-                            <style id='swiftuiwebview-readability-styles'>
-                                \(Readability.shared.css)
-                            </style>
-                            <title>\(titleForDisplay)</title>
-                        </head>
-                        
-                        <body data-is-next-load-in-reader-mode="true">
-                            <div id="reader-header" class="header">
-                                <h1 id="reader-title">\(titleForDisplay)</h1>
-                                <div id="reader-byline-container">
-                                    <span id="reader-byline" class="byline">\(author)</span>
-                                    \(url.scheme == "internal" ? "" : "<a class='reader-view-original'>View Original</a>")
-                                </div>
-                            </div>
-                            <div id="reader-content">
-                                \(html)
-                            </div>
-                            <script>
-                                (function () {
-                                    var loc = document.location;
-                                    var uri = {
-                                        spec: loc.href,
-                                        host: loc.host,
-                                        prePath: loc.protocol + "//" + loc.host,
-                                        scheme: loc.protocol.substr(0, loc.protocol.indexOf(":")),
-                                        pathBase: loc.protocol + "//" + loc.host + loc.pathname.substr(0, loc.pathname.lastIndexOf("/") + 1)
-                                    };
-                                    var documentClone = document.cloneNode(true);
-                                    var article = new Readability(uri, documentClone, {
-                                        classesToPreserve: [
-                                        "caption", "emoji", "hidden", "invisible", "sr-only", "visually-hidden", "visuallyhidden", "wp-caption", "wp-caption-text", "wp-smiley"
-                                        ],
-                                        charThreshold: 1}).parse();
-                                    
-                                    if (article) {
-                                        var content = DOMPurify.sanitize(article.content);
-                                        var readerContentDiv = document.getElementById("reader-content");
-                                        if (readerContentDiv) {
-                                            readerContentDiv.innerHTML = content;
-                                        } 
-                                    }
-                    
-                                    document.body.removeAttribute('data-is-next-load-in-reader-mode');
-                                    document.body.classList.add('readability-mode');
-                                })();
-                    
-                                \(Readability.shared.scripts)
-                            </script>
-                        </body>
-                    </html>
-                    """
-            } else {
-                return html
-            }
+            return html
         } else if url.isReaderFileURL {
             guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
             return String(decoding: data, as: UTF8.self)
