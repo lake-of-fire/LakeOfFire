@@ -167,6 +167,18 @@ class LibraryCategoryViewModel: ObservableObject {
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoryView: View {
+    @StateObject private var libraryCategoryViewModel: LibraryCategoryViewModel
+    
+    init(category: FeedCategory, libraryConfiguration: LibraryConfiguration, selectedFeed: Binding<Feed?>) {
+        _libraryCategoryViewModel = StateObject(
+            wrappedValue: LibraryCategoryViewModel(
+                category: category,
+                libraryConfiguration: libraryConfiguration,
+                selectedFeed: selectedFeed
+            )
+        )
+    }
+    
     @EnvironmentObject private var viewModel: LibraryCategoryViewModel
     @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
     

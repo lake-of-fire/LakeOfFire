@@ -22,8 +22,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
 //        guard let readingProgressLoader = ReaderContentReadingProgressLoader.readingProgressLoader else { return }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
-        //        let url = item.url
-        //        let item = item.freeze()
         let imageURL = try await item.imageURLToDisplay()
         try await { @ReaderContentCellActor in
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
@@ -179,7 +177,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             }
             .frame(maxHeight: cellHeight)
         }
-        .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (item.imageURLToDisplay == nil ? nil : cellHeight))
+        .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (viewModel.imageURL == nil ? nil : cellHeight))
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }
@@ -188,7 +186,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 try? await viewModel.load(item: item)
             }
         }
-        .onChange(of: item.imageUrl) { _ in
+        .onChange(of: item.imageUrl) { newImageURL in
+            guard newImageURL != viewModel.imageURL else { return }
             Task { @MainActor in
                 viewModel.imageURL = try await item.imageURLToDisplay()
             }

@@ -84,8 +84,8 @@ fileprivate struct ReaderFileManagerModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task { @MainActor in
-                try? await readerFileManager.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
                 readerModeViewModel.readerFileManager = readerFileManager
+                try? await readerFileManager.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
             }
     }
 }

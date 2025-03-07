@@ -257,25 +257,40 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     @MainActor
     public func imageURLToDisplay() async throws -> URL? {
-        if extractImageFromContent, imageUrl == nil, let content = content, let configuration = realm?.configuration {
-            let legacyHTMLContent = htmlContent
-            let ref = compoundKey
-            let existingImageURL = imageUrl
-            try await { @FeedEntryActor in
-                if let html = Self.contentToHTML(legacyHTMLContent: legacyHTMLContent, content: content), let url = Self.imageURLExtractedFromContent(htmlContent: html), existingImageURL != url {
+        if let imageUrl {
+            return imageUrl
+        }
+        guard let configuration = realm?.configuration else { return nil }
+        let compoundKey = compoundKey
+        return try await { @FeedEntryActor in
+            let realm = try await Realm(configuration: configuration, actor: FeedEntryActor.shared)
+            guard let feedEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: compoundKey) else { return nil }
+            if feedEntry.extractImageFromContent {
+                let legacyHTMLContent = htmlContent
+                let ref = compoundKey
+                let existingImageURL = imageUrl
+                if let html = Self.contentToHTML(
+                    legacyHTMLContent: legacyHTMLContent,
+                    content: content
+                ), let url = Self.imageURLExtractedFromContent(
+                    htmlContent: html
+                ), existingImageURL != url {
                     try await { @RealmBackgroundActor in
                         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
                         guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: ref) else { return }
-                        await realm.asyncRefresh()
+                        //await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             entry.imageUrl = url
                             entry.modifiedAt = Date()
                         }
                     }()
+                    return url
                 }
-            }()
-        }
-        return imageUrl
+                return nil
+            }
+            return nil
+        }()
+        return nil
     }
     
     @RealmBackgroundActor
