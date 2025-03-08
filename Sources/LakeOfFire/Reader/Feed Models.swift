@@ -22,7 +22,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     @Persisted public var createdAt: Date
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
-//    @Persisted(originProperty: "category") public var feeds: LinkingObjects<Feed>
+    //    @Persisted(originProperty: "category") public var feeds: LinkingObjects<Feed>
     
     public enum CodingKeys: String, CodingKey, CaseIterable {
         case id
@@ -42,7 +42,9 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
             print("Warning: Unexpectedly unmanaged object")
             return nil
         }
-        return realm.objects(Feed.self).where { $0.categoryID == id && !$0.isDeleted } .sorted(by: \.title).map { $0 }
+        return realm.objects(Feed.self).where { $0.categoryID == id && !$0.isDeleted }
+            .sorted(by: \.title)
+            .map { $0 }
     }
     
     public func isEmpty() -> Bool {
@@ -73,8 +75,8 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var extractImageFromContent = true
     @Persisted public var deleteOrphans = false
-
-//    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
+    
+    //    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
     
     @Persisted public var createdAt = Date()
@@ -107,7 +109,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
         return realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)?.opmlURL == nil
     }
     
-        public func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
@@ -152,7 +154,9 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
             print("Warning: Unexpectedly unmanaged object")
             return nil
         }
-        return realm.objects(FeedEntry.self).where { $0.feedID == id && !$0.isDeleted } .sorted(by: \.publicationDate) .map { $0 }
+        return realm.objects(FeedEntry.self).where { $0.feedID == id && !$0.isDeleted }
+            .sorted(by: \.publicationDate)
+            .map { $0 }
     }
 }
 
@@ -175,12 +179,12 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var imageUrl: URL?
     @Persisted public var publicationDate: Date?
     @Persisted public var isReaderModeOfferHidden = false
-//    @Persisted public var isFromClipboard = false
+    //    @Persisted public var isFromClipboard = false
     @Persisted public var content: Data?
-//    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
-
+    //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil
+    
     public var isFromClipboard = false
-        
+    
     public var isReaderModeAvailable: Bool {
         get { return isReaderModeByDefault }
         set { }
@@ -216,7 +220,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     // Feed options.
     public var isReaderModeByDefault: Bool {
-//        get { readerModeAvailabilityOverride ?? feed?.isReaderModeByDefault ?? true }
+        //        get { readerModeAvailabilityOverride ?? feed?.isReaderModeByDefault ?? true }
         get { getFeed()?.isReaderModeByDefault ?? true }
         set { }
     }
@@ -241,7 +245,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         set { getFeed()?.extractImageFromContent = newValue }
     }
     
-    #warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
+#warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -304,7 +308,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         }
         bookmark.meaningfulContentMinLength = feed?.meaningfulContentMinLength ?? bookmark.meaningfulContentMinLength
         bookmark.injectEntryImageIntoHeader = feed?.injectEntryImageIntoHeader ?? bookmark.injectEntryImageIntoHeader
-//        bookmark.rawEntryThumbnailContentMode = feed?.contentmode
+        //        bookmark.rawEntryThumbnailContentMode = feed?.contentmode
         bookmark.displayPublicationDate = feed?.displayPublicationDate ?? bookmark.displayPublicationDate
         
         // Feed metadata.
@@ -339,7 +343,8 @@ fileprivate extension FeedEntry {
                 }
                 
                 do {
-                    let height: Float? = try Float(imageTag.attr("height")), width: Float? = try Float(imageTag.attr("width"))
+                    let height: Float? = try Float(imageTag.attr("height")),
+                        width: Float? = try Float(imageTag.attr("width"))
                     if let width: Float = width, let height: Float = height {
                         return Float(height / width) > threshold
                     } else {
@@ -360,7 +365,8 @@ fileprivate extension FeedEntry {
                     }
                     
                     do {
-                        let height = try Float(imageTag.attr("height")), width = try Float(imageTag.attr("width"))
+                        let height = try Float(imageTag.attr("height")),
+                            width = try Float(imageTag.attr("width"))
                         return height != nil || width != nil
                     } catch {
                         return true
@@ -371,7 +377,9 @@ fileprivate extension FeedEntry {
             // Match YouTube links for thumbnails.
             if imageUrlOptional == nil {
                 imageUrlOptional = try doc.getElementsByTag("iframe").compactMap({ iframeTag -> String? in
-                    if let src = try? iframeTag.attr("src"), src.hasPrefix("https://www.youtube.com"), let youtubeId = src.split(separator: "/").last {
+                    if let src = try? iframeTag.attr("src"),
+                       src.hasPrefix("https://www.youtube.com"),
+                       let youtubeId = src.split(separator: "/").last {
                         return "https://img.youtube.com/vi/\(youtubeId)/0.jpg"
                     }
                     return nil
@@ -426,21 +434,34 @@ public extension Feed {
         let feedID = id
         try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
-
-            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID } .filter { !$0.isDeleted } .map { $0.compoundKey })
+            
+            let existingEntryIDs = Array(
+                realm.objects(FeedEntry.self)
+                    .where { $0.feedID == feedID }
+                    .filter { !$0.isDeleted }
+                    .map { $0.compoundKey }
+            )
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-                guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed), let url = URL(string: link) else { return nil }
+                guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+                      let url = URL(string: link)
+                else { return nil }
                 var imageUrl: URL? = nil
                 if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
                     if let imageUrlRaw = enclosureAttribs.url {
                         imageUrl = URL(string: imageUrlRaw)
                     }
-                } else if let rawImageURL = item.media?.contents?.lazy.compactMap({ $0.attributes?.url }).first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) }) {
+//                } else if let rawImageURL = item.media?.contents?
+//                    .lazy.compactMap({ $0.attributes?.url })
+//                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+                } else if let rawImageURL = item.media?.mediaContents?
+                    .lazy.compactMap({ $0.attributes?.url })
+                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+                {
                     imageUrl = URL(string: rawImageURL)
                 }
-                let content = item.content?.encoded ?? item.description
+                let content = item.content?.contentEncoded ?? item.description
                 
                 var title = item.title
                 do {
@@ -449,9 +470,6 @@ public extension Feed {
                             doc.outputSettings().prettyPrint(pretty: false)
                             try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
                             title = try doc.text()
-//                        } else {
-//                            print("Failed to parse HTML in order to transform content.")
-//                            throw FeedError.parserFailed
                         }
                     }
                 } catch { }
@@ -464,7 +482,7 @@ public extension Feed {
                 feedEntry.title = title ?? ""
                 feedEntry.author = item.author ?? ""
                 feedEntry.imageUrl = imageUrl
-                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.date
+                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
                 feedEntry.updateCompoundKey()
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
@@ -472,7 +490,8 @@ public extension Feed {
             if deleteOrphans {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
-                    let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                    let orphans = realm.objects(FeedEntry.self)
+                        .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     for orphan in orphans {
                         orphan.isDeleted = true
                         orphan.modifiedAt = Date()
@@ -492,17 +511,23 @@ public extension Feed {
     @MainActor
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
-        try await  { @RealmBackgroundActor in
+        try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
-
-            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID } .filter { !$0.isDeleted } .map { $0.compoundKey })
+            
+            let existingEntryIDs = Array(
+                realm.objects(FeedEntry.self)
+                    .where { $0.feedID == feedID }
+                    .filter { !$0.isDeleted }
+                    .map { $0.compoundKey }
+            )
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
                 var url: URL?
                 var imageUrl: URL?
-                item.links?.forEach { (link: AtomFeedLink) in
-                    guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else { return }
+                item.links?.forEach { (link: AtomFeedEntryLink) in
+                    guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                    else { return }
                     
                     if (link.attributes?.rel ?? "alternate") == "alternate" {
                         url = URL(string: linkHref)
@@ -513,9 +538,12 @@ public extension Feed {
                 guard let url = url else { return nil }
                 
                 var voiceFrameUrl: URL? = nil
-                if let rawVoiceFrameUrl = item.links?.filter({ (link) -> Bool in
-                    return (link.attributes?.rel ?? "") == "voice-frame"
-                }).first?.attributes?.href {
+                if let rawVoiceFrameUrl = item.links?
+                    .filter({ (link) -> Bool in
+                        return (link.attributes?.rel ?? "") == "voice-frame"
+                    })
+                        .first?.attributes?.href
+                {
                     voiceFrameUrl = URL(string: rawVoiceFrameUrl)
                 }
                 
@@ -526,9 +554,14 @@ public extension Feed {
                 
                 // TODO: Refactor into community commentary links
                 var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
-                if let redditTranslationsAttrs = item.links?.filter({ (link) -> Bool in
-                    return (link.attributes?.rel ?? "") == "reddit-translations"
-                }).first?.attributes, let rawRedditTranslationsUrl = redditTranslationsAttrs.href?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                if let redditTranslationsAttrs = item.links?
+                    .filter({ (link) -> Bool in
+                        return (link.attributes?.rel ?? "") == "reddit-translations"
+                    })
+                        .first?.attributes,
+                   let rawRedditTranslationsUrl = redditTranslationsAttrs.href?
+                    .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+                {
                     redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
                     redditTranslationsTitle = redditTranslationsAttrs.title
                 }
@@ -540,8 +573,6 @@ public extension Feed {
                             doc.outputSettings().prettyPrint(pretty: false)
                             try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
                             title = try doc.text()
-//                        } else {
-//                            print("Failed to parse HTML in order to transform content.")
                         }
                     }
                 } catch { }
@@ -551,10 +582,11 @@ public extension Feed {
                 feedEntry.feedID = feedID
                 feedEntry.url = url
                 feedEntry.title = title ?? ""
-                feedEntry.author = item.authors?.compactMap { $0.name } .joined(separator: ", ") ?? ""
+                feedEntry.author = item.authors?.compactMap { $0.name }
+                    .joined(separator: ", ") ?? ""
                 feedEntry.imageUrl = imageUrl
                 feedEntry.publicationDate = item.published ?? item.updated
-                feedEntry.html = item.content?.text
+                feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
@@ -568,7 +600,8 @@ public extension Feed {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     if deleteOrphans {
-                        let orphans = realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+                        let orphans = realm.objects(FeedEntry.self)
+                            .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                         for orphan in orphans {
                             orphan.isDeleted = true
                             orphan.modifiedAt = Date()
@@ -586,27 +619,52 @@ public extension Feed {
             throw FeedError.downloadFailed
         }
         rssData = cleanRssData(rssData)
-        let feed = try await FeedKit.Feed(data: rssData)
-        switch feed {
-        case .rss(let rssFeed):
-            guard let items = rssFeed.channel?.items else {
-                throw FeedError.parserFailed
+        let parser = FeedKit.FeedParser(data: rssData)
+        return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
+            parser.parseAsync { [weak self] parserResult in
+                switch parserResult {
+                case .success(let feed):
+                    switch feed {
+                    case .rss(let rssFeed):
+                        guard let items = rssFeed.items else {
+                            continuation.resume(throwing: FeedError.parserFailed)
+                            return
+                        }
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            do {
+                                try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                continuation.resume(returning: ())
+                            } catch {
+                                continuation.resume(throwing: error)
+                            }
+                        }
+                        return
+                    case .atom(let atomFeed):
+                        guard let items = atomFeed.entries else {
+                            continuation.resume(throwing: FeedError.parserFailed)
+                            return
+                        }
+                        Task { @MainActor [weak self] in
+                            guard let self = self else { return }
+                            do {
+                                try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                continuation.resume(returning: ())
+                            } catch {
+                                continuation.resume(throwing: error)
+                            }
+                        }
+                        return
+                    case .json(let jsonFeed):
+                        continuation.resume(throwing: FeedError.parserFailed)
+                        return
+                    }
+                case .failure(_):
+                    continuation.resume(throwing: FeedError.parserFailed)
+                    return
+                }
             }
-            try await { @MainActor [self] in
-                try await persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-            }()
-            return
-        case .atom(let atomFeed):
-            guard let items = atomFeed.entries else {
-                throw FeedError.parserFailed
-            }
-            try await { @MainActor [self] in
-                try await persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-            }()
-            return
-        case .json(let jsonFeed):
-            throw FeedError.parserFailed
-        }
+        })
     }
 }
 
@@ -620,12 +678,13 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     
     for entry in entries {
         if let existingEntry = existingEntriesDict[entry.compoundKey] {
-           let schema = entry.objectSchema
+            let schema = entry.objectSchema
             for property in schema.properties where property.name != "createdAt" {
                 let propertyName = property.name
                 if property.type == .object, let objectType = property.objectClassName {
                     let primaryKey = realm.schema[objectType]?.primaryKeyProperty?.name ?? ""
-                    if let entryValue = entry.value(forKey: propertyName) as? Object, let existingValue = existingEntry.value(forKey: propertyName) as? Object {
+                    if let entryValue = entry.value(forKey: propertyName) as? Object,
+                       let existingValue = existingEntry.value(forKey: propertyName) as? Object {
                         if entryValue.value(forKey: primaryKey) as? String != existingValue.value(forKey: primaryKey) as? String {
                             differentEntries.append(entry)
                             break
@@ -634,7 +693,8 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                 } else if property.isArray {
                     switch property.type {
                     case .string:
-                        if let entryList = entry.value(forKey: propertyName) as? List<String>, let existingList = existingEntry.value(forKey: propertyName) as? List<String> {
+                        if let entryList = entry.value(forKey: propertyName) as? List<String>,
+                           let existingList = existingEntry.value(forKey: propertyName) as? List<String> {
                             if entryList != existingList {
                                 differentEntries.append(entry)
                                 break
