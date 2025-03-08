@@ -417,6 +417,8 @@ fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderConte
     }
 }
 
+fileprivate let entryImageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
+
 public extension Feed {
     @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
@@ -425,7 +427,7 @@ public extension Feed {
         try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
 
-            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feedID == feedID } .map { $0.compoundKey })
+            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID } .filter { !$0.isDeleted } .map { $0.compoundKey })
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
@@ -435,6 +437,8 @@ public extension Feed {
                     if let imageUrlRaw = enclosureAttribs.url {
                         imageUrl = URL(string: imageUrlRaw)
                     }
+                } else if let rawImageURL = item.media?.contents?.lazy.compactMap({ $0.attributes?.url }).first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) }) {
+                    imageUrl = URL(string: rawImageURL)
                 }
                 let content = item.content?.encoded ?? item.description
                 
@@ -491,7 +495,7 @@ public extension Feed {
         try await  { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
 
-            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { !$0.isDeleted && $0.feedID == feedID } .map { $0.compoundKey })
+            let existingEntryIDs = Array(realm.objects(FeedEntry.self).where { $0.feedID == feedID } .filter { !$0.isDeleted } .map { $0.compoundKey })
             
             var incomingIDs = [String]()
             let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in

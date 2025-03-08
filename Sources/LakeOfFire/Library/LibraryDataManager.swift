@@ -717,7 +717,9 @@ public class LibraryDataManager: NSObject {
     public func importOPML(download: Downloadable) async throws {
         try Task.checkCancellation()
         try await importOPML(fileURL: download.localDestination, fromDownload: download)
-        download.finishedLoadingDuringCurrentLaunchAt = Date()
+        await { @MainActor in
+            download.finishedLoadingDuringCurrentLaunchAt = Date()
+        }()
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         if let realm = libraryConfiguration.realm {
             await realm.asyncRefresh()
