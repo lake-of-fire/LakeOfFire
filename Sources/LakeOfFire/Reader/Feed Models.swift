@@ -177,6 +177,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var title = ""
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
+    @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
     @Persisted public var isReaderModeOfferHidden = false
     //    @Persisted public var isFromClipboard = false
@@ -482,6 +483,7 @@ public extension Feed {
                 feedEntry.title = title ?? ""
                 feedEntry.author = item.author ?? ""
                 feedEntry.imageUrl = imageUrl
+                feedEntry.sourceIconURL = iconUrl
                 feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
                 feedEntry.updateCompoundKey()
                 incomingIDs.append(feedEntry.compoundKey)
@@ -511,6 +513,7 @@ public extension Feed {
     @MainActor
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
+        let sourceIconURL = iconUrl
         try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
             
@@ -585,6 +588,7 @@ public extension Feed {
                 feedEntry.author = item.authors?.compactMap { $0.name }
                     .joined(separator: ", ") ?? ""
                 feedEntry.imageUrl = imageUrl
+                feedEntry.sourceIconURL = sourceIconURL
                 feedEntry.publicationDate = item.published ?? item.updated
                 feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl

@@ -25,6 +25,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var title: String { get set }
     var author: String { get set }
     var imageUrl: URL? { get set }
+    var sourceIconURL: URL? { get set }
     var content: Data? { get set }
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
@@ -269,6 +270,7 @@ public extension ReaderContentProtocol {
         let content = content
         let publicationDate = publicationDate
         let imageURL = imageUrl
+        let sourceIconURL = sourceIconURL
         let isFromClipboard = isFromClipboard
         let isReaderModeByDefault = isReaderModeByDefault
         let rssContainsFullContent = rssContainsFullContent
@@ -276,7 +278,21 @@ public extension ReaderContentProtocol {
         let isReaderModeOfferHidden = isReaderModeOfferHidden
         try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            let bookmark = try await Bookmark.add(url: url, title: title, imageUrl: imageURL, html: html, content: content, publicationDate: publicationDate, isFromClipboard: isFromClipboard, rssContainsFullContent: rssContainsFullContent, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: isReaderModeAvailable, isReaderModeOfferHidden: isReaderModeOfferHidden, realmConfiguration: realmConfiguration)
+            let bookmark = try await Bookmark.add(
+                url: url,
+                title: title,
+                imageUrl: imageURL,
+                sourceIconURL: sourceIconURL,
+                html: html,
+                content: content,
+                publicationDate: publicationDate,
+                isFromClipboard: isFromClipboard,
+                rssContainsFullContent: rssContainsFullContent,
+                isReaderModeByDefault: isReaderModeByDefault,
+                isReaderModeAvailable: isReaderModeAvailable,
+                isReaderModeOfferHidden: isReaderModeOfferHidden,
+                realmConfiguration: realmConfiguration
+            )
             guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
             if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
                 content.configureBookmark(bookmark)
@@ -331,6 +347,7 @@ public extension ReaderContentProtocol {
             try await realm.asyncWrite {
                 record.title = title
                 record.imageUrl = imageURL
+                record.sourceIconURL = sourceIconURL
                 record.isFromClipboard = isFromClipboard
                 record.rssContainsFullContent = rssContainsFullContent
                 if rssContainsFullContent {
@@ -359,6 +376,7 @@ public extension ReaderContentProtocol {
             record.url = pageURL
             record.title = title
             record.imageUrl = imageURL
+            record.sourceIconURL = sourceIconURL
             record.rssContainsFullContent = rssContainsFullContent
             if rssContainsFullContent {
                 record.content = content

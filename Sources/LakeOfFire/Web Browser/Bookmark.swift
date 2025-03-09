@@ -11,6 +11,7 @@ public class Bookmark: Object, ReaderContentProtocol {
     @Persisted public var title = ""
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
+    @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
     @Persisted public var isFromClipboard = false
     
@@ -66,7 +67,21 @@ public class Bookmark: Object, ReaderContentProtocol {
 
 public extension Bookmark {
     @RealmBackgroundActor
-    static func add(url: URL? = nil, title: String = "", imageUrl: URL? = nil, html: String? = nil, content: Data? = nil, publicationDate: Date? = nil, isFromClipboard: Bool, rssContainsFullContent: Bool, isReaderModeByDefault: Bool, isReaderModeAvailable: Bool, isReaderModeOfferHidden: Bool, realmConfiguration: Realm.Configuration) async throws -> Bookmark {
+    static func add(
+        url: URL? = nil,
+        title: String = "",
+        imageUrl: URL? = nil,
+        sourceIconURL: URL? = nil,
+        html: String? = nil,
+        content: Data? = nil,
+        publicationDate: Date? = nil,
+        isFromClipboard: Bool,
+        rssContainsFullContent: Bool,
+        isReaderModeByDefault: Bool,
+        isReaderModeAvailable: Bool,
+        isReaderModeOfferHidden: Bool,
+        realmConfiguration: Realm.Configuration
+    ) async throws -> Bookmark {
         guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Couldn't get Realm for Bookmark.add") }
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
@@ -74,6 +89,7 @@ public extension Bookmark {
             try await realm.asyncWrite {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
+                bookmark.sourceIconURL = sourceIconURL
                 if let html = html {
                     bookmark.html = html
                 } else if let content = content {
@@ -105,6 +121,7 @@ public extension Bookmark {
             }
             bookmark.title = title
             bookmark.imageUrl = imageUrl
+            bookmark.sourceIconURL = sourceIconURL
             bookmark.publicationDate = publicationDate
             bookmark.isFromClipboard = isFromClipboard
             bookmark.isReaderModeByDefault = isReaderModeByDefault
