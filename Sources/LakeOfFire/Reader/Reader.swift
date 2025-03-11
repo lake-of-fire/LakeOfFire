@@ -192,57 +192,57 @@ public struct Reader: View {
 #endif
 
     public var body: some View {
-        VStack(spacing: 0) {
-            WebView(
-                config: WebViewConfig(
-                    contentRules: readerModeViewModel.contentRules,
-                    dataDetectorsEnabled: false, // TODO: Bugs out with Manabi Reader callbacks...
-                    userScripts: readerViewModel.allScripts),
-                navigator: navigator,
-                state: $readerViewModel.state,
-                scriptCaller: scriptCaller,
-                blockedHosts: Set([
-                    "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
-                    "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
-                    "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
-                    "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
-                    "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
-                    "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
-                ]),
-                obscuredInsets: totalObscuredInsets(),
-                bounces: bounces,
-                persistentWebViewID: persistentWebViewID,
-                schemeHandlers: [
-                    (internalURLSchemeHandler, "internal"),
-                    (readerFileURLSchemeHandler, "reader-file"),
-                    (ebookURLSchemeHandler, "ebook"),
-                ] + schemeHandlers,
-                onNavigationCommitted: { state in
-                    onNavigationCommitted(state: state)
-                },
-                onNavigationFinished: { state in
-                    onNavigationFinished(state: state)
-                },
-                onNavigationFailed: { state in
-                    onNavigationFailed(state: state)
-                },
-                onURLChanged: { state in
-                    onURLChanged(state: state)
-                },
-//                textSelection: $textSelection,
-                buildMenu: { builder in
-                    buildMenu?(builder)
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                WebView(
+                    config: WebViewConfig(
+                        contentRules: readerModeViewModel.contentRules,
+                        dataDetectorsEnabled: false, // TODO: Bugs out with Manabi Reader callbacks...
+                        userScripts: readerViewModel.allScripts),
+                    navigator: navigator,
+                    state: $readerViewModel.state,
+                    scriptCaller: scriptCaller,
+                    blockedHosts: Set([
+                        "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
+                        "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
+                        "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
+                        "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
+                        "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
+                        "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
+                    ]),
+                    obscuredInsets: totalObscuredInsets(),
+                    bounces: bounces,
+                    persistentWebViewID: persistentWebViewID,
+                    schemeHandlers: [
+                        (internalURLSchemeHandler, "internal"),
+                        (readerFileURLSchemeHandler, "reader-file"),
+                        (ebookURLSchemeHandler, "ebook"),
+                    ] + schemeHandlers,
+                    onNavigationCommitted: { state in
+                        onNavigationCommitted(state: state)
+                    },
+                    onNavigationFinished: { state in
+                        onNavigationFinished(state: state)
+                    },
+                    onNavigationFailed: { state in
+                        onNavigationFailed(state: state)
+                    },
+                    onURLChanged: { state in
+                        onURLChanged(state: state)
+                    },
+                    //                textSelection: $textSelection,
+                    buildMenu: { builder in
+                        buildMenu?(builder)
+                    }
+                )
+                .onChange(of: geo.safeAreaInsets) { safeAreaInsets in
+                    obscuredInsets = safeAreaInsets
                 }
-            )
+            }
 #if os(iOS)
             .edgesIgnoringSafeArea([.top, .bottom])
 #endif
             .modifier(ReaderLoadingOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading))
-        }
-        .geometryReader { geometry in
-            Task { @MainActor in
-                obscuredInsets = geometry.safeAreaInsets
-            }
         }
         .modifier(
             ReaderMessageHandlersViewModifier(
