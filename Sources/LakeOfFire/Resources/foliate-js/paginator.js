@@ -260,7 +260,7 @@ class View {
                     this.#iframe.style.display = 'block'
                     this.render(layout)
                     this.#resizeObserver.observe(doc.body)
-//                    this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
+                    this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
                     
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
@@ -377,18 +377,24 @@ class View {
             })
         }
     }
-    expand() {
-        const { documentElement } = this.document
+    async expand() {
+//        const { documentElement } = this.document
+        const documentElement = this.document?.documentElement
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
             const contentRect = this.#contentRange.getBoundingClientRect()
-            const rootRect = documentElement.getBoundingClientRect()
-            // offset caused by column break at the start of the page
-            // which seem to be supported only by WebKit and only for horizontal writing
-            const contentStart = this.#vertical ? 0
-            : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-            const contentSize = contentStart + contentRect[side]
+            let contentSize
+            if (documentElement) {
+                const rootRect = documentElement.getBoundingClientRect()
+                // offset caused by column break at the start of the page
+                // which seem to be supported only by WebKit and only for horizontal writing
+                const contentStart = this.#vertical ? 0
+                : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                contentSize = contentStart + contentRect[side]
+            } else {
+                contentSize = this.#contentRange.getBoundingClientRect()[side]
+            }
             const pageCount = Math.ceil(contentSize / this.#size)
             const expandedSize = pageCount * this.#size
             this.#element.style.padding = '0'
@@ -396,7 +402,9 @@ class View {
             this.#element.style[side] = `${expandedSize + this.#size * 2}px`
             this.#iframe.style[otherSide] = '100%'
             this.#element.style[otherSide] = '100%'
-            documentElement.style[side] = `${this.#size}px`
+            if (documentElement) {
+                documentElement.style[side] = `${this.#size}px`
+            }
             if (this.#overlayer) {
                 this.#overlayer.element.style.margin = '0'
                 this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
@@ -407,7 +415,7 @@ class View {
         } else {
             const side = this.#vertical ? 'width' : 'height'
             const otherSide = this.#vertical ? 'height' : 'width'
-            const contentSize = documentElement.getBoundingClientRect()[side]
+            const contentSize = documentElement?.getBoundingClientRect()?.[side]
             const expandedSize = contentSize
             const { margin } = this.#layout
             const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
@@ -424,7 +432,7 @@ class View {
                 this.#overlayer.redraw()
             }
         }
-        this.onExpand()
+        await this.onExpand()
     }
     set overlayer(overlayer) {
         this.#overlayer = overlayer
@@ -435,7 +443,7 @@ class View {
     }
     destroy() {
         if (this.document) this.#resizeObserver.unobserve(this.document.body)
-//        if (this.document) this.#mutationObserver.disconnect()
+        if (this.document) this.#mutationObserver.disconnect()
     }
 }
 
@@ -590,9 +598,12 @@ export class Paginator extends HTMLElement {
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
-                if (this.#justAnchored) this.#justAnchored = false
-                    else this.#afterScroll('scroll')
-                        }
+                if (this.#justAnchored) {
+                    this.#justAnchored = false
+                } else {
+                    this.#afterScroll('scroll')
+                }
+            }
         }, 250))
 
         const opts = { passive: false }
@@ -642,8 +653,8 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    #onExpand() {
-        this.#scrollToAnchor(this.#anchor)
+    async #onExpand() {
+        await this.#scrollToAnchor(this.#anchor)
         //                this.#scrollToAnchor.bind(this),
 //        await this.#scrollToAnchor(this.#anchor);
         if (this.#view.needsRenderForMutation) {
@@ -651,8 +662,7 @@ export class Paginator extends HTMLElement {
                 vertical: this.#vertical,
                 rtl: this.#rtl,
             }));
-//            await this.#scrollToAnchor();
-            this.#scrollToAnchor();
+            await this.#scrollToAnchor();
             this.#view.needsRenderForMutation = false
         }
     }
