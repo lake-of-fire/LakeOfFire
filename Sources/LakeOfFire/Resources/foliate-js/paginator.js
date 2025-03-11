@@ -179,19 +179,19 @@ const setStylesImportant = (el, styles) => {
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
-    #resizeObserver = new ResizeObserver(() => this.expand())
-//    #resizeObserver = new ResizeObserver(async () => {
-////        this.#debouncedExpand()
+//    #resizeObserver = new ResizeObserver(() => this.expand())
+    #resizeObserver = new ResizeObserver(async () => {
+        this.#debouncedExpand()
 //        this.expand()
-//    })
-    #mutationObserver = new MutationObserver(async () => {
-        return ;
-        // TODO: Needed still?
-//        if (this.#column) {
-//            this.needsRenderForMutation = true
-//        }
     })
-//    needsRenderForMutation = false
+    #mutationObserver = new MutationObserver(async () => {
+//        return ;
+        // TODO: Needed still?
+        if (this.#column) {
+            this.needsRenderForMutation = true
+        }
+    })
+    needsRenderForMutation = false
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
     #contentRange = document.createRange()
@@ -260,7 +260,7 @@ class View {
                     this.#iframe.style.display = 'block'
                     this.render(layout)
                     this.#resizeObserver.observe(doc.body)
-                    this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
+//                    this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
                     
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
@@ -349,10 +349,10 @@ class View {
         })
         this.setImageSize()
         // Don't infinite loop.
-//        if (!this.needsRenderForMutation) {
-            //this.expand()
-            this.#debouncedExpand()
-//        }
+        if (!this.needsRenderForMutation) {
+            this.expand()
+//            this.#debouncedExpand()
+        }
     }
     setImageSize() {
         const { width, height, margin } = this.#layout
@@ -435,7 +435,7 @@ class View {
     }
     destroy() {
         if (this.document) this.#resizeObserver.unobserve(this.document.body)
-        if (this.document) this.#mutationObserver.disconnect()
+//        if (this.document) this.#mutationObserver.disconnect()
     }
 }
 
@@ -447,14 +447,14 @@ export class Paginator extends HTMLElement {
     ]
     #root = this.attachShadow({ mode: 'closed' })
     #debouncedRender = debounce(this.render.bind(this), 333)
-//    #hasResizeObserverTriggered = false
+    #hasResizeObserverTriggered = false
 //    #resizeObserver = new ResizeObserver(() => this.render())
     #resizeObserver = new ResizeObserver(() => {
-////        if (!this.#hasResizeObserverTriggered) {
-////            // Skip initial observation on start
-////            this.#hasResizeObserverTriggered = true
-////            return
-////        }
+        if (!this.#hasResizeObserverTriggered) {
+//            // Skip initial observation on start
+            this.#hasResizeObserverTriggered = true
+            return
+        }
         this.#debouncedRender()
 //        this.render()
     })
@@ -635,9 +635,9 @@ export class Paginator extends HTMLElement {
         }
         this.#view = new View({
             container: this,
-//            onExpand: this.#onExpand.bind(this),
+            onExpand: this.#onExpand.bind(this),
             isCacheWarmer: this.#isCacheWarmer,
-            onExpand: debounce(() => this.#onExpand.bind(this), 500),
+//            onExpand: debounce(() => this.#onExpand.bind(this), 500),
         })
         this.#container.append(this.#view.element)
         return this.#view
@@ -646,14 +646,15 @@ export class Paginator extends HTMLElement {
         this.#scrollToAnchor(this.#anchor)
         //                this.#scrollToAnchor.bind(this),
 //        await this.#scrollToAnchor(this.#anchor);
-//        if (this.#view.needsRenderForMutation) {
-//            this.#view.render(this.#beforeRender({
-//                vertical: this.#vertical,
-//                rtl: this.#rtl,
-//            }))
+        if (this.#view.needsRenderForMutation) {
+            this.#view.render(this.#beforeRender({
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+            }));
 //            await this.#scrollToAnchor();
-//            this.#view.needsRenderForMutation = false
-//        }
+            this.#scrollToAnchor();
+            this.#view.needsRenderForMutation = false
+        }
     }
     #beforeRender({ vertical, rtl, background }) {
         this.#vertical = vertical
