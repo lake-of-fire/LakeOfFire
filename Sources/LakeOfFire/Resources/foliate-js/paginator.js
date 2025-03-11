@@ -360,9 +360,9 @@ class View {
         const doc = this.document
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
             // preserve max size if they are already set, avoiding ebook stylesheet values
-            //const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
-            const maxHeight = el.style.maxHeight || 'none';
-            const maxWidth = el.style.maxWidth || 'none';
+            const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
+//            const maxHeight = el.style.maxHeight || 'none';
+//            const maxWidth = el.style.maxWidth || 'none';
             setStylesImportant(el, {
                 'max-height': vertical
                 ? (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%')
