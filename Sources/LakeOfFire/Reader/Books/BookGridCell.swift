@@ -11,8 +11,6 @@ fileprivate struct BookGridCellContent: View {
     let publicationDate: Date?
     var onSelected: ((Bool) -> Void)? = nil
     
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
-    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
@@ -62,7 +60,6 @@ fileprivate struct DownloadableBookGridCell: View {
     @State private var wasDownloaded = false
     
     @ObservedObject private var downloadController = DownloadController.shared
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -110,7 +107,7 @@ fileprivate struct DownloadableBookGridCell: View {
     
     private func refreshDownloadable() async {
         if downloadable.existsLocally() && !wasDownloaded {
-            try? await readerFileManager.refreshAllFilesMetadata()
+            try? await ReaderFileManager.shared.refreshAllFilesMetadata()
             wasDownloaded = true
         }
     }
@@ -135,8 +132,6 @@ struct BookGridCell: View {
     let publicationDate: Date?
     let downloadURL: URL?
     var onSelected: ((Bool) -> Void)? = nil
-    
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     @State private var downloadable: Downloadable?
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
@@ -166,7 +161,7 @@ struct BookGridCell: View {
     private func refreshDownloadable() async {
         if let downloadURL = downloadURL {
             if downloadable?.url != downloadURL || downloadable?.name != title {
-                downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: title)
+                downloadable = try? await ReaderFileManager.shared.downloadable(url: downloadURL, name: title)
             }
         }
     }

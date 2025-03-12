@@ -18,19 +18,19 @@ class CloudDriveSyncStatusModel: ObservableObject {
     private var refreshTask: Task<Void, Never>? = nil
     
     @MainActor
-    func refreshAsync(item: ContentFile, readerFileManager: ReaderFileManager) async {
+    func refreshAsync(item: ContentFile) async {
         refreshTask?.cancel() // Cancel any existing task
         refreshTask = Task { [weak self] in
             // Continuously refresh status in the background
-            await self?.periodicStatusRefresh(item: item, readerFileManager: readerFileManager)
+            await self?.periodicStatusRefresh(item: item)
         }
         await refreshTask?.value
     }
     
-    private func periodicStatusRefresh(item: ContentFile, readerFileManager: ReaderFileManager) async {
+    private func periodicStatusRefresh(item: ContentFile) async {
         while !Task.isCancelled {
             do {
-                let newStatus = try await item.cloudDriveSyncStatus(readerFileManager: readerFileManager)
+                let newStatus = try await item.cloudDriveSyncStatus()
                 await MainActor.run {
                     self.status = newStatus
                 }
@@ -66,13 +66,15 @@ public enum CloudDriveSyncStatus {
 }
 
 public class ReaderFileManager: ObservableObject {
+    // TODO: Migrate to a 'plugin registry' architecture instead of all these callbacks
     public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
     public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
     public static var fileProcessors = [@RealmBackgroundActor ([ContentFile]) async throws -> Void]()
 
     public static var shared = ReaderFileManager()
     
-    @Published public var readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip, .directory, .zip]
+    // TODO: Pull these from callbacks per above
+    public var readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip, .directory, .zip]
     
     @MainActor @Published public var files: [ContentFile]?
     
@@ -82,7 +84,15 @@ public class ReaderFileManager: ObservableObject {
     
     /*@MainActor*/ @Published private var cloudDrive: CloudDrive?
     /*@MainActor*/ @Published private var localDrive: CloudDrive?
-    public var ubiquityContainerIdentifier: String? = nil
+    public var ubiquityContainerIdentifier: String? = nil {
+        didSet {
+            if oldValue != ubiquityContainerIdentifier {
+                Task { [weak self] in
+                    try await self?.refreshAllFilesMetadata()
+                }
+            }
+        }
+    }
     
     private var refreshAllFilesMetadataTask: Task<Void, Never>?
     

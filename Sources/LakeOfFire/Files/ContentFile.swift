@@ -30,13 +30,13 @@ extension ContentFile: DeletableReaderContent {
     }
     
     @MainActor
-    public func delete(readerFileManager: ReaderFileManager) async throws {
-        try await readerFileManager.delete(readerFileURL: url)
+    public func delete() async throws {
+        try await ReaderFileManager.shared.delete(readerFileURL: url)
         try await deleteRealmData()
     }
     
     @MainActor
-    func cloudDriveSyncStatus(readerFileManager: ReaderFileManager) async throws -> CloudDriveSyncStatus {
-        return try await readerFileManager.cloudDriveSyncStatus(readerFileURL: url)
+    func cloudDriveSyncStatus() async throws -> CloudDriveSyncStatus {
+        return try await ReaderFileManager.shared.cloudDriveSyncStatus(readerFileURL: url)
     }
 }

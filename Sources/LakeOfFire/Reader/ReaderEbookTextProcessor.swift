@@ -19,10 +19,11 @@ public struct EbookProcessorCacheKey: Encodable, Hashable {
     }
 }
 
-//public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, [UInt8]>(
-public let ebookProcessorCache = LRUCache<EbookProcessorCacheKey, [UInt8]>(
-//    namespace: "ReaderEbookTextProcessor",
-    totalCostLimit: 30_000_000,
+public let ebookProcessorCache = LRUFileCache<EbookProcessorCacheKey, [UInt8]>(
+//public let ebookProcessorCache = LRUCache<EbookProcessorCacheKey, [UInt8]>(
+    namespace: "ReaderEbookTextProcessor",
+//    totalCostLimit: 30_000_000,
+    totalBytesLimit: 30_000_000,
     countLimit: 2_000
 )
 
@@ -224,7 +225,7 @@ internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, conte
             html = try doc.outerHtml()
         }
         let value = html.utf8Array
-        ebookProcessorCache.setValue(value, forKey: cacheKey, cost: value.count)
+        ebookProcessorCache.setValue(value, forKey: cacheKey)//, cost: value.count)
         return html
     } catch {
         debugPrint("Error processing readability content for ebook", error)

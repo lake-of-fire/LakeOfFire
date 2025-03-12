@@ -34,7 +34,7 @@ public extension WebViewNavigator {
     @MainActor
     func load(
         content: any ReaderContentProtocol,
-        readerFileManager: ReaderFileManager,
+        readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
@@ -51,7 +51,7 @@ class NavigationTaskManager: ObservableObject {
     @Published var onNavigationFinishedTask: Task<Void, Error>?
     @Published var onNavigationFailedTask: Task<Void, Error>?
     @Published var onURLChangedTask: Task<Void, Error>?
-
+    
     func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
         onNavigationCommittedTask?.cancel()
         onNavigationCommittedTask = Task { @MainActor in
@@ -114,7 +114,7 @@ public struct Reader: View {
 #elseif os(macOS)
     var buildMenu: ((Any) -> Void)?
 #endif
-
+    
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") internal var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") internal var darkModeTheme: DarkModeTheme = .black
@@ -129,10 +129,9 @@ public struct Reader: View {
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.colorScheme) private var colorScheme
-
+    
     @StateObject private var navigationTaskManager = NavigationTaskManager()
     
     private var navigationTitle: String? {
@@ -190,7 +189,7 @@ public struct Reader: View {
         self.buildMenu = buildMenu
     }
 #endif
-
+    
     public var body: some View {
         GeometryReader { geo in
             VStack(spacing: 0) {
@@ -254,11 +253,11 @@ public struct Reader: View {
                 readerContent.isReaderProvisionallyNavigating = state.isProvisionallyNavigating
             }
             
-//            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
-                // May be from replaceState or pushState
-                // TODO: Improve replaceState support
-//                onNavigationCommitted(state: state)
-//            }
+            //            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
+            // May be from replaceState or pushState
+            // TODO: Improve replaceState support
+            //                onNavigationCommitted(state: state)
+            //            }
         }
         .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
             guard !readerContent.isReaderProvisionallyNavigating else { return }
@@ -309,7 +308,7 @@ public struct Reader: View {
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
         }
-        .task(id: readerFileManager.ubiquityContainerIdentifier) { @MainActor in
+        .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
             ebookURLSchemeHandler.readerFileManager = readerFileManager
         }

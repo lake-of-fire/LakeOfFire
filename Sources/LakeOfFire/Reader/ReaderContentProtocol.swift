@@ -89,7 +89,7 @@ public extension ReaderContentProtocol {
 public protocol DeletableReaderContent: ReaderContentProtocol {
     var isDeleted: Bool { get set }
     var deleteActionTitle: String { get }
-    func delete(readerFileManager: ReaderFileManager) async throws
+    func delete() async throws
 }
 
 public extension URL {

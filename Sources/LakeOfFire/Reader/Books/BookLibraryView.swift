@@ -18,10 +18,8 @@ public class BookLibraryModalsModel: ObservableObject {
 
 struct BookLibrarySheetsModifier: ViewModifier {
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
-    @Binding var isActive: Bool
     
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     func body(content: Content) -> some View {
         content
@@ -39,12 +37,12 @@ struct BookLibrarySheetsModifier: ViewModifier {
             .background {
                 // Weird hack because stacking fileImporter breaks all of them
                 Color.clear
-                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile.gatedBy($isActive), allowedContentTypes: readerFileManager.readerContentMimeTypes) { result in
+                    .fileImporter(isPresented: $bookLibraryModalsModel.isImportingBookFile, allowedContentTypes: ReaderFileManager.shared.readerContentMimeTypes) { result in
                         Task { @MainActor in
                             switch result {
                             case .success(let url):
                                 do {
-                                    guard let importedFileURL = try await readerFileManager.importFile(fileURL: url, fromDownloadURL: nil) else {
+                                    guard let importedFileURL = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
                                         print("Couldn't import \(url.absoluteString)")
                                         return
                                     }
@@ -62,8 +60,8 @@ struct BookLibrarySheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel, isActive: Binding<Bool>) -> some View {
-        modifier(BookLibrarySheetsModifier(bookLibraryModalsModel: bookLibraryModalsModel, isActive: isActive))
+    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel) -> some View {
+        modifier(BookLibrarySheetsModifier(bookLibraryModalsModel: bookLibraryModalsModel))
     }
 }
 
@@ -72,7 +70,6 @@ fileprivate struct EditorsPicksView: View {
     
     @ObservedObject private var downloadController = DownloadController.shared
     
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -95,7 +92,7 @@ fileprivate struct EditorsPicksView: View {
                     Task { @MainActor in
                         try await viewModel.open(
                             publication: selectedPublication,
-                            readerFileManager: readerFileManager,
+                            readerFileManager: ReaderFileManager.shared,
                             readerPageURL: readerContent.pageURL,
                             navigator: navigator,
                             readerModeViewModel: readerModeViewModel
@@ -199,9 +196,6 @@ public struct BookLibraryView: View {
         }
         .refreshable {
             await viewModel.fetchAllData()
-        }
-        .task(id: readerFileManager.ubiquityContainerIdentifier) {
-            try? await readerFileManager.refreshAllFilesMetadata()
         }
         .task { @MainActor in
             if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
@@ -317,7 +311,7 @@ public class BookLibraryViewModel: ObservableObject {
     @RealmBackgroundActor
     func open(
         publication: Publication,
-        readerFileManager: ReaderFileManager,
+        readerFileManager: ReaderFileManager = .shared,
         readerPageURL: URL,
         navigator: WebViewNavigator,
         readerModeViewModel: ReaderModeViewModel

@@ -61,7 +61,6 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
     @ObservedRealmObject var item: ContentFile
     
     @EnvironmentObject var cloudDriveSyncStatusModel: CloudDriveSyncStatusModel
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     private var title: String? {
         switch cloudDriveSyncStatusModel.status {

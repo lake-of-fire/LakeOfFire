@@ -267,7 +267,6 @@ struct LibraryFeedFormSections: View {
 
     @State private var readerFeedEntry: FeedEntry?
     
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @Environment(\.openURL) private var openURL
 
     @ViewBuilder private var synchronizationSection: some View {
@@ -527,7 +526,6 @@ struct LibraryFeedFormSections: View {
                     if let content = readerContent.content, content != entry {
                         try await readerViewModel.navigator?.load(
                             content: entry,
-                            readerFileManager: readerFileManager,
                             readerModeViewModel: readerModeViewModel
                         )
                     }

@@ -30,7 +30,7 @@ extension DeletableReaderContent {
         }
     }
     @RealmBackgroundActor
-    public func delete(readerFileManager: ReaderFileManager) async throws {
+    public func delete() async throws {
         guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
         await realm.asyncRefresh()
         try await realm.asyncWrite {

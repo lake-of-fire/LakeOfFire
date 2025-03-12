@@ -24,7 +24,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @StateObject var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
 
@@ -37,7 +36,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             Task { @MainActor in
                 try await navigator.load(
                     content: content,
-                    readerFileManager: readerFileManager,
                     readerModeViewModel: readerModeViewModel
                 )
             }
@@ -79,7 +77,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
-                await cloudDriveSyncStatusModel.refreshAsync(item: item, readerFileManager: readerFileManager)
+                await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
         }
     }
@@ -87,8 +85,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
     var filteredContents: [C]
-    
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
 //    @State private var viewWidth: CGFloat = 0

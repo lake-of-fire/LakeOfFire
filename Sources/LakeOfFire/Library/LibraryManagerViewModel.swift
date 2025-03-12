@@ -60,17 +60,13 @@ public extension View {
 }
 
 struct LibraryManagerSheetModifier: ViewModifier {
-    @Binding var isActive: Bool
-    
     @available(iOS 16, macOS 13, *)
     struct ActiveLibrarySheetModifier: ViewModifier {
-        @Binding var isActive: Bool
-        
         @ObservedObject private var libraryViewModel = LibraryManagerViewModel.shared
         
         func body(content: Content) -> some View {
             content
-                .sheet(isPresented: $libraryViewModel.isLibraryPresented.gatedBy($isActive)) {
+                .sheet(isPresented: $libraryViewModel.isLibraryPresented) {
                     if #available(iOS 16.4, macOS 13.1, *) {
                         LibraryManagerView()
 #if os(macOS)
@@ -84,7 +80,7 @@ struct LibraryManagerSheetModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16, macOS 13, *) {
             content
-                .modifier(ActiveLibrarySheetModifier(isActive: $isActive))
+                .modifier(ActiveLibrarySheetModifier())
         } else {
             content
         }
@@ -92,8 +88,8 @@ struct LibraryManagerSheetModifier: ViewModifier {
 }
 
 public extension View {
-    func libraryManagerSheet(isActive: Binding<Bool>) -> some View {
-        modifier(LibraryManagerSheetModifier(isActive: isActive))
+    func libraryManagerSheet() -> some View {
+        modifier(LibraryManagerSheetModifier())
     }
 }
 

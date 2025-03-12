@@ -14,19 +14,16 @@ public class ReaderContentListModalsModel: ObservableObject {
 
 struct ReaderContentListSheetsModifier: ViewModifier {
     @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
-    @Binding var isActive: Bool
-    
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     func body(content: Content) -> some View {
         content
-            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete.gatedBy($isActive), actions: {
+            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete, actions: {
                 Button("Cancel", role: .cancel) {
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
                 Button("Delete", role: .destructive) {
                     Task { @MainActor in
-                        try await readerContentListModalsModel.confirmDeletionOf?.delete(readerFileManager: readerFileManager)
+                        try await readerContentListModalsModel.confirmDeletionOf?.delete()
                     }
                 }
             }, message: {
@@ -36,8 +33,8 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel, isActive: Binding<Bool>) -> some View {
-        modifier(ReaderContentListSheetsModifier(readerContentListModalsModel: readerContentListModalsModel, isActive: isActive))
+    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel) -> some View {
+        modifier(ReaderContentListSheetsModifier(readerContentListModalsModel: readerContentListModalsModel))
     }
 }
 
@@ -141,7 +138,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
         item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: (item as? PhysicalMediaCapableProtocol)?.isPhysicalMedia ?? false)
@@ -260,7 +256,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
-                await cloudDriveSyncStatusModel.refreshAsync(item: item, readerFileManager: readerFileManager)
+                await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
         }
     }
@@ -318,7 +314,6 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
 
     @ViewBuilder private var listItems: some View {
@@ -377,7 +372,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
 
     public var body: some View {
@@ -392,7 +386,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                 Task { @MainActor in
                     try await navigator.load(
                         content: content,
-                        readerFileManager: readerFileManager,
                         readerModeViewModel: readerModeViewModel
                     )
                     // TODO: This is crashy sadly.

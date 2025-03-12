@@ -78,14 +78,13 @@ fileprivate struct ReaderModeViewModelModifier: ViewModifier {
 fileprivate struct ReaderFileManagerModifier: ViewModifier {
     let ubiquityContainerIdentifier: String
     
-    @EnvironmentObject private var readerFileManager: ReaderFileManager
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     
     func body(content: Content) -> some View {
         content
-            .task { @MainActor in
-                readerModeViewModel.readerFileManager = readerFileManager
-                try? await readerFileManager.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
+            .task(id: ubiquityContainerIdentifier) { @MainActor in
+                readerModeViewModel.readerFileManager = ReaderFileManager.shared
+                try? await ReaderFileManager.shared.initialize(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
             }
     }
 }
