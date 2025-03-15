@@ -431,7 +431,6 @@ fileprivate let entryImageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
 public extension Feed {
     @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
-        // TODO: Optimize by only persisting changes if it's actually changed.
         let feedID = id
         try await { @RealmBackgroundActor in
             guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
@@ -475,6 +474,12 @@ public extension Feed {
                     }
                 } catch { }
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+//                
+//                if let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url, html: content)) {
+//                    if existingEntry.feedID == feedID && existingEntry.html == content && existingEntry.url == url && existingEntry.title == title ?? "" && existingEntry.author == item.author ?? "" && existingEntry.imageUrl == imageUrl && existingEntry.publicationDate == item.pubDate ?? item.dublinCore?.dcDate {
+//                        return exi
+//                    }
+//                }
                 
                 let feedEntry = FeedEntry()
                 feedEntry.feedID = feedID
@@ -504,6 +509,11 @@ public extension Feed {
             if !entriesToPersist.isEmpty {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
+                    for entry in entriesToPersist {
+                        if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: entry.compoundKey) {
+                            entry.createdAt = existing.createdAt
+                        }
+                    }
                     realm.add(entriesToPersist, update: .modified)
                 }
             }
@@ -611,6 +621,11 @@ public extension Feed {
                             orphan.modifiedAt = Date()
                         }
                     }
+                    for entry in entriesToPersist {
+                        if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: entry.compoundKey) {
+                            entry.createdAt = existing.createdAt
+                        }
+                    }
                     realm.add(entriesToPersist, update: .modified)
                 }
             }
@@ -683,7 +698,7 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     for entry in entries {
         if let existingEntry = existingEntriesDict[entry.compoundKey] {
             let schema = entry.objectSchema
-            for property in schema.properties where property.name != "createdAt" {
+            for property in schema.properties where property.name != "createdAt" && property.name != "modifiedAt" {
                 let propertyName = property.name
                 if property.type == .object, let objectType = property.objectClassName {
                     let primaryKey = realm.schema[objectType]?.primaryKeyProperty?.name ?? ""

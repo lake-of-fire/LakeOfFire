@@ -55,7 +55,8 @@ public struct Readability {
     public var userScript: WebViewUserScript {
         WebViewUserScript(
             source: userScriptSource,
-            injectionTime: .atDocumentStart,
+//            injectionTime: .atDocumentStart,
+            injectionTime: .atDocumentEnd,
             forMainFrameOnly: false,
             in: .page,
             allowedDomains: Set()

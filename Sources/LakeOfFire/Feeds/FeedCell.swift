@@ -32,7 +32,7 @@ public struct FeedCell: View {
                     .font(.headline.bold())
                     Spacer()
                 }
-                if includesDescription {
+                if includesDescription, !feed.markdownDescription.isEmpty {
                     Text(feed.markdownDescription)
                         .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
