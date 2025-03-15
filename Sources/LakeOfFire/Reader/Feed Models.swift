@@ -267,16 +267,16 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         }
         guard let configuration = realm?.configuration else { return nil }
         let compoundKey = compoundKey
-        return try await { @FeedEntryActor in
+        return try await { @FeedEntryActor () -> URL? in
             let realm = try await Realm(configuration: configuration, actor: FeedEntryActor.shared)
             guard let feedEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: compoundKey) else { return nil }
             if feedEntry.extractImageFromContent {
                 let legacyHTMLContent = htmlContent
                 let ref = compoundKey
-                let existingImageURL = imageUrl
+                let existingImageURL = feedEntry.imageUrl
                 if let html = Self.contentToHTML(
                     legacyHTMLContent: legacyHTMLContent,
-                    content: content
+                    content: feedEntry.content
                 ), let url = Self.imageURLExtractedFromContent(
                     htmlContent: html
                 ), existingImageURL != url {
