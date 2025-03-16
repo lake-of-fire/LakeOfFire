@@ -262,7 +262,6 @@ public class ReaderModeViewModel: ObservableObject {
                     contentRules = contentRulesForReadabilityLoading
                     navigator?.loadHTML(html, baseURL: committedURL)
                 } else {
-                    
                     readabilityContent = html
                     showReaderView(
                         readerContent: readerContent,
