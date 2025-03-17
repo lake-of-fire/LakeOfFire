@@ -10,6 +10,8 @@ fileprivate extension URL {
     }
 }
 
+fileprivate let zipArchiveExtensions = ["zip", "epub"]
+
 final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
     @MainActor var readerFileManager: ReaderFileManager? = nil
     
@@ -42,7 +44,7 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Package (eg ZIP) subpath file
                 if let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
                    let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value {
-                    if url.pathExtension.lowercased() == "zip", let readerFileURL = url.deletingQuery, let archive = Archive(url: readerFileURL, accessMode: .read), let entry = archive[subpathValue], entry.type == .file {
+                    if zipArchiveExtensions.contains(url.pathExtension.lowercased()), let readerFileURL = url.deletingQuery, let archive = Archive(url: readerFileURL, accessMode: .read), let entry = archive[subpathValue], entry.type == .file {
                         var imageData = Data()
                         try archive.extract(entry, consumer: { imageData.append($0) })
                         

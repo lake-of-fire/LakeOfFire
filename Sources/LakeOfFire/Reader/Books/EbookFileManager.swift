@@ -5,18 +5,18 @@ import RealmSwiftGaps
 import ZIPFoundation
 import UniformTypeIdentifiers
 import SwiftCloudDrive
+import Logging
+import LakeKit
 
 public extension RootRelativePath {
     static let ebooks = Self(path: "Books")
 }
 
-fileprivate let mokuroImageExtensions = ["jpg", "jpeg", "png", "webp"]
-
 public struct EbookFileManager {
     private static let subpathCharacterSet = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&="))
     
     public static func configure() {
-        for mimeType: [UTType] in [.epub, .epubZip, .directory] {
+        for mimeType in [UTType.epub, .epubZip, .directory] {
             if !ReaderFileManager.shared.readerContentMimeTypes.contains(mimeType) {
                 ReaderFileManager.shared.readerContentMimeTypes.append(mimeType)
             }
@@ -41,46 +41,45 @@ public struct EbookFileManager {
             var toUpdateWithTitle = [(ContentFile, String)]()
             var toUpdateAsPhysicalMedia = [ContentFile]()
             
-            let readerRealm = try await RealmBackgroundActor.shared.readerRealm
-            
-            for contentFile in contentFiles where contentFile.url.pathExtension == "zip" && contentFile.packageFilePaths.contains("_ocr/") {
-                if readerRealm.objects(ContentPackageFile.self).where({ $0.packageContentFileID == contentFile.compoundKey && !$0.isDeleted }).isEmpty, let mokuroVolumes = contentFile.mokuroVolumes() {
-                    toUpdateWithPackageFiles.append((contentFile, mokuroVolumes.compactMap { mokuroVolume in
-                        return mokuroVolume.contentPackageFile(forPackageContentFile: contentFile)
-                    }))
+            for contentFile in contentFiles {
+                // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
+                guard contentFile.url.pathExtension.lowercased() == "epub"
+                        || contentFile.mimeType == "application/epub+zip"
+                        || contentFile.mimeType == "directory"
+                else {
+                    continue
                 }
                 
-                if !(contentFile.imageUrl?.absoluteString.hasPrefix(contentFile.url.absoluteString.replacingOccurrences(of: "mokuro://mokuro/load/", with: "reader-file://file/load/") + "?subpath=") ?? false) {
-                    if let imagePath = contentFile.packageFilePaths.lazy.sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending }).first(where: { path in
-                        let path = path.lowercased()
-                        return mokuroImageExtensions.contains(where: { path.hasSuffix("." + $0) })
-                    }), let escapedPath = imagePath.addingPercentEncoding(withAllowedCharacters: subpathCharacterSet) {
-                        let imageURL = contentFile.url.absoluteString.replacingOccurrences(of: "mokuro://mokuro/load/", with: "reader-file://file/load/") + "?subpath=" + escapedPath
-                        if let imageURL = URL(string: imageURL) {
-                            toUpdateWithImage.append((contentFile, imageURL))
+                // Attempt to parse the EPUB for metadata + cover:
+                do {
+                    let localURL = try contentFile.systemFileURL
+                    if let metadata = try EPubParser.parseMetadataAndCover(from: localURL) {
+                        if contentFile.title != metadata.title {
+                            toUpdateWithTitle.append((contentFile, metadata.title))
+                        }
+                        
+                        // If we found a cover href
+                        // We'll build the URL scheme to read the cover image from the same 'reader-file' approach
+                        // e.g. "reader-file://file/load/... ?subpath=<coverHref>"
+                        let coverURLPrefix = contentFile.url.absoluteString.replacingOccurrences(of: "ebook://ebook/load/", with: "reader-file://file/load/") + "?subpath="
+                        if let encodedPath = metadata.coverHref.addingPercentEncoding(withAllowedCharacters: subpathCharacterSet),
+                           let coverImageURL = URL(string: coverURLPrefix + encodedPath), contentFile.imageUrl != coverImageURL {
+                            toUpdateWithImage.append((contentFile, coverImageURL))
+                        }
+                        
+                        if !contentFile.isPhysicalMedia {
+                            toUpdateAsPhysicalMedia.append(contentFile)
                         }
                     }
-                }
-                
-                let currentTitle = contentFile.title
-                if currentTitle.isEmpty || currentTitle == contentFile.url.deletingPathExtension().lastPathComponent, let archive = try? contentFile.zipArchive(), let firstMokuro = contentFile.packageFilePaths.lazy.sorted().first(where: { $0.hasSuffix(".mokuro") }), let firstMokuroData = archive.data(for: firstMokuro), let title = (try? JSONSerialization.jsonObject(with: firstMokuroData) as? [String: Any])?["title"] as? String {
-                    toUpdateWithTitle.append((contentFile, title))
-                }
-                
-                if !contentFile.isPhysicalMedia {
-                    toUpdateAsPhysicalMedia.append(contentFile)
+                } catch {
+                    Logger.shared.logger.error("EbookFileManager error: \(error)")
                 }
             }
             
-            if !toUpdateWithImage.isEmpty || !toUpdateWithPackageFiles.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
-                let realm = try await RealmBackgroundActor.shared.readerRealm
+            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
+                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
-                    for (contentFile, contentPackageFiles) in toUpdateWithPackageFiles {
-                        for contentPackageFile in contentPackageFiles {
-                            realm.add(contentPackageFile, update: .modified)
-                        }
-                    }
                     for (contentFile, imageURL) in toUpdateWithImage {
                         contentFile.imageUrl = imageURL
                     }

@@ -11,6 +11,8 @@ fileprivate extension URL {
     }
 }
 
+fileprivate let zipArchiveExtensions = ["zip", "epub"]
+
 public struct ReaderImage: View {
     let url: URL
     let contentMode: ContentMode
@@ -49,9 +51,16 @@ public struct ReaderImage: View {
                 guard let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
                       let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
                 
+                if FileManager.default.isDirectory(url) {
+                    let filePath = url.appendingPathComponent(subpathValue)
+                    return try? Data(contentsOf: filePath)
+                }
                 
-                guard url.pathExtension.lowercased() == "zip", let readerFileURL = url.deletingQuery, let archive = try Archive(url: ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL), accessMode: .read), let entry = archive[subpathValue], entry.type == .file else { return nil }
-                
+                guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+                guard let readerFileURL = url.deletingQuery else { return nil }
+                let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
+                guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
+                guard let entry = archive[subpathValue], entry.type == .file else { return nil }
                 var imageData = Data()
                 try archive.extract(entry, consumer: { imageData.append($0) })
                 return imageData
