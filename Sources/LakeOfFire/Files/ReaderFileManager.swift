@@ -74,7 +74,7 @@ public class ReaderFileManager: ObservableObject {
     public static var shared = ReaderFileManager()
     
     // TODO: Pull these from callbacks per above
-    public var readerContentMimeTypes: [UTType] = [.plainText, .html, .epub, .epubZip, .directory, .zip]
+    public var readerContentMimeTypes: [UTType] = [.plainText, .html, .zip]
     
     @MainActor @Published public var files: [ContentFile]?
     
@@ -234,11 +234,7 @@ public class ReaderFileManager: ObservableObject {
                         return url
                     }
                 }
-                if fileURL.isEBookURL {
-                    return URL(string: "ebook://ebook/load/" + encodedPath)
-                } else {
-                    return URL(string: "reader-file://file/load/" + encodedPath)
-                }
+                return URL(string: "reader-file://file/load/" + encodedPath)
             }
         }
         return nil
@@ -526,7 +522,6 @@ extension ReaderFileManager: CloudDriveObserver {
 private extension ReaderFileManager {
     static func rootRelativePath(forImportedURL url: URL) async throws -> RootRelativePath {
         switch url.pathExtension.lowercased() {
-        case "epub": return .ebooks.appending(url.host ?? "")
         default:
             for fileDestinationProcessor in fileDestinationProcessors {
                 if let destination = try await fileDestinationProcessor(url) {
@@ -540,10 +535,6 @@ private extension ReaderFileManager {
     static func getDocumentsDirectory() -> URL {
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
-}
-
-public extension RootRelativePath {
-    static let ebooks = Self(path: "Books")
 }
 
 extension URL {

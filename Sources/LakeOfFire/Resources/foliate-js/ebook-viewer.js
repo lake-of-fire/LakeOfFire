@@ -245,25 +245,6 @@ class Reader {
 
         Promise.resolve(book.getCover?.())?.then(blob => {
             blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
-            if (blob) {
-                // From https://stackoverflow.com/a/52959897/89373
-                (async () => {
-                    const bmp = await createImageBitmap(blob);
-                    const canvas = document.createElement('canvas');
-                    let resizing = Math.min(1.0, (80.0 / bmp.width), (120.0 / bmp.height))
-                    canvas.width = bmp.width * resizing;
-                    canvas.height = bmp.height * resizing;
-                    const ctx = canvas.getContext('bitmaprenderer');
-                    ctx.transferFromImageBitmap(bmp);
-                    let dataUrl = canvas.toDataURL("image/jpeg", 0.4);
-                    
-                    let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-                    window.webkit.messageHandlers.imageUpdated.postMessage({
-                        newImageURL: dataUrl,
-                        mainDocumentURL: mainDocumentURL,
-                    })
-                })().catch(console.error);
-            }
         })
 
         const toc = book.toc
