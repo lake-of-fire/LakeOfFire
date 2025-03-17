@@ -119,17 +119,20 @@ public struct ReaderContentLoader {
     }
     
     @RealmBackgroundActor
-    public static func loadAll(url: URL) async throws -> [(any ReaderContentProtocol)] {
+    public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
         guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return [] }
         guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return [] }
-        guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return [] }
         try Task.checkCancellation()
  
-        let contentFile = historyRealm.objects(ContentFile.self)
-            .where { !$0.isDeleted }
-            .sorted(by: \.createdAt, ascending: false)
-            .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-            .first
+        var contentFile: ContentFile?
+        if !skipContentFiles {
+            contentFile = historyRealm.objects(ContentFile.self)
+                .where { !$0.isDeleted }
+                .sorted(by: \.createdAt, ascending: false)
+                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
+                .first
+        }
+        
         let history = historyRealm.objects(HistoryRecord.self)
             .where { !$0.isDeleted }
             .sorted(by: \.createdAt, ascending: false)
@@ -140,16 +143,20 @@ public struct ReaderContentLoader {
             .sorted(by: \.createdAt, ascending: false)
             .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
             .first
-        let feeds = feedRealm.objects(FeedEntry.self)
-            .where { !$0.isDeleted }
-            .sorted(by: \.createdAt, ascending: false)
         
         var feed: FeedEntry?
-        if url.scheme == "https" {
-            feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
-            feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
-        } else if !url.isReaderFileURL {
-            feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+        if !skipFeedEntries {
+            guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return [] }
+            let feeds = feedRealm.objects(FeedEntry.self)
+                .where { !$0.isDeleted }
+                .sorted(by: \.createdAt, ascending: false)
+            
+            if url.scheme == "https" {
+                feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
+                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
+            } else if !url.isReaderFileURL {
+                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+            }
         }
         
         let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }

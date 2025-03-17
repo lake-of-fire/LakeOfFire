@@ -39,6 +39,7 @@ public struct EbookFileManager {
         ReaderFileManager.fileProcessors.append({ @RealmBackgroundActor contentFiles in
             var toUpdateWithImage = [(ContentFile, URL)]()
             var toUpdateWithTitle = [(ContentFile, String)]()
+            var toUpdateWithAuthor = [(ContentFile, String?)]()
             var toUpdateAsPhysicalMedia = [ContentFile]()
             
             for contentFile in contentFiles {
@@ -56,6 +57,9 @@ public struct EbookFileManager {
                     if let metadata = try EPubParser.parseMetadataAndCover(from: localURL) {
                         if contentFile.title != metadata.title {
                             toUpdateWithTitle.append((contentFile, metadata.title))
+                        }
+                        if contentFile.author != (metadata.author ?? "") {
+                            toUpdateWithAuthor.append((contentFile, metadata.author))
                         }
                         
                         // If we found a cover href
@@ -76,7 +80,7 @@ public struct EbookFileManager {
                 }
             }
             
-            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
+            if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateWithAuthor.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
                 guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -85,6 +89,9 @@ public struct EbookFileManager {
                     }
                     for (contentFile, title) in toUpdateWithTitle {
                         contentFile.title = title
+                    }
+                    for (contentFile, author) in toUpdateWithAuthor {
+                        contentFile.author = author ?? ""
                     }
                     for contentFile in toUpdateAsPhysicalMedia {
                         contentFile.isPhysicalMedia = true

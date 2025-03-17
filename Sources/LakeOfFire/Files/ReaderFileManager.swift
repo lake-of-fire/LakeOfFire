@@ -425,7 +425,6 @@ public class ReaderFileManager: ObservableObject {
                             updatedFiles.append(contentFile)
                             matchedContentFile = contentFile
                         }
-                        matchedContentFile?.isPhysicalMedia = readerFileURL.isEBookURL
                     }
                 }
                 for fileProcessor in Self.fileProcessors {
