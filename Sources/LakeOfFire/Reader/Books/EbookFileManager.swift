@@ -9,7 +9,7 @@ import Logging
 import LakeKit
 
 public extension RootRelativePath {
-    static let ebooks = Self.documents.appending("Books")
+    static let ebooks = Self(path: "Books")
 }
 
 public struct EbookFileManager {

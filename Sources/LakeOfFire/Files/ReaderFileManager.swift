@@ -13,9 +13,9 @@ public enum ReaderFileManagerError: Swift.Error {
     case driveMissing
 }
 
-public extension RootRelativePath {
-    static let documents = Self(path: "Documents")
-}
+//public extension RootRelativePath {
+//    static let documents = Self(path: "Documents")
+//}
 
 class CloudDriveSyncStatusModel: ObservableObject {
     @Published var status: CloudDriveSyncStatus = .loadingStatus
@@ -105,7 +105,7 @@ public class ReaderFileManager: ObservableObject {
     @MainActor
     public func initialize(ubiquityContainerIdentifier: String) async throws {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
-        cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier)
+        cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()
@@ -375,8 +375,7 @@ public class ReaderFileManager: ObservableObject {
         var filesToUpdate: [(readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)] = []
         
         do {
-            for url in try await drive.contentsOfDirectory(at: relativePath ?? (drive.ubiquityContainerIdentifier == nil ? .root : .documents)
-, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
+            for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
                 try Task.checkCancellation()
                 var tryRelativePath = RootRelativePath(path: url.relativePath)
                 if let relativePath, !relativePath.path.isEmpty {
@@ -553,7 +552,7 @@ private extension ReaderFileManager {
                     return destination
                 }
             }
-            return (drive.ubiquityContainerIdentifier == nil ? .root : .documents)
+            return .root
         }
     }
     

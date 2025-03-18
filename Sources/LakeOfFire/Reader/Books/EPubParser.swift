@@ -50,6 +50,7 @@ struct EPubParser {
     private static func parseContainer(_ data: Data) -> String? {
         final class ContainerParser: NSObject, XMLParserDelegate {
             var foundPath: String?
+            var aborted = false
             func parser(_ parser: XMLParser,
                         didStartElement elementName: String,
                         namespaceURI: String?,
@@ -57,12 +58,15 @@ struct EPubParser {
                         attributes attributeDict: [String: String] = [:]) {
                 if elementName == "rootfile", let fullPath = attributeDict["full-path"] {
                     foundPath = fullPath
+                    aborted = true
                     parser.abortParsing()  // Stop parsing after finding the path.
                 }
             }
             
             func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
-                print("Container parse error: \(parseError)")
+                guard !aborted else { return }
+                let error = parseError as NSError
+                print("Container parse error: \(error.localizedDescription) (code: \(error.code), domain: \(error.domain)) at line \(parser.lineNumber), column \(parser.columnNumber)")
             }
         }
         
