@@ -13,6 +13,10 @@ public enum ReaderFileManagerError: Swift.Error {
     case driveMissing
 }
 
+public extension RootRelativePath {
+    static let documents = Self(path: "Documents")
+}
+
 class CloudDriveSyncStatusModel: ObservableObject {
     @Published var status: CloudDriveSyncStatus = .loadingStatus
     private var refreshTask: Task<Void, Never>? = nil
@@ -82,8 +86,8 @@ public class ReaderFileManager: ObservableObject {
         return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
     }
     
-    /*@MainActor*/ @Published private var cloudDrive: CloudDrive?
-    /*@MainActor*/ @Published private var localDrive: CloudDrive?
+    /*@MainActor*/ @Published public var cloudDrive: CloudDrive?
+    /*@MainActor*/ @Published public var localDrive: CloudDrive?
     public var ubiquityContainerIdentifier: String? = nil {
         didSet {
             if oldValue != ubiquityContainerIdentifier {
@@ -216,7 +220,7 @@ public class ReaderFileManager: ObservableObject {
         let drives: [CloudDrive] = (drive == nil ? [cloudDrive, localDrive] : [drive]).filter({ $0?.isConnected ?? false }).compactMap({ $0 })
         for drive in drives {
             // This relativePath stuff is funky/fragile
-            guard let relativePathStr = relativePath(for: fileURL, relativeTo: drive.rootDirectory) else {
+            guard let relativePathStr = Self.relativePath(for: fileURL, relativeTo: drive.rootDirectory) else {
                 continue
             }
             let relativePath = RootRelativePath(path: relativePathStr)
@@ -244,7 +248,7 @@ public class ReaderFileManager: ObservableObject {
     public func importFile(fileURL: URL, fromDownloadURL downloadURL: URL?) async throws -> URL? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
-        let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL)
+        let targetDirectory = try await Self.rootRelativePath(forImportedURL: downloadURL ?? fileURL, drive: drive)
         var targetFilePath = targetDirectory.appending(fileURL.lastPathComponent)
         let targetURL = try targetFilePath.directoryURL(forRoot: drive.rootDirectory)
         
@@ -371,7 +375,8 @@ public class ReaderFileManager: ObservableObject {
         var filesToUpdate: [(readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)] = []
         
         do {
-            for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
+            for url in try await drive.contentsOfDirectory(at: relativePath ?? (drive.ubiquityContainerIdentifier == nil ? .root : .documents)
+, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
                 try Task.checkCancellation()
                 var tryRelativePath = RootRelativePath(path: url.relativePath)
                 if let relativePath, !relativePath.path.isEmpty {
@@ -392,7 +397,9 @@ public class ReaderFileManager: ObservableObject {
                 }
             }
         } catch {
-            debugPrint(error)
+            if !(error is CancellationError) {
+                debugPrint("refreshFilesMetadata error:", error)
+            }
             throw error
         }
         
@@ -489,6 +496,25 @@ public class ReaderFileManager: ObservableObject {
             return nil
         }
     }
+    
+    public static func relativePath(for fileURL: URL, relativeTo rootDirectory: URL) -> String? {
+        let filePath = fileURL.path
+        let rootPath = rootDirectory.path
+        
+        // Check if the file path is within the root directory
+        guard filePath.hasPrefix(rootPath) else {
+            print("File is not within the root directory.")
+            return nil
+        }
+        
+        // Extract the relative path
+        let relativePath = String(filePath.dropFirst(rootPath.count))
+        
+        // Ensure the relative path does not start with a "/" to make it a true relative path
+        let trimmedRelativePath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        
+        return trimmedRelativePath
+    }
 }
 
 public extension ReaderFileManager {
@@ -498,7 +524,7 @@ public extension ReaderFileManager {
     func downloadable(url: URL, name: String) async throws -> Downloadable? {
         guard let drive = ((cloudDrive?.isConnected ?? false) ? cloudDrive : nil) ?? localDrive else { return nil }
         
-        let targetDirectory = try await Self.rootRelativePath(forImportedURL: url)
+        let targetDirectory = try await Self.rootRelativePath(forImportedURL: url, drive: drive)
         let targetFilePath = targetDirectory.appending(url.lastPathComponent)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
         
@@ -519,7 +545,7 @@ extension ReaderFileManager: CloudDriveObserver {
 }
 
 private extension ReaderFileManager {
-    static func rootRelativePath(forImportedURL url: URL) async throws -> RootRelativePath {
+    static func rootRelativePath(forImportedURL url: URL, drive: CloudDrive) async throws -> RootRelativePath {
         switch url.pathExtension.lowercased() {
         default:
             for fileDestinationProcessor in fileDestinationProcessors {
@@ -527,7 +553,7 @@ private extension ReaderFileManager {
                     return destination
                 }
             }
-            return .root
+            return (drive.ubiquityContainerIdentifier == nil ? .root : .documents)
         }
     }
     
@@ -564,23 +590,4 @@ fileprivate extension FileManager {
         var isDirectory: ObjCBool = false
         return fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
-}
-
-fileprivate func relativePath(for fileURL: URL, relativeTo rootDirectory: URL) -> String? {
-    let filePath = fileURL.path
-    let rootPath = rootDirectory.path
-    
-    // Check if the file path is within the root directory
-    guard filePath.hasPrefix(rootPath) else {
-        print("File is not within the root directory.")
-        return nil
-    }
-    
-    // Extract the relative path
-    let relativePath = String(filePath.dropFirst(rootPath.count))
-    
-    // Ensure the relative path does not start with a "/" to make it a true relative path
-    let trimmedRelativePath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    
-    return trimmedRelativePath
 }

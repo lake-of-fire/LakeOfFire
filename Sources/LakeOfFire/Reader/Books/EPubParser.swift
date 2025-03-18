@@ -93,11 +93,13 @@ struct EPubParser {
             var inMetadata = false
             var inManifest = false
             
-            func parser(_ parser: XMLParser,
-                        didStartElement elementName: String,
-                        namespaceURI: String?,
-                        qualifiedName qName: String?,
-                        attributes attributeDict: [String : String] = [:]) {
+            func parser(
+                _ parser: XMLParser,
+                didStartElement elementName: String,
+                namespaceURI: String?,
+                qualifiedName qName: String?,
+                attributes attributeDict: [String : String] = [:]
+            ) {
                 if elementName == "package" {
                     if let version = attributeDict["version"] {
                         epubVersion = version

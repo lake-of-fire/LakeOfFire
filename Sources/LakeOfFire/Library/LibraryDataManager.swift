@@ -49,6 +49,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     public lazy var systemScripts: [WebViewUserScript] = {
         return [
             Readability.shared.userScript,
+            ReadabilityImagesUserScript.shared.userScript,
 //            ManabiReaderUserScript().userScript,
 //            YoutubeAdBlockUserScript.userScript,
 //            YoutubeAdSkipUserScript.userScript,

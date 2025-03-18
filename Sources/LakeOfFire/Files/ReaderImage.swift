@@ -51,14 +51,15 @@ public struct ReaderImage: View {
                 guard let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
                       let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
                 
-                if FileManager.default.isDirectory(url) {
-                    let filePath = url.appendingPathComponent(subpathValue)
+                guard let readerFileURL = url.deletingQuery else { return nil }
+                let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
+
+                if try isPackageFile(at: fileURL) || FileManager.default.isDirectory(fileURL) {
+                    let filePath = fileURL.appendingPathComponent(subpathValue)
                     return try? Data(contentsOf: filePath)
                 }
                 
                 guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-                guard let readerFileURL = url.deletingQuery else { return nil }
-                let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
                 guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
                 guard let entry = archive[subpathValue], entry.type == .file else { return nil }
                 var imageData = Data()
@@ -67,4 +68,9 @@ public struct ReaderImage: View {
             }
         )
     }
+}
+
+fileprivate func isPackageFile(at url: URL) throws -> Bool {
+    let resourceValues = try url.resourceValues(forKeys: [.isPackageKey])
+    return resourceValues.isPackage ?? false
 }
