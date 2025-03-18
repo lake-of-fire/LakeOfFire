@@ -17,13 +17,14 @@ public class BookLibraryModalsModel: ObservableObject {
 }
 
 struct BookLibrarySheetsModifier: ViewModifier {
+    let isActive: Bool
     @ObservedObject var bookLibraryModalsModel: BookLibraryModalsModel
     
     @StateObject private var opdsCatalogsViewModel = OPDSCatalogsViewModel()
     
     func body(content: Content) -> some View {
         content
-            .sheet(isPresented: $bookLibraryModalsModel.showingEbookCatalogs) {
+            .sheet(isPresented: $bookLibraryModalsModel.showingEbookCatalogs.gatedBy(isActive)) {
                 if #available(iOS 16, macOS 13, *) {
                     NavigationStack {
                         OPDSCatalogsView()
@@ -60,8 +61,13 @@ struct BookLibrarySheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func bookLibrarySheets(bookLibraryModalsModel: BookLibraryModalsModel) -> some View {
-        modifier(BookLibrarySheetsModifier(bookLibraryModalsModel: bookLibraryModalsModel))
+    func bookLibrarySheets(isActive: Bool, bookLibraryModalsModel: BookLibraryModalsModel) -> some View {
+        modifier(
+            BookLibrarySheetsModifier(
+                isActive: isActive,
+                bookLibraryModalsModel: bookLibraryModalsModel
+            )
+        )
     }
 }
 

@@ -189,7 +189,7 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFont
 }
 
 internal func ebookTextProcessor(contentURL: URL, sectionLocation: String, content: String, processReadabilityContent: ((SwiftSoup.Document) async -> String)?) async throws -> String {
-    let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? 16
+    let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? 18
     let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
     let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
     

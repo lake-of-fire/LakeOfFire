@@ -13,11 +13,12 @@ public class ReaderContentListModalsModel: ObservableObject {
 }
 
 struct ReaderContentListSheetsModifier: ViewModifier {
+    let isActive: Bool
     @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
     
     func body(content: Content) -> some View {
         content
-            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete, actions: {
+            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
                 Button("Cancel", role: .cancel) {
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
@@ -33,8 +34,13 @@ struct ReaderContentListSheetsModifier: ViewModifier {
 }
 
 public extension View {
-    func readerContentListSheets(readerContentListModalsModel: ReaderContentListModalsModel) -> some View {
-        modifier(ReaderContentListSheetsModifier(readerContentListModalsModel: readerContentListModalsModel))
+    func readerContentListSheets(isActive: Bool, readerContentListModalsModel: ReaderContentListModalsModel) -> some View {
+        modifier(
+            ReaderContentListSheetsModifier(
+                isActive: isActive,
+                readerContentListModalsModel: readerContentListModalsModel
+            )
+        )
     }
 }
 
