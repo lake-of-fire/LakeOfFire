@@ -27,11 +27,11 @@ public extension URL {
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
     public struct ContentReference {
-        let contentType: RealmSwift.Object.Type
-        let contentKey: String
-        let realmConfiguration: Realm.Configuration
+        public let contentType: RealmSwift.Object.Type
+        public let contentKey: String
+        public let realmConfiguration: Realm.Configuration
         
-        init?(content: any ReaderContentProtocol) {
+        public init?(content: any ReaderContentProtocol) {
             guard let contentType = content.objectSchema.objectClass as? RealmSwift.Object.Type, let config = content.realm?.configuration else { return nil }
             self.contentType = contentType
             contentKey = content.compoundKey
