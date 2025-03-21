@@ -284,9 +284,12 @@ public struct ReaderContentLoader {
     /// Returns a URL to load for the given content into a Reader instance. The URL is either a resource (like a web location),
     /// or an internal "local" URL for loading HTML content in Reader Mode.
     @MainActor
-    public static func load(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws -> URL? {
+    public static func load(
+        content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager
+    ) async throws -> URL? {
         let contentURL = content.url
-        if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
+        if ["http", "https"].contains(contentURL.scheme?.lowercased()) || contentURL.isSnippetURL {
             let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
                 let allContents = try await loadAll(url: contentURL)
                 for candidateContent in allContents {
@@ -307,26 +310,6 @@ public struct ReaderContentLoader {
         
         return content.url
     }
-    
-//    @MainActor
-//    public static func loadHTML(content: any ReaderContentProtocol, readerFileManager: ReaderFileManager) async throws -> String? {
-//        if content
-//        let contentURL = content.url
-//        let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
-//            let allContents = try await loadAll(url: contentURL)
-//            
-//            for candidateContent in allContents {
-//                if !candidateContent.url.isReaderFileURL, candidateContent.isReaderModeByDefault, candidateContent.hasHTML {
-//                    guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
-//                    //            debugPrint("!! load(content isREaderModebydefault", historyURL)
-//                    return historyURL
-//                }
-//            }
-//            return nil
-//        }.value
-//        
-//        return matchingURL ?? content.url
-//    }
 
     private static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
         return (
@@ -375,7 +358,7 @@ public struct ReaderContentLoader {
         let text: String? = html
 #endif
         
-        if let text, let url = URL(string: text), url.absoluteString == text {
+        if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {
             match = try await load(url: url, countsAsHistoryVisit: true)
         } else if let html {
             if let doc = try? SwiftSoup.parse(html) {
@@ -405,6 +388,7 @@ public struct ReaderContentLoader {
                         try await realm.asyncWrite {
                             content.isFromClipboard = true
                             content.rssContainsFullContent = true
+                            content.isReaderModeByDefault = true
                             content.url = url
                             content.modifiedAt = Date()
                         }

@@ -75,7 +75,10 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
-        guard let readabilityContent else { return }
+        guard let readabilityContent else {
+            isReaderModeLoading = false
+            return
+        }
         let contentURL = readerContent.pageURL
         isReaderModeLoading = true
         Task { @MainActor in
