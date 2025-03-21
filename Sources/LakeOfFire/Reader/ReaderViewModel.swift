@@ -89,10 +89,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
         if let historyRecord = content as? HistoryRecord {
+            let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
             Task { @RealmBackgroundActor in
-                guard let content = try await ReaderContentLoader.fromMainActor(content: historyRecord) as? HistoryRecord, let realm = content.realm else { return }
-                await realm.asyncRefresh()
-                try await realm.asyncWrite {
+                guard let content = try await contentRef?.resolveOnBackgroundActor() as? HistoryRecord else { return }
+                await content.realm?.asyncRefresh()
+                try await content.realm?.asyncWrite {
                     content.lastVisitedAt = Date()
                     content.modifiedAt = Date()
                 }
@@ -141,8 +142,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
         let newTitle = fixAnnoyingTitlesWithPipes(title: title)
-        let contents = try await ReaderContentLoader.fromBackgroundActor(contents: ReaderContentLoader.loadAll(url: state.pageURL))
-        for content in contents {
+        let contentRefs = try await { @RealmBackgroundActor in
+            let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
+            return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
+        }()
+        for contentRef in contentRefs {
+            guard let content = try await contentRef.resolveOnMainActor() else { continue }
             if !newTitle.isEmpty, content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != title || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
                     content.title = newTitle

@@ -19,25 +19,29 @@ extension HistoryRecord: DeletableReaderContent {
 }
 
 extension DeletableReaderContent {
-    @RealmBackgroundActor
-    public func deleteRealmData() async throws {
-        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
-        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-//            for videoStatus in realm.objects(VideoS)
-            content.isDeleted = true
-            content.modifiedAt = Date()
-        }
-    }
-    @RealmBackgroundActor
+    @MainActor
     public func delete() async throws {
-        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
-        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            content.isDeleted = true
-            content.modifiedAt = Date()
-        }
+        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
+        try await { @RealmBackgroundActor in
+            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
+            await content.realm?.asyncRefresh()
+            try await content.realm?.asyncWrite {
+                //            for videoStatus in realm.objects(VideoS)
+                content.isDeleted = true
+                content.modifiedAt = Date()
+            }
+        }()
     }
+    
+//    @MainActor
+//    public func delete() async throws {
+//        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
+//        await realm.asyncRefresh()
+//        try await realm.asyncWrite {
+//            content.isDeleted = true
+//            content.modifiedAt = Date()
+//        }
+//    }
 }
 
 //public extension HistoryRecord {

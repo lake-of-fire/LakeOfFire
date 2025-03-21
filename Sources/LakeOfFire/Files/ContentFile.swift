@@ -32,7 +32,8 @@ extension ContentFile: DeletableReaderContent {
     @MainActor
     public func delete() async throws {
         try await ReaderFileManager.shared.delete(readerFileURL: url)
-        try await deleteRealmData()
+//        try await deleteRealmData()
+        try await delete()
     }
     
     @MainActor

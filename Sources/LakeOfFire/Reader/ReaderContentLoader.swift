@@ -37,6 +37,18 @@ public struct ReaderContentLoader {
             contentKey = content.compoundKey
             realmConfiguration = config
         }
+        
+        @RealmBackgroundActor
+        public func resolveOnBackgroundActor() async throws -> (any ReaderContentProtocol)? {
+            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return nil }
+            return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
+        }
+        
+        @MainActor
+        public func resolveOnMainActor() async throws -> (any ReaderContentProtocol)? {
+            let realm = try await Realm(configuration: realmConfiguration, actor: MainActor.shared)
+            return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
+        }
     }
     
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
@@ -56,59 +68,6 @@ public struct ReaderContentLoader {
         get async throws {
             return try await Self.load(url: URL(string: "about:blank")!, persist: true)!
         }
-    }
-    
-    @MainActor
-    public static func fromBackgroundActor(content: any ReaderContentProtocol) async throws -> (any ReaderContentProtocol)? {
-        if content.realm == nil {
-            return content
-        }
-        guard let ref = await { @RealmBackgroundActor in
-            return ContentReference(content: content)
-        }() else { return nil }
-        let realm = try await Realm(configuration: ref.realmConfiguration, actor: MainActor.shared)
-        await realm.asyncRefresh() // Ensure exists from other thread
-        return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
-    }
-    
-    @RealmBackgroundActor
-    public static func fromMainActor(content: any ReaderContentProtocol) async throws -> (any ReaderContentProtocol)? {
-        if content.realm == nil {
-            return content
-        }
-        guard let ref = await { @MainActor in
-            return ContentReference(content: content)
-        }() else { return nil }
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ref.realmConfiguration) else { return nil }
-        return realm.object(ofType: ref.contentType, forPrimaryKey: ref.contentKey) as? any ReaderContentProtocol
-    }
-    
-    @MainActor
-    public static func fromBackgroundActor(contents: [any ReaderContentProtocol]) async throws -> [any ReaderContentProtocol] {
-        if contents.allSatisfy({ $0.realm == nil }) {
-            return contents
-        }
-        var mapped: [any ReaderContentProtocol] = []
-        for content in contents {
-            if let newMapped = try await fromBackgroundActor(content: content) {
-                mapped.append(newMapped)
-            }
-        }
-        return mapped
-    }
-    
-    @RealmBackgroundActor
-    public static func fromMainActor(contents: [any ReaderContentProtocol]) async throws -> [any ReaderContentProtocol] {
-        if contents.allSatisfy({ $0.realm == nil }) {
-            return contents
-        }
-        var mapped: [any ReaderContentProtocol] = []
-        for content in contents {
-            if let newMapped = try await fromMainActor(content: content) {
-                mapped.append(newMapped)
-            }
-        }
-        return mapped
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
@@ -165,7 +124,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        let content = try await { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
+        let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
@@ -176,7 +135,7 @@ public struct ReaderContentLoader {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 historyRecord.updateCompoundKey()
-                return historyRecord
+                return ReaderContentLoader.ContentReference(content: historyRecord)
             }
             
             var match: (any ReaderContentProtocol)?
@@ -216,14 +175,12 @@ public struct ReaderContentLoader {
                     match.modifiedAt = Date()
                 }
             }
-            return match
+            guard let match else { return nil }
+            return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
         
-        if let content {
-            return try await fromBackgroundActor(content: content)
-        }
-        return nil
+        return try await contentRef?.resolveOnMainActor()
     }
     
     @MainActor
@@ -234,7 +191,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(html: String) async throws -> (any ReaderContentProtocol)? {
-        let content = try await { @RealmBackgroundActor () -> (any ReaderContentProtocol)? in
+        let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return nil }
             guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return nil }
             guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return nil }
@@ -257,7 +214,7 @@ public struct ReaderContentLoader {
             let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
             
             if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
-                return match
+                return ReaderContentLoader.ContentReference(content: match)
             }
             
             let historyRecord = HistoryRecord()
@@ -272,13 +229,10 @@ public struct ReaderContentLoader {
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
-            return historyRecord
+            return ReaderContentLoader.ContentReference(content: historyRecord)
         }()
         
-        if let content = content {
-            return try await fromBackgroundActor(content: content)
-        }
-        return nil
+        return try await contentRef?.resolveOnMainActor()
     }
     
     /// Returns a URL to load for the given content into a Reader instance. The URL is either a resource (like a web location),
