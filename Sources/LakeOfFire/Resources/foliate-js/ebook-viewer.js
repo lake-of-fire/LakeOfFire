@@ -348,6 +348,7 @@ class Reader {
             mainDocumentURL: mainDocumentURL,
         })
     }, 400)
+    
     #onRelocate({ detail }) {
         const { fraction, location, tocItem, pageItem, cfi } = detail
         const percent = percentFormat.format(fraction)
@@ -425,6 +426,10 @@ class CacheWarmer {
 
 
 window.setEbookViewerLayout = (layoutMode) => {
+    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+}
+
+window.setEbookViewerWritingDirection = (layoutMode) => {
     globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
 }
 

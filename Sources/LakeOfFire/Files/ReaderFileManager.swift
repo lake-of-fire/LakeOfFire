@@ -87,6 +87,7 @@ public class ReaderFileManager: ObservableObject {
     }
     
     /*@MainActor*/ @Published public var cloudDrive: CloudDrive?
+//    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
     /*@MainActor*/ @Published public var localDrive: CloudDrive?
     public var ubiquityContainerIdentifier: String? = nil {
         didSet {
@@ -106,6 +107,7 @@ public class ReaderFileManager: ObservableObject {
     public func initialize(ubiquityContainerIdentifier: String) async throws {
         self.ubiquityContainerIdentifier = ubiquityContainerIdentifier
         cloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "Documents")
+//        legacyCloudDrive = try? await CloudDrive(ubiquityContainerIdentifier: ubiquityContainerIdentifier, relativePathToRootInContainer: "")
         localDrive = try? await CloudDrive(storage: .localDirectory(rootURL: Self.getDocumentsDirectory()))
         Task { [weak self] in
             try await self?.refreshAllFilesMetadata()

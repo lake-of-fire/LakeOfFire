@@ -208,9 +208,9 @@ public class ReaderModeViewModel: ObservableObject {
                 } else {
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
-                Task { @MainActor in
+                try await { @MainActor in
                     isReaderModeLoading = false
-                }
+                }()
             }()
         }()
     }
@@ -261,6 +261,7 @@ public class ReaderModeViewModel: ObservableObject {
                     // TODO: Fix content rules... images still load...
                     contentRules = contentRulesForReadabilityLoading
                     navigator?.loadHTML(html, baseURL: committedURL)
+                    isReaderModeLoading = false
                 } else {
                     readabilityContent = html
                     showReaderView(

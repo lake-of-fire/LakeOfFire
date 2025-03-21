@@ -135,6 +135,21 @@ public struct ImageUpdatedMessage {
     }
 }
 
+public struct WritingDirectionMessage {
+    public var writingDirection: String
+    public var mainDocumentURL: URL?
+    
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        
+        guard let direction = body["writingDirection"] as? String else { return nil }
+        writingDirection = direction
+        if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
+            mainDocumentURL = pageURL
+        }
+    }
+}
+
 //public struct YoutubeCaptionsMessage {
 //    public enum Status: String {
 //        case idle = "idle"
