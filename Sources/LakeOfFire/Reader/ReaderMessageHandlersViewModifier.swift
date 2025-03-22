@@ -71,7 +71,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                     return
                 }
-                
+
                 guard !url.isNativeReaderView else { return }
                 readerModeViewModel.readabilityContent = result.outputHTML
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector

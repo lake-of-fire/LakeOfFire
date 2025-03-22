@@ -246,7 +246,9 @@ public struct ReaderWebView: View {
         try Task.checkCancellation()
         try await readerContent.load(url: state.pageURL)
         try Task.checkCancellation()
-        guard let content = readerContent.content else { return }
+        guard let content = readerContent.content else {
+            return
+        }
         // TODO: Add onURLChanged or rename these view model methods to be more generic...
         try await readerViewModel.onNavigationCommitted(content: content, newState: state)
         try Task.checkCancellation()

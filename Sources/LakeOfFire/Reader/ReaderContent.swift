@@ -20,6 +20,7 @@ public class ReaderContent: ObservableObject {
             try Task.checkCancellation()
             let content = try await ReaderViewModel.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(url) else {
+                debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
             }
             self?.content = content

@@ -111,11 +111,13 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let url = content.url
         
-        await scriptCaller.evaluateJavaScript("""
+        Task {
+            await scriptCaller.evaluateJavaScript("""
             if (document.body) {
                 document.body.dataset.isNextLoadInReaderMode = 'true';
             }
             """)
+        }
         
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
@@ -245,7 +247,7 @@ public class ReaderModeViewModel: ObservableObject {
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
             }
         }
-        
+
         if newState.pageURL.isReaderURLLoaderURL {
             if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 let currentURL = readerContent.pageURL

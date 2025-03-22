@@ -41,12 +41,14 @@ public struct ReaderContentLoader {
         @RealmBackgroundActor
         public func resolveOnBackgroundActor() async throws -> (any ReaderContentProtocol)? {
             guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return nil }
+            try await realm.asyncRefresh()
             return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
         }
         
         @MainActor
         public func resolveOnMainActor() async throws -> (any ReaderContentProtocol)? {
             let realm = try await Realm(configuration: realmConfiguration, actor: MainActor.shared)
+            try await realm.asyncRefresh()
             return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
         }
     }
@@ -179,7 +181,6 @@ public struct ReaderContentLoader {
             return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
-        
         return try await contentRef?.resolveOnMainActor()
     }
     
