@@ -74,7 +74,6 @@ class LibraryCategoryViewModel: ObservableObject {
                         print("An error occurred: \(error)")
                     }
                 }
-            await refresh()
         }
         
         $categoryTitle
@@ -109,7 +108,7 @@ class LibraryCategoryViewModel: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor in
+        Task { @RealmBackgroundActor [weak objectNotificationToken] in
             objectNotificationToken?.invalidate()
         }
     }
@@ -179,7 +178,6 @@ struct LibraryCategoryView: View {
         )
     }
     
-    @EnvironmentObject private var viewModel: LibraryCategoryViewModel
     @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
     
     func unfrozen(_ category: FeedCategory) -> FeedCategory {
@@ -200,7 +198,7 @@ struct LibraryCategoryView: View {
     
     @ViewBuilder func duplicationMenu(feed: Feed) -> some View {
         Menu("Duplicate In…") {
-            ForEach((viewModel.libraryConfiguration.getCategories() ?? []).filter({ $0.isUserEditable })) { (category: FeedCategory) in
+            ForEach((libraryCategoryViewModel.libraryConfiguration.getCategories() ?? []).filter({ $0.isUserEditable })) { (category: FeedCategory) in
                 if matchingDistinctFeed(category: category, feed: feed) != nil { //}, matchingFeed?.category.id != feed.category.id {
                     Menu(category.title) {
                         Button("Overwrite Existing Feed") {
@@ -220,7 +218,7 @@ struct LibraryCategoryView: View {
                             try await libraryManagerViewModel.duplicate(feed: ThreadSafeReference(to: feed), inCategory: ThreadSafeReference(to: category), overwriteExisting: false)
                         }
                     } label: {
-                        Text(viewModel.category.title)
+                        Text(libraryCategoryViewModel.category.title)
                     }
                 }
             }
@@ -228,17 +226,17 @@ struct LibraryCategoryView: View {
     }
     
     @ViewBuilder private var categoryLabel: some View {
-        FeedCategoryButtonLabel(title: viewModel.categoryTitle, backgroundImageURL: viewModel.category.backgroundImageUrl, isCompact: true)
+        FeedCategoryButtonLabel(title: libraryCategoryViewModel.categoryTitle, backgroundImageURL: libraryCategoryViewModel.category.backgroundImageUrl, isCompact: true)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .listRowInsets(EdgeInsets())
     }
     
     var body: some View {
         ScrollViewReader { scrollProxy in
-            List(selection: $viewModel.selectedFeed) {
+            List(selection: $libraryCategoryViewModel.selectedFeed) {
                 categoryLabel
                 
-                if let opmlURL = viewModel.category.opmlURL {
+                if let opmlURL = libraryCategoryViewModel.category.opmlURL {
                     Section(header: Label("Managed", systemImage: "lock.fill")) {
                         if LibraryConfiguration.opmlURLs.contains(opmlURL) {
                             Text("Official Manabi Reader categories cannot be edited.")
@@ -253,36 +251,36 @@ struct LibraryCategoryView: View {
                     }
                 }
                 
-                if viewModel.showRestoreButton {
+                if libraryCategoryViewModel.showRestoreButton {
                     Section("Archive") {
                         Button {
                             Task {
-                                try await viewModel.restoreCategory()
+                                try await libraryCategoryViewModel.restoreCategory()
                             }
                         } label: {
-                            Label("Restore Category", systemImage: viewModel.deleteButtonImageName)
+                            Label("Restore Category", systemImage: libraryCategoryViewModel.deleteButtonImageName)
                                 .frame(maxWidth: .infinity)
                         }
                     }
                 }
                 
                 Section("Category Title") {
-                    TextField("Title", text: $viewModel.categoryTitle, prompt: Text("Enter category title"))
-                        .disabled(!viewModel.isUserEditable)
+                    TextField("Title", text: $libraryCategoryViewModel.categoryTitle, prompt: Text("Enter category title"))
+                        .disabled(!libraryCategoryViewModel.isUserEditable)
                 }
                     
                 Section {
                     TextField("Image URL", text: Binding {
-                        viewModel.categoryBackgroundImageURL == "about:blank" ? "" : viewModel.categoryBackgroundImageURL
-                    } set: { viewModel.categoryBackgroundImageURL = $0 }, axis: .vertical)
-                        .disabled(!viewModel.isUserEditable)
+                        libraryCategoryViewModel.categoryBackgroundImageURL == "about:blank" ? "" : libraryCategoryViewModel.categoryBackgroundImageURL
+                    } set: { libraryCategoryViewModel.categoryBackgroundImageURL = $0 }, axis: .vertical)
+                        .disabled(!libraryCategoryViewModel.isUserEditable)
                 } header: {
                     Text("Category Image URL")
                 }
                 
                 Section("Feeds") {
                     // TODO: Cache feeds in subview structs
-                    ForEach(viewModel.category.getFeeds() ?? []) { feed in
+                    ForEach(libraryCategoryViewModel.category.getFeeds() ?? []) { feed in
                         let isFeedUserEditable = feed.isUserEditable()
                         NavigationLink(value: feed) {
                             FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
@@ -294,7 +292,7 @@ struct LibraryCategoryView: View {
                                 Divider()
                                 Button(role: .destructive) {
                                     Task {
-                                        try await viewModel.deleteFeed(feed)
+                                        try await libraryCategoryViewModel.deleteFeed(feed)
                                     }
                                 } label: {
                                     Text("Delete Feed")
@@ -304,7 +302,7 @@ struct LibraryCategoryView: View {
                         }
                     }
                     .onDelete {
-                        viewModel.deleteFeed(at: $0)
+                        libraryCategoryViewModel.deleteFeed(at: $0)
                     }
                 }
             }
@@ -326,31 +324,34 @@ struct LibraryCategoryView: View {
 #endif
             .toolbar {
                 ToolbarItem(placement: .automatic) {
-                    if viewModel.showMoreOptions {
+                    if libraryCategoryViewModel.showMoreOptions {
                         moreOptionsMenu
                     }
                 }
 #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     // TODO: Cache feeds in subview structs
-                    if viewModel.isUserEditable && !viewModel.category.isEmpty() {
+                    if libraryCategoryViewModel.isUserEditable && !libraryCategoryViewModel.category.isEmpty() {
                         EditButton()
                     }
                 }
                 ToolbarItem(placement: buttonsPlacement) {
-                    if viewModel.isUserEditable {
+                    if libraryCategoryViewModel.isUserEditable {
                         addFeedButton(scrollProxy: scrollProxy)
                     }
                 }
 #endif
             }
         }
+        .task(id: libraryCategoryViewModel.category.id) { @MainActor in
+            libraryCategoryViewModel.refresh()
+        }
     }
     
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
             Task { @MainActor in
-                let ref = ThreadSafeReference(to: viewModel.category)
+                let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
                 try await Task { @RealmBackgroundActor in
                     guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref) else { return }
                     let feedID = feed.id.uuidString
@@ -363,19 +364,19 @@ struct LibraryCategoryView: View {
             Label("Add Feed", systemImage: "plus.circle")
                 .labelStyle(.titleAndIcon)
         }
-        .disabled(viewModel.category.opmlURL != nil)
+        .disabled(libraryCategoryViewModel.category.opmlURL != nil)
         .keyboardShortcut("n", modifiers: [.command])
     }
     
     @ViewBuilder private var moreOptionsMenu: some View {
         Menu {
-            if viewModel.showDeleteButton {
+            if libraryCategoryViewModel.showDeleteButton {
                 Button(role: .destructive) {
                     Task {
-                        try await viewModel.deleteCategory()
+                        try await libraryCategoryViewModel.deleteCategory()
                     }
                 } label: {
-                    Label(viewModel.deleteButtonTitle, systemImage: viewModel.deleteButtonImageName)
+                    Label(libraryCategoryViewModel.deleteButtonTitle, systemImage: libraryCategoryViewModel.deleteButtonImageName)
                         .frame(maxWidth: .infinity)
                 }
             }

@@ -90,7 +90,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
     }
     
     deinit {
-        Task { @RealmBackgroundActor [readerContentObjectNotificationToken] in
+        Task { @RealmBackgroundActor [weak readerContentObjectNotificationToken] in
             readerContentObjectNotificationToken?.invalidate()
         }
     }

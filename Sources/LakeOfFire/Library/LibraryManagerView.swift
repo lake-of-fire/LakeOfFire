@@ -25,10 +25,6 @@ struct UserScriptAllowedDomainCell: View {
 struct LibraryScriptForm: View {
     let script: UserScript
     
-    func unfrozen(_ script: UserScript) -> UserScript {
-        return script.isFrozen ? script.thaw() ?? script : script
-    }
-    
     var body: some View {
         Form {
             LibraryScriptFormSections(script: script)
