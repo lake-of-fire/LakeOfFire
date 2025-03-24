@@ -312,7 +312,7 @@ struct LibraryCategoryView: View {
 #if os(macOS)
             .textFieldStyle(.roundedBorder)
             .safeAreaInset(edge: .bottom) {
-                if viewModel.isUserEditable {
+                if libraryCategoryViewModel.isUserEditable {
                     HStack(spacing: 0) {
                         addFeedButton(scrollProxy: scrollProxy)
                             .buttonStyle(.borderless)

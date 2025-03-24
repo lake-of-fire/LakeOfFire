@@ -186,7 +186,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(urlString: String, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme ?? "") else { return nil }
+        guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme ?? ""), url.host != nil else { return nil }
         return try await load(url: url, countsAsHistoryVisit: countsAsHistoryVisit)
     }
     
