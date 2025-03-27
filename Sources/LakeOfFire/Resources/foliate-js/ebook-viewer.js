@@ -4,7 +4,7 @@ import { Overlayer } from '../foliate-js/overlayer.js'
 
 // TODO: replaceText factory for setting isCacheWarmer and returning a function below
 const replaceText = async (href, text, mediaType) => {
-//    const replaceText = async (href, text, mediaType, isCacheWarmer) => {
+    //    const replaceText = async (href, text, mediaType, isCacheWarmer) => {
     const response = await fetch('ebook://ebook/process-text', {
         method: "POST", // *GET, POST, PUT, DELETE, etc.
         mode: "cors", // no-cors, *cors, same-origin
@@ -19,7 +19,7 @@ const replaceText = async (href, text, mediaType) => {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
-//        let html = await response.text();
+        //        let html = await response.text();
         /*if (html && html.replace && this.view.dataset.isCacheWarmer === 'true') {
          html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ");
          }*/
@@ -37,12 +37,12 @@ const debounce = (f, wait, immediate) => {
         const later = () => {
             timeout = null
             if (!immediate) f(...args)
-        }
+                }
         const callNow = immediate && !timeout
         if (timeout) clearTimeout(timeout)
-        timeout = setTimeout(later, wait)
-        if (callNow) f(...args)
-    }
+            timeout = setTimeout(later, wait)
+            if (callNow) f(...args)
+                }
 }
 
 const isZip = async file => {
@@ -52,74 +52,74 @@ const isZip = async file => {
 
 const makeZipLoader = async (file, isCacheWarmer) => {
     const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
-        await import('./vendor/zip.js')
+    await import('./vendor/zip.js')
     configure({ useWebWorkers: false })
     const reader = new ZipReader(new BlobReader(file))
     const entries = await reader.getEntries()
     const map = new Map(entries.map(entry => [entry.filename, entry]))
     const load = f => (name, ...args) =>
-        map.has(name) ? f(map.get(name), ...args) : null
+    map.has(name) ? f(map.get(name), ...args) : null
     const loadText = load(entry => entry.getData(new TextWriter()))
     const loadBlob = load((entry, type) => entry.getData(new BlobWriter(type)))
     const getSize = name => map.get(name)?.uncompressedSize ?? 0
-//    const wrappedReplaceText = ((href, text, mediaType) => {
-//        replaceText(href, text, mediaType, isCacheWarmer)
-//    })
+    //    const wrappedReplaceText = ((href, text, mediaType) => {
+    //        replaceText(href, text, mediaType, isCacheWarmer)
+    //    })
     return { entries, loadText, loadBlob, getSize, replaceText }
 }
 
 const getFileEntries = async entry => entry.isFile ? entry
-    : (await Promise.all(Array.from(
-        await new Promise((resolve, reject) => entry.createReader()
-            .readEntries(entries => resolve(entries), error => reject(error))),
-        getFileEntries))).flat()
+: (await Promise.all(Array.from(
+                                await new Promise((resolve, reject) => entry.createReader()
+                                                  .readEntries(entries => resolve(entries), error => reject(error))),
+                                getFileEntries))).flat()
 
 const isCBZ = ({ name, type }) =>
-    type === 'application/vnd.comicbook+zip' || name.endsWith('.cbz')
+type === 'application/vnd.comicbook+zip' || name.endsWith('.cbz')
 
 const isFB2 = ({ name, type }) =>
-    type === 'application/x-fictionbook+xml' || name.endsWith('.fb2')
+type === 'application/x-fictionbook+xml' || name.endsWith('.fb2')
 
 const isFBZ = ({ name, type }) =>
-    type === 'application/x-zip-compressed-fb2'
-    || name.endsWith('.fb2.zip') || name.endsWith('.fbz')
+type === 'application/x-zip-compressed-fb2'
+|| name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
 const getView = async (file, isCacheWarmer) => {
     let book
     if (!file.size) throw new Error('File not found')
-    else if (await isZip(file)) {
-        const loader = await makeZipLoader(file, isCacheWarmer)
-        if (isCBZ(file)) {
-            throw new Error('File format not yet supported')
-//            const { makeComicBook } = await import('./comic-book.js')
-//            book = makeComicBook(loader, file)
-        } else if (isFBZ(file)) {
-            throw new Error('File format not yet supported')
-//            const { makeFB2 } = await import('./fb2.js')
-//            const { entries } = loader
-//            const entry = entries.find(entry => entry.filename.endsWith('.fb2'))
-//            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
-//            book = await makeFB2(blob)
+        else if (await isZip(file)) {
+            const loader = await makeZipLoader(file, isCacheWarmer)
+            if (isCBZ(file)) {
+                throw new Error('File format not yet supported')
+                //            const { makeComicBook } = await import('./comic-book.js')
+                //            book = makeComicBook(loader, file)
+            } else if (isFBZ(file)) {
+                throw new Error('File format not yet supported')
+                //            const { makeFB2 } = await import('./fb2.js')
+                //            const { entries } = loader
+                //            const entry = entries.find(entry => entry.filename.endsWith('.fb2'))
+                //            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
+                //            book = await makeFB2(blob)
+            } else {
+                const { EPUB } = await import('./epub.js')
+                book = await new EPUB(loader).init()
+            }
         } else {
-            const { EPUB } = await import('./epub.js')
-            book = await new EPUB(loader).init()
+            throw new Error('File format not yet supported')
+            //        const { isMOBI, MOBI } = await import('./mobi.js')
+            //        if (await isMOBI(file)) {
+            //            const fflate = await import('./vendor/fflate.js')
+            //            book = await new MOBI({ unzlib: fflate.unzlibSync }).open(file)
+            //        } else if (isFB2(file)) {
+            //            const { makeFB2 } = await import('./fb2.js')
+            //            book = await makeFB2(file)
+            //        }
         }
-    } else {
-        throw new Error('File format not yet supported')
-//        const { isMOBI, MOBI } = await import('./mobi.js')
-//        if (await isMOBI(file)) {
-//            const fflate = await import('./vendor/fflate.js')
-//            book = await new MOBI({ unzlib: fflate.unzlibSync }).open(file)
-//        } else if (isFB2(file)) {
-//            const { makeFB2 } = await import('./fb2.js')
-//            book = await makeFB2(file)
-//        }
-    }
     if (!book) throw new Error('File type not supported')
-    const view = document.createElement('foliate-view')
-    if (!isCacheWarmer) {
-        document.body.append(view)
-    }
+        const view = document.createElement('foliate-view')
+        if (!isCacheWarmer) {
+            document.body.append(view)
+        }
     await view.open(book, isCacheWarmer)
     return view
 }
@@ -197,25 +197,28 @@ class Reader {
     }
     async open(file) {
         $('#loading-indicator').style.display = 'block'
-
+        
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
+        if (typeof window.initialLayoutMode !== 'undefined') {
+            this.view.renderer.setAttribute('flow', window.initialLayoutMode)
+        }
         this.view.addEventListener('goTo', this.#onGoTo.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
-
+        
         const { book } = this.view
         this.view.renderer.setStyles?.(getCSS(this.style))
-//        this.view.renderer.next()
+        //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
         $('#left-button').addEventListener('click', () => this.view.goLeft())
         $('#right-button').addEventListener('click', () => this.view.goRight())
-
+        
         const slider = $('#progress-slider')
         slider.dir = book.dir
         slider.addEventListener('input', e =>
-            this.view.goToFraction(parseFloat(e.target.value)))
+                                this.view.goToFraction(parseFloat(e.target.value)))
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
         if (sizes.length < 100) {
             const total = sizes.reduce((a, b) => a + b, 0)
@@ -227,26 +230,26 @@ class Reader {
                 $('#tick-marks').append(option)
             }
         }
-
+        
         document.addEventListener('keydown', this.#handleKeydown.bind(this))
-
+        
         const title = book.metadata?.title ?? 'Untitled Book'
         document.title = title
         $('#side-bar-title').innerText = title
         const author = book.metadata?.author
         let authorText = typeof author === 'string' ? author
-            : author
-                ?.map(author => typeof author === 'string' ? author : author.name)
-                ?.join(', ')
-                ?? ''
+        : author
+        ?.map(author => typeof author === 'string' ? author : author.name)
+        ?.join(', ')
+        ?? ''
         $('#side-bar-author').innerText = authorText
         window.webkit.messageHandlers.pageMetadataUpdated.postMessage({
             'title': title, 'author': authorText, 'url': window.top.location.href})
-
+        
         Promise.resolve(book.getCover?.())?.then(blob => {
             blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
         })
-
+        
         const toc = book.toc
         if (toc) {
             this.#tocView = createTOCView(toc, href => {
@@ -255,7 +258,7 @@ class Reader {
             })
             $('#toc-view').append(this.#tocView.element)
         }
-
+        
         // load and show highlights embedded in the file by Calibre
         const bookmarks = await book.getCalibreBookmarks?.()
         if (bookmarks) {
@@ -268,16 +271,16 @@ class Reader {
                     const annotation = { value, color, note }
                     const list = this.annotations.get(obj.spine_index)
                     if (list) list.push(annotation)
-                    else this.annotations.set(obj.spine_index, [annotation])
-                    this.annotationsByValue.set(value, annotation)
-                }
+                        else this.annotations.set(obj.spine_index, [annotation])
+                            this.annotationsByValue.set(value, annotation)
+                            }
             }
             this.view.addEventListener('create-overlay', e => {
                 const { index } = e.detail
                 const list = this.annotations.get(index)
                 if (list) for (const annotation of list)
                     this.view.addAnnotation(annotation)
-            })
+                    })
             this.view.addEventListener('draw-annotation', e => {
                 const { draw, annotation } = e.detail
                 const { color } = annotation
@@ -286,20 +289,20 @@ class Reader {
             this.view.addEventListener('show-annotation', e => {
                 const annotation = this.annotationsByValue.get(e.detail.value)
                 if (annotation.note) alert(annotation.note)
-            })
+                    })
         }
     }
     #handleKeydown(event) {
         const k = event.key
         if (k === 'ArrowLeft' || k === 'h') this.view.goLeft()
-        else if(k === 'ArrowRight' || k === 'l') this.view.goRight()
-    }
+            else if(k === 'ArrowRight' || k === 'l') this.view.goRight()
+                }
     #onGoTo({}) {
         $('#loading-indicator').style.display = 'block'
     }
     #onLoad({ detail: { doc } }) {
         $('#loading-indicator').style.display = 'none'
-
+        
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
@@ -339,7 +342,7 @@ class Reader {
             }
         }
     }
-
+    
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
@@ -361,10 +364,10 @@ class Reader {
         slider.value = fraction
         slider.title = `${percent} · ${loc}`
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
-        
-        if (this.hasLoadedLastPosition) {
-            this.#postUpdateReadingProgressMessage({ fraction, cfi })
-        }
+            
+            if (this.hasLoadedLastPosition) {
+                this.#postUpdateReadingProgressMessage({ fraction, cfi })
+            }
     }
 }
 
@@ -384,7 +387,7 @@ class CacheWarmer {
     }
     
     #onLoad({ detail: { doc } }) {
-//        window.webkit.messageHandlers.pritn.postMessage({"test": "cache onload..", "1": this.view.ownerDocument.defaultView})
+        //        window.webkit.messageHandlers.pritn.postMessage({"test": "cache onload..", "1": this.view.ownerDocument.defaultView})
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
             frameURL: event.detail.doc.location.href,
@@ -399,14 +402,14 @@ class CacheWarmer {
         }
     }
     
-//    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
-//        let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
-//        window.webkit.messageHandlers.updateReadingProgress.postMessage({
-//        fractionalCompletion: fraction,
-//        cfi: cfi,
-//        mainDocumentURL: mainDocumentURL,
-//        })
-//    }, 400)
+    //    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
+    //        let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
+    //        window.webkit.messageHandlers.updateReadingProgress.postMessage({
+    //        fractionalCompletion: fraction,
+    //        cfi: cfi,
+    //        mainDocumentURL: mainDocumentURL,
+    //        })
+    //    }, 400)
 }
 
 //const open = async file => {
@@ -437,7 +440,7 @@ window.loadNextCacheWarmerSection = async () => {
     await window.cacheWarmer.view.renderer.nextSection()
 }
 
-window.loadEBook = ({ url }) => {
+window.loadEBook = ({ url, layoutMode }) => {
     let reader = new Reader()
     globalThis.reader = reader
     
@@ -451,13 +454,16 @@ window.loadEBook = ({ url }) => {
         .then(res => res.blob())
         .then(async (blob) => {
             window.blob = blob
+            if (layoutMode) {
+                window.initialLayoutMode = layoutMode
+            }
             await reader.open(new File([blob], new URL(url).pathname))
         })
         .then(() => {
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         .catch(e => console.error(e))
-}
+        }
 
 window.loadLastPosition = async ({ cfi }) => {
     if (cfi.length > 0) {

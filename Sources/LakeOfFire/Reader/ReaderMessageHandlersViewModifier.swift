@@ -6,6 +6,8 @@ import RealmSwiftGaps
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
     
+    @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "scrolled"
+    
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
@@ -71,7 +73,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                     return
                 }
-
+                
                 guard !url.isNativeReaderView else { return }
                 readerModeViewModel.readabilityContent = result.outputHTML
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
@@ -104,30 +106,30 @@ internal extension ReaderMessageHandlersViewModifier {
                 }
             },
             "showReaderView": { @MainActor _ in
-//                let contentURL = readerContent.pageURL
-//                Task { @MainActor in
-                    guard readerContent.pageURL == readerViewModel.state.pageURL else {
-                        print("ERROR: showReaderView called with mismatched content URL (\(readerContent.content?.url.absoluteString) vs \(readerViewModel.state.pageURL.absoluteString)")
-                        return
-                    }
-//                    guard readerContent.pageURL == contentURL else { return }
+                //                let contentURL = readerContent.pageURL
+                //                Task { @MainActor in
+                guard readerContent.pageURL == readerViewModel.state.pageURL else {
+                    print("ERROR: showReaderView called with mismatched content URL (\(readerContent.content?.url.absoluteString) vs \(readerViewModel.state.pageURL.absoluteString)")
+                    return
+                }
+                //                    guard readerContent.pageURL == contentURL else { return }
                 readerModeViewModel.showReaderView(
                     readerContent: readerContent,
                     scriptCaller: scriptCaller
                 )
-//                }
+                //                }
             },
             "showOriginal": { @MainActor _ in
                 Task { @MainActor in
                     try await showOriginal()
                 }
             },
-//            "youtubeCaptions": { message in
-//                Task { @MainActor in
-//                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
-//                    debugPrint(result)
-//                }
-//            },
+            //            "youtubeCaptions": { message in
+            //                Task { @MainActor in
+            //                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
+            //                    debugPrint(result)
+            //                }
+            //            },
             "rssURLs": { @MainActor message in
                 Task { @MainActor in
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
@@ -169,16 +171,26 @@ internal extension ReaderMessageHandlersViewModifier {
             },
             "ebookViewerInitialized": { @MainActor message in
                 let url = readerViewModel.state.pageURL
-                if let scheme = url.scheme, scheme == "ebook" || scheme == "ebook-url", url.absoluteString.hasPrefix("\(url.scheme ?? "")://"), url.isEBookURL, let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(url.scheme ?? "")://".count))") {
+                if let scheme = url.scheme,
+                   (scheme == "ebook" || scheme == "ebook-url"),
+                   url.absoluteString.hasPrefix("\(scheme)://"),
+                   url.isEBookURL,
+                   let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
                     Task { @MainActor in
-                        await scriptCaller.evaluateJavaScript("window.loadEBook({ url })", arguments: ["url": loaderURL.absoluteString])
+                        await scriptCaller.evaluateJavaScript(
+                            "window.loadEBook({ url, layoutMode })",
+                            arguments: [
+                                "url": loaderURL.absoluteString,
+                                "layoutMode": ebookViewerLayout
+                            ]
+                        )
                     }
                 }
             },
             "videoStatus": { @MainActor message in
                 Task(priority: .utility) { @RealmBackgroundActor in
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
-                    debugPrint("!!", result)
+                    //                    debugPrint("!!", result)
                     if let pageURL = result.pageURL {
                         let mediaStatus = try await MediaStatus.getOrCreate(url: pageURL)
                     }

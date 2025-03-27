@@ -167,7 +167,7 @@ public struct Reader: View {
     var onURLChanged: ((WebViewState) async throws -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
-    var buildMenu: ((Any) -> Void)?
+    var buildMenu: BuildMenuType?
     
     @State private var obscuredInsets: EdgeInsets? = nil
     
@@ -182,7 +182,7 @@ public struct Reader: View {
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
-        buildMenu: ((Any) -> Void)? = nil
+        buildMenu: BuildMenuType? = nil
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable

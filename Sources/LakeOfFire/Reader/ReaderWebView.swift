@@ -80,11 +80,7 @@ public struct ReaderWebView: View {
     var onURLChanged: ((WebViewState) async throws -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
-#if os(iOS)
-    var buildMenu: ((UIMenuBuilder) -> Void)?
-#elseif os(macOS)
-    var buildMenu: ((Any) -> Void)?
-#endif
+    var buildMenu: BuildMenuType?
     
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
@@ -117,7 +113,7 @@ public struct ReaderWebView: View {
         onURLChanged: ((WebViewState) async throws -> Void)? = nil,
         hideNavigationDueToScroll: Binding<Bool> = .constant(false),
         textSelection: Binding<String?>? = nil,
-        buildMenu: ((Any) -> Void)? = nil
+        buildMenu: BuildMenuType? = nil
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
@@ -129,15 +125,7 @@ public struct ReaderWebView: View {
         self.onURLChanged = onURLChanged
         _hideNavigationDueToScroll = hideNavigationDueToScroll
         _textSelection = textSelection ?? .constant(nil)
-#if os(iOS)
-        if let buildMenu = buildMenu as? ((UIMenuBuilder) -> Void)? {
-            self.buildMenu = buildMenu
-        } else {
-            self.buildMenu = nil
-        }
-#else
         self.buildMenu = buildMenu
-#endif
     }
     
     public var body: some View {
