@@ -42,6 +42,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     @Persisted public var categoryIDs: RealmSwift.List<UUID>
     @Persisted public var userScriptIDs: RealmSwift.List<UUID>
     
+    @Persisted public var syncableRevisionCount = 0
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -57,7 +58,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         ]
     }()
     
-    public var needsSyncToServer: Bool {
+    public var needsSyncToAppServer: Bool {
         return false
     }
     
@@ -165,6 +166,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     var sortedIndexes = [Int]()
                     for (index, categoryID) in primaryConfiguration.categoryIDs.enumerated() {
                         if inactiveCategoryIDs.contains(categoryID) {
+                            try Task.checkCancellation()
                             sortedIndexes.append(index)
                         }
                     }
@@ -228,9 +230,9 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     // Delete consolidated configurations
                     for otherConfig in otherConfigurations {
                         otherConfig.isDeleted = true
-                        otherConfig.modifiedAt = Date()
+                        otherConfig.refreshChangeMetadata()
                     }
-                    primaryConfiguration.modifiedAt = Date()
+                    primaryConfiguration.refreshChangeMetadata()
                 }
             }
             
@@ -244,9 +246,10 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                 try await realm.asyncWrite {
                     let existingCategoryIDs = Set(primaryConfiguration.categoryIDs)
                     for category in orphanCategories where !existingCategoryIDs.contains(category.id) {
+                        try Task.checkCancellation()
                         primaryConfiguration.categoryIDs.append(category.id)
                     }
-                    primaryConfiguration.modifiedAt = Date()
+                    primaryConfiguration.refreshChangeMetadata()
                 }
             }
             
@@ -391,12 +394,12 @@ public class LibraryDataManager: NSObject {
                     for (idx, candidateID) in Array(configuration.userScriptIDs).enumerated() {
                         if candidateID == script.id {
                             configuration.userScriptIDs.remove(at: idx)
-                            configuration.modifiedAt = Date()
+                            configuration.refreshChangeMetadata()
                         }
                     }
                 } else if !configuration.userScriptIDs.contains(script.id) {
                     configuration.userScriptIDs.append(script.id)
-                    configuration.modifiedAt = Date()
+                    configuration.refreshChangeMetadata()
                 }
             }
         }
@@ -417,7 +420,7 @@ public class LibraryDataManager: NSObject {
             try await realm.asyncWrite {
                 guard !configuration.categoryIDs.contains(where: { $0 == categoryID }) else { return }
                 configuration.categoryIDs.append(categoryID)
-                configuration.modifiedAt = Date()
+                configuration.refreshChangeMetadata()
             }
         }
         return category
@@ -452,7 +455,7 @@ public class LibraryDataManager: NSObject {
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
-                    feed.modifiedAt = Date()
+                    feed.refreshChangeMetadata()
                 }
             }
             
@@ -463,7 +466,7 @@ public class LibraryDataManager: NSObject {
                 try await realm.asyncWrite {
                     for dupeFeed in dupeFeeds {
                         dupeFeed.isDeleted = true
-                        dupeFeed.modifiedAt = Date()
+                        dupeFeed.refreshChangeMetadata()
                     }
                 }
             }
@@ -488,7 +491,7 @@ public class LibraryDataManager: NSObject {
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
-        value.modifiedAt = Date()
+        value.refreshChangeMetadata()
         value.isDeleted = false
         value.isArchived = false
         value.categoryID = category.id
@@ -514,7 +517,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.userScriptIDs.append(script.id)
-                configuration.modifiedAt = Date()
+                configuration.refreshChangeMetadata()
             }
         }
         return script
@@ -586,7 +589,7 @@ public class LibraryDataManager: NSObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     configuration.userScriptIDs.insert(script.id, at: lastNeighborIdx + 1)
-                    configuration.modifiedAt = Date()
+                    configuration.refreshChangeMetadata()
                 }
             }
             try Task.checkCancellation()
@@ -602,7 +605,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         configuration.userScriptIDs.move(from: fromIdx, to: idx)
-                        configuration.modifiedAt = Date()
+                        configuration.refreshChangeMetadata()
                     }
                 }
             }
@@ -624,7 +627,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
-                configuration.modifiedAt = Date()
+                configuration.refreshChangeMetadata()
             }
         }
         
@@ -637,7 +640,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         category.isDeleted = true
-                        category.modifiedAt = Date()
+                        category.refreshChangeMetadata()
                     }
                 }
             }
@@ -653,7 +656,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         feed.isDeleted = true
-                        feed.modifiedAt = Date()
+                        feed.refreshChangeMetadata()
                     }
                 }
             }
@@ -671,7 +674,7 @@ public class LibraryDataManager: NSObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
-                    configuration.modifiedAt = Date()
+                    configuration.refreshChangeMetadata()
                 }
             }
             try Task.checkCancellation()
@@ -687,7 +690,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         configuration.categoryIDs.move(from: fromIdx, to: idx)
-                        configuration.modifiedAt = Date()
+                        configuration.refreshChangeMetadata()
                     }
                 }
             }
@@ -709,7 +712,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.categoryIDs.remove(atOffsets: toRemove)
-                configuration.modifiedAt = Date()
+                configuration.refreshChangeMetadata()
             }
         }
     }
@@ -726,7 +729,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 libraryConfiguration.opmlLastImportedAt = Date()
-                libraryConfiguration.modifiedAt = Date()
+                libraryConfiguration.refreshChangeMetadata()
             }
         }
     }
@@ -972,7 +975,7 @@ public class LibraryDataManager: NSObject {
         }
         
         if didChange {
-            script.modifiedAt = Date()
+            script.refreshChangeMetadata()
         }
     }
     
@@ -1041,7 +1044,7 @@ public class LibraryDataManager: NSObject {
         }
         
         if didChange {
-            category.modifiedAt = Date()
+            category.refreshChangeMetadata()
         }
     }
     
@@ -1183,7 +1186,7 @@ public class LibraryDataManager: NSObject {
         }
         
         if didChange {
-            feed.modifiedAt = Date()
+            feed.refreshChangeMetadata()
         }
     }
     

@@ -9,13 +9,14 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
     @Persisted public var url = URL(string: "about:blank")!
     @Persisted public var providerMediaID: String?
 
+    @Persisted public var syncableRevisionCount = 0
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
 //    @Persisted(originProperty: "mediaStatus") public var feeds: LinkingObjects<MediaTranscript>
     
-    public var needsSyncToServer: Bool {
+    public var needsSyncToAppServer: Bool {
         return false
     }
    
@@ -44,7 +45,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     mediaStatus.isDeleted = false
-                    mediaStatus.modifiedAt = Date()
+                    mediaStatus.refreshChangeMetadata()
                 }
             }
             return mediaStatus

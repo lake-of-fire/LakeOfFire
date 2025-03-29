@@ -145,7 +145,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                         self?.exportedOPMLFileURL = nil
                         self?.exportOPMLTask?.cancel()
                     })
-                    .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
+                    .debounce(for: .seconds(2), scheduler: libraryDataQueue)
                     .sink(receiveCompletion: { _ in }, receiveValue: { _ in
                         Task { @MainActor [weak self] in
                             self?.refreshOPMLExport()
@@ -237,7 +237,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         await realm.asyncRefresh()
         try await realm.asyncWrite {
             category.title = "User Library"
-            category.modifiedAt = Date()
+            category.refreshChangeMetadata()
         }
         guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
         await realm.asyncRefresh()
@@ -246,7 +246,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             if let title = title {
                 feed.title = title
             }
-            feed.modifiedAt = Date()
+            feed.refreshChangeMetadata()
         }
         let assignRef = ThreadSafeReference(to: category)
         try await { @MainActor in

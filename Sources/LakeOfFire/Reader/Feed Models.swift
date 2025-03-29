@@ -6,7 +6,7 @@ import FeedKit
 import RealmSwiftGaps
 
 public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
-    public var needsSyncToServer: Bool {
+    public var needsSyncToAppServer: Bool {
         return false
     }
     
@@ -19,6 +19,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     @Persisted public var backgroundImageUrl: URL
     @Persisted public var isArchived = false
     
+    @Persisted public var syncableRevisionCount = 0
     @Persisted public var createdAt: Date
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -57,7 +58,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
 }
 
 public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable, ChangeMetadataRecordable {
-    public var needsSyncToServer: Bool {
+    public var needsSyncToAppServer: Bool {
         return false
     }
     
@@ -79,6 +80,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     //    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
     
+    @Persisted public var syncableRevisionCount = 0
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -247,6 +249,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     }
     
 #warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
+    @Persisted public var syncableRevisionCount = 0
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -286,7 +289,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
                         //await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             entry.imageUrl = url
-                            entry.modifiedAt = Date()
+                            entry.refreshChangeMetadata()
                         }
                     }()
                     return url
@@ -501,7 +504,7 @@ public extension Feed {
                         .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     for orphan in orphans {
                         orphan.isDeleted = true
-                        orphan.modifiedAt = Date()
+                        orphan.refreshChangeMetadata()
                     }
                 }
             }
@@ -618,7 +621,7 @@ public extension Feed {
                             .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                         for orphan in orphans {
                             orphan.isDeleted = true
-                            orphan.modifiedAt = Date()
+                            orphan.refreshChangeMetadata()
                         }
                     }
                     for entry in entriesToPersist {

@@ -95,7 +95,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 await content.realm?.asyncRefresh()
                 try await content.realm?.asyncWrite {
                     content.lastVisitedAt = Date()
-                    content.modifiedAt = Date()
+                    content.refreshChangeMetadata()
                 }
             }
         }
@@ -152,7 +152,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 try await content.asyncWrite { _, content in
                     content.title = newTitle
                     content.author = author ?? ""
-                    content.modifiedAt = Date()
+                    content.refreshChangeMetadata()
                 }
                 refreshTitleInWebView(content: content)
             } else if state.pageURL.isEBookURL {

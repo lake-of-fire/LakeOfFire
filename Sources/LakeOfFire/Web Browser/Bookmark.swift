@@ -38,6 +38,7 @@ public class Bookmark: Object, ReaderContentProtocol {
     @Persisted public var injectEntryImageIntoHeader = false
     @Persisted public var displayPublicationDate = true
     
+    @Persisted public var syncableRevisionCount = 0
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -58,7 +59,7 @@ public class Bookmark: Object, ReaderContentProtocol {
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs)) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
                     historyRecord.bookmarkID = targetBookmarkID
-                    historyRecord.modifiedAt = Date()
+                    historyRecord.refreshChangeMetadata()
                 }
             }
         }
@@ -102,7 +103,7 @@ public extension Bookmark {
                 bookmark.rssContainsFullContent = rssContainsFullContent
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.isDeleted = false
-                bookmark.modifiedAt = Date()
+                bookmark.refreshChangeMetadata()
             }
             return bookmark
         } else {

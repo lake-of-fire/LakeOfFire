@@ -168,13 +168,13 @@ public struct ReaderContentLoader {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
-                    match.modifiedAt = Date()
+                    match.refreshChangeMetadata()
                 }
             } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
-                    match.modifiedAt = Date()
+                    match.refreshChangeMetadata()
                 }
             }
             guard let match else { return nil }
@@ -345,7 +345,7 @@ public struct ReaderContentLoader {
                             content.rssContainsFullContent = true
                             content.isReaderModeByDefault = true
                             content.url = url
-                            content.modifiedAt = Date()
+                            content.refreshChangeMetadata()
                         }
                     }
                 }()

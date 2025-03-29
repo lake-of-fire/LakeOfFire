@@ -8,6 +8,8 @@ public class OPDSCatalog: Object, UnownedSyncableObject, ObjectKeyIdentifiable {
     @Persisted public var title: String = ""
     @Persisted public var url: String = ""
     
+    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt: Date
     @Persisted public var isDeleted = false
     
@@ -15,7 +17,7 @@ public class OPDSCatalog: Object, UnownedSyncableObject, ObjectKeyIdentifiable {
         super.init()
     }
     
-    public var needsSyncToServer: Bool {
+    public var needsSyncToAppServer: Bool {
         return false
     }
 }

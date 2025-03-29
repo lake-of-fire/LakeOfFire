@@ -69,7 +69,7 @@ internal extension ReaderMessageHandlersViewModifier {
                 guard !result.outputHTML.isEmpty else {
                     try? await content.asyncWrite { _, content in
                         content.isReaderModeAvailable = false
-                        content.modifiedAt = Date()
+                        content.refreshChangeMetadata()
                     }
                     return
                 }
@@ -101,7 +101,7 @@ internal extension ReaderMessageHandlersViewModifier {
                 if !content.isReaderModeAvailable {
                     try? await content.asyncWrite { _, content in
                         content.isReaderModeAvailable = true
-                        content.modifiedAt = Date()
+                        content.refreshChangeMetadata()
                     }
                 }
             },
@@ -143,7 +143,7 @@ internal extension ReaderMessageHandlersViewModifier {
                         content.rssURLs.append(objectsIn: urls)
                         content.rssTitles.append(objectsIn: titles)
                         content.isRSSAvailable = !content.rssURLs.isEmpty
-                        content.modifiedAt = Date()
+                        content.refreshChangeMetadata()
                     }
                 }
             },
@@ -164,7 +164,7 @@ internal extension ReaderMessageHandlersViewModifier {
                         await content.realm?.asyncRefresh()
                         try await content.realm?.asyncWrite {
                             content.imageUrl = result.newImageURL
-                            content.modifiedAt = Date()
+                            content.refreshChangeMetadata()
                         }
                     }
                 }
@@ -208,7 +208,7 @@ fileprivate extension ReaderMessageHandlersViewModifier {
         if readerContent.content?.isReaderModeByDefault ?? false {
             try await readerContent.content?.asyncWrite { _, content in
                 content.isReaderModeByDefault = false
-                content.modifiedAt = Date()
+                content.refreshChangeMetadata()
             }
         }
         navigator.reload()

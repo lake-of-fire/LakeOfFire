@@ -313,7 +313,7 @@ public extension ReaderContentProtocol {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 bookmark.isDeleted = true
-                bookmark.modifiedAt = Date()
+                bookmark.refreshChangeMetadata()
             }
             return true
         }()
@@ -368,7 +368,7 @@ public extension ReaderContentProtocol {
                 if objectSchema.objectClass == Bookmark.self, let bookmark = self as? Bookmark {
                     record.configureBookmark(bookmark)
                 }
-                record.modifiedAt = Date()
+                record.refreshChangeMetadata()
             }
             return record
         } else {
