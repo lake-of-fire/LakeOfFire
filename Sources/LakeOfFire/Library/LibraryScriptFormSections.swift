@@ -45,7 +45,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptTitle
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] scriptTitle in
+            .sink { @MainActor [weak self] scriptTitle in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
@@ -58,7 +58,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptText
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] scriptText in
+            .sink { @MainActor [weak self] scriptText in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
@@ -70,7 +70,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $scriptEnabled
             .removeDuplicates()
-            .sink { [weak self] scriptEnabled in
+            .sink { @MainActor [weak self] scriptEnabled in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
@@ -82,7 +82,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $scriptInjectAtStart
             .removeDuplicates()
-            .sink { [weak self] scriptInjectAtStart in
+            .sink { @MainActor [weak self] scriptInjectAtStart in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
@@ -94,7 +94,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $scriptMainFrameOnly
             .removeDuplicates()
-            .sink { [weak self] scriptMainFrameOnly in
+            .sink { @MainActor [weak self] scriptMainFrameOnly in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
@@ -106,7 +106,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $scriptSandboxed
             .removeDuplicates()
-            .sink { [weak self] scriptSandboxed in
+            .sink { @MainActor [weak self] scriptSandboxed in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {
@@ -119,7 +119,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         $scriptPreviewURL
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { [weak self] scriptPreviewURL in
+            .sink { @MainActor [weak self] scriptPreviewURL in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
                 Task.detached {

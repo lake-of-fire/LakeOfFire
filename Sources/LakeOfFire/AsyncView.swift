@@ -73,7 +73,7 @@ public struct AsyncView<Success, Content: View>: View {
             }
         }
         .onAppear {
-            Task {
+            Task { @MainActor in
                 await model.loadIfNeeded()
             }
         }

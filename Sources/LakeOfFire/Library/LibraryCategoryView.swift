@@ -80,7 +80,7 @@ class LibraryCategoryViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { categoryTitle in
-                Task {
+                Task { @MainActor in
                     try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
                         category.title = categoryTitle
                         category.refreshChangeMetadata()
@@ -92,7 +92,7 @@ class LibraryCategoryViewModel: ObservableObject {
             .removeDuplicates()
             .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { categoryBackgroundImageURL in
-                Task {
+                Task { @MainActor in
                     try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
                         if categoryBackgroundImageURL.isEmpty {
                             category.backgroundImageUrl = URL(string: "about:blank")!
