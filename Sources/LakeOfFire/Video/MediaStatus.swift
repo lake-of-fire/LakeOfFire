@@ -9,7 +9,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
     @Persisted public var url = URL(string: "about:blank")!
     @Persisted public var providerMediaID: String?
 
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false

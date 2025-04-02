@@ -38,7 +38,7 @@ public class Bookmark: Object, ReaderContentProtocol {
     @Persisted public var injectEntryImageIntoHeader = false
     @Persisted public var displayPublicationDate = true
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false

@@ -19,7 +19,7 @@ public class FeedCategory: Object, UnownedSyncableObject, ObjectKeyIdentifiable,
     @Persisted public var backgroundImageUrl: URL
     @Persisted public var isArchived = false
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt: Date
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -80,7 +80,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     //    @Persisted(originProperty: "feed") public var entries: LinkingObjects<FeedEntry>
     @Persisted public var isArchived = false
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
@@ -249,7 +249,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     }
     
 #warning("TODO: Use createdAt to trim FeedEntry items after N days, N entries etc. or low disk notif")
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false

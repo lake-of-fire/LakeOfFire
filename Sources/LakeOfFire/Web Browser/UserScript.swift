@@ -12,7 +12,7 @@ public class UserScriptAllowedDomain: Object, UnownedSyncableObject, ObjectKeyId
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var domain = ""
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt: Date
     @Persisted public var isDeleted = false
@@ -39,7 +39,7 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     @Persisted public var opmlOwnerName: String? = nil
     @Persisted public var opmlURL: URL? = nil
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt: Date
     

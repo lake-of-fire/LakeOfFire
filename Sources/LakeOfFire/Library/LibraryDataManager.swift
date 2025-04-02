@@ -42,7 +42,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     @Persisted public var categoryIDs: RealmSwift.List<UUID>
     @Persisted public var userScriptIDs: RealmSwift.List<UUID>
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false

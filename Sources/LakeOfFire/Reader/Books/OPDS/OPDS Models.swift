@@ -8,7 +8,7 @@ public class OPDSCatalog: Object, UnownedSyncableObject, ObjectKeyIdentifiable {
     @Persisted public var title: String = ""
     @Persisted public var url: String = ""
     
-    @Persisted public var syncableRevisionCount = 0
+    @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt: Date
     @Persisted public var isDeleted = false
