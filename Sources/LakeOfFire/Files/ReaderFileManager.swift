@@ -150,7 +150,7 @@ public class ReaderFileManager: ObservableObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 existing.isDeleted = true
-                existing.refreshChangeMetadata()
+                existing.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
@@ -353,7 +353,7 @@ public class ReaderFileManager: ObservableObject {
                         try await realm.asyncWrite {
                             for orphan in orphans {
                                 orphan.isDeleted = true
-                                orphan.refreshChangeMetadata()
+                                orphan.refreshChangeMetadata(explicitlyModified: true)
                             }
                         }
                     }()
@@ -418,7 +418,7 @@ public class ReaderFileManager: ObservableObject {
                         var matchedContentFile: ContentFile?
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                             setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
-                            existing.refreshChangeMetadata()
+                            existing.refreshChangeMetadata(explicitlyModified: true)
                             updatedFileRefs.append(ThreadSafeReference(to: existing))
                             updatedFiles.append(existing)
                             matchedContentFile = existing

@@ -58,7 +58,7 @@ fileprivate struct PageMetadataModifier: ViewModifier {
                     for content in contents where content.imageUrl == nil {
                         try await content.realm?.asyncWrite {
                             content.imageUrl = imageURL
-                            content.refreshChangeMetadata()
+                            content.refreshChangeMetadata(explicitlyModified: true)
                         }
                     }
                 }

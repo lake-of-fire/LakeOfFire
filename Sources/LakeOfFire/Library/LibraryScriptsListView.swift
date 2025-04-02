@@ -50,7 +50,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
         try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { realm, libraryConfiguration in
             if let idx = libraryConfiguration.userScriptIDs.firstIndex(where: { $0 == scriptID }) {
                 libraryConfiguration.userScriptIDs.remove(at: idx)
-                libraryConfiguration.refreshChangeMetadata()
+                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         
@@ -96,7 +96,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
             guard let libraryConfiguration = libraryConfiguration else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
                 libraryConfiguration.userScriptIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-                libraryConfiguration.refreshChangeMetadata()
+                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }

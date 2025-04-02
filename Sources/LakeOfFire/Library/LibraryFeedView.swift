@@ -108,7 +108,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     block(feed)
-                    feed.refreshChangeMetadata()
+                    feed.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
@@ -242,7 +242,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             guard let self = self else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: feed), configuration: LibraryDataManager.realmConfiguration) { _, feed in
                 feed.rssUrl = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
-                feed.refreshChangeMetadata()
+                feed.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }

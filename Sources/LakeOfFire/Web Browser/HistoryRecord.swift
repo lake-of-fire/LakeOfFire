@@ -28,7 +28,7 @@ extension DeletableReaderContent {
             try await content.realm?.asyncWrite {
                 //            for videoStatus in realm.objects(VideoS)
                 content.isDeleted = true
-                content.refreshChangeMetadata()
+                content.refreshChangeMetadata(explicitlyModified: true)
             }
         }()
     }
@@ -39,7 +39,7 @@ extension DeletableReaderContent {
 //        await realm.asyncRefresh()
 //        try await realm.asyncWrite {
 //            content.isDeleted = true
-//            content.refreshChangeMetadata()
+//            content.refreshChangeMetadata(explicitlyModified: true)
 //        }
 //    }
 }

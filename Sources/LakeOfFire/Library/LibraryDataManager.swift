@@ -230,9 +230,9 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                     // Delete consolidated configurations
                     for otherConfig in otherConfigurations {
                         otherConfig.isDeleted = true
-                        otherConfig.refreshChangeMetadata()
+                        otherConfig.refreshChangeMetadata(explicitlyModified: true)
                     }
-                    primaryConfiguration.refreshChangeMetadata()
+                    primaryConfiguration.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
             
@@ -249,7 +249,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
                         try Task.checkCancellation()
                         primaryConfiguration.categoryIDs.append(category.id)
                     }
-                    primaryConfiguration.refreshChangeMetadata()
+                    primaryConfiguration.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
             
@@ -394,12 +394,12 @@ public class LibraryDataManager: NSObject {
                     for (idx, candidateID) in Array(configuration.userScriptIDs).enumerated() {
                         if candidateID == script.id {
                             configuration.userScriptIDs.remove(at: idx)
-                            configuration.refreshChangeMetadata()
+                            configuration.refreshChangeMetadata(explicitlyModified: true)
                         }
                     }
                 } else if !configuration.userScriptIDs.contains(script.id) {
                     configuration.userScriptIDs.append(script.id)
-                    configuration.refreshChangeMetadata()
+                    configuration.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
@@ -420,7 +420,7 @@ public class LibraryDataManager: NSObject {
             try await realm.asyncWrite {
                 guard !configuration.categoryIDs.contains(where: { $0 == categoryID }) else { return }
                 configuration.categoryIDs.append(categoryID)
-                configuration.refreshChangeMetadata()
+                configuration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         return category
@@ -455,7 +455,7 @@ public class LibraryDataManager: NSObject {
                     feed.meaningfulContentMinLength = 0
                     feed.isReaderModeByDefault = isReaderModeByDefault
                     feed.rssContainsFullContent = rssContainsFullContent
-                    feed.refreshChangeMetadata()
+                    feed.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
             
@@ -466,7 +466,7 @@ public class LibraryDataManager: NSObject {
                 try await realm.asyncWrite {
                     for dupeFeed in dupeFeeds {
                         dupeFeed.isDeleted = true
-                        dupeFeed.refreshChangeMetadata()
+                        dupeFeed.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -491,7 +491,7 @@ public class LibraryDataManager: NSObject {
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
         value.id = (overwriteExisting ? existing?.id : nil) ?? UUID()
-        value.refreshChangeMetadata()
+        value.refreshChangeMetadata(explicitlyModified: true)
         value.isDeleted = false
         value.isArchived = false
         value.categoryID = category.id
@@ -517,7 +517,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.userScriptIDs.append(script.id)
-                configuration.refreshChangeMetadata()
+                configuration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         return script
@@ -589,7 +589,7 @@ public class LibraryDataManager: NSObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     configuration.userScriptIDs.insert(script.id, at: lastNeighborIdx + 1)
-                    configuration.refreshChangeMetadata()
+                    configuration.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
             try Task.checkCancellation()
@@ -605,7 +605,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         configuration.userScriptIDs.move(from: fromIdx, to: idx)
-                        configuration.refreshChangeMetadata()
+                        configuration.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -627,7 +627,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.userScriptIDs.remove(atOffsets: scriptsToRemove)
-                configuration.refreshChangeMetadata()
+                configuration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
         
@@ -640,7 +640,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         category.isDeleted = true
-                        category.refreshChangeMetadata()
+                        category.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -656,7 +656,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         feed.isDeleted = true
-                        feed.refreshChangeMetadata()
+                        feed.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -674,7 +674,7 @@ public class LibraryDataManager: NSObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     configuration.categoryIDs.insert(category.id, at: lastNeighborIdx + 1)
-                    configuration.refreshChangeMetadata()
+                    configuration.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
             try Task.checkCancellation()
@@ -690,7 +690,7 @@ public class LibraryDataManager: NSObject {
                     await realm.asyncRefresh()
                     try await realm.asyncWrite {
                         configuration.categoryIDs.move(from: fromIdx, to: idx)
-                        configuration.refreshChangeMetadata()
+                        configuration.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -712,7 +712,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 configuration.categoryIDs.remove(atOffsets: toRemove)
-                configuration.refreshChangeMetadata()
+                configuration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -729,7 +729,7 @@ public class LibraryDataManager: NSObject {
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 libraryConfiguration.opmlLastImportedAt = Date()
-                libraryConfiguration.refreshChangeMetadata()
+                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -975,7 +975,7 @@ public class LibraryDataManager: NSObject {
         }
         
         if didChange {
-            script.refreshChangeMetadata()
+            script.refreshChangeMetadata(explicitlyModified: true)
         }
     }
     
@@ -1044,7 +1044,7 @@ public class LibraryDataManager: NSObject {
         }
         
         if didChange {
-            category.refreshChangeMetadata()
+            category.refreshChangeMetadata(explicitlyModified: true)
         }
     }
     
@@ -1186,7 +1186,7 @@ public class LibraryDataManager: NSObject {
         }
         
         if didChange {
-            feed.refreshChangeMetadata()
+            feed.refreshChangeMetadata(explicitlyModified: true)
         }
     }
     

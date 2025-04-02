@@ -45,7 +45,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     mediaStatus.isDeleted = false
-                    mediaStatus.refreshChangeMetadata()
+                    mediaStatus.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
             return mediaStatus

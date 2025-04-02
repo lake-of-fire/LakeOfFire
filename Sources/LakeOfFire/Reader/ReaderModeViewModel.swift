@@ -67,7 +67,7 @@ public class ReaderModeViewModel: ObservableObject {
         if !content.isReaderModeOfferHidden {
             try await content.asyncWrite { _, content in
                 content.isReaderModeOfferHidden = true
-                content.refreshChangeMetadata()
+                content.refreshChangeMetadata(explicitlyModified: true)
             }
             objectWillChange.send()
         }
@@ -132,7 +132,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 content.rssContainsFullContent = true
             }
-            content.refreshChangeMetadata()
+            content.refreshChangeMetadata(explicitlyModified: true)
         }
         
         if !isReaderMode {

@@ -289,7 +289,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
                         //await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             entry.imageUrl = url
-                            entry.refreshChangeMetadata()
+                            entry.refreshChangeMetadata(explicitlyModified: true)
                         }
                     }()
                     return url
@@ -504,7 +504,7 @@ public extension Feed {
                         .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                     for orphan in orphans {
                         orphan.isDeleted = true
-                        orphan.refreshChangeMetadata()
+                        orphan.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
@@ -621,7 +621,7 @@ public extension Feed {
                             .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
                         for orphan in orphans {
                             orphan.isDeleted = true
-                            orphan.refreshChangeMetadata()
+                            orphan.refreshChangeMetadata(explicitlyModified: true)
                         }
                     }
                     for entry in entriesToPersist {

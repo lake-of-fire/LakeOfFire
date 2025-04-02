@@ -82,7 +82,7 @@ public struct DataSettingsForm: View {
                             try await realm.asyncWrite {
                                 for record in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
                                     record.isDeleted = true
-                                    record.refreshChangeMetadata()
+                                    record.refreshChangeMetadata(explicitlyModified: true)
                                 }
                             }
 //                            realm.refresh() // ?
@@ -104,7 +104,7 @@ public struct DataSettingsForm: View {
                             try await realm.asyncWrite {
                                 for entry in realm.objects(FeedEntry.self).where({ !$0.isDeleted }) {
                                     entry.isDeleted = true
-                                    entry.refreshChangeMetadata()
+                                    entry.refreshChangeMetadata(explicitlyModified: true)
                                 }
                             }
 //                            realm.refresh() // ?

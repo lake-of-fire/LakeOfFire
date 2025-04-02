@@ -59,7 +59,7 @@ public class Bookmark: Object, ReaderContentProtocol {
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs)) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
                     historyRecord.bookmarkID = targetBookmarkID
-                    historyRecord.refreshChangeMetadata()
+                    historyRecord.refreshChangeMetadata(explicitlyModified: true)
                 }
             }
         }
@@ -103,7 +103,7 @@ public extension Bookmark {
                 bookmark.rssContainsFullContent = rssContainsFullContent
                 bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.isDeleted = false
-                bookmark.refreshChangeMetadata()
+                bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
             return bookmark
         } else {

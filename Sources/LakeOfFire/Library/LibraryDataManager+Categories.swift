@@ -16,15 +16,15 @@ public extension LibraryDataManager {
         try await realm.asyncWrite {
             if let idx = libraryConfiguration.categoryIDs.firstIndex(of: category.id) {
                 libraryConfiguration.categoryIDs.remove(at: idx)
-                libraryConfiguration.refreshChangeMetadata()
+                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
             
             if category.isArchived && !LibraryConfiguration.opmlURLs.map({ $0 }).contains(category.opmlURL) {
                 category.isDeleted = true
-                category.refreshChangeMetadata()
+                category.refreshChangeMetadata(explicitlyModified: true)
             } else if !category.isArchived {
                 category.isArchived = true
-                category.refreshChangeMetadata()
+                category.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
@@ -39,7 +39,7 @@ public extension LibraryDataManager {
             category.isArchived = false
             if !libraryConfiguration.categoryIDs.contains(category.id) {
                 libraryConfiguration.categoryIDs.append(category.id)
-                libraryConfiguration.refreshChangeMetadata()
+                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }

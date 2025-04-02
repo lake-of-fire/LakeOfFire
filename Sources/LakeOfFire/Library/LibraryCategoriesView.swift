@@ -127,7 +127,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
             guard let libraryConfiguration = libraryConfiguration else { return }
             try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
                 libraryConfiguration.categoryIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-                libraryConfiguration.refreshChangeMetadata()
+                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }

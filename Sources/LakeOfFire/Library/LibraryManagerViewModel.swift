@@ -237,7 +237,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         await realm.asyncRefresh()
         try await realm.asyncWrite {
             category.title = "User Library"
-            category.refreshChangeMetadata()
+            category.refreshChangeMetadata(explicitlyModified: true)
         }
         guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
         await realm.asyncRefresh()
@@ -246,7 +246,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             if let title = title {
                 feed.title = title
             }
-            feed.refreshChangeMetadata()
+            feed.refreshChangeMetadata(explicitlyModified: true)
         }
         let assignRef = ThreadSafeReference(to: category)
         try await { @MainActor in
