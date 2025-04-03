@@ -89,7 +89,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
                 .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)

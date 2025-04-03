@@ -30,7 +30,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 .subscribe(on: libraryCategoriesQueue)
                 .map { _ in }
                 .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     self?.refreshData()
                 })
                 .store(in: &cancellables)

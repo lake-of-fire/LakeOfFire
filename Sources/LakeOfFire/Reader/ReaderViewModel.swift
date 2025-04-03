@@ -39,8 +39,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .subscribe(on: readerViewModelQueue)
                 .map { _ in }
                 .debounce(for: .seconds(0.3), scheduler: readerViewModelQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
-                    Task { @RealmBackgroundActor in
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
                         let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
                         let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()

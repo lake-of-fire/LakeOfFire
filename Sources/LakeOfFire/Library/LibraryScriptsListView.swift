@@ -20,8 +20,8 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
                 .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { _ in
-                    Task { @RealmBackgroundActor in
+                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
+                    Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
                         let libraryConfigurationID = libraryConfiguration.id
                         let userScriptIDs = Array(libraryConfiguration.getUserScripts() ?? []).map { $0.id }
