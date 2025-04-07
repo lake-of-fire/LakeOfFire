@@ -66,6 +66,15 @@ public class Bookmark: Object, ReaderContentProtocol {
     }
 }
 
+extension Bookmark: SyncSkippablePropertiesModel {
+    public func skipSyncingProperties() -> Set<String>? {
+        if url.isFileURL || url.isHTTP || url.isReaderFileURL {
+            return ["htmlContent", "content", "isReaderModeAvailable"]
+        }
+        return nil
+    }
+}
+
 public extension Bookmark {
     @RealmBackgroundActor
     static func add(
