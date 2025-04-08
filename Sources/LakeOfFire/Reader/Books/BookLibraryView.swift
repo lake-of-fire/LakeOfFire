@@ -222,8 +222,8 @@ public struct BookLibraryView: View {
             guard let loadedFiles = viewModel.loadedFiles else { return }
             Task { @RealmBackgroundActor in
                 guard !filteredFileIDs.isEmpty, let realmConfiguration = readerContentListViewModel.realmConfiguration else { return }
-                let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-                try await loadedFiles(filteredFileIDs.compactMap { realm?.object(ofType: ContentFile.self, forPrimaryKey: $0) })
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+                try await loadedFiles(filteredFileIDs.compactMap { realm.object(ofType: ContentFile.self, forPrimaryKey: $0) })
             }
         }
     }

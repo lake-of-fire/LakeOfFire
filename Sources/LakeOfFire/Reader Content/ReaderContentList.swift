@@ -5,6 +5,13 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
+@globalActor
+public actor ReaderContentListActor: @preconcurrency CachedRealmsActor {
+    public static var shared = ReaderContentListActor()
+    
+    public var cachedRealms = [String: RealmSwift.Realm]()
+}
+
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
     @Published var confirmDeletionOf: (any DeletableReaderContent)?
@@ -71,8 +78,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     var refreshSelectionTask: Task<Void, Error>?
     var loadContentsTask: Task<Void, Error>?
     
+    @Published var hasLoadedBefore = false
+    
+    var isLoading: Bool {
+        return loadContentsTask != nil
+    }
+    
     @MainActor
-    public func load(contents: [C], sortOrder: ReaderContentSortOrder? = nil, contentFilter: (@RealmBackgroundActor (C) async throws -> Bool)? = nil) async throws {
+    public func load(contents: [C], sortOrder: ReaderContentSortOrder? = nil, contentFilter: (@ReaderContentListActor (C) async throws -> Bool)? = nil) async throws {
         if sortOrder == nil && contentFilter == nil {
             filteredContentIDs = contents.map { $0.compoundKey }
             filteredContents = contents
@@ -83,7 +96,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         self.realmConfiguration = realmConfig
         let refs = contents.map { ThreadSafeReference(to: $0) }
         loadContentsTask?.cancel()
-        loadContentsTask = Task { @RealmBackgroundActor in
+        loadContentsTask = Task { @ReaderContentListActor in
             var filtered: [C] = []
             //            let filtered: AsyncFilterSequence<AnyRealmCollection<ReaderContentType>> = contents.filter({
             //                try await contentFilter($0)
@@ -95,7 +108,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 }()
                 return
             }
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfig) else { return }
+            let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig) 
             let contents = refs.compactMap { realm.resolve($0) }
             for content in contents {
                 try Task.checkCancellation()
@@ -130,8 +143,13 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 filteredContentIDs = ids
                 filteredContents = (contents as [any ReaderContentProtocol]) as? [C] ?? filteredContents
             }()
+            
+            await { @MainActor [weak self] in
+                self?.hasLoadedBefore = true
+            }()
         }
         try await loadContentsTask?.value
+        loadContentsTask = nil
     }
 }
 
@@ -145,8 +163,14 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 100
+    
     @ViewBuilder private func unstyledCell(item: C) -> some View {
-        item.readerContentCellView(alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: (item as? PhysicalMediaCapableProtocol)?.isPhysicalMedia ?? false)
+        item.readerContentCellView(
+            maxCellHeight: maxCellHeight,
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            isEbookStyle: (item as? PhysicalMediaCapableProtocol)?.isPhysicalMedia ?? false
+        )
     }
     
     @ViewBuilder private func cell(item: C) -> some View {

@@ -53,7 +53,7 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
     init() {
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
             realm.objects(Bookmark.self)
                 .collectionPublisher(keyPaths: ["isDeleted", "compoundKey"])
                 .subscribe(on: bookmarksQueue)

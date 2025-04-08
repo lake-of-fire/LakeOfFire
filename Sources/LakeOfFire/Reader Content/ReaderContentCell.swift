@@ -48,8 +48,17 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
 }
 
 extension ReaderContentProtocol {
-    @ViewBuilder func readerContentCellView(alwaysShowThumbnails: Bool = true, isEbookStyle: Bool = false) -> some View {
-        ReaderContentCell(item: self, alwaysShowThumbnails: alwaysShowThumbnails, isEbookStyle: isEbookStyle)
+    @ViewBuilder func readerContentCellView(
+        maxCellHeight: CGFloat,
+        alwaysShowThumbnails: Bool = true,
+        isEbookStyle: Bool = false
+    ) -> some View {
+        ReaderContentCell(
+            item: self,
+            maxCellHeight: maxCellHeight,
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            isEbookStyle: isEbookStyle
+        )
     }
     
     @ViewBuilder func readerContentCellButtonsView() -> some View {
@@ -112,6 +121,7 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
 
 struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
+    let maxCellHeight: CGFloat
     var alwaysShowThumbnails = true
     var isEbookStyle = false
     
@@ -119,8 +129,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return 26
     }
     
-    @ScaledMetric(relativeTo: .headline) private var scaledImageWidth: CGFloat = 100
-    @ScaledMetric(relativeTo: .headline) private var cellHeight: CGFloat = 100
+    var scaledImageWidth: CGFloat {
+        return maxCellHeight
+    }
     
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
 
@@ -128,10 +139,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = viewModel.imageURL {
                 if isEbookStyle {
-                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: cellHeight)
+                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: maxCellHeight)
 //                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
                 } else {
-                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: cellHeight, maxHeight: cellHeight)
+                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: maxCellHeight, maxHeight: maxCellHeight)
                         .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
                 }
             }
@@ -174,9 +185,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 }
                 .padding(.trailing, 5)
             }
-            .frame(maxHeight: cellHeight)
+            .frame(maxHeight: maxCellHeight)
         }
-        .frame(minWidth: cellHeight, idealHeight: alwaysShowThumbnails ? cellHeight : (viewModel.imageURL == nil ? nil : cellHeight))
+        .frame(minWidth: maxCellHeight, idealHeight: alwaysShowThumbnails ? maxCellHeight : (viewModel.imageURL == nil ? nil : maxCellHeight))
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }

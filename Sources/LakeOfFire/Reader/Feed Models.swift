@@ -284,7 +284,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
                     htmlContent: html
                 ), existingImageURL != url {
                     try await { @RealmBackgroundActor in
-                        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: configuration) else { return }
+                        try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                         guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: ref) else { return }
                         //await realm.asyncRefresh()
                         try await realm.asyncWrite {
@@ -436,7 +436,7 @@ public extension Feed {
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         try await { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
             let existingEntryIDs = Array(
                 realm.objects(FeedEntry.self)
@@ -528,7 +528,7 @@ public extension Feed {
         let feedID = id
         let sourceIconURL = iconUrl
         try await { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
             let existingEntryIDs = Array(
                 realm.objects(FeedEntry.self)

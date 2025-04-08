@@ -12,7 +12,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher

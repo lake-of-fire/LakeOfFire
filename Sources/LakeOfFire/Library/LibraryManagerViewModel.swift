@@ -130,7 +130,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
             let exportableTypes: [ObjectBase.Type] = [FeedCategory.self, Feed.self, LibraryConfiguration.self]
             for objectType in exportableTypes {
@@ -225,7 +225,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     @RealmBackgroundActor
     func add(rssURL: URL, title: String?, toCategory categoryRef: ThreadSafeReference<FeedCategory>? = nil) async throws {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         var category: FeedCategory?
         if let categoryRef = categoryRef {
             category = realm.resolve(categoryRef)

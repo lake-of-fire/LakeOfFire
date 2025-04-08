@@ -53,7 +53,7 @@ public class Bookmark: Object, ReaderContentProtocol {
         let url = url
         let targetBookmarkID = bookmark.compoundKey
         Task { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) 
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
@@ -92,7 +92,7 @@ public extension Bookmark {
         isReaderModeOfferHidden: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Couldn't get Realm for Bookmark.add") }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
             await realm.asyncRefresh()
@@ -157,7 +157,7 @@ public extension Bookmark {
     
     @RealmBackgroundActor
     static func removeAll(realmConfiguration: Realm.Configuration) async throws {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
         await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.objects(self).setValue(true, forKey: "isDeleted")

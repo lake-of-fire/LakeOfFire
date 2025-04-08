@@ -132,7 +132,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //    
 //    @RealmBackgroundActor
 //    public static func get() async throws -> LibraryConfiguration? {
-//        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return nil }
+//        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return nil }
 //        if let configuration = realm.objects(LibraryConfiguration.self).sorted(by: \.modifiedAt, ascending: true).first(where: { !$0.isDeleted }) {
 //            return configuration
 //        }
@@ -150,7 +150,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     
     @RealmBackgroundActor
     public static func getConsolidatedOrCreate() async throws -> LibraryConfiguration {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { fatalError("No Realm for LibraryDataManager getOrCreate") }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
         
         // Take oldest as primary. Consolidate newer ones into it.
         let configurations = Array(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted } .sorted(by: \.modifiedAt, ascending: true))
@@ -355,7 +355,7 @@ public class LibraryDataManager: NSObject {
         //            .store(in: &cancellables)
         
         Task { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: Self.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: Self.realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -407,7 +407,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func createEmptyCategory(addToLibrary: Bool) async throws -> FeedCategory {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { fatalError("No Realm for createEmptyCategory") }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         let category = FeedCategory()
         await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -428,7 +428,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> Feed? {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return nil }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
         guard let category = realm.resolve(category) else { return nil }
         let feed = Feed()
         feed.categoryID = category.id
@@ -442,7 +442,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func getOrCreateAppFeed(rssURL: URL, isReaderModeByDefault: Bool, rssContainsFullContent: Bool) async throws -> Feed? {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return nil }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
         var feed = Feed()
         let existingAppFeeds = realm.objects(Feed.self).where({ !$0.isDeleted && $0.categoryID == nil }).filter { $0.rssUrl == rssURL }
         if let existing = existingAppFeeds.first {
@@ -486,7 +486,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> Feed? {
-        guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) else { return nil }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
         let value = try JSONDecoder().decode(Feed.self, from: JSONEncoder().encode(feed))
@@ -505,7 +505,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func createEmptyScript(addToLibrary: Bool) async throws -> UserScript {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { fatalError("No Realm for createEmptyScript") }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         let script = UserScript()
         script.title = ""
         if addToLibrary {
@@ -745,7 +745,7 @@ public class LibraryDataManager: NSObject {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return (OrderedSet(), OrderedSet(), OrderedSet()) }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {

@@ -61,7 +61,7 @@ class LibraryCategoryViewModel: ObservableObject {
         let ref = ThreadSafeReference(to: category)
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let category = realm.resolve(ref) else { return }
             objectNotificationToken = category
                 .observe { [weak self] change in

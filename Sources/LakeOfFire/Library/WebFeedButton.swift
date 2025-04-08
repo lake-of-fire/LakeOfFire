@@ -22,7 +22,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
             
             Task { @RealmBackgroundActor in
                 rssURLsCancellables.forEach { $0.cancel() }
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                 realm.objects(Feed.self)
                     .where { !$0.isDeleted }
                     .collectionPublisher
@@ -63,7 +63,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
 
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -102,7 +102,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
         guard let realmConfig = readerContent.realm?.configuration else { return }
         Task { @RealmBackgroundActor in
             readerContentObjectNotificationToken?.invalidate()
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfig) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfig) 
             guard let readerContent = realm.resolve(ref) else { return }
             readerContentObjectNotificationToken = readerContent
                 .observe(keyPaths: ["rssURLs", "isRSSAvailable", "rssTitles"]) { [weak self] change in

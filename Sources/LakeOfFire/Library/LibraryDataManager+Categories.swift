@@ -10,7 +10,7 @@ public extension LibraryDataManager {
         }
         
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
         await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -32,7 +32,7 @@ public extension LibraryDataManager {
     @RealmBackgroundActor
     func restoreCategory(_ category: FeedCategory) async throws {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
         await realm.asyncRefresh()
         try await realm.asyncWrite {

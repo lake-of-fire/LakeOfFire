@@ -69,7 +69,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         let feedID = feed.id
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             objectNotificationToken = feed
                 .observe { [weak self] change in
@@ -103,7 +103,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         
         func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
             Task { @RealmBackgroundActor in
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                 guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -267,6 +267,8 @@ struct LibraryFeedFormSections: View {
 
     @State private var readerFeedEntry: FeedEntry?
     
+    @ScaledMetric(relativeTo: .headline) private var maxContentCellHeight: CGFloat = 100
+    
     @Environment(\.openURL) private var openURL
 
     @ViewBuilder private var synchronizationSection: some View {
@@ -355,7 +357,10 @@ struct LibraryFeedFormSections: View {
     private var feedPreview: some View {
         Group {
             if let readerFeedEntry = readerFeedEntry {
-                ReaderContentCell(item: readerFeedEntry)
+                ReaderContentCell(
+                    item: readerFeedEntry,
+                    maxCellHeight: maxContentCellHeight
+                )
                 HStack(alignment: .center) {
                     GroupBox {
                         PageURLLinkButton()

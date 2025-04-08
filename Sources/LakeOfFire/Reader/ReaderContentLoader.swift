@@ -40,7 +40,7 @@ public struct ReaderContentLoader {
         
         @RealmBackgroundActor
         public func resolveOnBackgroundActor() async throws -> (any ReaderContentProtocol)? {
-            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return nil }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             try await realm.asyncRefresh()
             return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
         }
@@ -81,8 +81,8 @@ public struct ReaderContentLoader {
     
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
-        guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return [] }
-        guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return [] }
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
         try Task.checkCancellation()
  
         var contentFile: ContentFile?
@@ -107,7 +107,7 @@ public struct ReaderContentLoader {
         
         var feed: FeedEntry?
         if !skipFeedEntries {
-            guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return [] }
+            let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
             let feeds = feedRealm.objects(FeedEntry.self)
                 .where { !$0.isDeleted }
                 .sorted(by: \.createdAt, ascending: false)
@@ -154,7 +154,7 @@ public struct ReaderContentLoader {
                 //        historyRecord.isReaderModeByDefault
                 historyRecord.updateCompoundKey()
                 if persist {
-                    guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return nil }
+                    let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
                     await historyRealm.asyncRefresh()
                     try await historyRealm.asyncWrite {
                         historyRealm.add(historyRecord, update: .modified)
@@ -193,9 +193,9 @@ public struct ReaderContentLoader {
     @MainActor
     public static func load(html: String) async throws -> (any ReaderContentProtocol)? {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
-            guard let bookmarkRealm = await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration) else { return nil }
-            guard let historyRealm = await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration) else { return nil }
-            guard let feedRealm = await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration) else { return nil }
+            let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+            let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
             
             let data = html.readerContentData
             
@@ -336,7 +336,7 @@ public struct ReaderContentLoader {
                 let pk = match.primaryKeyValue
                 guard let url = URL(string: match.url.absoluteString) else { return nil }
                 try await { @RealmBackgroundActor in
-                    guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
                     if let pk = pk, let content = realm.object(ofType: type, forPrimaryKey: pk), let content = content as? (any ReaderContentProtocol) {
                         let url = snippetURL(key: content.compoundKey) ?? content.url
                         await realm.asyncRefresh()

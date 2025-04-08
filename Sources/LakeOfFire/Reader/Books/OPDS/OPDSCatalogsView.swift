@@ -26,7 +26,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     private func observeCatalogs() {
         Task { @RealmBackgroundActor in
             do {
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) else { return }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
                 let results = realm.objects(OPDSCatalog.self)
                 notificationToken = results.observe { [weak self] (changes: RealmCollectionChange) in
                     switch changes {
@@ -57,7 +57,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         newCatalog.url = url
         
         do {
-            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)
@@ -72,7 +72,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     func deleteCatalogs(at offsets: IndexSet) {
         let catalogIDsToDelete = offsets.map { catalogs[$0].id }
         Task { @RealmBackgroundActor [weak self] in
-            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
             await realm.asyncRefresh()
             try? await realm.asyncWrite {
                 for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
@@ -193,7 +193,7 @@ struct AddCatalogView: View {
         newCatalog.url = url
         
         do {
-            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration) 
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)

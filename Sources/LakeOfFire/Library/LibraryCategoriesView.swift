@@ -23,7 +23,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
 
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -85,7 +85,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     func deleteCategory(_ category: FeedCategory) async throws {
         let ref = ThreadSafeReference(to: category)
         async let task = { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let category = realm.resolve(ref) else { return }
             try await LibraryDataManager.shared.deleteCategory(category)
         }()
@@ -96,7 +96,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     func restoreCategory(_ category: FeedCategory) async throws {
         let ref = ThreadSafeReference(to: category)
         async let task = { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let category = realm.resolve(ref) else { return }
             try await LibraryDataManager.shared.restoreCategory(category)
         }()
@@ -113,7 +113,7 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 guard category.isUserEditable else { continue }
                 let ref = ThreadSafeReference(to: category)
                 try await Task { @RealmBackgroundActor in
-                    guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { return }
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                     guard let category = realm.resolve(ref) else { return }
                     try await LibraryDataManager.shared.deleteCategory(category)
                 }.value

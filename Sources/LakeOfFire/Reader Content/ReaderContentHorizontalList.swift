@@ -20,6 +20,7 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
 
 fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol>: View {
     var content: C
+    let maxCellHeight: CGFloat
     
     @StateObject var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -29,6 +30,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
     //    @State private var viewWidth: CGFloat = 0
+    
+    private let padding: CGFloat = 8
     
     @ViewBuilder var body: some View {
         Button {
@@ -40,11 +43,16 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 )
             }
         } label: {
-            AnyView(content.readerContentCellView(alwaysShowThumbnails: true))
+            AnyView(
+                content.readerContentCellView(
+                    maxCellHeight: maxCellHeight - (padding * 2),
+                    alwaysShowThumbnails: true
+                )
+            )
 //                .background(Color.white.opacity(0.00000001)) // Clickability
                                                              //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
                 .frame(maxWidth: maxWidth)
-                .padding(8)
+                .padding(padding)
                 .background(Color.groupBoxBackground)
             //                .background(.regularMaterial)
             //                .background(.secondary.opacity(0.09))
@@ -86,6 +94,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
     var filteredContents: [C]
     
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 100
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
 //    @State private var viewWidth: CGFloat = 0
     
@@ -93,10 +102,14 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
         ScrollView(.horizontal) {
             LazyHStack {
                 ForEach(filteredContents, id: \.compoundKey) { (content: C) in
-                    ReaderContentInnerHorizontalListItem(content: content)
+                    ReaderContentInnerHorizontalListItem(
+                        content: content,
+                        maxCellHeight: maxCellHeight
+                    )
                 }
                 .headerProminence(.increased)
             }
+            .frame(minHeight: maxCellHeight)
             .fixedSize()
 //            .padding(.horizontal)
         }
@@ -120,25 +133,35 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
     @StateObject var viewModel = ReaderContentListViewModel<C>()
 
     let contentSortAscending = false
-    var contentFilter: (@RealmBackgroundActor (C) async throws -> Bool) = { @RealmBackgroundActor _ in return true }
+    var contentFilter: (@ReaderContentListActor (C) async throws -> Bool) = { @ReaderContentListActor _ in return true }
 //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
 //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
     
     public var body: some View {
-        ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
-            .task { @MainActor in
-//                await Task { @RealmBackgroundActor in
-//                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
+        ZStack {
+            if viewModel.isLoading || !viewModel.hasLoadedBefore || !viewModel.filteredContents.isEmpty {
+                ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
+            }
+            
+            if viewModel.isLoading || !viewModel.hasLoadedBefore {
+                ProgressView()
+                    .controlSize(.small)
+                    .delayedAppearance()
+            }
+        }
+        .task { @MainActor in
+            //                await Task { @RealmBackgroundActor in
+            //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
+            try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+            //                }.value
+        }
+        .onChange(of: contents, debounceTime: 0.1) { contents in
+            Task { @MainActor in
                 try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
-//                }.value
+                //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
-            .onChange(of: contents, debounceTime: 0.1) { contents in
-                Task { @MainActor in
-                    try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
-//                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
-                }
-            }
+        }
     }
     
     public init(contents: [C], contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder? = nil) {

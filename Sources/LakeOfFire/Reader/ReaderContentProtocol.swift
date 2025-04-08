@@ -75,7 +75,7 @@ public extension ReaderContentProtocol {
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
         try await { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: config) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
             await realm.asyncRefresh()
             try await realm.asyncWrite {
@@ -293,7 +293,7 @@ public extension ReaderContentProtocol {
                 isReaderModeOfferHidden: isReaderModeOfferHidden,
                 realmConfiguration: realmConfiguration
             )
-            guard let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
                 content.configureBookmark(bookmark)
             }
@@ -306,7 +306,7 @@ public extension ReaderContentProtocol {
         let url = url
         let html = html
         return try await { @RealmBackgroundActor in
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return false }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
                 return false
             }
@@ -341,7 +341,7 @@ public extension ReaderContentProtocol {
                 return try await content?.imageURLToDisplay()
             }()
         }
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { fatalError("Can't get realm for addHistoryRecord") }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
             await realm.asyncRefresh()
             try await realm.asyncWrite {

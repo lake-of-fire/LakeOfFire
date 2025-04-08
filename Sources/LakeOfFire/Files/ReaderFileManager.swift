@@ -144,7 +144,7 @@ public class ReaderFileManager: ObservableObject {
     
     @RealmBackgroundActor
     public func delete(readerFileURL: URL) async throws {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
 //        try ReaderFileManager.validate(readerFileURL: readerFileURL)
         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), readerFileURL.absoluteString as CVarArg)).first {
             await realm.asyncRefresh()
@@ -346,7 +346,7 @@ public class ReaderFileManager: ObservableObject {
                     // Delete orphans (objects with no corresponding file on disk)
                     try await { @RealmBackgroundActor in
                         try Task.checkCancellation()
-                        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else { return }
+                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
                         let existingURLs = discoveredURLs.map { $0.absoluteString }
                         let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
                         await realm.asyncRefresh()
@@ -408,9 +408,7 @@ public class ReaderFileManager: ObservableObject {
             let updatedFiles = try await { @RealmBackgroundActor in
                 var updatedFileRefs = [ThreadSafeReference<ContentFile>]()
                 var updatedFiles = [ContentFile]()
-                guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration) else {
-                    fatalError("Couldn't get Realm for refreshFileMetadata")
-                }
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
                 
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {

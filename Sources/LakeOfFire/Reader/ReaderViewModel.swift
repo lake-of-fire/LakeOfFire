@@ -32,7 +32,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
-            guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) else { return }
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher

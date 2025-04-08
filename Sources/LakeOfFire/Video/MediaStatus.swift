@@ -38,7 +38,7 @@ public class MediaStatus: Object, UnownedSyncableObject, ChangeMetadataRecordabl
     
     @RealmBackgroundActor
     static func getOrCreate(url: URL) async throws -> MediaStatus {
-        guard let realm = await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) else { fatalError("Can't get Realm for MediaStatus") }
+         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
 
         if let mediaStatus = realm.object(ofType: MediaStatus.self, forPrimaryKey: MediaStatus.makeCompoundKey(url: url)) {
             if mediaStatus.isDeleted {
