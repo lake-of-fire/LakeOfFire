@@ -76,12 +76,16 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     var filteredContentIDs: [String] = []
     var realmConfiguration: Realm.Configuration?
     var refreshSelectionTask: Task<Void, Error>?
-    var loadContentsTask: Task<Void, Error>?
+    @Published var loadContentsTask: Task<Void, Error>?
     
     @Published var hasLoadedBefore = false
     
     var isLoading: Bool {
         return loadContentsTask != nil
+    }
+    
+    var showLoadingIndicator: Bool {
+        return !hasLoadedBefore || isLoading
     }
     
     @MainActor
@@ -108,7 +112,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 }()
                 return
             }
-            let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig) 
+            let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig)
             let contents = refs.compactMap { realm.resolve($0) }
             for content in contents {
                 try Task.checkCancellation()
@@ -148,7 +152,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 self?.hasLoadedBefore = true
             }()
         }
-        try await loadContentsTask?.value
+        try? await loadContentsTask?.value
         loadContentsTask = nil
     }
 }

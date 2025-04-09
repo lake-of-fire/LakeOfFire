@@ -284,7 +284,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
                     htmlContent: html
                 ), existingImageURL != url {
                     try await { @RealmBackgroundActor in
-                        try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
+                        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
                         guard let entry = realm.object(ofType: FeedEntry.self, forPrimaryKey: ref) else { return }
                         //await realm.asyncRefresh()
                         try await realm.asyncWrite {

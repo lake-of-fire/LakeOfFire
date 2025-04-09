@@ -140,11 +140,11 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
     
     public var body: some View {
         ZStack {
-            if viewModel.isLoading || !viewModel.hasLoadedBefore || !viewModel.filteredContents.isEmpty {
+            if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
                 ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
             }
             
-            if viewModel.isLoading || !viewModel.hasLoadedBefore {
+            if viewModel.showLoadingIndicator {
                 ProgressView()
                     .controlSize(.small)
                     .delayedAppearance()
