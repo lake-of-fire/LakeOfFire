@@ -35,7 +35,7 @@ let package = Package(
         .package(url: "https://github.com/nmdias/FeedKit.git", from: "9.1.2"),
 //        .package(url: "https://github.com/satoshi-takano/OpenGraph.git", branch: "main"),
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", from: "1.6.0"),
-        .package(url: "https://github.com/sushichop/Puppy.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/Puppy.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/FaviconFinder.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),

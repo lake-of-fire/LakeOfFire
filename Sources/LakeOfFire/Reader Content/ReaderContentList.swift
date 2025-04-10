@@ -6,10 +6,18 @@ import SwiftUtilities
 import LakeKit
 
 @globalActor
-public actor ReaderContentListActor: @preconcurrency CachedRealmsActor {
+public actor ReaderContentListActor: CachedRealmsActor {
     public static var shared = ReaderContentListActor()
     
     public var cachedRealms = [String: RealmSwift.Realm]()
+    
+    public func getCachedRealm(key: String) async -> Realm? {
+        return cachedRealms[key]
+    }
+    
+    public func setCachedRealm(_ realm: Realm, key: String) async {
+        cachedRealms[key] = realm
+    }
 }
 
 public class ReaderContentListModalsModel: ObservableObject {
