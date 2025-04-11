@@ -6,7 +6,7 @@ fileprivate struct ErrorView: View {
     let error: Error
     let reloadAction: (() -> Void)?
     @State private var showingPopover = false
-
+    
     var body: some View {
         VStack(spacing: 10) {
             Button(error.localizedDescription) {
@@ -61,7 +61,9 @@ public struct AsyncView<Success, Content: View>: View {
             case let (.success(value), _):
                 content(value)
             case let (.failure(error), showInitialContent):
-                if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled, showInitialContent {
+                if (error as NSError).domain == NSURLErrorDomain,
+                   [NSURLErrorCancelled, NSURLErrorNotConnectedToInternet].contains((error as NSError).code),
+                   showInitialContent {
                     content(nil)
                 } else {
                     ErrorView(error: error, reloadAction: {

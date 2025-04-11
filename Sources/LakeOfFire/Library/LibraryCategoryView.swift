@@ -147,7 +147,7 @@ class LibraryCategoryViewModel: ObservableObject {
     func deleteCategory() async throws {
         let ref = ThreadSafeReference(to: category)
         try await Task { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let category = realm.resolve(ref) else { return }
             try await LibraryDataManager.shared.deleteCategory(category)
         }.value
@@ -157,7 +157,7 @@ class LibraryCategoryViewModel: ObservableObject {
     func restoreCategory() async throws {
         let ref = ThreadSafeReference(to: category)
         try await Task { @RealmBackgroundActor in
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let category = realm.resolve(ref) else { return }
             try await LibraryDataManager.shared.restoreCategory(category)
         }.value

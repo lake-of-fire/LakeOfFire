@@ -1,36 +1,27 @@
 import Foundation
 import WebKit
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 import SwiftUIWebView
 
-public struct ReadabilityImagesUserScript {
+public struct NetflixUserScript {
     public static let shared = ReadabilityImagesUserScript()
     
     public let userScriptSource: String
     
     public init(meaningfulContentMinChars: Int = 1) {
-        var readabilityImagesJS: String
-        
         do {
-            readabilityImagesJS = try loadFile(name: "readability_images", type: "js")
+            userScriptSource = try loadBundleFile(name: "netflix", extension: "js", subdirectory: "User Scripts")
         } catch {
-            fatalError("Couldn't load Readability scripts. \(error)")
+            fatalError("Couldn't load user script. \(error)")
         }
-        
-        userScriptSource = readabilityImagesJS
     }
     
     public var userScript: WebViewUserScript {
         WebViewUserScript(
             source: userScriptSource,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false,
+            forMainFrameOnly: true,
             in: .page,
-            allowedDomains: Set()
+            allowedDomains: ["www.netflix.com"]
         )
     }
 }
