@@ -103,7 +103,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             filteredContents = contents
             return
         }
-        
+
         let realmConfig = contents.first?.realm?.configuration
         self.realmConfiguration = realmConfig
         let refs = contents.map { ThreadSafeReference(to: $0) }
@@ -117,6 +117,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 await { @MainActor [weak self] in
                     self?.filteredContentIDs.removeAll()
                     self?.filteredContents.removeAll()
+                    self?.hasLoadedBefore = true
                 }()
                 return
             }
@@ -128,7 +129,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                     filtered.append(content)
                 }
             }
-            
+
             if let sortOrder {
                 switch sortOrder {
                 case .publicationDate:
