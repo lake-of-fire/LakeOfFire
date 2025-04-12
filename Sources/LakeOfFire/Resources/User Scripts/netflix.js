@@ -354,8 +354,7 @@
              }, false);
              
              const panelElem = document.createElement("div");
-             panelElem.style.cssText =
-             "position: absolute; z-index: 1000; top: 0; right: 0; font-size: 16px; color: white; pointer-events: auto";
+             panelElem.style.cssText = "position: absolute; z-index: 1000; top: 0; right: 0; font-size: 16px; color: white; pointer-events: auto";
              panelElem.appendChild(toggleDisplayButtonElem);
              panelElem.appendChild(selectElem);
              panelElem.appendChild(select2Elem);
@@ -363,8 +362,7 @@
              
              const containerElem = document.createElement("div");
              containerElem.id = SUBS_LIST_ELEM_ID;
-             containerElem.style.cssText =
-             "width: 100%; height: 100%; position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none";
+             containerElem.style.cssText = "width: 100%; height: 100%; position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none";
              containerElem.appendChild(panelElem);
              
              document.body.appendChild(containerElem);
@@ -412,8 +410,7 @@
              
              const customSubsElem = document.createElement("div");
              customSubsElem.id = CUSTOM_SUBS_ELEM_ID;
-             customSubsElem.style.cssText =
-             "position: absolute; bottom: 20vh; left: 0; right: 0; color: white; font-size: 3vw; text-align: center; user-select: text; -moz-user-select: text; z-index: 100; pointer-events: none";
+             customSubsElem.style.cssText = "position: absolute; bottom: 20vh; left: 0; right: 0; color: white; font-size: 3vw; text-align: center; user-select: text; -moz-user-select: text; z-index: 100; pointer-events: none";
              
              function updateSubtitles() {
                  while (customSubsElem.firstChild) {
@@ -424,8 +421,7 @@
                  if (trackElem.track.activeCues) {
                      for (const cue of trackElem.track.activeCues) {
                          const cueElem = document.createElement("div");
-                         cueElem.style.cssText =
-                         "background: rgba(0,0,0,0.8); white-space: pre-wrap; padding: 0.2em 0.3em; margin: 10px auto; width: fit-content; width: -moz-fit-content; pointer-events: auto";
+                         cueElem.style.cssText = "background: rgba(0,0,0,0.8); white-space: pre-wrap; padding: 0.2em 0.3em; margin: 10px auto; width: fit-content; width: -moz-fit-content; pointer-events: auto";
                          cueElem.innerHTML = vttTextToSimple(cue.text, true);
                          customSubsElem.appendChild(cueElem);
                      }
@@ -435,8 +431,7 @@
                  if (trackElem2 && trackElem2.track.activeCues) {
                      for (const cue of trackElem2.track.activeCues) {
                          const cueElem = document.createElement("div");
-                         cueElem.style.cssText =
-                         "background: rgba(0,0,0,0.8); white-space: pre-wrap; padding: 0.2em 0.3em; margin: 10px auto; width: fit-content; width: -moz-fit-content; pointer-events: auto; color: #ffff00;";
+                         cueElem.style.cssText = "background: rgba(0,0,0,0.8); white-space: pre-wrap; padding: 0.2em 0.3em; margin: 10px auto; width: fit-content; width: -moz-fit-content; pointer-events: auto; color: #ffff00;";
                          cueElem.innerHTML = vttTextToSimple(cue.text, true);
                          customSubsElem.appendChild(cueElem);
                      }
@@ -642,9 +637,7 @@
                 const trackElem = document.getElementById(TRACK_ELEM_ID);
                 const videoPlayer =
                 netflix?.appContext?.state?.playerApp?.getAPI?.()?.videoPlayer;
-                const player = videoPlayer?.getVideoPlayerBySessionId(
-                                                                      videoPlayer.getAllPlayerSessionIds()[0]
-                                                                      );
+                const player = videoPlayer?.getVideoPlayerBySessionId(videoPlayer.getAllPlayerSessionIds()[0]);
                 
                 if (trackElem?.track?.cues && player) {
                     const currentTime = player.getCurrentTime() / 1000; // Netflix uses milliseconds
@@ -681,9 +674,7 @@
                 const trackElem = document.getElementById(TRACK_ELEM_ID);
                 const videoPlayer =
                 netflix?.appContext?.state?.playerApp?.getAPI?.()?.videoPlayer;
-                const player = videoPlayer?.getVideoPlayerBySessionId(
-                                                                      videoPlayer.getAllPlayerSessionIds()[0]
-                                                                      );
+                const player = videoPlayer?.getVideoPlayerBySessionId(videoPlayer.getAllPlayerSessionIds()[0]);
                 
                 if (trackElem?.track?.cues && player) {
                     const currentTime = player.getCurrentTime() / 1000; // Netflix uses milliseconds

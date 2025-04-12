@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 import SwiftUIWebView
+import LakeKit
 
 public struct NetflixUserScript {
     public static let shared = ReadabilityImagesUserScript()
@@ -9,7 +10,7 @@ public struct NetflixUserScript {
     
     public init(meaningfulContentMinChars: Int = 1) {
         do {
-            userScriptSource = try loadBundleFile(name: "netflix", extension: "js", subdirectory: "User Scripts")
+            userScriptSource = try loadModuleFile(name: "netflix", extension: "js", subdirectory: "User Scripts")
         } catch {
             fatalError("Couldn't load user script. \(error)")
         }
