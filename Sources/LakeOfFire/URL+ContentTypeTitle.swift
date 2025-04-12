@@ -3,7 +3,7 @@ import Foundation
 public extension URL {
     var contentTypeTitle: String {
         if isEBookURL {
-            return "ebook"
+            return "book"
         } else if isFileURL {
             return "file"
         } else if isSnippetURL {
