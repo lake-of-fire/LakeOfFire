@@ -70,6 +70,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return getCategories()?.filter { !$0.isArchived }
     }
 
+    @MainActor
     public var downloadables: Set<Downloadable> {
         guard !Self.securityApplicationGroupIdentifier.isEmpty else { fatalError("securityApplicationGroupIdentifier unset") }
         return Set(Self.opmlURLs.compactMap { url in
@@ -105,14 +106,14 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return userScriptIDs.compactMap { realm.object(ofType: UserScript.self, forPrimaryKey: $0) } .filter { !$0.isDeleted }
     }
 
-    @available(macOS 13.0, iOS 16.1, *)
-    public func pendingBackgroundAssetDownloads() -> Set<BADownload> {
-        let downloadables = downloadables
-        Task.detached { @MainActor in
-            await DownloadController.shared.ensureDownloaded(downloadables)
-        }
-        return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
-    }
+//    @available(macOS 13.0, iOS 16.1, *)
+//    public func pendingBackgroundAssetDownloads() -> Set<BADownload> {
+//        let downloadables = downloadables
+//        Task.detached { @MainActor in
+//            await DownloadController.shared.ensureDownloaded(downloadables)
+//        }
+//        return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
+//    }
     
     public func getActiveWebViewUserScripts() -> [WebViewUserScript]? {
         guard let realm else {
