@@ -68,9 +68,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
     
     func deletionTitle(category: FeedCategory) -> String {
         if category.isArchived {
-            return "Delete Category"
+            return "Delete"
         }
-        return "Archive Category"
+        return "Archive"
     }
     
     func showDeleteButton(category: FeedCategory) -> Bool {
