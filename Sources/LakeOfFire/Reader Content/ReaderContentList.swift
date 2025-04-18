@@ -43,7 +43,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                     }
                 }
             }, message: {
-               Text("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")? Deletion cannot be undone.")
+                Text("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")? Deletion cannot be undone.")
             })
     }
 }
@@ -70,7 +70,7 @@ struct ListItemToggleStyle: ToggleStyle {
         .background(configuration.isOn ? Color.accentColor : Color.clear)
     }
 }
-    
+
 public enum ReaderContentSortOrder {
     case publicationDate
     case createdAt
@@ -103,7 +103,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             filteredContents = contents
             return
         }
-
+        
         let realmConfig = contents.first?.realm?.configuration
         self.realmConfiguration = realmConfig
         let refs = contents.map { ThreadSafeReference(to: $0) }
@@ -129,7 +129,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                     filtered.append(content)
                 }
             }
-
+            
             if let sortOrder {
                 switch sortOrder {
                 case .publicationDate:
@@ -145,7 +145,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 }
             }
             try Task.checkCancellation()
-
+            
             // TODO: Pagination
             let ids = Array(filtered.prefix(10_000)).map { $0.compoundKey }
             try await { @MainActor [weak self] in
@@ -215,7 +215,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 get: {
                     //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
                     entrySelection == content.compoundKey
-//                    readerWebViewState.matches(content: content)
+                    //                    readerWebViewState.matches(content: content)
                 },
                 set: {
                     let newValue = $0 ? content.compoundKey : nil
@@ -237,7 +237,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 AnyView(content.readerContentCellButtonsView())
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
-
+            
             if showSeparators, content.compoundKey != viewModel.filteredContentIDs.last {
                 Divider()
                     .padding(.top, 4)
@@ -331,7 +331,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
             }
         }
         .frame(minHeight: 10) // Needed so ScrollView doesn't collapse at start...
-   }
+    }
     
     init(
         entrySelection: Binding<String?>,
@@ -358,7 +358,7 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
-
+    
     @ViewBuilder private var listItems: some View {
         ReaderContentListItems(viewModel: viewModel, entrySelection: $entrySelection, contentSortAscending: contentSortAscending, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: false)
     }
@@ -403,20 +403,20 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
 
 public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel = ReaderContentListViewModel<C>()
-//    let contents: [C]
+    //    let contents: [C]
     // TODO: Something with this triggers repreatedly in printchanges; change to an environmentkey
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
     var showSeparators = false
-//    var contentFilter: ((C) async throws -> Bool)? = nil
-//    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-//    var sortOrder = ReaderContentSortOrder.publicationDate
+    //    var contentFilter: ((C) async throws -> Bool)? = nil
+    //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
+    //    var sortOrder = ReaderContentSortOrder.publicationDate
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-
+    
     public var body: some View {
         ReaderContentInnerListItems(
             entrySelection: $entrySelection,
@@ -424,32 +424,32 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             showSeparators: showSeparators,
             viewModel: viewModel
         )
-            .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-                guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
-                Task { @MainActor in
-                    try await navigator.load(
-                        content: content,
-                        readerModeViewModel: readerModeViewModel
-                    )
-                    // TODO: This is crashy sadly.
-                    //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    //                        scrollViewProxy.scrollTo(entrySelection)
-                    //                    }
-                }
+        .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
+            guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+            Task { @MainActor in
+                try await navigator.load(
+                    content: content,
+                    readerModeViewModel: readerModeViewModel
+                )
+                // TODO: This is crashy sadly.
+                //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                //                        scrollViewProxy.scrollTo(entrySelection)
+                //                    }
             }
-            .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
-                if oldPageURL != readerPageURL {
-                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
-                }
+        }
+        .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
+            if oldPageURL != readerPageURL {
+                refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
             }
-            .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
-                Task { @MainActor in
-                    refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
-                }
-            }
-            .task { @MainActor in
+        }
+        .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
+            Task { @MainActor in
                 refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
             }
+        }
+        .task { @MainActor in
+            refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
+        }
         //            .onChange(of: contents) { contents in
         //                Task { @MainActor in
         //                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
@@ -470,13 +470,17 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         viewModel.refreshSelectionTask?.cancel()
         guard !isReaderProvisionallyNavigating else { return }
         
-//        let readerContentCompoundKey = readerContent.compoundKey
+        //        let readerContentCompoundKey = readerContent.compoundKey
         let entrySelection = entrySelection
         let filteredContentURLs = viewModel.filteredContents.map { $0.url }
         viewModel.refreshSelectionTask = Task.detached {
             try Task.checkCancellation()
             do {
-                if !readerPageURL.isNativeReaderView, let entrySelection = entrySelection, let idx = viewModel.filteredContentIDs.firstIndex(of: entrySelection), !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
+                if !readerPageURL.isNativeReaderView,
+                   let entrySelection = entrySelection,
+                   let idx = viewModel.filteredContentIDs.firstIndex(of: entrySelection),
+                   idx < filteredContentURLs.count,
+                   !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     async let task = { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = nil
@@ -494,7 +498,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     }
                     return
                 }
-//                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
+                //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
                 if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
                     let contentKey = viewModel.filteredContentIDs[idx]
                     async let task = { @MainActor in
