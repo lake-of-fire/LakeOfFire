@@ -117,9 +117,10 @@ const getView = async (file, isCacheWarmer) => {
         }
     if (!book) throw new Error('File type not supported')
         const view = document.createElement('foliate-view')
-        if (!isCacheWarmer) {
+        view.dataset.isCache = isCacheWarmer;
+        //if (!isCacheWarmer) {
             document.body.append(view)
-        }
+        //}
     await view.open(book, isCacheWarmer)
     return view
 }
@@ -398,7 +399,7 @@ class CacheWarmer {
                 topWindowURL: window.top.location.href,
             })
         } else {
-            this.view.remove()
+//            this.view.remove()
         }
     }
     
@@ -463,7 +464,7 @@ window.loadEBook = ({ url, layoutMode }) => {
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         .catch(e => console.error(e))
-        }
+}
 
 window.loadLastPosition = async ({ cfi }) => {
     if (cfi.length > 0) {
@@ -474,7 +475,7 @@ window.loadLastPosition = async ({ cfi }) => {
     globalThis.reader.hasLoadedLastPosition = true
     
     // Don't overlap cache warming with initial page load
-    await cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+    await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

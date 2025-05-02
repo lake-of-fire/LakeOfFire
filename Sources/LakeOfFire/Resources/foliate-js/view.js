@@ -89,6 +89,7 @@ export class View extends HTMLElement {
     #sectionProgress
     #tocProgress
     #pageProgress
+    #isCacheWarmer
     #searchResults = new Map()
     isFixedLayout = false
     lastLocation
@@ -103,6 +104,7 @@ export class View extends HTMLElement {
     async open(book, isCacheWarmer) {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
+        this.#isCacheWarmer = isCacheWarmer
 
         if (book.splitTOCHref && book.getTOCFragment) {
             const ids = book.sections.map(s => s.id)
@@ -126,8 +128,10 @@ export class View extends HTMLElement {
         this.renderer.setAttribute('exportparts', 'head,foot,filter')
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
-        this.renderer.addEventListener('create-overlayer', e =>
-            e.detail.attach(this.#createOverlayer(e.detail)))
+        if (!this.#isCacheWarmer) {
+            this.renderer.addEventListener('create-overlayer', e =>
+               e.detail.attach(this.#createOverlayer(e.detail)))
+        }
         this.renderer.open(book, isCacheWarmer)
         this.#root.append(this.renderer)
     }

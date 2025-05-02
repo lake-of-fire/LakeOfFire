@@ -181,14 +181,18 @@ class View {
     #debouncedExpand
 //    #resizeObserver = new ResizeObserver(() => this.expand())
     #resizeObserver = new ResizeObserver(async () => {
-        this.#debouncedExpand()
+        if (!this.#isCacheWarmer) {
+            this.#debouncedExpand()
+        }
 //        this.expand()
     })
     #mutationObserver = new MutationObserver(async () => {
 //        return ;
-        // TODO: Needed still?
-        if (this.#column) {
-            this.needsRenderForMutation = true
+        if (!this.#isCacheWarmer) {
+            if (this.#column) {
+                // TODO: Needed still?
+                this.needsRenderForMutation = true
+            }
         }
     })
     needsRenderForMutation = false
@@ -458,13 +462,15 @@ export class Paginator extends HTMLElement {
     #hasResizeObserverTriggered = false
 //    #resizeObserver = new ResizeObserver(() => this.render())
     #resizeObserver = new ResizeObserver(() => {
-        if (!this.#hasResizeObserverTriggered) {
-//            // Skip initial observation on start
-            this.#hasResizeObserverTriggered = true
-            return
+        if (!this.#isCacheWarmer) {
+            if (!this.#hasResizeObserverTriggered) {
+                //            // Skip initial observation on start
+                this.#hasResizeObserverTriggered = true
+                return
+            }
+            this.#debouncedRender()
+            //        this.render()
         }
-        this.#debouncedRender()
-//        this.render()
     })
     #top
     #background
@@ -997,7 +1003,9 @@ export class Paginator extends HTMLElement {
             const oldIndex = this.#index
             const onLoad = detail => {
                 this.sections[oldIndex]?.unload?.()
-                this.setStyles(this.#styles)
+                if (!this.#isCacheWarmer) {
+                    this.setStyles(this.#styles)
+                }
                 this.dispatchEvent(new CustomEvent('load', { detail }))
             }
             await this.#display(Promise.resolve(this.sections[index].load())
