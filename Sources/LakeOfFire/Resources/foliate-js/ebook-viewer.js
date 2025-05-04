@@ -121,6 +121,9 @@ const getView = async (file, isCacheWarmer) => {
         //if (!isCacheWarmer) {
             document.body.append(view)
         //}
+    if (isCacheWarmer) {
+        view.style.display = 'none'
+    }
     await view.open(book, isCacheWarmer)
     return view
 }
@@ -467,6 +470,8 @@ window.loadEBook = ({ url, layoutMode }) => {
 }
 
 window.loadLastPosition = async ({ cfi }) => {
+    console.log("load last pos")
+    console.log(cfi)
     if (cfi.length > 0) {
         await globalThis.reader.view.goTo(cfi).catch(e => console.error(e))
     } else {
