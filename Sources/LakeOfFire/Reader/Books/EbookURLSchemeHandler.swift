@@ -3,6 +3,40 @@ import WebKit
 import UniformTypeIdentifiers
 import SwiftSoup
 
+fileprivate actor EBookProcessingActor {
+    let ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> String)?) async throws -> String)?
+    let processReadabilityContent: ((SwiftSoup.Document) async -> String)?
+    
+    init(
+        ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> String)?) async throws -> String)?,
+        processReadabilityContent: ((SwiftSoup.Document) async -> String)?
+    ) {
+        self.ebookTextProcessor = ebookTextProcessor
+        self.processReadabilityContent = processReadabilityContent
+    }
+    
+    func process(
+        contentURL: URL,
+        location: String,
+        text: String
+    ) async -> String {
+        var respText = text
+        if let processor = ebookTextProcessor {
+            do {
+                respText = try await processor(
+                    contentURL,
+                    location,
+                    text,
+                    processReadabilityContent
+                )
+            } catch {
+                print("Error processing Ebook text: \(error)")
+            }
+        }
+        return respText
+    }
+}
+
 public extension URL {
     var isEBookURL: Bool {
         return (isFileURL || scheme == "https" || scheme == "http" || scheme == "ebook" || scheme == "ebook-url") && pathExtension.lowercased() == "epub"
@@ -30,27 +64,26 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         guard let url = urlSchemeTask.request.url else { return }
         
         if url.path == "/process-text" {
+            debugPrint("# / process text")
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
-                let ebookTextProcessor = ebookTextProcessor
-                let processReadabilityContent = processReadabilityContent
-                Task.detached(priority: .utility) {
-                    var respText = text
-                    if let ebookTextProcessor {
-                        do {
-                            respText = try await ebookTextProcessor(
-                                contentURL,
-                                replacedTextLocation,
-                                text,
-                                processReadabilityContent
-                            )
-                        } catch {
-                            print("Error processing Ebook text: \(error)")
-                        }
-                    }
-                    if let respData = respText.data(using: .utf8) {
-                        Task { @MainActor in
+                if let ebookTextProcessor, let processReadabilityContent {
+                    let processingActor = EBookProcessingActor(
+                        ebookTextProcessor: ebookTextProcessor,
+                        processReadabilityContent: processReadabilityContent
+                    )
+                    Task.detached(priority: .utility) {
+                        let respText = await processingActor.process(
+                            contentURL: contentURL,
+                            location: replacedTextLocation,
+                            text: text
+                        )
+                        if let respData = respText.data(using: .utf8) {
                             let resp = HTTPURLResponse(
-                                url: url, mimeType: nil, expectedContentLength: respData.count, textEncodingName: "utf-8")
+                                url: url,
+                                mimeType: nil,
+                                expectedContentLength: respData.count,
+                                textEncodingName: "utf-8"
+                            )
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                 urlSchemeTask.didReceive(resp)
                                 urlSchemeTask.didReceive(respData)
@@ -58,6 +91,19 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                             }
                         }
+                    }
+                } else if let respData = text.data(using: .utf8) {
+                    let resp = HTTPURLResponse(
+                        url: url,
+                        mimeType: nil,
+                        expectedContentLength: respData.count,
+                        textEncodingName: "utf-8"
+                    )
+                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                        urlSchemeTask.didReceive(resp)
+                        urlSchemeTask.didReceive(respData)
+                        urlSchemeTask.didFinish()
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                     }
                 }
                 return
@@ -104,56 +150,56 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 let readerFileManager = readerFileManager,
                 // Security check.
                 urlSchemeTask.request.mainDocumentURL == fileURL {
-                  Task { @MainActor in
-                      do {
-                          // User file.
-                          if try await readerFileManager.directoryExists(directoryURL: fileURL) {
-                              let localFileURL = try await readerFileManager.localDirectoryURL(forReaderFileURL: fileURL)
-                              await Task.detached {
-                                  guard let epubData = EPub.zipToEPub(directoryURL: localFileURL) else {
-                                      print("Failed to ZIP epub \(fileURL) for loading.")
-                                      // TODO: Canceling/failed tasks
-                                      return
-                                  }
-                                  await Task { @MainActor in
-                                      let response = HTTPURLResponse(
+                Task { @MainActor in
+                    do {
+                        // User file.
+                        if try await readerFileManager.directoryExists(directoryURL: fileURL) {
+                            let localFileURL = try await readerFileManager.localDirectoryURL(forReaderFileURL: fileURL)
+                            await Task.detached {
+                                guard let epubData = EPub.zipToEPub(directoryURL: localFileURL) else {
+                                    print("Failed to ZIP epub \(fileURL) for loading.")
+                                    // TODO: Canceling/failed tasks
+                                    return
+                                }
+                                await Task { @MainActor in
+                                    let response = HTTPURLResponse(
                                         url: fileURL,
                                         mimeType: "application/epub+zip",
                                         expectedContentLength: epubData.count, textEncodingName: nil)
-                                      if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                          urlSchemeTask.didReceive(response)
-                                          urlSchemeTask.didReceive(epubData)
-                                          urlSchemeTask.didFinish()
-                                          self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                      }
-                                  }.value
-                              }.value
-                          } else if try await readerFileManager.fileExists(fileURL: fileURL) {
-                              let localFileURL = try await readerFileManager.localFileURL(forReaderFileURL: fileURL)
-                              if let mimeType = mimeType(ofFileAtUrl: localFileURL),
-                                 let data = try? Data(contentsOf: localFileURL) {
-                                  let response = HTTPURLResponse(
+                                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                        urlSchemeTask.didReceive(response)
+                                        urlSchemeTask.didReceive(epubData)
+                                        urlSchemeTask.didFinish()
+                                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                    }
+                                }.value
+                            }.value
+                        } else if try await readerFileManager.fileExists(fileURL: fileURL) {
+                            let localFileURL = try await readerFileManager.localFileURL(forReaderFileURL: fileURL)
+                            if let mimeType = mimeType(ofFileAtUrl: localFileURL),
+                               let data = try? Data(contentsOf: localFileURL) {
+                                let response = HTTPURLResponse(
                                     url: url,
                                     mimeType: mimeType,
                                     expectedContentLength: data.count, textEncodingName: nil)
-                                  if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                      urlSchemeTask.didReceive(response)
-                                      urlSchemeTask.didReceive(data)
-                                      urlSchemeTask.didFinish()
-                                      self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                  }
-                              }
-                          } else {
-                              // TODO: Raise and display 404 error
-                              print("File not found for \(fileURL)")
-                          }
-                      } catch {
-                          print("Error: \(error)")
-                          // TODO: Error here
-                      }
-                  }
-                  return
-              }
+                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                    urlSchemeTask.didReceive(response)
+                                    urlSchemeTask.didReceive(data)
+                                    urlSchemeTask.didFinish()
+                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                }
+                            }
+                        } else {
+                            // TODO: Raise and display 404 error
+                            print("File not found for \(fileURL)")
+                        }
+                    } catch {
+                        print("Error: \(error)")
+                        // TODO: Error here
+                    }
+                }
+                return
+            }
         }
         
         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
@@ -166,7 +212,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
         return Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
     }
-
+    
     private func mimeType(ofFileAtUrl url: URL) -> String? {
         return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }

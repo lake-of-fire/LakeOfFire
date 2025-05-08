@@ -4,6 +4,7 @@ import SwiftSoup
 import RealmSwift
 import Combine
 import RealmSwiftGaps
+import LakeKit
 import WebKit
 
 @globalActor
@@ -16,9 +17,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     public var processReadabilityContent: ((SwiftSoup.Document) async -> String)? = nil
     public var navigator: WebViewNavigator?
-    
     public var defaultFontSize: Double?
-    @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
@@ -140,26 +139,21 @@ public class ReaderModeViewModel: ObservableObject {
         }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
-        let readerFontSize = readerFontSize
-        let defaultFontSize = defaultFontSize ?? 18
         let processReadabilityContent = processReadabilityContent
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()
-        let lightModeTheme = lightModeTheme
-        let darkModeTheme = darkModeTheme
         
         try await { @ReaderViewModelActor [weak self] in
             var doc: SwiftSoup.Document
-            doc = try processForReaderMode(
+            doc = try await processForReaderMode(
                 content: readabilityContent,
                 url: url,
+                contentSectionLocationIdentifier: nil,
                 isEBook: false,
                 defaultTitle: titleForDisplay,
                 imageURL: imageURLToDisplay,
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
-                fontSize: readerFontSize ?? defaultFontSize,
-                lightModeTheme: lightModeTheme,
-                darkModeTheme: darkModeTheme
+                defaultFontSize: defaultFontSize ?? 18
             )
             
             var html: String
@@ -302,10 +296,226 @@ public class ReaderModeViewModel: ObservableObject {
     }
 }
 
-public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defaultTitle: String?, imageURL: URL?, injectEntryImageIntoHeader: Bool, fontSize: Double, lightModeTheme: LightModeTheme, darkModeTheme: DarkModeTheme) throws -> SwiftSoup.Document {
+public struct ReaderModeProcessorCacheKey: Encodable, Hashable {
+    public let contentURL: URL
+    public let sectionLocation: String?
+    
+    public enum CodingKeys: String, CodingKey {
+        case contentURL
+        case sectionLocation
+    }
+    
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(contentURL, forKey: .contentURL)
+        try container.encodeIfPresent(sectionLocation, forKey: .sectionLocation)
+    }
+}
+
+public let readerModeProcessorCache = LRUFileCache<ReaderModeProcessorCacheKey, [UInt8]>(
+    //public let ebookProcessorCache = LRUCache<ReaderModeProcessorCacheKey, [UInt8]>(
+    namespace: "ReaderModeTextProcessor",
+    //    totalCostLimit: 30_000_000,
+    totalBytesLimit: 250_000_000,
+    countLimit: 20_000
+)
+
+@inlinable
+internal func range(of subArray: ArraySlice<UInt8>, in arraySlice: ArraySlice<UInt8>, startingAt start: ArraySlice<UInt8>.Index) -> Range<ArraySlice<UInt8>.Index>? {
+    guard !subArray.isEmpty, start < arraySlice.endIndex else { return nil }
+    let subCount = subArray.count
+    // Ensure that we iterate within bounds.
+    for i in start...(arraySlice.endIndex - subCount) {
+        if arraySlice[i..<i+subCount] == subArray {
+            return i..<i+subCount
+        }
+    }
+    return nil
+}
+
+fileprivate func extractBlobUrls(from bytes: [UInt8]) -> [ArraySlice<UInt8>] {
+    let prefixBytes = UTF8Arrays.blobColon
+    let prefixBytesCount = prefixBytes.count
+    let quote1: UInt8 = 0x22 // "
+    let quote2: UInt8 = 0x27 // '
+    let bytesCount = bytes.count
+    var blobUrls: [ArraySlice<UInt8>] = []
+    var i = 0
+    
+    while i < bytesCount {
+        // Skip continuation bytes (i.e. bytes that are not the start of a new UTF-8 scalar)
+        if (bytes[i] & 0b11000000) == 0b10000000 {
+            i += 1
+            continue
+        }
+        
+        // Determine length of current UTF-8 character
+        let charLen: Int
+        if bytes[i] < 0x80 {
+            charLen = 1
+        } else if bytes[i] < 0xE0 {
+            charLen = 2
+        } else if bytes[i] < 0xF0 {
+            charLen = 3
+        } else {
+            charLen = 4
+        }
+        
+        // Check for prefix match.
+        if i + prefixBytesCount <= bytesCount {
+            var match = true
+            for k in 0..<prefixBytesCount {
+                if bytes[i + k] != prefixBytes[k] {
+                    match = false
+                    break
+                }
+            }
+            if match {
+                let urlStart = i + prefixBytesCount
+                var j = urlStart
+                // Scan until we hit a quote or the end of the bytes.
+                while j < bytesCount {
+                    // Make sure we are at a character boundary
+                    if (bytes[j] & 0b11000000) == 0b10000000 {
+                        j += 1
+                        continue
+                    }
+                    // Break if we hit a quote character.
+                    if bytes[j] == quote1 || bytes[j] == quote2 {
+                        break
+                    }
+                    // Move j by the character length at this position.
+                    let len: Int
+                    if bytes[j] < 0x80 {
+                        len = 1
+                    } else if bytes[j] < 0xE0 {
+                        len = 2
+                    } else if bytes[j] < 0xF0 {
+                        len = 3
+                    } else {
+                        len = 4
+                    }
+                    j += len
+                }
+                blobUrls.append(bytes[urlStart..<j])
+                i = j
+                continue
+            }
+        }
+        i += charLen
+    }
+    return blobUrls
+}
+
+fileprivate func replaceBlobUrls(in htmlBytes: [UInt8], with blobUrls: [ArraySlice<UInt8>]) -> [UInt8] {
+    let extractedBlobUrlSlices = extractBlobUrls(from: htmlBytes)
+    
+    // Only replace as many as the lesser of the two counts.
+    let minCount = min(blobUrls.count, extractedBlobUrlSlices.count)
+    
+    // Work with an ArraySlice for performance.
+    let workingSlice = htmlBytes[htmlBytes.startIndex..<htmlBytes.endIndex]
+    var result = [UInt8]()
+    var currentIndex = workingSlice.startIndex
+    
+    // For each replacement, search for the extracted blob URL slice in workingSlice starting from currentIndex.
+    for i in 0..<minCount {
+        if let rangeFound = range(of: extractedBlobUrlSlices[i], in: workingSlice, startingAt: currentIndex) {
+            // Append everything before the found range.
+            result.append(contentsOf: workingSlice[currentIndex..<rangeFound.lowerBound])
+            // Append the replacement blob URL bytes.
+            result.append(contentsOf: blobUrls[i])
+            // Move currentIndex past the found blob URL.
+            currentIndex = rangeFound.upperBound
+        }
+    }
+    
+    // Append the remainder of the bytes if any exists.
+    if currentIndex < workingSlice.endIndex {
+        result.append(contentsOf: workingSlice[currentIndex..<workingSlice.endIndex])
+    }
+    
+    return result
+}
+
+fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#
+fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: readerFontSizeStylePattern, options: .caseInsensitive)
+
+fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
+fileprivate let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
+
+fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
+    // Convert the UTF8 bytes to a String.
+    guard let html = String(bytes: htmlBytes, encoding: .utf8) else {
+        return htmlBytes
+    }
+    
+    let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
+    let nsHTML = html as NSString
+    var updatedHtml: String
+    let newFontSizeStr = "font-size: " + String(newFontSize) + "px"
+    // If a font-size exists in the style, replace it.
+    if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
+        let replacement = readerFontSizeStyleRegex.replacementString(
+            for: firstMatch,
+            in: html,
+            offset: 0,
+            template: "$1" + newFontSizeStr
+        )
+        updatedHtml = nsHTML.replacingCharacters(in: firstMatch.range, with: replacement)
+    }
+    // Otherwise, if a <body ... style="..."> exists, insert the font-size.
+    else if let styleMatch = bodyStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
+        let prefix = nsHTML.substring(with: styleMatch.range(at: 1))
+        let content = nsHTML.substring(with: styleMatch.range(at: 2))
+        let suffix = nsHTML.substring(with: styleMatch.range(at: 3))
+        let newContent = newFontSizeStr + "; " + content
+        let replacement = prefix + newContent + suffix
+        updatedHtml = nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
+    }
+    else {
+        updatedHtml = html
+    }
+    
+    // Convert the updated HTML string back to UTF8 bytes.
+    return Array(updatedHtml.utf8)
+}
+
+public func processForReaderMode(
+    content: String,
+    url: URL,
+    contentSectionLocationIdentifier: String?,
+    isEBook: Bool,
+    defaultTitle: String?,
+    imageURL: URL?,
+    injectEntryImageIntoHeader: Bool,
+    defaultFontSize: CGFloat
+) throws -> SwiftSoup.Document {
+       // TODO: font size and theme set elsewhere already..?
+    let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
+    let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
+    let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
+ 
+    var updatedContent = content
+    let cacheKey = ReaderModeProcessorCacheKey(contentURL: url, sectionLocation: contentSectionLocationIdentifier)
+    if let cached = readerModeProcessorCache.value(forKey: cacheKey) {
+        if isEBook {
+            let blobs = extractBlobUrls(from: content.utf8Array)
+            var updatedCache = replaceBlobUrls(in: cached, with: blobs)
+            // TODO: Also overwrite the theme here
+            updatedCache = rewriteManabiReaderFontSizeStyle(
+                in: updatedCache,
+                newFontSize: readerFontSize
+            )
+            updatedContent = String(decoding: updatedCache, as: UTF8.self)
+        } else {
+            updatedContent = String(decoding: cached, as: UTF8.self)
+        }
+    }
+    
     let isXML = content.hasPrefix("<?xml")
     let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
-    let doc = try SwiftSoup.parse(content, url?.absoluteString ?? "", parser)
+    let doc = try SwiftSoup.parse(updatedContent, url.absoluteString, parser)
     doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
     
     // Migrate old cached versions
@@ -320,7 +530,7 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
     }
     
     if let bodyTag = doc.body() {
-        var bodyStyle = "font-size: \(fontSize)px"
+        var bodyStyle = "font-size: \(readerFontSize)px"
         if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
             bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
         }
@@ -345,7 +555,7 @@ public func processForReaderMode(content: String, url: URL?, isEBook: Bool, defa
         } catch { }
     }
     
-    if let url = url {
+    if !isEBook {
         transformContentSpecificToFeed(doc: doc, url: url)
         do {
             try wireViewOriginalLinks(doc: doc, url: url)
