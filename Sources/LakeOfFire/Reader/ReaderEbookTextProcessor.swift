@@ -3,16 +3,31 @@ import SwiftSoup
 import LRUCache
 import LakeKit
 
+fileprivate extension URL {
+    /// Backport of iOS 16+ `appending(queryItems:)` for iOS 15
+    func appending(queryItems items: [URLQueryItem]) -> URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: true) else {
+            return self
+        }
+        var existingItems = components.queryItems ?? []
+        existingItems.append(contentsOf: items)
+        components.queryItems = existingItems
+        return components.url ?? self
+    }
+}
+
 internal func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
     processReadabilityContent: ((SwiftSoup.Document) async -> String)?
 ) async throws -> String {
+    let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
+    
     do {
         let doc = try processForReaderMode(
             content: content,
-            url: contentURL, //nil,
+            url: sectionLocationURL, //nil,
             contentSectionLocationIdentifier: sectionLocation,
             isEBook: true,
             defaultTitle: nil,
