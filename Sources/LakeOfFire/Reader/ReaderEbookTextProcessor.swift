@@ -20,13 +20,23 @@ internal func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
     content: String,
-    processReadabilityContent: ((SwiftSoup.Document) async -> String)?
+    processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?,
+    processHTML: ((String) async -> String)?
 ) async throws -> String {
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
     
     do {
-        let doc = try processForReaderMode(
-            content: content,
+        let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
+        let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
+        var doc = try SwiftSoup.parse(content, sectionLocationURL.absoluteString, parser)
+        doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
+        
+        if let processReadabilityContent {
+            doc = await processReadabilityContent(doc)
+        }
+        
+        try processForReaderMode(
+            doc: doc,
             url: sectionLocationURL, //nil,
             contentSectionLocationIdentifier: sectionLocation,
             isEBook: true,
@@ -35,13 +45,17 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 18 // TODO: Pass this in from ReaderViewModel...
         )
-        doc.outputSettings().charset(.utf8).escapeMode(.xhtml)
-        let html: String
-        if let processReadabilityContent {
-            html = await processReadabilityContent(doc)
-        } else {
-            html = try doc.outerHtml()
+        
+        doc.outputSettings().charset(.utf8)
+        if isXML {
+            doc.outputSettings().escapeMode(.xhtml)
         }
+        var html = try doc.outerHtml()
+        
+        if let processHTML {
+            html = await processHTML(html)
+        }
+        
         return html
     } catch {
         debugPrint("Error processing readability content for ebook", error)

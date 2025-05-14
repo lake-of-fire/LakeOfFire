@@ -4,15 +4,18 @@ import UniformTypeIdentifiers
 import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
-    let ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> String)?) async throws -> String)?
-    let processReadabilityContent: ((SwiftSoup.Document) async -> String)?
-    
+    let ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?
+    let processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?
+    let processHTML: ((String) async -> String)?
+
     init(
-        ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> String)?) async throws -> String)?,
-        processReadabilityContent: ((SwiftSoup.Document) async -> String)?
+        ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?,
+        processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?,
+        processHTML: ((String) async -> String)?
     ) {
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
+        self.processHTML = processHTML
     }
     
     func process(
@@ -21,13 +24,14 @@ fileprivate actor EBookProcessingActor {
         text: String
     ) async -> String {
         var respText = text
-        if let processor = ebookTextProcessor {
+        if let ebookTextProcessor {
             do {
-                respText = try await processor(
+                respText = try await ebookTextProcessor(
                     contentURL,
                     location,
                     text,
-                    processReadabilityContent
+                    processReadabilityContent,
+                    processHTML
                 )
             } catch {
                 print("Error processing Ebook text: \(error)")
@@ -44,10 +48,11 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> String)?) async throws -> String)? = nil
+    var ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
-    var processReadabilityContent: ((SwiftSoup.Document) async -> String)?
-    
+    var processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?
+    var processHTML: ((String) async -> String)?
+
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     
     enum CustomSchemeHandlerError: Error {
@@ -65,10 +70,11 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
-                if let ebookTextProcessor, let processReadabilityContent {
+                if let ebookTextProcessor, let processReadabilityContent, let processHTML {
                     let processingActor = EBookProcessingActor(
                         ebookTextProcessor: ebookTextProcessor,
-                        processReadabilityContent: processReadabilityContent
+                        processReadabilityContent: processReadabilityContent,
+                        processHTML: processHTML
                     )
                     Task.detached(priority: .utility) {
                         let respText = await processingActor.process(

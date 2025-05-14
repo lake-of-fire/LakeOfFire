@@ -2,32 +2,31 @@ import './view.js'
 import { createTOCView } from './ui/tree.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 
-// TODO: replaceText factory for setting isCacheWarmer and returning a function below
-const replaceText = async (href, text, mediaType) => {
-    //    const replaceText = async (href, text, mediaType, isCacheWarmer) => {
+// Factory for replaceText with isCacheWarmer support
+const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const response = await fetch('ebook://ebook/process-text', {
-        method: "POST", // *GET, POST, PUT, DELETE, etc.
-        mode: "cors", // no-cors, *cors, same-origin
-        cache: "no-cache", // *default, no-cache, reload, force-cache, only-if-cached
+        method: "POST",
+        mode: "cors",
+        cache: "no-cache",
         headers: {
             "Content-Type": mediaType,
             "X-Replaced-Text-Location": href,
             "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
         },
-        body: text})
+        body: text
+    })
     try {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
-        //        let html = await response.text();
-        /*if (html && html.replace && this.view.dataset.isCacheWarmer === 'true') {
-         html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ");
-         }*/
-        return await response.text();
-    } catch {
-        console.error("Error replacing text:", error);
-        //throw error;
-        return text;
+        let html = await response.text()
+        if (isCacheWarmer && html.replace) {
+            html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ")
+        }
+        return html
+    } catch (error) {
+        console.error("Error replacing text:", error)
+        return text
     }
 }
 
@@ -65,6 +64,7 @@ const makeZipLoader = async (file, isCacheWarmer) => {
     //    const wrappedReplaceText = ((href, text, mediaType) => {
     //        replaceText(href, text, mediaType, isCacheWarmer)
     //    })
+    const replaceText = makeReplaceText(isCacheWarmer)
     return { entries, loadText, loadBlob, getSize, replaceText }
 }
 
@@ -118,9 +118,9 @@ const getView = async (file, isCacheWarmer) => {
     if (!book) throw new Error('File type not supported')
         const view = document.createElement('foliate-view')
         view.dataset.isCache = isCacheWarmer;
-        //if (!isCacheWarmer) {
-            document.body.append(view)
-        //}
+    //if (!isCacheWarmer) {
+    document.body.append(view)
+    //}
     if (isCacheWarmer) {
         view.style.display = 'none'
     }
@@ -402,7 +402,7 @@ class CacheWarmer {
                 topWindowURL: window.top.location.href,
             })
         } else {
-//            this.view.remove()
+            //            this.view.remove()
         }
     }
     
@@ -467,11 +467,11 @@ window.loadEBook = ({ url, layoutMode }) => {
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         .catch(e => console.error(e))
-}
+        }
 
 window.loadLastPosition = async ({ cfi }) => {
-    console.log("load last pos")
-    console.log(cfi)
+    //console.log("load last pos")
+    //console.log(cfi)
     if (cfi.length > 0) {
         await globalThis.reader.view.goTo(cfi).catch(e => console.error(e))
     } else {

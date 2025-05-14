@@ -167,6 +167,7 @@ public struct ReaderWebView: View {
         .task { @MainActor in
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
+            ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
