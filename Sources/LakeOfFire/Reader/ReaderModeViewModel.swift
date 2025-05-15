@@ -172,6 +172,10 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultFontSize: defaultFontSize ?? 18
             )
 
+            doc.outputSettings().charset(.utf8)
+            if isXML {
+                doc.outputSettings().escapeMode(.xhtml)
+            }
             var html = try doc.outerHtml()
             
             if let processHTML {

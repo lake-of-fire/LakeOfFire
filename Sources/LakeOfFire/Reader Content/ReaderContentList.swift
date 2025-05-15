@@ -316,14 +316,11 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     viewModel: viewModel
                 )
             }
-            .modifier {
-//#if os(macOS)
-//                $0.headerProminence(.increased)
-//#else
 #if os(iOS)
+            .modifier {
                 $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
-#endif
             }
+#endif
         }
         .frame(minHeight: 10) // Needed so ScrollView doesn't collapse at start...
     }
