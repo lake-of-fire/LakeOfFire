@@ -209,53 +209,50 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     var body: some View {
         VStack(spacing: 0) {
-#if os(macOS)
-            // TODO: Optimize by using state instead of dynamic binding, and get rid of the readerWebViewState and just use readerPageURL
-            Toggle(isOn: Binding<Bool>(
-                get: {
-                    //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-                    entrySelection == content.compoundKey
-                    //                    readerWebViewState.matches(content: content)
-                },
-                set: {
-                    let newValue = $0 ? content.compoundKey : nil
-                    if entrySelection != newValue {
-                        entrySelection = newValue
-                    }
-                }
-            ), label: {
-                cell(item: content)
-                    .background(Color.white.opacity(0.00000001)) // Clickability
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(.secondary.opacity(0.2))
-                            .shadow(radius: 5)
-                    }
-            })
-            .toggleStyle(ListItemToggleStyle())
-            .overlay {
-                AnyView(content.readerContentCellButtonsView())
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            
-            if showSeparators, content.compoundKey != viewModel.filteredContentIDs.last {
-                Divider()
-                    .padding(.top, 4)
-            }
-            //                                    .contextMenu {
-            //                    if let content = content as? (any DeletableReaderContent) {
-            //                        Button(role: .destructive) {
-            //                            readerContentListModalsModel.confirmDeletionOf = content
-            //                            readerContentListModalsModel.confirmDelete = true
-            //                        } label: {
-            //                            Label(content.deleteActionTitle, image: "trash")
-            //                        }
-            //                    }
-            //                }
-            
-            //                    .buttonStyle(.borderless)
-            //                    .id(feedEntry.compoundKey)
-#elseif os(iOS)
+//#if os(macOS)
+//            // TODO: Optimize by using state instead of dynamic binding, and get rid of the readerWebViewState and just use readerPageURL
+//            Toggle(isOn: Binding<Bool>(
+//                get: {
+//                    //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
+//                    entrySelection == content.compoundKey
+//                    //                    readerWebViewState.matches(content: content)
+//                },
+//                set: {
+//                    let newValue = $0 ? content.compoundKey : nil
+//                    if entrySelection != newValue {
+//                        entrySelection = newValue
+//                    }
+//                }
+//            ), label: {
+//                cell(item: content)
+//                    .background(Color.white.opacity(0.00000001)) // Clickability
+//                    .overlay {
+//                        RoundedRectangle(cornerRadius: 12)
+//                            .stroke(.secondary.opacity(0.2))
+//                            .shadow(radius: 5)
+//                    }
+//            })
+//            .toggleStyle(ListItemToggleStyle())
+//            .clipShape(RoundedRectangle(cornerRadius: 12))
+//            
+//            if showSeparators, content.compoundKey != viewModel.filteredContentIDs.last {
+//                Divider()
+//                    .padding(.top, 4)
+//            }
+//            //                                    .contextMenu {
+//            //                    if let content = content as? (any DeletableReaderContent) {
+//            //                        Button(role: .destructive) {
+//            //                            readerContentListModalsModel.confirmDeletionOf = content
+//            //                            readerContentListModalsModel.confirmDelete = true
+//            //                        } label: {
+//            //                            Label(content.deleteActionTitle, image: "trash")
+//            //                        }
+//            //                    }
+//            //                }
+//            
+//            //                    .buttonStyle(.borderless)
+//            //                    .id(feedEntry.compoundKey)
+//#elseif os(iOS)
             if #available(iOS 16.0, *) {
                 cell(item: content)
             } else {
@@ -274,12 +271,9 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             //                        Divider()
             //                            .padding(.top, 8)
             //                    }
-#endif
+//#endif
         }
 #if os(iOS)
-        .overlay {
-            AnyView(content.readerContentCellButtonsView())
-        }
         //                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
         .deleteDisabled((content as? any DeletableReaderContent) == nil)
         .swipeActions {
@@ -323,9 +317,10 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                 )
             }
             .modifier {
-#if os(macOS)
-                $0.headerProminence(.increased)
-#else
+//#if os(macOS)
+//                $0.headerProminence(.increased)
+//#else
+#if os(iOS)
                 $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
 #endif
             }
@@ -365,13 +360,13 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
     
     public var body: some View {
         Group {
-#if os(macOS)
-            ScrollView {
-                LazyVStack {
-                    listItems
-                }
-            }
-#else
+//#if os(macOS)
+//            ScrollView {
+//                LazyVStack {
+//                    listItems
+//                }
+//            }
+//#else
             List(selection: $entrySelection) {
                 listItems
                     .listRowSeparatorIfAvailable(.hidden)
@@ -379,7 +374,7 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
             .listStyle(.plain)
             .scrollContentBackgroundIfAvailable(.hidden)
             .listItemTint(appTint)
-#endif
+//#endif
         }
         .task { @MainActor in
             try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)

@@ -67,9 +67,9 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         .tint(.secondary)
         //                    .padding(.vertical, 4)
         //                    .padding(.horizontal, 8)
-        .overlay {
-            AnyView(content.readerContentCellButtonsView())
-        }
+//        .overlay {
+//            AnyView(content.readerContentCellButtonsView())
+//        }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         //                    .id(feedEntry.compoundKey)
         .contextMenu {
@@ -107,7 +107,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                         maxCellHeight: maxCellHeight
                     )
                 }
-                .headerProminence(.increased)
+//                .headerProminence(.increased)
             }
             .frame(minHeight: maxCellHeight)
             .fixedSize()

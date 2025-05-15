@@ -60,10 +60,6 @@ extension ReaderContentProtocol {
             isEbookStyle: isEbookStyle
         )
     }
-    
-    @ViewBuilder func readerContentCellButtonsView() -> some View {
-        ReaderContentCellButtons(item: self)
-    }
 }
 
 struct CloudDriveSyncStatusView: View { //, Equatable {
@@ -133,8 +129,21 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return maxCellHeight
     }
     
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
 
+    private var buttonSize: CGFloat {
+        return ReaderContentCell<C>.buttonSize
+    }
+    
+    private var isProgressVisible: Bool {
+        if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
+            return true
+        }
+        return false
+    }
+    
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let imageUrl = viewModel.imageURL {
@@ -171,17 +180,65 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         }
                         .foregroundStyle(.secondary)
 
-                        if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
-                            ProgressView(value: min(1, readingProgressFloat))
-                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                                ProgressView(value: min(1, readingProgressFloat))
+                                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                            }
+                    }
+#if os(macOS)
+                    .padding(.bottom, isProgressVisible ? buttonSize / 2 - 10 : buttonSize / 2 - 5)
+#elseif os(iOS)
+                    .padding(.bottom, isProgressVisible ? buttonSize / 2 - 3 : buttonSize / 2 - 7)
+#endif
+
+                    Spacer(minLength: 0)
+                            
+                    HStack(alignment: .center, spacing: 0) {
+                        BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                            .buttonStyle(.borderless)
+                            .padding(.leading, 2)
+                        
+                        if let item = item as? (any DeletableReaderContent) {
+                            Menu {
+                                if let item = item as? ContentFile {
+                                    CloudDriveSyncStatusView(item: item)
+                                        .labelStyle(.titleAndIcon)
+                                    Divider()
+                                }
+                                
+                                Button(role: .destructive) {
+                                    readerContentListModalsModel.confirmDeletionOf = item
+                                    readerContentListModalsModel.confirmDelete = true
+                                } label: {
+                                    Label(item.deleteActionTitle, systemImage: "trash")
+                                }
+                            } label: {
+                                Label("More Options", systemImage: "ellipsis")
+                                //                                .foregroundStyle(.secondary)
+                                //                                .foregroundStyle(.blue)
+                                    .background(.white.opacity(0.0000000001))
+                                //                                .overlay(.white.opacity(0.0000000001))
+                                    .frame(width: buttonSize, height: buttonSize)
+                                //                                .background(.green)
+                                //                            #if os(macOS)
+                                //                                .padding(.horizontal, 4)
+                                //                                .padding(.vertical, 10)
+                                //                            #else
+                                //#endif
+                                    .labelStyle(.iconOnly)
+                            }
+                            .foregroundStyle(.secondary)
+                            //                        .frame(width: buttonSize, height: buttonSize)
+                            .menuIndicator(.hidden)
+                            .buttonStyle(.borderless)
+                            //                        .buttonStyle(.borderless)
+                            //                        .buttonStyle(.plain)
+                            //#if os(macOS)
+                            //                        .offset(y: -(buttonSize / 2.5)) // IDK why
+                            //                                                        //                        .offset(y: 3)
+                            //#endif
                         }
                     }
-                    Spacer(minLength: 0)
-                    // Button placeholders:
-                    Spacer()
-                        .frame(width: Self.buttonSize, height: Self.buttonSize)
-                    Spacer()
-                        .frame(width: Self.buttonSize, height: Self.buttonSize)
                 }
                 .padding(.trailing, 5)
             }
@@ -202,82 +259,5 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 viewModel.imageURL = try await item.imageURLToDisplay()
             }
         }
-    }
-}
-
-struct ReaderContentCellButtons<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
-    @ObservedRealmObject var item: C
-    
-    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-    
-    private var buttonSize: CGFloat {
-        return ReaderContentCell<C>.buttonSize
-    }
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 0) {
-//#if os(macOS)
-//                    Spacer(minLength: 0)
-//                    BookmarkButton(readerContent: item, hiddenIfUnbookmarked: !viewModel.forceShowBookmark)
-//                        .buttonStyle(.borderless)
-//#endif
-                }
-                Spacer(minLength: 0)
-                HStack(alignment: .bottom, spacing: 0) {
-                    Spacer(minLength: 0)
-//#if os(iOS)
-//                    BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
-                    BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
-                        .buttonStyle(.borderless)
-                        .padding(.leading, 2)
-#if os(macOS)
-                        .offset(y: -(buttonSize / 4)) // IDK why
-#endif
-//#endif
-                    if let item = item as? (any DeletableReaderContent) {
-                        Menu {
-                            if let item = item as? ContentFile {
-                                CloudDriveSyncStatusView(item: item)
-                                    .labelStyle(.titleAndIcon)
-                                Divider()
-                            }
-                            
-                            Button(role: .destructive) {
-                                readerContentListModalsModel.confirmDeletionOf = item
-                                readerContentListModalsModel.confirmDelete = true
-                            } label: {
-                                Label(item.deleteActionTitle, systemImage: "trash")
-                            }
-                        } label: {
-                            Label("More Options", systemImage: "ellipsis")
-                                .foregroundStyle(.secondary)
-                                .frame(width: buttonSize, height: buttonSize)
-                                .background(.white).opacity(0.0000000001)
-                            //                            #if os(macOS)
-                            //                                .padding(.horizontal, 4)
-                            //                                .padding(.vertical, 10)
-                            //                            #else
-                            //#endif
-                                .labelStyle(.iconOnly)
-                        }
-                        .foregroundStyle(.secondary)
-                        .menuIndicator(.hidden)
-//                        .buttonStyle(.borderless)
-                        .buttonStyle(.plain)
-#if os(macOS)
-                        .offset(y: -(buttonSize / 2.5)) // IDK why
-                                                        //                        .offset(y: 3)
-#endif
-                    }
-                }
-                .padding(.trailing, 8)
-            }
-        }
-//        .onHover { hovered in
-//            viewModel.forceShowBookmark = hovered
-//        }
     }
 }
