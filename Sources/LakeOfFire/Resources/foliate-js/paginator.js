@@ -1025,9 +1025,15 @@ export class Paginator extends HTMLElement {
     #scrollPrev(distance) {
         if (!this.#view) return true
         if (this.scrolled) {
-            if (this.start > 0) return this.#scrollTo(
-                Math.max(0, this.start - (distance ?? this.size)), null, true)
-            return true
+            const style = getComputedStyle(this.#container);
+            const lineAdvance = this.#vertical
+            ? parseFloat(style.fontSize) || 20
+            : parseFloat(style.lineHeight) || 20;
+            const scrollDistance = distance ?? (this.size - lineAdvance);
+            if (this.start > 0) {
+                return this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+            }
+            return true;
         }
         if (this.atStart) return
         const page = this.page - 1
@@ -1036,9 +1042,15 @@ export class Paginator extends HTMLElement {
     #scrollNext(distance) {
         if (!this.#view) return true
         if (this.scrolled) {
-            if (this.viewSize - this.end > 2) return this.#scrollTo(
-                Math.min(this.viewSize, distance ? this.start + distance : this.end), null, true)
-            return true
+            const style = getComputedStyle(this.#container);
+            const lineAdvance = this.#vertical
+            ? parseFloat(style.fontSize) || 20
+            : parseFloat(style.lineHeight) || 20;
+            const scrollDistance = distance ?? (this.size - lineAdvance);
+            if (this.viewSize - this.end > 2) {
+                return this.#scrollTo(Math.min(this.viewSize, this.start + scrollDistance), null, true);
+            }
+            return true;
         }
         if (this.atEnd) return
         const page = this.page + 1

@@ -204,6 +204,7 @@ class Reader {
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
+        this.view.renderer.setAttribute('animated', true)
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
