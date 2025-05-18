@@ -1,7 +1,10 @@
 import Foundation
 
 public extension URL {
-    var contentTypeTitle: String {
+    var contentTypeTitle: String? {
+        guard !isNativeReaderView else {
+            return nil
+        }
         if isEBookURL {
             return "book"
         } else if isFileURL {
