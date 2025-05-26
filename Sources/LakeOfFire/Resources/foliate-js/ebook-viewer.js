@@ -213,12 +213,16 @@ class Reader {
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
         
         const { book } = this.view
+        this.bookDir = book.dir || 'ltr';
+        this.isRTL   = this.bookDir === 'rtl';
+        this.leftButton  = $('#left-button');
+        this.rightButton = $('#right-button');
         this.view.renderer.setStyles?.(getCSS(this.style))
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
-        $('#left-button').addEventListener('click', () => this.view.goLeft())
-        $('#right-button').addEventListener('click', () => this.view.goRight())
+        this.leftButton.addEventListener('click', this.#onNavButtonClick.bind(this));
+        this.rightButton.addEventListener('click', this.#onNavButtonClick.bind(this));
         
         const slider = $('#progress-slider')
         slider.dir = book.dir
@@ -297,6 +301,70 @@ class Reader {
                     })
         }
     }
+    
+    updateNavButtons() {
+        if (!this.view?.renderer) return;
+        
+        const r = this.view.renderer;
+        const page = r.page;
+        const pages = r.pages;
+        const atStart = page <= 1;
+        const atEnd = page >= pages - 2;
+        
+        let hasPrev = false, hasNext = false;
+        if (typeof r.getContents === 'function' && r.sections) {
+            const currentIndex = r.getContents()?.[0]?.index ?? 0;
+            const sections = r.sections;
+            hasPrev = sections.slice(0, currentIndex).some(s => s.linear !== 'no');
+            hasNext = sections.slice(currentIndex + 1).some(s => s.linear !== 'no');
+        }
+        
+        const prevBtn = this.isRTL ? this.rightButton : this.leftButton;
+        const nextBtn = this.isRTL ? this.leftButton : this.rightButton;
+        const prevLabel = prevBtn.querySelector('.button-label');
+        const nextLabel = nextBtn.querySelector('.button-label');
+        
+        // Clear button data-button-type before assigning labels
+        prevBtn.removeAttribute('data-button-type');
+        nextBtn.removeAttribute('data-button-type');
+        
+        // hide inactive buttons
+        prevBtn.style.visibility = (atStart && !hasPrev) ? 'hidden' : 'visible';
+        nextBtn.style.visibility = (atEnd && !hasNext) ? 'hidden' : 'visible';
+        
+        [prevLabel, nextLabel].forEach(label => label.textContent = '');
+        [prevBtn, nextBtn].forEach(btn => {
+            const path = btn.querySelector('path');
+            if (btn.dataset.originalPath && path) {
+                path.setAttribute('d', btn.dataset.originalPath);
+            }
+        });
+        
+        if (atStart && hasPrev) {
+            prevLabel.textContent = 'Previous Chapter';
+            prevBtn.setAttribute('data-button-type', 'prev');
+            if (this.isRTL) prevBtn.insertBefore(prevLabel, prevBtn.querySelector('svg'));
+            else prevBtn.append(prevLabel);
+        }
+        
+        if (atEnd) {
+            const iconPath = nextBtn.querySelector('path');
+            if (hasNext) {
+                nextLabel.textContent = 'Next Chapter';
+                nextBtn.setAttribute('data-button-type', 'next');
+                if (this.isRTL) nextBtn.append(nextLabel);
+                else nextBtn.insertBefore(nextLabel, nextBtn.querySelector('svg'));
+            } else {
+                nextLabel.textContent = 'Finished Reading';
+                nextBtn.setAttribute('data-button-type', 'finish');
+                if (iconPath) {
+                    nextBtn.dataset.originalPath = nextBtn.dataset.originalPath || iconPath.getAttribute('d');
+                    iconPath.setAttribute('d', 'M4 12l4 4 12-12');
+                }
+                nextBtn.insertBefore(nextLabel, nextBtn.querySelector('svg'));
+            }
+        }
+    }
     #handleKeydown(event) {
         const k = event.key
         if (k === 'ArrowLeft' || k === 'h') this.view.goLeft()
@@ -373,6 +441,53 @@ class Reader {
             if (this.hasLoadedLastPosition) {
                 this.#postUpdateReadingProgressMessage({ fraction, cfi })
             }
+        this.updateNavButtons();
+    }
+    
+    #onNavButtonClick(e) {
+        const btn = e.currentTarget;
+        const type = btn.dataset.buttonType;
+        
+        const icon = btn.querySelector('svg');
+        const label = btn.querySelector('.button-label');
+        
+        // Hide the label while loading
+        if (label) label.style.visibility = 'hidden';
+        
+        // Replace SVG icon with spinner
+        if (icon) {
+            btn._originalIcon = icon.cloneNode(true);
+            const spinner = document.createElement('div');
+            spinner.className = 'ispinner nav-spinner';
+            spinner.innerHTML = '<div class="ispinner-blade"></div>'.repeat(8);
+            icon.replaceWith(spinner);
+        }
+        
+        const restoreIcon = () => {
+            const spinner = btn.querySelector('.ispinner.nav-spinner');
+            if (spinner && btn._originalIcon) {
+                spinner.replaceWith(btn._originalIcon);
+                delete btn._originalIcon;
+            }
+            if (label) label.style.visibility = '';
+        };
+        
+        let nav;
+        if (type === 'prev') {
+            nav = this.view.renderer.prevSection();
+        } else if (type === 'next') {
+            nav = this.view.renderer.nextSection();
+        } else if (type === 'finish') {
+            console.log('Finished reading – stub action');
+            nav = Promise.resolve();
+        } else {
+            nav = (btn === this.leftButton ? this.view.goLeft() : this.view.goRight());
+        }
+        
+        Promise.resolve(nav).finally(() => {
+            // Delay slightly to avoid flicker
+            setTimeout(restoreIcon, 150);
+        });
     }
 }
 

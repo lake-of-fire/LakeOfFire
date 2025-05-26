@@ -284,8 +284,12 @@ private func hypebeast(doc: Document) throws {
 
 public func fixAnnoyingTitlesWithPipes(doc: Document) throws {
     guard let titleElement = try doc.getElementById("reader-title") else { return }
-    let title = try titleElement.text()
-    try titleElement.text(fixAnnoyingTitlesWithPipes(title: title))
+    let textNodes = try titleElement.textNodes()
+    for node in textNodes {
+        let original = node.getWholeText()
+        let updated = fixAnnoyingTitlesWithPipes(title: original)
+        node.text(updated)
+    }
 }
 
 public func fixAnnoyingTitlesWithPipes(title: String) -> String {
