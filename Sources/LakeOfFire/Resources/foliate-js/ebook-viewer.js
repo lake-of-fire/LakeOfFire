@@ -306,10 +306,9 @@ class Reader {
         if (!this.view?.renderer) return;
         
         const r = this.view.renderer;
-        const page = r.page;
-        const pages = r.pages;
-        const atStart = page <= 1;
-        const atEnd = page >= pages - 2;
+        // Use r.start and r.end for exact scroll position
+        const atStart = r.start <= 1;
+        const atEnd = r.viewSize - r.end <= 1;
         
         let hasPrev = false, hasNext = false;
         if (typeof r.getContents === 'function' && r.sections) {
@@ -451,6 +450,12 @@ class Reader {
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
         
+        // Only show spinner for prev/next/finish chapter nav
+        if (type !== 'prev' && type !== 'next' && type !== 'finish') {
+            (btn === this.leftButton ? this.view.goLeft() : this.view.goRight());
+            return;
+        }
+        
         // Hide the label while loading
         if (label) label.style.visibility = 'hidden';
         
@@ -480,8 +485,6 @@ class Reader {
         } else if (type === 'finish') {
             console.log('Finished reading – stub action');
             nav = Promise.resolve();
-        } else {
-            nav = (btn === this.leftButton ? this.view.goLeft() : this.view.goRight());
         }
         
         Promise.resolve(nav).finally(() => {
