@@ -452,7 +452,8 @@ class Reader {
             const iconPath = restartBtn.querySelector('svg path');
             if (iconPath) {
                 iconPath.setAttribute('d', 'M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z');
-                iconPath.removeAttribute('fill');
+                iconPath.setAttribute('fill', 'currentColor');
+                iconPath.setAttribute('stroke', 'none');
             }
         }
     }
