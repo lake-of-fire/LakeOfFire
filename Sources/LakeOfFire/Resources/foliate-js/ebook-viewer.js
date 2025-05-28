@@ -36,12 +36,12 @@ const debounce = (f, wait, immediate) => {
         const later = () => {
             timeout = null
             if (!immediate) f(...args)
-                }
+        }
         const callNow = immediate && !timeout
-        if (timeout) clearTimeout(timeout)ls
-            timeout = setTimeout(later, wait)
-            if (callNow) f(...args)
-                }
+        if (timeout) clearTimeout(timeout)
+        timeout = setTimeout(later, wait)
+        if (callNow) f(...args)
+    }
 }
 
 const isZip = async file => {
