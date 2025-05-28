@@ -56,11 +56,12 @@
                     cursor: pointer;
                 }
                 .icon {
-                    display: inline-block;
-                    vertical-align: middle;
+                    width: 24px;
+                    height: 24px;
                     fill: none;
                     stroke: currentcolor;
                     stroke-width: 2px;
+                    flex-shrink: 0;
                 }
                 .empty-state-icon {
                     margin: auto;
@@ -84,20 +85,41 @@
                     background: none;
                     border: 0;
                     color: GrayText;
+                    display: flex;
+                    align-items: center;
+                    justify-content: start;
+                    min-width: 0;
+                    gap: 4px;
+                }
+                /* Left stack: label left, icon right */
+                #left-stack .button-label {
+                    order: 1;
+                }
+                #left-stack .icon {
+                    order: 2;
+                    margin-left: auto;
+                }
+                
+                /* Right stack: label right, icon left */
+                #right-stack .button-label {
+                    order: 2;
+                    margin-left: auto;
+                }
+                #right-stack .icon {
+                    order: 1;
                 }
                 .toolbar button:hover {
                     background: rgba(0, 0, 0, .1);
                     color: currentcolor;
                 }
                 .toolbar button .button-label {
-                    margin: 0 4px;
                     font-size: x-small;
                     font-weight: 600;
                     pointer-events: none;
-                    vertical-align: middle;
                     color: inherit;
+                    white-space: nowrap;
                 }
-
+                
                 /* Position chapter-nav spinner inline where SVG was */
                 .toolbar button .ispinner.nav-spinner {
                     display: inline-block !important;
@@ -407,6 +429,18 @@
         </div>
         <div id="nav-bar" class="toolbar">
             <div id="left-stack" class="button-stack">
+                <button id="btn-left-loading" class="icon-button">
+                    <div class="ispinner button-spinner">
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                    </div>
+                </button>
                 <button id="btn-left-scroll" data-button-type="scroll-prev" aria-label="Scroll left">
                     <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
                 </button>
@@ -421,6 +455,18 @@
                     <datalist id="tick-marks"></datalist>
             </div>
             <div id="right-stack" class="button-stack">
+                <button id="btn-right-loading" class="icon-button">
+                    <div class="ispinner button-spinner">
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                        <div class="ispinner-blade"></div>
+                    </div>
+                </button>
                 <button id="btn-right-scroll" data-button-type="scroll-next" aria-label="Scroll right">
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
