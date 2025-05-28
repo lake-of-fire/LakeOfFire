@@ -393,6 +393,19 @@
                     left: 50%;
                     transform: translate(-50%, -50%);
                 }
+                
+                /* Short-label support for narrow viewports */
+                .toolbar button .button-label.short {
+                    display: none;
+                }
+                @media (max-width: 480px) {
+                    .toolbar button .button-label.full {
+                        display: none;
+                    }
+                    .toolbar button .button-label.short {
+                        display: inline;
+                    }
+                }
             </style>
     </head>
     <body class="ebook-viewer">
@@ -446,7 +459,8 @@
                 </button>
                 <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
                     <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                    <span class="button-label">Previous Chapter</span>
+                    <span class="button-label full">Previous Chapter</span>
+                    <span class="button-label short">Prev</span>
                 </button>
             </div>
             <div id="progress-wrapper" style="display: flex; flex: 1; justify-content: center; align-items: center;">
@@ -471,15 +485,18 @@
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
                 <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
-                    <span class="button-label">Next Chapter</span>
+                    <span class="button-label full">Next Chapter</span>
+                    <span class="button-label short">Next</span>
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
                 <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                    <span class="button-label">Finished Reading</span>
+                    <span class="button-label full">Finished Reading</span>
+                    <span class="button-label short">Finished</span>
                     <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
                 </button>
                 <button id="btn-restart" data-button-type="restart" aria-label="Start over">
-                    <span class="button-label">Start Over</span>
+                    <span class="button-label full">Start Over</span>
+                    <span class="button-label short">Restart</span>
                     <svg class="icon" width="24" height="24"><path d="M4 12a8 8 0 1 1 2.2 5.6l-1.7 1.8M4 4v4h4"/></svg>
                 </button>
             </div>
