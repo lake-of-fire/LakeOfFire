@@ -602,6 +602,26 @@ export class Paginator extends HTMLElement {
 
         this.#resizeObserver.observe(this.#container)
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
+        
+        // Continuously fire relocate during scroll
+        this.#container.addEventListener('scroll', () => {
+            if (this.scrolled) {
+                const range = this.#getVisibleRange();
+                const index = this.#index;
+                let fraction = 0;
+                if (this.scrolled) {
+                    fraction = this.start / this.viewSize;
+                } else if (this.pages > 0) {
+                    const { page, pages } = this;
+                    fraction = (page - 1) / (pages - 2);
+                }
+                // Don't include all details, just enough for the slider
+                this.dispatchEvent(new CustomEvent('relocate', {
+                    detail: { reason: 'live-scroll', range, index, fraction }
+                }));
+            }
+        });
+        
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
                 if (this.#justAnchored) {
