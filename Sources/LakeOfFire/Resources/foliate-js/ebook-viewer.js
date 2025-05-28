@@ -173,6 +173,15 @@ const locales = 'en'
 const percentFormat = new Intl.NumberFormat(locales, { style: 'percent' })
 
 class Reader {
+    #show(btn, show = true) {
+        if (show) {
+            btn.hidden = false;
+            btn.style.visibility = 'visible';
+        } else {
+            btn.hidden = true;
+            btn.style.visibility = 'hidden';
+        }
+    }
     #tocView
     hasLoadedLastPosition = false
     markedAsFinished = false;
@@ -217,14 +226,21 @@ class Reader {
         const { book } = this.view
         this.bookDir = book.dir || 'ltr';
         this.isRTL   = this.bookDir === 'rtl';
-        this.leftButton  = $('#left-button');
-        this.rightButton = $('#right-button');
         this.view.renderer.setStyles?.(getCSS(this.style))
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
-        this.leftButton.addEventListener('click', this.#onNavButtonClick.bind(this));
-        this.rightButton.addEventListener('click', this.#onNavButtonClick.bind(this));
+        this.buttons = {
+            leftScroll:  document.getElementById('btn-left-scroll'),
+            prev:        document.getElementById('btn-prev-chapter'),
+            rightScroll: document.getElementById('btn-right-scroll'),
+            next:        document.getElementById('btn-next-chapter'),
+            finish:      document.getElementById('btn-finish'),
+            restart:     document.getElementById('btn-restart'),
+        };
+        Object.values(this.buttons).forEach(btn =>
+                                            btn.addEventListener('click', this.#onNavButtonClick.bind(this))
+                                            );
         
         const slider = $('#progress-slider')
         slider.dir = book.dir
@@ -325,12 +341,9 @@ class Reader {
     
     updateNavButtons() {
         if (!this.view?.renderer) return;
-        
         const r = this.view.renderer;
-        // Use r.start and r.end for exact scroll position
         const atStart = r.start <= 1;
         const atEnd = r.viewSize - r.end <= 1;
-        
         let hasPrev = false, hasNext = false;
         if (typeof r.getContents === 'function' && r.sections) {
             const currentIndex = r.getContents()?.[0]?.index ?? 0;
@@ -338,62 +351,30 @@ class Reader {
             hasPrev = sections.slice(0, currentIndex).some(s => s.linear !== 'no');
             hasNext = sections.slice(currentIndex + 1).some(s => s.linear !== 'no');
         }
-        
-        const prevBtn = this.isRTL ? this.rightButton : this.leftButton;
-        const nextBtn = this.isRTL ? this.leftButton : this.rightButton;
-        const prevLabel = prevBtn.querySelector('.button-label');
-        const nextLabel = nextBtn.querySelector('.button-label');
-        
-        // Clear button data-button-type before assigning labels
-        prevBtn.removeAttribute('data-button-type');
-        nextBtn.removeAttribute('data-button-type');
-        
-        // hide inactive buttons
-        prevBtn.style.visibility = (atStart && !hasPrev) ? 'hidden' : 'visible';
-        nextBtn.style.visibility = (atEnd && !hasNext) ? 'hidden' : 'visible';
-        
-        [prevLabel, nextLabel].forEach(label => label.textContent = '');
-        [prevBtn, nextBtn].forEach(btn => {
-            const path = btn.querySelector('path');
-            if (btn.dataset.originalPath && path) {
-                path.setAttribute('d', btn.dataset.originalPath);
-            }
-        });
-        
-        if (atStart && hasPrev) {
-            prevLabel.textContent = 'Previous Chapter';
-            prevBtn.setAttribute('data-button-type', 'prev');
-            if (this.isRTL) prevBtn.insertBefore(prevLabel, prevBtn.querySelector('svg'));
-            else prevBtn.append(prevLabel);
-        }
-        
+        this.#show(this.buttons.prev, atStart && hasPrev);
+        this.#show(this.buttons.leftScroll, !(atStart && hasPrev));
         if (atEnd) {
-            const iconPath = nextBtn.querySelector('path');
             if (hasNext) {
-                nextLabel.textContent = 'Next Chapter';
-                nextBtn.setAttribute('data-button-type', 'next');
-                if (iconPath && nextBtn.dataset.originalPath)
-                    iconPath.setAttribute('d', nextBtn.dataset.originalPath);
+                this.#show(this.buttons.next, true);
+                this.#show(this.buttons.finish, false);
+                this.#show(this.buttons.restart, false);
+                this.#show(this.buttons.rightScroll, false);
             } else {
+                this.#show(this.buttons.next, false);
+                this.#show(this.buttons.rightScroll, false);
                 if (this.markedAsFinished) {
-                    nextLabel.textContent = 'Start Over';
-                    nextBtn.setAttribute('data-button-type', 'restart');
-                    if (iconPath) {
-                        nextBtn.dataset.originalPath = nextBtn.dataset.originalPath || iconPath.getAttribute('d');
-                        iconPath.setAttribute('d', 'M4 12a8 8 0 1 1 2.2 5.6l-1.7 1.8M4 4v4h4');
-                    }
+                    this.#show(this.buttons.restart, true);
+                    this.#show(this.buttons.finish, false);
                 } else {
-                    nextLabel.textContent = 'Finished Reading';
-                    nextBtn.setAttribute('data-button-type', 'finish');
-                    if (iconPath) {
-                        nextBtn.dataset.originalPath = nextBtn.dataset.originalPath || iconPath.getAttribute('d');
-                        iconPath.setAttribute('d', 'M4 12l4 4 12-12');
-                    }
+                    this.#show(this.buttons.finish, true);
+                    this.#show(this.buttons.restart, false);
                 }
             }
-            // Always ensure the label is visible and reinserted in the correct spot
-            if (this.isRTL) nextBtn.append(nextLabel);
-            else nextBtn.insertBefore(nextLabel, nextBtn.querySelector('svg'));
+        } else {
+            this.#show(this.buttons.next, false);
+            this.#show(this.buttons.finish, false);
+            this.#show(this.buttons.restart, false);
+            this.#show(this.buttons.rightScroll, true);
         }
     }
     #handleKeydown(event) {
@@ -487,19 +468,27 @@ class Reader {
     #onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
-        
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
-        
         // Only show spinner for prev/next/finish/restart chapter nav
-        if (type !== 'prev' && type !== 'next' && type !== 'finish' && type !== 'restart') {
-            (btn === this.leftButton ? this.view.goLeft() : this.view.goRight());
-            return;
-        }
-        
+        if (
+            type !== 'prev' &&
+            type !== 'next' &&
+            type !== 'finish' &&
+            type !== 'restart'
+            ) {
+                switch (type) {
+                    case 'scroll-prev':
+                        this.view.goLeft();
+                        break;
+                    case 'scroll-next':
+                        this.view.goRight();
+                        break;
+                }
+                return;
+            }
         // Hide the label while loading
         if (label) label.style.visibility = 'hidden';
-        
         // Replace SVG icon with spinner
         if (icon) {
             btn._originalIcon = icon.cloneNode(true);
@@ -508,7 +497,6 @@ class Reader {
             spinner.innerHTML = '<div class="ispinner-blade"></div>'.repeat(8);
             icon.replaceWith(spinner);
         }
-        
         const restoreIcon = () => {
             const spinner = btn.querySelector('.ispinner.nav-spinner');
             if (spinner && btn._originalIcon) {
@@ -517,21 +505,32 @@ class Reader {
             }
             if (label) label.style.visibility = '';
         };
-        
         let nav;
-        if (type === 'prev') {
-            nav = this.view.renderer.prevSection();
-        } else if (type === 'next') {
-            nav = this.view.renderer.nextSection();
-        } else if (type === 'finish') {
-            console.log('Finished reading – stub action');
-            nav = Promise.resolve();
-        } else if (type === 'restart') {
-            window.webkit.messageHandlers.startOver.postMessage({});
-            this.view.renderer.firstSection();
-            nav = Promise.resolve();
+        switch (type) {
+            case 'scroll-prev':
+                nav = this.view.goLeft();
+                break;
+            case 'scroll-next':
+                nav = this.view.goRight();
+                break;
+            case 'prev':
+                nav = this.view.renderer.prevSection();
+                break;
+            case 'next':
+                nav = this.view.renderer.nextSection();
+                break;
+            case 'finish':
+                window.webkit.messageHandlers.finishedReadingBook.postMessage({
+                    topWindowURL: window.top.location.href,
+                });
+                nav = Promise.resolve();
+                break;
+            case 'restart':
+                window.webkit.messageHandlers.startOver.postMessage({});
+                this.view.renderer.firstSection();
+                nav = Promise.resolve();
+                break;
         }
-        
         Promise.resolve(nav).finally(() => {
             // Delay slightly to avoid flicker
             setTimeout(restoreIcon, 150);
