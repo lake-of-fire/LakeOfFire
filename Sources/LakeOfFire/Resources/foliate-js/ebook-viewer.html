@@ -80,7 +80,7 @@
                     visibility: hidden;
                 }
                 .toolbar button {
-                    padding: 3px 16px;
+                    padding: 3px 8px;
                     border-radius: 6px;
                     background: none;
                     border: 0;
@@ -406,6 +406,17 @@
                         display: inline;
                     }
                 }
+                
+                /* Ensure left/right button stacks match width */
+                #left-stack, #right-stack {
+                    display: grid;
+                    grid-template-columns: 1fr;
+                }
+                #left-stack > button,
+                #right-stack > button {
+                    width: 100%;
+                    max-width: 100%;
+                }
             </style>
     </head>
     <body class="ebook-viewer">
@@ -441,64 +452,68 @@
             <div id="toc-view"></div>
         </div>
         <div id="nav-bar" class="toolbar">
-            <div id="left-stack" class="button-stack">
-                <button id="btn-left-loading" class="icon-button">
-                    <div class="ispinner button-spinner">
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                    </div>
-                </button>
-                <button id="btn-left-scroll" data-button-type="scroll-prev" aria-label="Scroll left">
-                    <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                </button>
-                <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
-                    <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                    <span class="button-label full">Previous Chapter</span>
-                    <span class="button-label short">Prev</span>
-                </button>
+            <div id="left-button-container" style="display: grid; grid-template-columns: 1fr;">
+                <div id="left-stack" class="button-stack">
+                    <button id="btn-left-loading" class="icon-button">
+                        <div class="ispinner button-spinner">
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                        </div>
+                    </button>
+                    <button id="btn-left-scroll" data-button-type="scroll-prev" aria-label="Scroll left">
+                        <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
+                    </button>
+                    <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
+                        <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
+                        <span class="button-label full">Previous Chapter</span>
+                        <span class="button-label short">Prev</span>
+                    </button>
+                </div>
             </div>
             <div id="progress-wrapper" style="display: flex; flex: 1; justify-content: center; align-items: center;">
                 <button id="progress-button"></button>
                 <input id="progress-slider" type="range" min="0" max="1" step="any" list="tick-marks">
                     <datalist id="tick-marks"></datalist>
             </div>
-            <div id="right-stack" class="button-stack">
-                <button id="btn-right-loading" class="icon-button">
-                    <div class="ispinner button-spinner">
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                        <div class="ispinner-blade"></div>
-                    </div>
-                </button>
-                <button id="btn-right-scroll" data-button-type="scroll-next" aria-label="Scroll right">
-                    <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
-                </button>
-                <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
-                    <span class="button-label full">Next Chapter</span>
-                    <span class="button-label short">Next</span>
-                    <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
-                </button>
-                <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                    <span class="button-label full">Finished Reading</span>
-                    <span class="button-label short">Finished</span>
-                    <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
-                </button>
-                <button id="btn-restart" data-button-type="restart" aria-label="Start over">
-                    <span class="button-label full">Start Over</span>
-                    <span class="button-label short">Restart</span>
-                    <svg class="icon" width="24" height="24"><path d="M4 12a8 8 0 1 1 2.2 5.6l-1.7 1.8M4 4v4h4"/></svg>
-                </button>
+            <div id="right-button-container" style="display: grid; grid-template-columns: 1fr;">
+                <div id="right-stack" class="button-stack">
+                    <button id="btn-right-loading" class="icon-button">
+                        <div class="ispinner button-spinner">
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                            <div class="ispinner-blade"></div>
+                        </div>
+                    </button>
+                    <button id="btn-right-scroll" data-button-type="scroll-next" aria-label="Scroll right">
+                        <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
+                    </button>
+                    <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
+                        <span class="button-label full">Next Chapter</span>
+                        <span class="button-label short">Next</span>
+                        <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
+                    </button>
+                    <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
+                        <span class="button-label full">Finished Reading</span>
+                        <span class="button-label short">Finished</span>
+                        <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
+                    </button>
+                    <button id="btn-restart" data-button-type="restart" aria-label="Start over">
+                        <span class="button-label full">Start Over</span>
+                        <span class="button-label short">Restart</span>
+                        <svg class="icon" width="24" height="24"><path d="M4 12a8 8 0 1 1 2.2 5.6l-1.7 1.8M4 4v4h4"/></svg>
+                    </button>
+                </div>
             </div>
         </div>
         <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
