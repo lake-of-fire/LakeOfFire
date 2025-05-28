@@ -731,8 +731,9 @@ window.loadLastPosition = async ({ cfi }) => {
     await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
-window.refreshArticleReadingProgress = function (articleReadingProgress) {
+window.refreshBookReadingProgress = function (articleReadingProgress) {
     globalThis.reader.markedAsFinished = !!articleReadingProgress.articleMarkedAsFinished;
+    globalThis.reader.updateNavButtons();
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
