@@ -397,8 +397,17 @@ class Reader {
             hasPrev = sections.slice(0, currentIndex).some(s => s.linear !== 'no');
             hasNext = sections.slice(currentIndex + 1).some(s => s.linear !== 'no');
         }
-        this.#show(this.buttons.prev, atStart && hasPrev);
-        this.#show(this.buttons.leftScroll, !(atStart && hasPrev));
+        // Update left stack: only show one, or hide both if neither needed
+        if (atStart && hasPrev) {
+            this.#show(this.buttons.prev, true);
+            this.#show(this.buttons.leftScroll, false);
+        } else if (!atStart) {
+            this.#show(this.buttons.prev, false);
+            this.#show(this.buttons.leftScroll, true);
+        } else {
+            this.#show(this.buttons.prev, false);
+            this.#show(this.buttons.leftScroll, false);
+        }
         if (atEnd) {
             if (hasNext) {
                 this.#show(this.buttons.next, true);

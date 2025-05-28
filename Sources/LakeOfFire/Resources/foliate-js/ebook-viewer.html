@@ -97,7 +97,7 @@
                     vertical-align: middle;
                     color: inherit;
                 }
-                
+
                 /* Position chapter-nav spinner inline where SVG was */
                 .toolbar button .ispinner.nav-spinner {
                     display: inline-block !important;
@@ -124,9 +124,12 @@
                     grid-area: 1 / 1;       /* all share same cell */
                 }
                 /* keep the hidden rule */
-                .button-stack > button[hidden]{
+                .button-stack > button[hidden] {
                     visibility: hidden;
                     pointer-events: none;
+                    display: block !important; /* ensure grid space is still taken */
+                    height: 0;
+                    overflow: hidden;
                 }
                 #nav-bar {
                     bottom: 0;
