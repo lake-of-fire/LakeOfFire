@@ -396,6 +396,16 @@ class Reader {
     }
     
     updateNavButtons() {
+        // Remove any nav-spinner left over from finish/restart click
+        document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
+            const btn = spinner.closest('button');
+            if (btn && btn._originalIcon) {
+                spinner.replaceWith(btn._originalIcon);
+                delete btn._originalIcon;
+            }
+            const label = btn.querySelector('.button-label');
+            if (label) label.style.visibility = '';
+        });
         // Hide the loading spinners now that navigation buttons are ready
         const leftLoading = document.getElementById('btn-left-loading');
         const rightLoading = document.getElementById('btn-right-loading');
