@@ -125,6 +125,25 @@ const getView = async (file, isCacheWarmer) => {
         view.style.display = 'none'
     }
     await view.open(book, isCacheWarmer)
+    
+    // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
+    const paginator = view.shadowRoot?.querySelector('foliate-paginator');
+    if (paginator?.shadowRoot) {
+        const style = document.createElement('style');
+        style.textContent = `
+        #container {
+            scrollbar-width: none !important;         /* Firefox */
+            -ms-overflow-style: none !important;      /* IE/Edge */
+        }
+        #container::-webkit-scrollbar {
+            display: none !important;                 /* WebKit (macOS/iOS) */
+            width: 0 !important;
+            height: 0 !important;
+        }
+    `;
+        paginator.shadowRoot.appendChild(style);
+    }
+    
     return view
 }
 
