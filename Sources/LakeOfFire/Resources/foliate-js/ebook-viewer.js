@@ -36,12 +36,12 @@ const debounce = (f, wait, immediate) => {
         const later = () => {
             timeout = null
             if (!immediate) f(...args)
-        }
+                }
         const callNow = immediate && !timeout
         if (timeout) clearTimeout(timeout)
-        timeout = setTimeout(later, wait)
-        if (callNow) f(...args)
-    }
+            timeout = setTimeout(later, wait)
+            if (callNow) f(...args)
+                }
 }
 
 const isZip = async file => {
@@ -238,9 +238,55 @@ class Reader {
             finish:      document.getElementById('btn-finish'),
             restart:     document.getElementById('btn-restart'),
         };
+        
+        // Flip chevron icons for RTL books
+        if (this.isRTL) {
+            const flipChevron = (btn, leftArrow) => {
+                const path = btn.querySelector('path');
+                if (path) {
+                    path.setAttribute('d', leftArrow
+                                      ? 'M 15 6 L 9 12 L 15 18'  // left chevron (◀)
+                                      : 'M 9 6 L 15 12 L 9 18'); // right chevron (▶)
+                }
+            };
+            
+            flipChevron(this.buttons.prev, false);        // ▶
+            flipChevron(this.buttons.next, true);         // ◀
+            flipChevron(this.buttons.leftScroll, false);  // ▶
+            flipChevron(this.buttons.rightScroll, true);  // ◀
+            
+            // Swap label/icon order for chapter buttons in RTL
+            // Ensure "Next Chapter" shows "< Next Chapter"
+            const nextBtn = this.buttons.next;
+            const nextLabel = nextBtn.querySelector('.button-label');
+            const nextIcon  = nextBtn.querySelector('svg');
+            if (nextIcon && nextLabel && nextIcon !== nextLabel.previousSibling) {
+                nextBtn.insertBefore(nextIcon, nextLabel);
+            }
+            
+            // Ensure "Previous Chapter" shows "Previous Chapter >"
+            const prevBtn = this.buttons.prev;
+            const prevLabel = prevBtn.querySelector('.button-label');
+            const prevIcon  = prevBtn.querySelector('svg');
+            if (prevIcon && prevLabel && prevLabel !== prevIcon.previousSibling) {
+                prevBtn.insertBefore(prevLabel, prevIcon);
+            }
+        }
         Object.values(this.buttons).forEach(btn =>
                                             btn.addEventListener('click', this.#onNavButtonClick.bind(this))
                                             );
+        
+        // Reorder toolbar children for RTL/LTR so left/right stacks and progress are positioned correctly
+        const navBar = document.getElementById('nav-bar');
+        const leftStack = document.getElementById('left-stack');
+        const rightStack = document.getElementById('right-stack');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        navBar.innerHTML = '';
+        if (this.isRTL) {
+            navBar.append(rightStack, progressWrapper, leftStack);
+        } else {
+            navBar.append(leftStack, progressWrapper, rightStack);
+        }
         
         const slider = $('#progress-slider')
         slider.dir = book.dir
@@ -479,10 +525,12 @@ class Reader {
             ) {
                 switch (type) {
                     case 'scroll-prev':
-                        this.view.goLeft();
+                        // In RTL view, left arrow should scroll forward
+                        this.isRTL ? this.view.goRight() : this.view.goLeft();
                         break;
                     case 'scroll-next':
-                        this.view.goRight();
+                        // In RTL view, right arrow should scroll backward
+                        this.isRTL ? this.view.goLeft() : this.view.goRight();
                         break;
                 }
                 return;
@@ -508,10 +556,12 @@ class Reader {
         let nav;
         switch (type) {
             case 'scroll-prev':
-                nav = this.view.goLeft();
+                // In RTL view, left arrow should scroll forward
+                nav = this.isRTL ? this.view.goRight() : this.view.goLeft();
                 break;
             case 'scroll-next':
-                nav = this.view.goRight();
+                // In RTL view, right arrow should scroll backward
+                nav = this.isRTL ? this.view.goLeft() : this.view.goRight();
                 break;
             case 'prev':
                 nav = this.view.renderer.prevSection();
