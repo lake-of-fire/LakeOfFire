@@ -38,7 +38,7 @@ const debounce = (f, wait, immediate) => {
             if (!immediate) f(...args)
                 }
         const callNow = immediate && !timeout
-        if (timeout) clearTimeout(timeout)
+        if (timeout) clearTimeout(timeout)ls
             timeout = setTimeout(later, wait)
             if (callNow) f(...args)
                 }
@@ -175,6 +175,8 @@ const percentFormat = new Intl.NumberFormat(locales, { style: 'percent' })
 class Reader {
     #tocView
     hasLoadedLastPosition = false
+    markedAsFinished = false;
+    lastPercentValue = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -239,6 +241,25 @@ class Reader {
                 $('#tick-marks').append(option)
             }
         }
+        
+        // Percent jump input/button wiring
+        const percentInput = document.getElementById('percent-jump-input');
+        const percentButton = document.getElementById('percent-jump-button');
+        
+        percentInput.addEventListener('input', () => {
+            const value = parseFloat(percentInput.value);
+            const valid = !isNaN(value) && value >= 0 && value <= 100 && value !== this.lastPercentValue;
+            percentButton.disabled = !valid;
+        });
+        
+        percentButton.addEventListener('click', () => {
+            const value = parseFloat(percentInput.value);
+            if (!isNaN(value) && value >= 0 && value <= 100) {
+                this.lastPercentValue = value;
+                percentButton.disabled = true;
+                this.view.goToFraction(value / 100);
+            }
+        });
         
         document.addEventListener('keydown', this.#handleKeydown.bind(this))
         
@@ -351,17 +372,28 @@ class Reader {
             if (hasNext) {
                 nextLabel.textContent = 'Next Chapter';
                 nextBtn.setAttribute('data-button-type', 'next');
-                if (this.isRTL) nextBtn.append(nextLabel);
-                else nextBtn.insertBefore(nextLabel, nextBtn.querySelector('svg'));
+                if (iconPath && nextBtn.dataset.originalPath)
+                    iconPath.setAttribute('d', nextBtn.dataset.originalPath);
             } else {
-                nextLabel.textContent = 'Finished Reading';
-                nextBtn.setAttribute('data-button-type', 'finish');
-                if (iconPath) {
-                    nextBtn.dataset.originalPath = nextBtn.dataset.originalPath || iconPath.getAttribute('d');
-                    iconPath.setAttribute('d', 'M4 12l4 4 12-12');
+                if (this.markedAsFinished) {
+                    nextLabel.textContent = 'Start Over';
+                    nextBtn.setAttribute('data-button-type', 'restart');
+                    if (iconPath) {
+                        nextBtn.dataset.originalPath = nextBtn.dataset.originalPath || iconPath.getAttribute('d');
+                        iconPath.setAttribute('d', 'M4 12a8 8 0 1 1 2.2 5.6l-1.7 1.8M4 4v4h4');
+                    }
+                } else {
+                    nextLabel.textContent = 'Finished Reading';
+                    nextBtn.setAttribute('data-button-type', 'finish');
+                    if (iconPath) {
+                        nextBtn.dataset.originalPath = nextBtn.dataset.originalPath || iconPath.getAttribute('d');
+                        iconPath.setAttribute('d', 'M4 12l4 4 12-12');
+                    }
                 }
-                nextBtn.insertBefore(nextLabel, nextBtn.querySelector('svg'));
             }
+            // Always ensure the label is visible and reinserted in the correct spot
+            if (this.isRTL) nextBtn.append(nextLabel);
+            else nextBtn.insertBefore(nextLabel, nextBtn.querySelector('svg'));
         }
     }
     #handleKeydown(event) {
@@ -441,6 +473,15 @@ class Reader {
                 this.#postUpdateReadingProgressMessage({ fraction, cfi })
             }
         this.updateNavButtons();
+        // Keep percent-jump input in sync with scroll
+        const percentInput = document.getElementById('percent-jump-input');
+        const percentButton = document.getElementById('percent-jump-button');
+        if (percentInput && percentButton) {
+            const pct = Math.round(fraction * 100);
+            percentInput.value = pct;
+            this.lastPercentValue = pct;
+            percentButton.disabled = true;
+        }
     }
     
     #onNavButtonClick(e) {
@@ -450,8 +491,8 @@ class Reader {
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
         
-        // Only show spinner for prev/next/finish chapter nav
-        if (type !== 'prev' && type !== 'next' && type !== 'finish') {
+        // Only show spinner for prev/next/finish/restart chapter nav
+        if (type !== 'prev' && type !== 'next' && type !== 'finish' && type !== 'restart') {
             (btn === this.leftButton ? this.view.goLeft() : this.view.goRight());
             return;
         }
@@ -484,6 +525,10 @@ class Reader {
             nav = this.view.renderer.nextSection();
         } else if (type === 'finish') {
             console.log('Finished reading – stub action');
+            nav = Promise.resolve();
+        } else if (type === 'restart') {
+            window.webkit.messageHandlers.startOver.postMessage({});
+            this.view.renderer.firstSection();
             nav = Promise.resolve();
         }
         
@@ -600,6 +645,10 @@ window.loadLastPosition = async ({ cfi }) => {
     
     // Don't overlap cache warming with initial page load
     await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+}
+
+window.refreshArticleReadingProgress = function (articleReadingProgress) {
+    globalThis.reader.markedAsFinished = !!articleReadingProgress.articleMarkedAsFinished;
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

@@ -33,6 +33,9 @@
                     font: menu;
                     font-family: system-ui, sans-serif;
                 }
+                button {
+                    cursor: pointer;
+                }
                 #drop-target {
                     height: 100dvh;
                     display: flex;
@@ -157,7 +160,7 @@
                     display: flex;
                     flex-direction: column;
                     /*background: Canvas;*/
-                    background-color: rgba(0, 0, 0, .5);
+                    background-color: rgba(0, 0, 0, .05);
                     backdrop-filter: blur(20px);
                     color: CanvasText;
                     box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
@@ -356,7 +359,7 @@
                 }
             </style>
     </head>
-    <body class="ebook-viewer readability-mode">
+    <body class="ebook-viewer">
         <div class="ispinner" id="loading-indicator">
             <div class="ispinner-blade"></div>
             <div class="ispinner-blade"></div>
@@ -379,6 +382,12 @@
                     <button id="side-bar-close-button" aria-label="Close">
                         &times;
                     </button>
+            </div>
+            <div id="percent-jump-container" style="padding: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                <label for="percent-jump-input" style="white-space: nowrap; font-size: small;">Jump to:</label>
+                <input type="number" id="percent-jump-input" min="0" max="100" style="width: 4em; font-size: small;" />
+                <span style="font-size: small;">%</span>
+                <button id="percent-jump-button" disabled style="font-size: small;">Go</button>
             </div>
             <div id="toc-view"></div>
         </div>
