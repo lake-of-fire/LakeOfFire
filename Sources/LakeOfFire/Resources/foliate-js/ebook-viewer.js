@@ -232,9 +232,6 @@ class Reader {
     async open(file) {
         $('#loading-indicator').style.display = 'block'
         
-        // Show loading spinners in left/right stack and hide other nav buttons
-        document.getElementById('btn-left-loading').hidden = false;
-        document.getElementById('btn-right-loading').hidden = false;
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
@@ -263,9 +260,7 @@ class Reader {
         };
         // Hide all other nav buttons except spinners
         for (const btn of Object.values(this.buttons)) {
-            if (btn && btn.id !== 'btn-left-loading' && btn.id !== 'btn-right-loading') {
-                btn.hidden = true;
-            }
+            btn && (btn.hidden = true);
         }
         
         // Flip chevron icons for RTL books
@@ -425,11 +420,6 @@ class Reader {
             const label = btn.querySelector('.button-label');
             if (label) label.style.visibility = '';
         });
-        // Hide the loading spinners now that navigation buttons are ready
-        const leftLoading = document.getElementById('btn-left-loading');
-        const rightLoading = document.getElementById('btn-right-loading');
-        if (leftLoading) leftLoading.hidden = true;
-        if (rightLoading) rightLoading.hidden = true;
         if (!this.view?.renderer) return;
         const r = this.view.renderer;
         const atStart = r.start <= 1;
