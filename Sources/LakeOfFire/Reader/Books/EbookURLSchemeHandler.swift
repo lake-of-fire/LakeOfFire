@@ -4,13 +4,13 @@ import UniformTypeIdentifiers
 import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
-    let ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?
-    let processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?
+    let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?
+    let processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?
     let processHTML: ((String) async -> String)?
 
     init(
-        ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?,
-        processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?,
+        ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?,
+        processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?,
         processHTML: ((String) async -> String)?
     ) {
         self.ebookTextProcessor = ebookTextProcessor
@@ -21,7 +21,8 @@ fileprivate actor EBookProcessingActor {
     func process(
         contentURL: URL,
         location: String,
-        text: String
+        text: String,
+        isCacheWarmer: Bool
     ) async -> String {
         var respText = text
         if let ebookTextProcessor {
@@ -30,6 +31,7 @@ fileprivate actor EBookProcessingActor {
                     contentURL,
                     location,
                     text,
+                    isCacheWarmer,
                     processReadabilityContent,
                     processHTML
                 )
@@ -48,9 +50,9 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessor: ((URL, String, String, ((SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)? = nil
+    var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
-    var processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)?
+    var processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?
     var processHTML: ((String) async -> String)?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
@@ -71,6 +73,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                 if let ebookTextProcessor, let processReadabilityContent, let processHTML {
+                   let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER")
                     let processingActor = EBookProcessingActor(
                         ebookTextProcessor: ebookTextProcessor,
                         processReadabilityContent: processReadabilityContent,
@@ -80,7 +83,8 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         let respText = await processingActor.process(
                             contentURL: contentURL,
                             location: replacedTextLocation,
-                            text: text
+                            text: text,
+                            isCacheWarmer: isCacheWarmer == "true"
                         )
                         if let respData = respText.data(using: .utf8) {
                             let resp = HTTPURLResponse(

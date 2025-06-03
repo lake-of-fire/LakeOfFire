@@ -2,17 +2,65 @@ import './view.js'
 import { createTOCView } from './ui/tree.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
 
+window.onerror = function (msg, source, lineno, colno, error) {
+    window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
+        message: msg,
+        source: source,
+        lineno: lineno,
+        colno: colno,
+        error: String(error)
+    });
+};
+
+window.onunhandledrejection = function (event) {
+    console.log(window.webkit.messageHandlers);
+    console.log(window.webkit?.messageHandlers?.readerOnError);
+    window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
+        message: event.reason?.message ?? "Unhandled rejection",
+        source: window.location.href,
+        lineno: null,
+        colno: null,
+        error: event.reason?.stack ?? String(event.reason)
+    });
+};
+
+function forwardShadowErrors(root) {
+    if (!root) return;
+    root.addEventListener('error', e => {
+        window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
+            message: e.message || e.error?.message || 'Shadow-DOM error',
+            source: window.location.href,
+            lineno: e.lineno || 0,
+            colno: e.colno || 0,
+            error: e.error?.stack || String(e.error || e)
+        });
+    });
+    root.addEventListener('unhandledrejection', e => {
+        window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
+            message: e.reason?.message || 'Shadow-DOM unhandled rejection',
+            source: window.location.href,
+            lineno: 0,
+            colno: 0,
+            error: e.reason?.stack || String(e.reason)
+        });
+    });
+}
+
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
+    const headers = {
+        "Content-Type": mediaType,
+        "X-Replaced-Text-Location": href,
+        "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
+    };
+    if (isCacheWarmer) {
+        headers['X-Is-Cache-Warmer'] = 'true';
+    }
     const response = await fetch('ebook://ebook/process-text', {
         method: "POST",
         mode: "cors",
         cache: "no-cache",
-        headers: {
-            "Content-Type": mediaType,
-            "X-Replaced-Text-Location": href,
-            "X-Content-Location": globalThis.reader.view.ownerDocument.defaultView.top.location.href,
-        },
+        headers: headers,
         body: text
     })
     try {
@@ -119,7 +167,8 @@ const getView = async (file, isCacheWarmer) => {
         const view = document.createElement('foliate-view')
         view.dataset.isCache = isCacheWarmer;
     //if (!isCacheWarmer) {
-    document.body.append(view)
+    document.body.append(view);
+    forwardShadowErrors(view.shadowRoot);
     //}
     if (isCacheWarmer) {
         view.style.display = 'none'
@@ -143,7 +192,7 @@ const getView = async (file, isCacheWarmer) => {
     `;
         paginator.shadowRoot.appendChild(style);
     }
-    
+
     return view
 }
 
@@ -658,7 +707,6 @@ class CacheWarmer {
     }
     
     #onLoad({ detail: { doc } }) {
-        //        window.webkit.messageHandlers.pritn.postMessage({"test": "cache onload..", "1": this.view.ownerDocument.defaultView})
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
             frameURL: event.detail.doc.location.href,
@@ -733,8 +781,8 @@ window.loadEBook = ({ url, layoutMode }) => {
         .then(() => {
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
-        .catch(e => console.error(e))
-        }
+        //.catch(e => console.error(e))
+}
 
 window.loadLastPosition = async ({ cfi }) => {
     //console.log("load last pos")

@@ -15,7 +15,7 @@ fileprivate actor ReaderViewModelActor {
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    public var processReadabilityContent: ((SwiftSoup.Document) async -> SwiftSoup.Document)? = nil
+    public var processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)? = nil
     public var processHTML: ((String) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
@@ -158,7 +158,10 @@ public class ReaderModeViewModel: ObservableObject {
             doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
             
             if let processReadabilityContent {
-                doc = await processReadabilityContent(doc)
+                doc = await processReadabilityContent(
+                    doc,
+                    false
+                )
             }
             
             try await processForReaderMode(
@@ -166,6 +169,7 @@ public class ReaderModeViewModel: ObservableObject {
                 url: url,
                 contentSectionLocationIdentifier: nil,
                 isEBook: false,
+                isCacheWarmer: false,
                 defaultTitle: titleForDisplay,
                 imageURL: imageURLToDisplay,
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
@@ -364,15 +368,12 @@ public func processForReaderMode(
     url: URL,
     contentSectionLocationIdentifier: String?,
     isEBook: Bool,
+    isCacheWarmer: Bool,
     defaultTitle: String?,
     imageURL: URL?,
     injectEntryImageIntoHeader: Bool,
     defaultFontSize: CGFloat
 ) throws {
-       // TODO: font size and theme set elsewhere already..?
-    let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
-    let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
-    let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
     
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
@@ -385,37 +386,44 @@ public func processForReaderMode(
         try doc.body()?.attr("data-is-ebook", "true")
     }
     
-    if let bodyTag = doc.body() {
-        var bodyStyle = "font-size: \(readerFontSize)px"
-        if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
-            bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
+    if !isCacheWarmer {
+        if let bodyTag = doc.body() {
+            // TODO: font size and theme set elsewhere already..?
+            let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
+            let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
+            let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
+            
+            var bodyStyle = "font-size: \(readerFontSize)px"
+            if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
+                bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
+            }
+            _ = try? bodyTag.attr("style", bodyStyle)
+            _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
+            _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
         }
-        _ = try? bodyTag.attr("style", bodyStyle)
-        _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
-        _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
-    }
-    
-    if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
-        let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
+        
+        if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
+            let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
+            do {
+                try existing.html(escapedTitle)
+            } catch { }
+        }
+        
         do {
-            try existing.html(escapedTitle)
+            try fixAnnoyingTitlesWithPipes(doc: doc)
         } catch { }
-    }
-    
-    do {
-        try fixAnnoyingTitlesWithPipes(doc: doc)
-    } catch { }
-    
-    if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
-        do {
-            try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
-        } catch { }
-    }
-    
-    if !isEBook {
-        transformContentSpecificToFeed(doc: doc, url: url)
-        do {
-            try wireViewOriginalLinks(doc: doc, url: url)
-        } catch { }
+        
+        if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+            do {
+                try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
+            } catch { }
+        }
+        
+        if !isEBook {
+            transformContentSpecificToFeed(doc: doc, url: url)
+            do {
+                try wireViewOriginalLinks(doc: doc, url: url)
+            } catch { }
+        }
     }
 }

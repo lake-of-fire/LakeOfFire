@@ -114,6 +114,17 @@ public class ReaderFileManager: ObservableObject {
         }
     }
     
+    @MainActor
+    public func appSuspendedDidChange(isSuspended: Bool) {
+        if isSuspended {
+            refreshAllFilesMetadataTask?.cancel()
+        } else {
+            Task { @MainActor in
+                try? await refreshAllFilesMetadata()
+            }
+        }
+    }
+    
     @MainActor public func files(ofTypes types: [UTType]) -> [ContentFile]? {
         return files?.filter { types.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
     }
@@ -338,20 +349,33 @@ public class ReaderFileManager: ObservableObject {
                     try Task.checkCancellation()
                     guard let self = self else { return }
                     let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
-                    let files = discoveredFiles.compactMap { realm.resolve($0) }
-                    self.files = files.map { $0.freeze() }
+                    let files = try discoveredFiles.compactMap {
+                        try Task.checkCancellation()
+                        return realm.resolve($0)
+                    }
+                    self.files = try files.map {
+                        try Task.checkCancellation()
+                        return $0.freeze()
+                    }
                     objectWillChange.send()
-                    let discoveredURLs = files.map { $0.url }
+                    let discoveredURLs = try files.map {
+                        try Task.checkCancellation()
+                        return $0.url
+                    }
 
                     // Delete orphans (objects with no corresponding file on disk)
                     try await { @RealmBackgroundActor in
                         try Task.checkCancellation()
                         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                        let existingURLs = discoveredURLs.map { $0.absoluteString }
+                        let existingURLs = try discoveredURLs.map {
+                            try Task.checkCancellation()
+                            return $0.absoluteString
+                        }
                         let orphans = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND NOT (url IN %@)", NSNumber(booleanLiteral: false), existingURLs))
-                        await realm.asyncRefresh()
+                        //await realm.asyncRefresh()
                         try await realm.asyncWrite {
                             for orphan in orphans {
+                                try Task.checkCancellation()
                                 orphan.isDeleted = true
                                 orphan.refreshChangeMetadata(explicitlyModified: true)
                             }
@@ -413,8 +437,11 @@ public class ReaderFileManager: ObservableObject {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     for (readerFileURL, _, drive) in filesToUpdate {
+                        try Task.checkCancellation()
+                        
                         var matchedContentFile: ContentFile?
                         if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
+                            try Task.checkCancellation()
                             setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive)
                             existing.refreshChangeMetadata(explicitlyModified: true)
                             updatedFileRefs.append(ThreadSafeReference(to: existing))
@@ -424,6 +451,7 @@ public class ReaderFileManager: ObservableObject {
                             let contentFile = ContentFile()
                             contentFile.url = readerFileURL
                             setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive)
+                            try Task.checkCancellation()
                             contentFile.updateCompoundKey()
                             contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain" || ["htm", "html", "txt"].contains(readerFileURL.pathExtension.lowercased())
                             realm.add(contentFile, update: .modified)
@@ -434,6 +462,7 @@ public class ReaderFileManager: ObservableObject {
                     }
                 }
                 for fileProcessor in Self.fileProcessors {
+                    try Task.checkCancellation()
                     try await fileProcessor(updatedFiles)
                 }
                 return updatedFileRefs

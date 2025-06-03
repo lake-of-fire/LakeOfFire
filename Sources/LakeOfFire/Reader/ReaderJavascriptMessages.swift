@@ -17,6 +17,24 @@ public struct NestedDOMRootSelector {
     }
 }
 
+public struct ReaderOnErrorMessage {
+    public let message: String?
+    public let source: URL
+    public let lineno: Int?
+    public let colno: Int?
+    public let error: String?
+    
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        guard let rawURL = body["source"] as? String, let url = URL(string: rawURL) else { return nil }
+        self.message = body["message"] as? String
+        source = url
+        lineno = body["lineno"] as? Int
+        colno = body["colno"] as? Int
+        error = body["error"] as? String
+    }
+}
+
 public struct ReaderModeUnavailableMessage {
     public let pageURL: URL?
     public let windowURL: URL?

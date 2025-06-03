@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
+import LakeKit
 
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
@@ -29,6 +30,16 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
 internal extension ReaderMessageHandlersViewModifier {
     func readerMessageHandlers() -> [String: (WebViewMessage) async -> Void] {
         return [
+            "readerOnError": { message in
+                guard let result = ReaderOnErrorMessage(fromMessage: message) else {
+                    return
+                }
+                
+                // Filter error logging based on URL
+                guard result.source.isEBookURL || result.source.scheme == "blob" || result.source.isFileURL || result.source.isReaderFileURL || result.source.isSnippetURL else { return }
+                
+                Logger.shared.logger.error("JS Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
+            },
             "readabilityFramePing": { @MainActor message in
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {
                     debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
