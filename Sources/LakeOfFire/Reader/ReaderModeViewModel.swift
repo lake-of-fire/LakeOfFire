@@ -15,7 +15,7 @@ fileprivate actor ReaderViewModelActor {
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    public var processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)? = nil
+    public var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)? = nil
     public var processHTML: ((String) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
@@ -160,6 +160,7 @@ public class ReaderModeViewModel: ObservableObject {
             if let processReadabilityContent {
                 doc = await processReadabilityContent(
                     doc,
+                    url,
                     false
                 )
             }

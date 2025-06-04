@@ -4,13 +4,13 @@ import UniformTypeIdentifiers
 import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
-    let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?
-    let processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?
+    let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?
+    let processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
     let processHTML: ((String) async -> String)?
 
     init(
-        ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?,
-        processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?,
+        ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?,
+        processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?,
         processHTML: ((String) async -> String)?
     ) {
         self.ebookTextProcessor = ebookTextProcessor
@@ -50,9 +50,9 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)? = nil
+    var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
-    var processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?
+    var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
     var processHTML: ((String) async -> String)?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]

@@ -243,13 +243,15 @@ class View {
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         return new Promise(resolve => {
-            this.#iframe.addEventListener('load', () => {
+            if (this.#isCacheWarmer) {
                 const doc = this.document
                 afterLoad?.(doc)
-
-                if (this.#isCacheWarmer) {
-//                    this.render(layout)
-                } else {
+                resolve()
+            } else {
+                this.#iframe.addEventListener('load', () => {
+                    const doc = this.document
+                    afterLoad?.(doc)
+                    
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
                     const { vertical, rtl } = getDirection(doc)
@@ -271,11 +273,11 @@ class View {
                     // until the bug is fixed we can at least account for font load
                     doc.fonts.ready.then(() => this.expand())
                     //                doc.fonts.ready.then(() => this.#debouncedExpand())
-                }
-                
-                resolve()
-            }, { once: true })
-            this.#iframe.src = src
+                    
+                    resolve()
+                }, { once: true })
+                this.#iframe.src = src
+            }
         })
     }
     render(layout) {
@@ -605,7 +607,7 @@ export class Paginator extends HTMLElement {
         
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', () => {
-            if (this.scrolled) {
+            if (this.scrolled && !this.#isCacheWarmer) {
                 const range = this.#getVisibleRange();
                 const index = this.#index;
                 let fraction = 0;
@@ -641,24 +643,6 @@ export class Paginator extends HTMLElement {
             doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
             doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
         })
-    }
-    attributeChangedCallback(name, _, value) {
-        switch (name) {
-            case 'flow':
-                this.render()
-                break
-            case 'gap':
-            case 'margin':
-            case 'max-block-size':
-            case 'max-column-count':
-                this.#top.style.setProperty('--_' + name, value)
-                break
-            case 'max-inline-size':
-                // needs explicit `render()` as it doesn't necessarily resize
-                this.#top.style.setProperty('--_' + name, value)
-                this.render()
-                break
-        }
     }
     open(book, isCacheWarmer) {
         this.#isCacheWarmer = isCacheWarmer
@@ -790,9 +774,15 @@ export class Paginator extends HTMLElement {
             : scrolled ? 'height' : 'width'
     }
     get size() {
+        if (this.#isCacheWarmer) {
+            return 0
+        }
         return this.#container.getBoundingClientRect()[this.sideProp]
     }
     get viewSize() {
+        if (this.#isCacheWarmer) {
+            return 0
+        }
         return this.#view.element.getBoundingClientRect()[this.sideProp]
     }
     get start() {
@@ -967,11 +957,17 @@ export class Paginator extends HTMLElement {
             this.start - size, this.end - size, this.#getRectMapper())
     }
     #afterScroll(reason) {
-        const range = this.#getVisibleRange()
+        let range;
+        if (this.#isCacheWarmer) {
+            range = this.#view.document.createRange()
+        } else {
+            range = this.#getVisibleRange()
+        }
+        
         // don't set new anchor if relocation was to scroll to anchor
-            if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
-                this.#anchor = range
-                else this.#justAnchored = true
+        if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
+            this.#anchor = range
+            else this.#justAnchored = true
 
         const index = this.#index
         const detail = { reason, range, index }

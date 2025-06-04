@@ -66,7 +66,7 @@ fileprivate struct ReaderViewModelModifier: ViewModifier {
     }
 }
 
-fileprivate struct ReaderModeViewModelModifier: ViewModifier {
+fileprivate struct ReaderModeLoadPendingModifier: ViewModifier {
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     
     func body(content: Content) -> some View {
@@ -118,8 +118,8 @@ fileprivate struct ReaderFontSizeModifier: ViewModifier {
 public extension View {
     func readerEnvironment(ubiquityContainerIdentifier: String) -> some View {
         self
+            .modifier(ReaderModeLoadPendingModifier())
             .modifier(ReaderViewModelModifier())
-            .modifier(ReaderModeViewModelModifier())
             .modifier(ReaderFileManagerModifier(ubiquityContainerIdentifier: ubiquityContainerIdentifier))
             .modifier(ReaderNavigatorModifier())
         .modifier(ReaderFontSizeModifier())

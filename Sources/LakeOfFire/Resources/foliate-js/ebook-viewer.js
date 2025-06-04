@@ -13,8 +13,6 @@ window.onerror = function (msg, source, lineno, colno, error) {
 };
 
 window.onunhandledrejection = function (event) {
-    console.log(window.webkit.messageHandlers);
-    console.log(window.webkit?.messageHandlers?.readerOnError);
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: event.reason?.message ?? "Unhandled rejection",
         source: window.location.href,
@@ -172,6 +170,12 @@ const getView = async (file, isCacheWarmer) => {
     //}
     if (isCacheWarmer) {
         view.style.display = 'none'
+        view.style.contain = 'strict'
+        view.style.position = 'absolute'
+        view.style.left = '-9001px'
+        view.style.width = 0
+        view.style.height = 0
+        view.style.pointerEvents = 'none'
     }
     await view.open(book, isCacheWarmer)
     
@@ -280,7 +284,6 @@ class Reader {
     }
     async open(file) {
         $('#loading-indicator').style.display = 'block'
-        
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)

@@ -21,9 +21,10 @@ internal func ebookTextProcessor(
     sectionLocation: String,
     content: String,
     isCacheWarmer: Bool,
-    processReadabilityContent: ((SwiftSoup.Document, Bool) async -> SwiftSoup.Document)?,
+    processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?,
     processHTML: ((String) async -> String)?
 ) async throws -> String {
+    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
     
     do {
@@ -33,7 +34,11 @@ internal func ebookTextProcessor(
         doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
         
         if let processReadabilityContent {
-            doc = await processReadabilityContent(doc, isCacheWarmer)
+            doc = await processReadabilityContent(
+                doc,
+                contentURL,
+                isCacheWarmer
+            )
         }
         
         try processForReaderMode(
