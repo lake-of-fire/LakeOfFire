@@ -957,13 +957,11 @@ export class Paginator extends HTMLElement {
             this.start - size, this.end - size, this.#getRectMapper())
     }
     #afterScroll(reason) {
-        let range;
         if (this.#isCacheWarmer) {
-            range = this.#view.document.createRange()
-        } else {
-            range = this.#getVisibleRange()
+            return;
         }
         
+        const range = this.#getVisibleRange()
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
