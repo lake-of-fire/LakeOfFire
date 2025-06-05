@@ -16,7 +16,7 @@ fileprivate actor ReaderViewModelActor {
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     public var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)? = nil
-    public var processHTML: ((String) async -> String)? = nil
+    public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
     
@@ -184,7 +184,10 @@ public class ReaderModeViewModel: ObservableObject {
             var html = try doc.outerHtml()
             
             if let processHTML {
-                html = await processHTML(html)
+                html = await processHTML(
+                    html,
+                    false
+                )
             }
 
             let transformedContent = html

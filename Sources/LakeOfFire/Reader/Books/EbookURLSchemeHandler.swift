@@ -4,14 +4,14 @@ import UniformTypeIdentifiers
 import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
-    let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?
+    let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
     let processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
-    let processHTML: ((String) async -> String)?
+    let processHTML: ((String, Bool) async -> String)?
 
     init(
-        ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)?,
+        ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
         processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?,
-        processHTML: ((String) async -> String)?
+        processHTML: ((String, Bool) async -> String)?
     ) {
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
@@ -50,10 +50,10 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String) async -> String)?) async throws -> String)? = nil
+    var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
     var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
-    var processHTML: ((String) async -> String)?
+    var processHTML: ((String, Bool) async -> String)?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     
