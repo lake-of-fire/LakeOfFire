@@ -196,7 +196,7 @@ const getView = async (file, isCacheWarmer) => {
     `;
         paginator.shadowRoot.appendChild(style);
     }
-
+    
     return view
 }
 
@@ -347,6 +347,24 @@ class Reader {
             if (prevIcon && prevLabel && prevLabel !== prevIcon.previousSibling) {
                 prevBtn.insertBefore(prevLabel, prevIcon);
             }
+            
+            // Spinner placement logic for RTL
+            // For prev: spinner after label (right side, where chevron is)
+            // For next: spinner before label (left side, where chevron is)
+            if (this.buttons.prev) {
+                this.buttons.prev._spinnerAfterLabel = true;
+            }
+            if (this.buttons.next) {
+                this.buttons.next._spinnerAfterLabel = false;
+            }
+        } else {
+            // LTR: spinner replaces icon (before label for prev, after label for next)
+            if (this.buttons.prev) {
+                this.buttons.prev._spinnerAfterLabel = false;
+            }
+            if (this.buttons.next) {
+                this.buttons.next._spinnerAfterLabel = false;
+            }
         }
         Object.values(this.buttons).forEach(btn =>
                                             btn.addEventListener('click', this.#onNavButtonClick.bind(this))
@@ -366,8 +384,10 @@ class Reader {
         
         const slider = $('#progress-slider')
         slider.dir = book.dir
-        slider.addEventListener('input', e =>
-                                this.view.goToFraction(parseFloat(e.target.value)))
+        const debouncedGoToFraction = debounce(e => {
+            this.view.goToFraction(parseFloat(e.target.value))
+        }, 420);
+        slider.addEventListener('input', debouncedGoToFraction)
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
         if (sizes.length < 100) {
             const total = sizes.reduce((a, b) => a + b, 0)
@@ -601,9 +621,9 @@ class Reader {
         slider.title = `${percent} · ${loc}`
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
             
-        if (this.hasLoadedLastPosition) {
-            this.#postUpdateReadingProgressMessage({ fraction, cfi })
-        }
+            if (this.hasLoadedLastPosition) {
+                this.#postUpdateReadingProgressMessage({ fraction, cfi })
+            }
         this.updateNavButtons();
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
@@ -619,6 +639,7 @@ class Reader {
     #onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
+        // For spinner placement
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
         // Only show spinner for prev/next/finish/restart chapter nav
@@ -642,13 +663,28 @@ class Reader {
             }
         // Hide the label while loading
         if (label) label.style.visibility = 'hidden';
-        // Replace SVG icon with spinner
+        // Replace SVG icon with spinner, respecting spinner placement
         if (icon) {
             btn._originalIcon = icon.cloneNode(true);
             const spinner = document.createElement('div');
             spinner.className = 'ispinner nav-spinner';
             spinner.innerHTML = '<div class="ispinner-blade"></div>'.repeat(8);
-            icon.replaceWith(spinner);
+            
+            // Decide where to insert spinner
+            // For prev/next: spinner always replaces chevron (icon)
+            // For RTL prev: spinner after label (right side, where chevron is)
+            // For LTR prev: spinner replaces icon (left of label, where chevron is)
+            // For next: spinner always replaces icon (right of label in LTR, left in RTL)
+            if (btn._spinnerAfterLabel && label) {
+                // Insert spinner after label (used for prev in RTL)
+                // Remove icon if present
+                icon.remove();
+                // Insert spinner after label
+                label.after(spinner);
+            } else {
+                // Default: replace icon with spinner
+                icon.replaceWith(spinner);
+            }
         }
         const restoreIcon = () => {
             const spinner = btn.querySelector('.ispinner.nav-spinner');
@@ -785,7 +821,7 @@ window.loadEBook = ({ url, layoutMode }) => {
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         //.catch(e => console.error(e))
-}
+        }
 
 window.loadLastPosition = async ({ cfi }) => {
     //console.log("load last pos")

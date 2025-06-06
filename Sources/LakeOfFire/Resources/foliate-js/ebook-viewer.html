@@ -418,6 +418,13 @@
                     width: 100%;
                     max-width: 100%;
                 }
+                
+                /* Center-align prev/next labels within their buttons */
+                button[data-button-type="prev"] .button-label,
+                button[data-button-type="next"] .button-label {
+                    margin-left: auto !important;
+                    margin-right: auto !important;
+                }
             </style>
     </head>
     <body class="ebook-viewer">

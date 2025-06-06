@@ -7,7 +7,7 @@ fileprivate actor EBookProcessingActor {
     let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
     let processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
     let processHTML: ((String, Bool) async -> String)?
-
+    
     init(
         ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
         processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?,
@@ -39,7 +39,16 @@ fileprivate actor EBookProcessingActor {
                 print("Error processing Ebook text: \(error)")
             }
         }
+        //        debugPrint("# from: ", text.prefix(1000), "to:", respText)
         return respText
+    }
+}
+    
+fileprivate actor ZIPToEbookActor {
+    static let shared = ZIPToEbookActor()
+    
+    func zipToEPub(directoryURL: URL) -> Data? {
+        return EPub.zipToEPub(directoryURL: directoryURL)
     }
 }
 
@@ -79,7 +88,9 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         processReadabilityContent: processReadabilityContent,
                         processHTML: processHTML
                     )
+                    
                     Task.detached(priority: .utility) {
+//                        print("# ebook proc text endpoint", replacedTextLocation)
                         let respText = await processingActor.process(
                             contentURL: contentURL,
                             location: replacedTextLocation,
@@ -93,12 +104,15 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 expectedContentLength: respData.count,
                                 textEncodingName: "utf-8"
                             )
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didReceive(resp)
-                                urlSchemeTask.didReceive(respData)
-                                urlSchemeTask.didFinish()
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }
+                            await { @MainActor in
+                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
+//                                    print("# ebook proc text endpoint", replacedTextLocation, "receive...")
+                                    urlSchemeTask.didReceive(resp)
+                                    urlSchemeTask.didReceive(respData)
+                                    urlSchemeTask.didFinish()
+                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                }
+                            }()
                         }
                     }
                 } else if let respData = text.data(using: .utf8) {
@@ -165,16 +179,16 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         if try await readerFileManager.directoryExists(directoryURL: fileURL) {
                             let localFileURL = try await readerFileManager.localDirectoryURL(forReaderFileURL: fileURL)
                             await Task.detached {
-                                guard let epubData = EPub.zipToEPub(directoryURL: localFileURL) else {
+                                guard let epubData = await ZIPToEbookActor.shared.zipToEPub(directoryURL: localFileURL) else {
                                     print("Failed to ZIP epub \(fileURL) for loading.")
                                     // TODO: Canceling/failed tasks
                                     return
                                 }
+                                let response = HTTPURLResponse(
+                                    url: fileURL,
+                                    mimeType: "application/epub+zip",
+                                    expectedContentLength: epubData.count, textEncodingName: nil)
                                 await Task { @MainActor in
-                                    let response = HTTPURLResponse(
-                                        url: fileURL,
-                                        mimeType: "application/epub+zip",
-                                        expectedContentLength: epubData.count, textEncodingName: nil)
                                     if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                         urlSchemeTask.didReceive(response)
                                         urlSchemeTask.didReceive(epubData)
