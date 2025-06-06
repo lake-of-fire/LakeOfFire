@@ -17,6 +17,19 @@ public struct NestedDOMRootSelector {
     }
 }
 
+public struct ConsoleLogMessage {
+    public let arguments: [Any?]
+    public let severity: String
+    
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        guard let arguments = body["arguments"] as? [Any?] else { return nil }
+        guard let severity = body["severity"] as? String else { return nil }
+        self.arguments = arguments
+        self.severity = severity
+    }
+}
+
 public struct ReaderOnErrorMessage {
     public let message: String?
     public let source: URL

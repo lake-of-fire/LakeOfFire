@@ -30,6 +30,22 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
 internal extension ReaderMessageHandlersViewModifier {
     func readerMessageHandlers() -> [String: (WebViewMessage) async -> Void] {
         return [
+            "readerConsoleLog": { message in
+                guard let result = ConsoleLogMessage(fromMessage: message) else {
+                    return
+                }
+                
+                // Filter error logging based on URL
+                guard let mainDocumentURL = message.frameInfo.request.mainDocumentURL else {
+                    return
+                }
+                guard mainDocumentURL.isEBookURL || mainDocumentURL.scheme == "blob" || mainDocumentURL.isFileURL || mainDocumentURL.isReaderFileURL || mainDocumentURL.isSnippetURL else { return }
+                
+                Logger.shared.logger.log(
+                    level: .init(rawValue: result.severity.lowercased()) ?? .info,
+                    "JS \(result.severity.capitalized) [\(mainDocumentURL.lastPathComponent)]: \(result.arguments.map { "\($0 ?? "nil")" }.joined(separator: " "))"
+                )
+            },
             "readerOnError": { message in
                 guard let result = ReaderOnErrorMessage(fromMessage: message) else {
                     return

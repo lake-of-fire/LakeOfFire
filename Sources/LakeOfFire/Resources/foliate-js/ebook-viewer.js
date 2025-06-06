@@ -670,17 +670,22 @@ class Reader {
             spinner.className = 'ispinner nav-spinner';
             spinner.innerHTML = '<div class="ispinner-blade"></div>'.repeat(8);
             
-            // Decide where to insert spinner
-            // For prev/next: spinner always replaces chevron (icon)
-            // For RTL prev: spinner after label (right side, where chevron is)
-            // For LTR prev: spinner replaces icon (left of label, where chevron is)
-            // For next: spinner always replaces icon (right of label in LTR, left in RTL)
-            if (btn._spinnerAfterLabel && label) {
-                // Insert spinner after label (used for prev in RTL)
-                // Remove icon if present
-                icon.remove();
-                // Insert spinner after label
-                label.after(spinner);
+            // Improved spinner placement for RTL/LTR
+            if (btn._spinnerAfterLabel) {
+                if (icon) icon.remove();
+                // Find the last visible .button-label (full or short)
+                const labels = btn.querySelectorAll('.button-label');
+                let targetLabel = null;
+                for (const lbl of labels) {
+                    if (lbl.offsetParent !== null && getComputedStyle(lbl).display !== 'none') {
+                        targetLabel = lbl;
+                    }
+                }
+                if (targetLabel) {
+                    targetLabel.after(spinner);
+                } else {
+                    btn.appendChild(spinner);
+                }
             } else {
                 // Default: replace icon with spinner
                 icon.replaceWith(spinner);

@@ -34,29 +34,29 @@ public struct ReaderConsoleLogsUserScript {
         }
         """
     
-    //    private static let logScript = """
-    //        (function() {
-    //            let old = {};
-    //
-    //            let appLog = function(severity, args) {
-    //                window.webkit.messageHandlers.log.postMessage({
-    //                    "severity": severity,
-    //                    "arguments": (args.length < 2) ? args[0] : Array.from(args)
-    //                });
-    //            };
-    //
-    //            ["log", "debug", "info", "warn", "error"].forEach(function(fn) {
-    //                old[fn] = console[fn];
-    //
-    //                console[fn] = function() {
-    //                    old[fn].apply(null, arguments);
-    //
-    //                    appLog(fn, arguments);
-    //                };
-    //            });
-    //        })();
-    //    """
-    
+    private static let logScript = """
+        (function() {
+            let old = {};
+
+            let appLog = function(severity, args) {
+                window.webkit.messageHandlers.readerConsoleLog.postMessage({
+                    "severity": severity,
+                    "arguments": (args.length < 2) ? args[0] : Array.from(args)
+                });
+            };
+
+            ["log", "debug", "info", "warn", "error"].forEach(function(fn) {
+                old[fn] = console[fn];
+
+                console[fn] = function() {
+                    old[fn].apply(null, arguments);
+
+                    appLog(fn, arguments);
+                };
+            });
+        })();
+    """
+
     public init() { }
     
     public var userScript: WebViewUserScript {
