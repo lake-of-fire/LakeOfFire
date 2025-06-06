@@ -601,9 +601,9 @@ class Reader {
         slider.title = `${percent} · ${loc}`
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
             
-            if (this.hasLoadedLastPosition) {
-                this.#postUpdateReadingProgressMessage({ fraction, cfi })
-            }
+        if (this.hasLoadedLastPosition) {
+            this.#postUpdateReadingProgressMessage({ fraction, cfi })
+        }
         this.updateNavButtons();
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
