@@ -61,7 +61,7 @@ public struct ReaderConsoleLogsUserScript {
     
     public var userScript: WebViewUserScript {
         WebViewUserScript(
-            source: Self.errorScript,
+            source: Self.errorScript + Self.logScript,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false,
             in: .page,

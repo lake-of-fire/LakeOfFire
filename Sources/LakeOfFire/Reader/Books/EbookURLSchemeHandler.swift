@@ -4,15 +4,18 @@ import UniformTypeIdentifiers
 import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
+    let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
     let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
     let processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
     let processHTML: ((String, Bool) async -> String)?
     
     init(
+        ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?,
         ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
         processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?,
         processHTML: ((String, Bool) async -> String)?
     ) {
+        self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookTextProcessor = ebookTextProcessor
         self.processReadabilityContent = processReadabilityContent
         self.processHTML = processHTML
@@ -24,6 +27,11 @@ fileprivate actor EBookProcessingActor {
         text: String,
         isCacheWarmer: Bool
     ) async -> String {
+        if isCacheWarmer, let ebookTextProcessorCacheHits, (try? await ebookTextProcessorCacheHits(contentURL, location)) ?? false {
+            // Bail early if we are already cached
+            return ""
+        }
+        
         var respText = text
         if let ebookTextProcessor {
             do {
@@ -59,6 +67,7 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
+    var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
     var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
     var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
@@ -84,6 +93,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 if let ebookTextProcessor, let processReadabilityContent, let processHTML {
                    let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER")
                     let processingActor = EBookProcessingActor(
+                        ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                         ebookTextProcessor: ebookTextProcessor,
                         processReadabilityContent: processReadabilityContent,
                         processHTML: processHTML

@@ -36,14 +36,14 @@ internal extension ReaderMessageHandlersViewModifier {
                 }
                 
                 // Filter error logging based on URL
-                guard let mainDocumentURL = message.frameInfo.request.mainDocumentURL else {
-                    return
+                let mainDocumentURL = message.frameInfo.request.mainDocumentURL
+                if let mainDocumentURL {
+                    guard mainDocumentURL.isEBookURL || mainDocumentURL.scheme == "blob" || mainDocumentURL.isFileURL || mainDocumentURL.isReaderFileURL || mainDocumentURL.isSnippetURL else { return }
                 }
-                guard mainDocumentURL.isEBookURL || mainDocumentURL.scheme == "blob" || mainDocumentURL.isFileURL || mainDocumentURL.isReaderFileURL || mainDocumentURL.isSnippetURL else { return }
                 
                 Logger.shared.logger.log(
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
-                    "JS \(result.severity.capitalized) [\(mainDocumentURL.lastPathComponent)]: \(result.arguments.map { "\($0 ?? "nil")" }.joined(separator: " "))"
+                    "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
                 )
             },
             "readerOnError": { message in
@@ -54,7 +54,7 @@ internal extension ReaderMessageHandlersViewModifier {
                 // Filter error logging based on URL
                 guard result.source.isEBookURL || result.source.scheme == "blob" || result.source.isFileURL || result.source.isReaderFileURL || result.source.isSnippetURL else { return }
                 
-                Logger.shared.logger.error("JS Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
+                Logger.shared.logger.error("[JS] Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
             },
             "readabilityFramePing": { @MainActor message in
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {

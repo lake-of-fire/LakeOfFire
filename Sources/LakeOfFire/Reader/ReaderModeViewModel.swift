@@ -15,6 +15,7 @@ fileprivate actor ReaderViewModelActor {
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
+    public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
     public var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)? = nil
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?

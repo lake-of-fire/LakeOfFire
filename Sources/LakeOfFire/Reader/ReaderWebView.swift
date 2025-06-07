@@ -165,6 +165,7 @@ public struct ReaderWebView: View {
             hideNavigationDueToScroll: $hideNavigationDueToScroll
         )
         .task { @MainActor in
+            ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML

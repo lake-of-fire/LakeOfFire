@@ -710,7 +710,11 @@ class Reader {
                 nav = this.isRTL ? this.view.goLeft() : this.view.goRight();
                 break;
             case 'prev':
-                nav = this.view.renderer.prevSection();
+                // Go to previous section, then jump to its end
+                nav = this.view.renderer.prevSection().then(() => {
+                    // TODO: Add this here...
+                    //this.view.fraction = 1;
+                });
                 break;
             case 'next':
                 nav = this.view.renderer.nextSection();
