@@ -386,7 +386,7 @@ class Reader {
         slider.dir = book.dir
         const debouncedGoToFraction = debounce(e => {
             this.view.goToFraction(parseFloat(e.target.value))
-        }, 420);
+        }, 666);
         slider.addEventListener('input', debouncedGoToFraction)
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
         if (sizes.length < 100) {
