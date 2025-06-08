@@ -29,7 +29,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var content: Data? { get set }
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
-    var isPhysicalMedia: Bool { get set }
+    var isPhysicalMedia: Bool { get }
     
     var isReaderModeOfferHidden: Bool { get set }
 

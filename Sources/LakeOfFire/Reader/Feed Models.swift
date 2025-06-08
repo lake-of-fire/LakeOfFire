@@ -181,6 +181,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
+    
+    public var isPhysicalMedia: Bool {
+        return false
+    }
+    
     @Persisted public var isReaderModeOfferHidden = false
     //    @Persisted public var isFromClipboard = false
     @Persisted public var content: Data?
