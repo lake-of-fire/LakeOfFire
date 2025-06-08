@@ -4,7 +4,7 @@ import RealmSwiftGaps
 import SwiftCloudDrive
 import BigSyncKit
 
-public class Bookmark: Object, ReaderContentProtocol {
+public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
@@ -14,6 +14,7 @@ public class Bookmark: Object, ReaderContentProtocol {
     @Persisted public var sourceIconURL: URL?
     @Persisted public var publicationDate: Date?
     @Persisted public var isFromClipboard = false
+    @Persisted public var isPhysicalMedia = false
     
     // Caches
     /// Deprecated, use `content` via `html`.
@@ -43,6 +44,10 @@ public class Bookmark: Object, ReaderContentProtocol {
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
+    public var displayAbsolutePublicationDate: Bool {
+        return isPhysicalMedia
+    }
+
     public func imageURLToDisplay() -> URL? {
         return imageUrl
     }

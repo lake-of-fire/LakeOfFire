@@ -182,7 +182,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         item.readerContentCellView(
             maxCellHeight: maxCellHeight,
             alwaysShowThumbnails: alwaysShowThumbnails,
-            isEbookStyle: (item as? PhysicalMediaCapableProtocol)?.isPhysicalMedia ?? false
+            isEbookStyle: item.isPhysicalMedia
         )
     }
     

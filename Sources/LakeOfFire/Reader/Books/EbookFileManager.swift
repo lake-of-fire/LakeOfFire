@@ -40,6 +40,7 @@ public struct EbookFileManager {
             var toUpdateWithImage = [(ContentFile, URL)]()
             var toUpdateWithTitle = [(ContentFile, String)]()
             var toUpdateWithAuthor = [(ContentFile, String?)]()
+            var toUpdateWithPublicationDate = [(ContentFile, Date)]()
             var toUpdateAsPhysicalMedia = [ContentFile]()
             
             for contentFile in contentFiles {
@@ -61,7 +62,10 @@ public struct EbookFileManager {
                         if contentFile.author != (metadata.author ?? "") {
                             toUpdateWithAuthor.append((contentFile, metadata.author))
                         }
-                        
+                        if let publicationDate = metadata.publicationDate, contentFile.publicationDate != publicationDate {
+                            toUpdateWithPublicationDate.append((contentFile, publicationDate))
+                        }
+
                         // If we found a cover href
                         // We'll build the URL scheme to read the cover image from the same 'reader-file' approach
                         // e.g. "reader-file://file/load/... ?subpath=<coverHref>"
@@ -92,6 +96,9 @@ public struct EbookFileManager {
                     }
                     for (contentFile, author) in toUpdateWithAuthor {
                         contentFile.author = author ?? ""
+                    }
+                    for (contentFile, publicationDate) in toUpdateWithPublicationDate {
+                        contentFile.publicationDate = publicationDate
                     }
                     for contentFile in toUpdateAsPhysicalMedia {
                         contentFile.isPhysicalMedia = true

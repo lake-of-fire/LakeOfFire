@@ -29,6 +29,8 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var content: Data? { get set }
     var publicationDate: Date? { get set }
     var isFromClipboard: Bool { get set }
+    var isPhysicalMedia: Bool { get set }
+    
     var isReaderModeOfferHidden: Bool { get set }
 
     // Caches.
@@ -58,6 +60,8 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var createdAt: Date { get }
     var modifiedAt: Date { get set }
     var isDeleted: Bool { get set }
+    
+    var displayAbsolutePublicationDate: Bool { get }
     
     func imageURLToDisplay() async throws -> URL?
     @RealmBackgroundActor
@@ -127,28 +131,39 @@ extension String {
     }
 }
 
+fileprivate let longDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .long
+    formatter.timeStyle = .none
+    return formatter
+}()
+
 public extension ReaderContentProtocol {
     var humanReadablePublicationDate: String? {
-        guard let publicationDate = publicationDate else { return nil}
+        guard let publicationDate else { return nil}
         
-        let interval = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .nanosecond], from: publicationDate, to: Date())
-        let intervalText: String
-        if let year = interval.year, year > 0 {
-            intervalText = "\(year) year\(year != 1 ? "s" : "")"
-        } else if let month = interval.month, month > 0 {
-            intervalText = "\(month) month\(month != 1 ? "s" : "")"
-        } else if let day = interval.day, day > 0 {
-            intervalText = "\(day) day\(day != 1 ? "s" : "")"
-        } else if let hour = interval.hour, hour > 0 {
-            intervalText = "\(hour) hour\(hour != 1 ? "s" : "")"
-        } else if let minute = interval.minute, minute > 0 {
-            intervalText = "\(minute) minute\(minute != 1 ? "s" : "")"
-        } else if let nanosecond = interval.nanosecond, nanosecond > 0 {
-            intervalText = "\(nanosecond / 1000000000) second\(nanosecond != 1000000000 ? "s" : "")"
+        if displayAbsolutePublicationDate {
+            return longDateFormatter.string(from: publicationDate)
         } else {
-            return nil
+            let interval = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .nanosecond], from: publicationDate, to: Date())
+            let intervalText: String
+            if let year = interval.year, year > 0 {
+                intervalText = "\(year) year\(year != 1 ? "s" : "")"
+            } else if let month = interval.month, month > 0 {
+                intervalText = "\(month) month\(month != 1 ? "s" : "")"
+            } else if let day = interval.day, day > 0 {
+                intervalText = "\(day) day\(day != 1 ? "s" : "")"
+            } else if let hour = interval.hour, hour > 0 {
+                intervalText = "\(hour) hour\(hour != 1 ? "s" : "")"
+            } else if let minute = interval.minute, minute > 0 {
+                intervalText = "\(minute) minute\(minute != 1 ? "s" : "")"
+            } else if let nanosecond = interval.nanosecond, nanosecond > 0 {
+                intervalText = "\(nanosecond / 1000000000) second\(nanosecond != 1000000000 ? "s" : "")"
+            } else {
+                return nil
+            }
+            return "\(intervalText) ago"
         }
-        return "\(intervalText) ago"
     }
     
     static func contentToHTML(legacyHTMLContent: String? = nil, content: Data?) -> String? {

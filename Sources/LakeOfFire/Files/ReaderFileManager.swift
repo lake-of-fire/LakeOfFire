@@ -478,33 +478,11 @@ public class ReaderFileManager: ObservableObject {
         var metadataUpdated = false
         let fileModifiedAt = Self.fileModificationDate(url: fileURL, drive: drive)
 
-        // Set publicationDate using EPUB dc:date if available, else fallback to file modification date or now
-        if fileURL.pathExtension.lowercased() == "epub",
-           contentFile.publicationDate == nil || (contentFile.fileMetadataRefreshedAt ?? .distantPast) < Calendar.current.date(from: DateComponents(year: 2025, month: 6, day: 30))!,
-           let systemFileURL = try? localFileURL(forReaderFileURL: fileURL),
-           let archive = try? Archive(url: systemFileURL, accessMode: .read),
-           let opfEntry = archive.first(where: { $0.path.lowercased().hasSuffix(".opf") }) {
-            var opfData = Data()
-            try? archive.extract(opfEntry) { part in opfData.append(part) }
-            if let opfString = String(data: opfData, encoding: .utf8),
-               let dateRange = opfString.range(of: "<dc:date[^>]*>(.*?)</dc:date>", options: String.CompareOptions.regularExpression) {
-                let matched = String(opfString[dateRange])
-                let cleaned = matched.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-                if let epubDate = ISO8601DateFormatter().date(from: cleaned) {
-                    contentFile.publicationDate = epubDate
-                } else {
-                    contentFile.publicationDate = fileModifiedAt ?? Date()
-                }
-            } else {
-                contentFile.publicationDate = fileModifiedAt ?? Date()
-            }
+        if !contentFile.isPhysicalMedia, contentFile.publicationDate != fileModifiedAt ?? Date() {
+            contentFile.publicationDate = fileModifiedAt ?? Date()
             metadataUpdated = true
-        } else {
-            if contentFile.publicationDate != fileModifiedAt ?? Date() {
-                contentFile.publicationDate = fileModifiedAt ?? Date()
-                metadataUpdated = true
-            }
         }
+        
         if contentFile.isDeleted {
             contentFile.isDeleted = false
             metadataUpdated = true

@@ -254,6 +254,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
+    public var displayAbsolutePublicationDate: Bool {
+        return false
+    }
+    
     public func getFeed() -> Feed? {
         guard let realm else {
             print("Warning: Unexpectedly unmanaged object")

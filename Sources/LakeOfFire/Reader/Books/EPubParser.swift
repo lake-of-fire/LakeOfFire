@@ -3,9 +3,9 @@ import ZIPFoundation
 
 struct EPubParser {
     /// Parses the EPUB file at the given URL (either a ZIP archive with an epub extension or an unpacked EPUB directory)
-    /// and returns a tuple with the book title, author (if found), and cover image relative path.
+    /// and returns a tuple with the book title, author (if found), cover image relative path, and publication date (if found).
     /// Returns nil if parsing fails.
-    static func parseMetadataAndCover(from epubURL: URL) throws -> (title: String, author: String?, coverHref: String)? {
+    static func parseMetadataAndCover(from epubURL: URL) throws -> (title: String, author: String?, coverHref: String, publicationDate: Date?)? {
         let opfData: Data?
         let fileManager = FileManager.default
         var opfRelativePath: String?
@@ -33,7 +33,7 @@ struct EPubParser {
         }
         
         guard let data = opfData, let opfRelPath = opfRelativePath else { return nil }
-        guard var (title, coverHref, author) = parseOPF(data) else { return nil }
+        guard var (title, coverHref, author, pubDate) = parseOPF(data) else { return nil }
         
         // Adjust the coverHref to be relative to the EPUB root.
         let opfDir = (opfRelPath as NSString).deletingLastPathComponent
@@ -41,7 +41,7 @@ struct EPubParser {
             coverHref = (opfDir as NSString).appendingPathComponent(coverHref)
         }
         
-        return (title: title, author: author, coverHref: coverHref)
+        return (title: title, author: author, coverHref: coverHref, publicationDate: pubDate)
     }
     
     // MARK: - Internal Parsing Helpers
@@ -77,16 +77,19 @@ struct EPubParser {
         return delegate.foundPath
     }
     
-    /// Parses the OPF XML data to extract the book title, cover image href, and author.
+    /// Parses the OPF XML data to extract the book title, cover image href, author, and publication date.
     /// For EPUB v2, it looks for a meta element with name="cover" and then finds the corresponding <item> in the manifest.
     /// For EPUB v3, it looks for an <item> with a properties attribute containing "cover-image".
-    private static func parseOPF(_ data: Data) -> (title: String, coverHref: String, author: String?)? {
+    private static func parseOPF(_ data: Data) -> (title: String, coverHref: String, author: String?, publicationDate: Date?)? {
         final class OPFParserDelegate: NSObject, XMLParserDelegate {
             var epubVersion: String = "2.0"  // Default to EPUB 2.
             var foundCoverId: String?
             var coverHref: String?
             var foundTitle: String?
             var foundAuthor: String?
+            var foundDate: Date?
+            var currentDateElement: String?
+            var accumulatingDate: String = ""
             
             // State for title and author accumulation.
             var currentTitleElement: String?
@@ -123,6 +126,10 @@ struct EPubParser {
                         currentCreatorElement = "dc:creator"
                         accumulatingCreator = ""
                     }
+                    if elementName == "dc:date" {
+                        currentDateElement = "dc:date"
+                        accumulatingDate = ""
+                    }
                     // EPUB v2: capture the cover id from a meta element.
                     if epubVersion.hasPrefix("2") && elementName == "meta" {
                         if let name = attributeDict["name"], name.lowercased() == "cover",
@@ -158,6 +165,9 @@ struct EPubParser {
                 if currentCreatorElement == "dc:creator" {
                     accumulatingCreator += string
                 }
+                if currentDateElement == "dc:date" {
+                    accumulatingDate += string
+                }
             }
             
             func parser(_ parser: XMLParser, didEndElement elementName: String,
@@ -176,6 +186,12 @@ struct EPubParser {
                     foundAuthor = accumulatingCreator.trimmingCharacters(in: .whitespacesAndNewlines)
                     currentCreatorElement = nil
                 }
+                if elementName == "dc:date" && currentDateElement == "dc:date" {
+                    let trimmed = accumulatingDate.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let isoFormatter = ISO8601DateFormatter()
+                    foundDate = isoFormatter.date(from: trimmed)
+                    currentDateElement = nil
+                }
             }
             
             func parser(_ parser: XMLParser, parseErrorOccurred parseError: Error) {
@@ -189,7 +205,7 @@ struct EPubParser {
         parser.parse()
         
         if let title = delegate.foundTitle, let cover = delegate.coverHref {
-            return (title: title, coverHref: cover, author: delegate.foundAuthor)
+            return (title: title, coverHref: cover, author: delegate.foundAuthor, publicationDate: delegate.foundDate)
         }
         return nil
     }

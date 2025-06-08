@@ -3,10 +3,8 @@ import RealmSwift
 import RealmSwiftGaps
 import ZIPFoundation
 
-public class ContentPackageFile: Bookmark, PhysicalMediaCapableProtocol {
+public class ContentPackageFile: Bookmark {
     @Persisted public var packageContentFileID: String?
-    
-    @Persisted public var isPhysicalMedia = false
     
 //    public var systemFileURL: URL {
 //        get throws {
