@@ -46,6 +46,9 @@ function forwardShadowErrors(root) {
 
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
+    if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html'/* && mediaType !== 'application/xml'*/) {
+        return text;
+    }
     const headers = {
         "Content-Type": mediaType,
         "X-Replaced-Text-Location": href,

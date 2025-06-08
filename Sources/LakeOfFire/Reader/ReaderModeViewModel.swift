@@ -379,7 +379,6 @@ public func processForReaderMode(
     injectEntryImageIntoHeader: Bool,
     defaultFontSize: CGFloat
 ) throws {
-    
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
     if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {

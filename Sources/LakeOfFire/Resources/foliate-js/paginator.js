@@ -493,6 +493,8 @@ export class Paginator extends HTMLElement {
     #touchState
     #touchScrolled
     #isCacheWarmer = false
+    #prefetchTimer = null
+    #prefetchCache = new Map()
     constructor() {
         super()
          // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -1022,13 +1024,46 @@ export class Paginator extends HTMLElement {
                 }
                 this.dispatchEvent(new CustomEvent('load', { detail }))
             }
-            await this.#display(Promise.resolve(this.sections[index].load())
+            
+            let loadPromise;
+            if (this.#prefetchCache.has(index)) {
+                loadPromise = this.#prefetchCache.get(index);
+            } else {
+                loadPromise = this.sections[index].load();
+                this.#prefetchCache.set(index, loadPromise);
+            }
+            await this.#display(Promise.resolve(loadPromise)
                 .then(src => ({ index, src, anchor, onLoad, select }))
-                .catch(e => {
-                    console.warn(e)
-                    console.warn(new Error(`Failed to load section ${index}`))
-                    return {}
-                }))
+                .catch(error => {
+                    console.error(error);
+                    console.warn(new Error(`Failed to load section ${index}`));
+                    return {};
+                }));
+            
+            clearTimeout(this.#prefetchTimer);
+            this.#prefetchTimer = setTimeout(() => {
+                if (this.#index !== index) return;  // bail if user has moved on
+                
+                const wanted = [ index - 1, index + 1 ];
+                // Keep any already cached of these two
+                const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
+                this.#prefetchCache = new Map(
+                                              [...this.#prefetchCache].filter(([i]) => keep.has(i))
+                                              );
+                
+                // Now prefetch any neighbor not already cached
+                wanted.forEach(i => {
+                    if (
+                        i >= 0 &&
+                        i < this.sections.length &&
+                        this.sections[i].linear !== 'no' &&
+                        !this.#prefetchCache.has(i)
+                    ) {
+                        const p = this.sections[i].load().catch(() => {});
+                        this.#prefetchCache.set(i, p);
+                    }
+                });
+            }, 500);
         }
     }
     async goTo(target) {

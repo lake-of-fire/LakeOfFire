@@ -91,7 +91,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                 if let ebookTextProcessor, let processReadabilityContent, let processHTML {
-                   let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER")
+                   let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                     let processingActor = EBookProcessingActor(
                         ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                         ebookTextProcessor: ebookTextProcessor,
@@ -101,11 +101,14 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     
                     Task.detached(priority: .utility) {
 //                        print("# ebook proc text endpoint", replacedTextLocation)
+//                        if !isCacheWarmer {
+//                            print("# ebook proc", replacedTextLocation, text)
+//                        }
                         let respText = await processingActor.process(
                             contentURL: contentURL,
                             location: replacedTextLocation,
                             text: text,
-                            isCacheWarmer: isCacheWarmer == "true"
+                            isCacheWarmer: isCacheWarmer
                         )
                         if let respData = respText.data(using: .utf8) {
                             let resp = HTTPURLResponse(
@@ -116,7 +119,9 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             )
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
-//                                    print("# ebook proc text endpoint", replacedTextLocation, "receive...")
+//                                    if !isCacheWarmer {
+//                                        print("# ebook proc text endpoint", replacedTextLocation, "receive...", respText)
+//                                    }
                                     urlSchemeTask.didReceive(resp)
                                     urlSchemeTask.didReceive(respData)
                                     urlSchemeTask.didFinish()
