@@ -1011,12 +1011,12 @@ export class Paginator extends HTMLElement {
             }
             const beforeRender = this.#beforeRender.bind(this)
             await view.load(src, afterLoad, beforeRender)
-            this.dispatchEvent(new CustomEvent('create-overlayer', {
-                detail: {
-                    doc: view.document, index,
-                    attach: overlayer => view.overlayer = overlayer,
-                },
-            }))
+//            this.dispatchEvent(new CustomEvent('create-overlayer', {
+//                detail: {
+//                    doc: view.document, index,
+//                    attach: overlayer => view.overlayer = overlayer,
+//                },
+//            }))
             this.#view = view
         }
         await this.scrollToAnchor((typeof anchor === 'function'
