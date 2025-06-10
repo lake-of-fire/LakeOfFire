@@ -2,38 +2,28 @@
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-// https://davidwalsh.name/javascript-debounce-function  (modified for leading+trailing)
-const debounce = function (func, wait) {
-    let lastInvokeTime = 0;          // time we last actually executed func
-    let timeout = null;              // active trailing-edge timer
-    let pendingArgs = null;          // latest args seen during the window
-    let pendingCtx  = null;
+// https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
+const debounce = (fn, delay) => {
+    let timeout;
+    let isLeadingInvoked = false;
     
-    function flush() {
-        timeout = null;
-        if (pendingArgs !== null) {
-            lastInvokeTime = Date.now();
-            func.apply(pendingCtx, pendingArgs);
-            pendingArgs = pendingCtx = null;
+    return function (...args) {
+        const context = this;
+        
+        if (!timeout) {
+            fn.apply(context, args);
+            isLeadingInvoked = true;
+            
+            timeout = setTimeout(() => {
+                timeout = null;
+                if (!isLeadingInvoked) {
+                    fn.apply(context, args);
+                }
+            }, delay);
+        } else {
+            isLeadingInvoked = false;
         }
     }
-    
-    return function debounced(/* ...args */) {
-        const now = Date.now();
-        const elapsed = now - lastInvokeTime;
-        
-        if (elapsed >= wait) {
-            // outside the debounce window → run immediately
-            lastInvokeTime = now;
-            func.apply(this, arguments);
-        } else {
-            // inside the window → schedule / reschedule trailing call
-            pendingArgs = arguments;
-            pendingCtx  = this;
-            clearTimeout(timeout);
-            timeout = setTimeout(flush, wait - elapsed);
-        }
-    };
 };
 
 const lerp = (min, max, x) => x * (max - min) + min
@@ -646,7 +636,7 @@ export class Paginator extends HTMLElement {
                     detail: { reason: 'live-scroll', range, index, fraction }
                 }));
             }
-        }), 200);
+        }, 450));
         
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
@@ -656,7 +646,7 @@ export class Paginator extends HTMLElement {
                     this.#afterScroll('scroll')
                 }
             }
-        }, 250))
+        }, 450))
 
         const opts = { passive: false }
         this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
@@ -981,6 +971,7 @@ export class Paginator extends HTMLElement {
             this.start - size, this.end - size, this.#getRectMapper())
     }
     #afterScroll(reason) {
+            console.log("after scroll")
         if (this.#isCacheWarmer) {
             return;
         }

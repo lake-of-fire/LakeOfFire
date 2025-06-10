@@ -79,38 +79,28 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     }
 }
 
-// https://davidwalsh.name/javascript-debounce-function  (modified for leading+trailing)
-const debounce = function (func, wait) {
-    let lastInvokeTime = 0;          // time we last actually executed func
-    let timeout = null;              // active trailing-edge timer
-    let pendingArgs = null;          // latest args seen during the window
-    let pendingCtx  = null;
+// https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
+const debounce = (fn, delay) => {
+    let timeout;
+    let isLeadingInvoked = false;
     
-    function flush() {
-        timeout = null;
-        if (pendingArgs !== null) {
-            lastInvokeTime = Date.now();
-            func.apply(pendingCtx, pendingArgs);
-            pendingArgs = pendingCtx = null;
+    return function (...args) {
+        const context = this;
+        
+        if (!timeout) {
+            fn.apply(context, args);
+            isLeadingInvoked = true;
+            
+            timeout = setTimeout(() => {
+                timeout = null;
+                if (!isLeadingInvoked) {
+                    fn.apply(context, args);
+                }
+            }, delay);
+        } else {
+            isLeadingInvoked = false;
         }
     }
-    
-    return function debounced(/* ...args */) {
-        const now = Date.now();
-        const elapsed = now - lastInvokeTime;
-        
-        if (elapsed >= wait) {
-            // outside the debounce window → run immediately
-            lastInvokeTime = now;
-            func.apply(this, arguments);
-        } else {
-            // inside the window → schedule / reschedule trailing call
-            pendingArgs = arguments;
-            pendingCtx  = this;
-            clearTimeout(timeout);
-            timeout = setTimeout(flush, wait - elapsed);
-        }
-    };
 };
 
 const isZip = async file => {
@@ -410,7 +400,7 @@ class Reader {
         slider.dir = book.dir
         const debouncedGoToFraction = debounce(e => {
             this.view.goToFraction(parseFloat(e.target.value))
-        }, 666);
+        }, 250);
         slider.addEventListener('input', debouncedGoToFraction)
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
         if (sizes.length < 100) {
@@ -648,6 +638,8 @@ class Reader {
     }, 400)
     
     #onRelocate({ detail }) {
+        console.log("ON RELOCATE")
+        console.log(detail)
         const { fraction, location, tocItem, pageItem, cfi } = detail
         const percent = percentFormat.format(fraction)
         const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
