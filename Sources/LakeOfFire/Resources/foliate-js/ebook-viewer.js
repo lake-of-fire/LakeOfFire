@@ -79,19 +79,39 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     }
 }
 
-const debounce = (f, wait, immediate) => {
-    let timeout
-    return (...args) => {
-        const later = () => {
-            timeout = null
-            if (!immediate) f(...args)
-                }
-        const callNow = immediate && !timeout
-        if (timeout) clearTimeout(timeout)
-            timeout = setTimeout(later, wait)
-            if (callNow) f(...args)
-                }
-}
+// https://davidwalsh.name/javascript-debounce-function  (modified for leading+trailing)
+const debounce = function (func, wait) {
+    let lastInvokeTime = 0;          // time we last actually executed func
+    let timeout = null;              // active trailing-edge timer
+    let pendingArgs = null;          // latest args seen during the window
+    let pendingCtx  = null;
+    
+    function flush() {
+        timeout = null;
+        if (pendingArgs !== null) {
+            lastInvokeTime = Date.now();
+            func.apply(pendingCtx, pendingArgs);
+            pendingArgs = pendingCtx = null;
+        }
+    }
+    
+    return function debounced(/* ...args */) {
+        const now = Date.now();
+        const elapsed = now - lastInvokeTime;
+        
+        if (elapsed >= wait) {
+            // outside the debounce window → run immediately
+            lastInvokeTime = now;
+            func.apply(this, arguments);
+        } else {
+            // inside the window → schedule / reschedule trailing call
+            pendingArgs = arguments;
+            pendingCtx  = this;
+            clearTimeout(timeout);
+            timeout = setTimeout(flush, wait - elapsed);
+        }
+    };
+};
 
 const isZip = async file => {
     const arr = new Uint8Array(await file.slice(0, 4).arrayBuffer())
@@ -165,8 +185,8 @@ const getView = async (file, isCacheWarmer) => {
             //        }
         }
     if (!book) throw new Error('File type not supported')
-        const view = document.createElement('foliate-view')
-        view.dataset.isCache = isCacheWarmer;
+    const view = document.createElement('foliate-view')
+    view.dataset.isCache = isCacheWarmer;
     //if (!isCacheWarmer) {
     document.body.append(view);
     forwardShadowErrors(view.shadowRoot);
@@ -286,15 +306,16 @@ class Reader {
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
     }
     async open(file) {
-        $('#loading-indicator').style.display = 'block'
-        
+        $('#loading-indicator').classList.add('show')
+
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
         this.view.renderer.setAttribute('animated', true)
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
-        this.view.addEventListener('goTo', this.#onGoTo.bind(this))
+        this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
+        this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
         
@@ -552,16 +573,31 @@ class Reader {
         }
     }
     #handleKeydown(event) {
-        const k = event.key
-        if (k === 'ArrowLeft' || k === 'h') this.view.goLeft()
-            else if(k === 'ArrowRight' || k === 'l') this.view.goRight()
-                }
-    #onGoTo({}) {
-        $('#loading-indicator').style.display = 'block'
+        const k = event.key;
+        const renderer = this.view.renderer;
+        if (k === 'ArrowLeft' || k === 'h') {
+            if (renderer.atStart) {
+                // simulate click on the "Previous Chapter" button to show spinner
+                this.buttons.prev.click();
+            } else {
+                this.view.goLeft();
+            }
+        } else if (k === 'ArrowRight' || k === 'l') {
+            if (renderer.atEnd) {
+                // simulate click on the "Next Chapter" button to show spinner
+                this.buttons.next.click();
+            } else {
+                this.view.goRight();
+            }
+        }
+    }
+    #onGoTo({ willLoadNewIndex }) {
+        $('#loading-indicator').classList.add('show')
+    }
+    #onDidDisplay({ }) {
+        $('#loading-indicator').classList.remove('show')
     }
     #onLoad({ detail: { doc } }) {
-        $('#loading-indicator').style.display = 'none'
-        
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,

@@ -557,7 +557,7 @@ class Loader {
                 el.setAttributeNS(NS.XLINK, 'href', await this.loadHref(el.getAttributeNS(NS.XLINK, 'href'), href, parents))
             }
             // replace inline styles
-            for (const el of doc.querySelectorAll('style'))
+            for (const el of doc.getElementsByTagName('style'))
                 if (el.textContent) el.textContent =
                     await this.replaceCSS(el.textContent, href, parents)
             for (const el of doc.querySelectorAll('[style]'))

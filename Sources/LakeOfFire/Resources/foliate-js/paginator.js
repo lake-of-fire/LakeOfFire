@@ -2,19 +2,39 @@
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-const debounce = (f, wait, immediate) => {
-    let timeout
-    return (...args) => {
-        const later = () => {
-            timeout = null
-            if (!immediate) f(...args)
+// https://davidwalsh.name/javascript-debounce-function  (modified for leading+trailing)
+const debounce = function (func, wait) {
+    let lastInvokeTime = 0;          // time we last actually executed func
+    let timeout = null;              // active trailing-edge timer
+    let pendingArgs = null;          // latest args seen during the window
+    let pendingCtx  = null;
+    
+    function flush() {
+        timeout = null;
+        if (pendingArgs !== null) {
+            lastInvokeTime = Date.now();
+            func.apply(pendingCtx, pendingArgs);
+            pendingArgs = pendingCtx = null;
         }
-        const callNow = immediate && !timeout
-        if (timeout) clearTimeout(timeout)
-        timeout = setTimeout(later, wait)
-        if (callNow) f(...args)
     }
-}
+    
+    return function debounced(/* ...args */) {
+        const now = Date.now();
+        const elapsed = now - lastInvokeTime;
+        
+        if (elapsed >= wait) {
+            // outside the debounce window → run immediately
+            lastInvokeTime = now;
+            func.apply(this, arguments);
+        } else {
+            // inside the window → schedule / reschedule trailing call
+            pendingArgs = arguments;
+            pendingCtx  = this;
+            clearTimeout(timeout);
+            timeout = setTimeout(flush, wait - elapsed);
+        }
+    };
+};
 
 const lerp = (min, max, x) => x * (max - min) + min
 const easeOutQuad = x => 1 - (1 - x) * (1 - x)
@@ -495,6 +515,7 @@ export class Paginator extends HTMLElement {
     #isCacheWarmer = false
     #prefetchTimer = null
     #prefetchCache = new Map()
+    #isLoading = false
     constructor() {
         super()
          // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -608,7 +629,8 @@ export class Paginator extends HTMLElement {
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
         
         // Continuously fire relocate during scroll
-        this.#container.addEventListener('scroll', () => {
+        this.#container.addEventListener('scroll', debounce(() => {
+            if (this.#isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
                 const range = this.#getVisibleRange();
                 const index = this.#index;
@@ -624,7 +646,7 @@ export class Paginator extends HTMLElement {
                     detail: { reason: 'live-scroll', range, index, fraction }
                 }));
             }
-        });
+        }), 200);
         
         this.#container.addEventListener('scroll', debounce(() => {
             if (this.scrolled) {
@@ -981,6 +1003,7 @@ export class Paginator extends HTMLElement {
         this.dispatchEvent(new CustomEvent('relocate', { detail }))
     }
     async #display(promise) {
+        this.#isLoading = true;
         const { index, src, anchor, onLoad, select } = await promise
         this.#index = index
         if (src) {
@@ -1005,15 +1028,20 @@ export class Paginator extends HTMLElement {
             }))
             this.#view = view
         }
-            await this.scrollToAnchor((typeof anchor === 'function'
-                                       ? anchor(this.#view.document) : anchor) ?? 0, select)
+        await this.scrollToAnchor((typeof anchor === 'function'
+                                   ? anchor(this.#view.document) : anchor) ?? 0, select)
+        this.#isLoading = false;
+        this.dispatchEvent(new CustomEvent('didDisplay', {}))
     }
     #canGoToIndex(index) {
         return index >= 0 && index <= this.sections.length - 1
     }
     async #goTo({ index, anchor, select }) {
-        this.dispatchEvent(new CustomEvent('goTo', {}))
-        if (index === this.#index) {
+        const willLoadNewIndex = index !== this.#index;
+        this.dispatchEvent(new CustomEvent('goTo', {
+            willLoadNewIndex: willLoadNewIndex
+        }))
+        if (!willLoadNewIndex) {
             await this.#display({ index, anchor, select })
         } else {
             const oldIndex = this.#index
