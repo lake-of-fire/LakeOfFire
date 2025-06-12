@@ -158,6 +158,12 @@
                     z-index: 3;
                     bottom: 0;
                     -webkit-backdrop-filter: blur(30px);
+                    background: rgba(0, 0, 0, .7);
+                }
+                @media (prefers-color-scheme: dark) {
+                    #nav-bar {
+                        background: rgba(255, 255, 255, .7);
+                    }
                 }
                 #progress-button {
                     all: unset; /* Remove default styling */
@@ -238,7 +244,7 @@
                 }
                 @media (prefers-color-scheme: dark) {
                     #loading-indicator {
-                        background: rgba(1, 1, 1, .6);
+                        background: rgba(255, 255, 255, .6);
                     }
                 }
                 #dimming-overlay {
