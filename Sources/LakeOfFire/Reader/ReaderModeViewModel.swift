@@ -158,6 +158,11 @@ public class ReaderModeViewModel: ObservableObject {
             var doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
             doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
             
+            try await preprocessWebContentForReaderMode(
+                doc: doc,
+                url: url
+            )
+
             if let processReadabilityContent {
                 doc = await processReadabilityContent(
                     doc,
@@ -368,6 +373,16 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFont
     return Array(updatedHtml.utf8)
 }
 
+public func preprocessWebContentForReaderMode(
+    doc: SwiftSoup.Document,
+    url: URL
+) throws {
+    transformContentSpecificToFeed(doc: doc, url: url)
+    do {
+        try wireViewOriginalLinks(doc: doc, url: url)
+    } catch { }
+}
+
 public func processForReaderMode(
     doc: SwiftSoup.Document,
     url: URL,
@@ -420,13 +435,6 @@ public func processForReaderMode(
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
-            } catch { }
-        }
-        
-        if !isEBook {
-            transformContentSpecificToFeed(doc: doc, url: url)
-            do {
-                try wireViewOriginalLinks(doc: doc, url: url)
             } catch { }
         }
     }
