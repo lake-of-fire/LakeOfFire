@@ -628,19 +628,18 @@ class Reader {
         }
     }
     
-    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
+    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi, reason }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
+            reason: reason,
             mainDocumentURL: mainDocumentURL,
         })
     }, 400)
     
     #onRelocate({ detail }) {
-        console.log("ON RELOCATE")
-        console.log(detail)
-        const { fraction, location, tocItem, pageItem, cfi } = detail
+        const { fraction, location, tocItem, pageItem, cfi, reason } = detail
         const percent = percentFormat.format(fraction)
         const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
         const progressButton = $('#progress-button')
@@ -652,9 +651,10 @@ class Reader {
         slider.title = `${percent} · ${loc}`
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
             
-            if (this.hasLoadedLastPosition) {
-                this.#postUpdateReadingProgressMessage({ fraction, cfi })
-            }
+        if (this.hasLoadedLastPosition) {
+            this.#postUpdateReadingProgressMessage({ fraction, cfi, reason })
+        }
+        
         this.updateNavButtons();
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');

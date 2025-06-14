@@ -124,6 +124,9 @@ private func wataNoC(doc: Document) throws {
         try wordWithTipElement.remove()
     }
     
+    // Remove bottom bar with audio player
+    try articleDiv.getElementById("bottom-bar")?.remove()
+    
     for element in try articleDiv.getAllElements() {
         guard containsCJKCharacters(text: element.ownText()) else { continue }
         

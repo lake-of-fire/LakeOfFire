@@ -201,12 +201,14 @@ public struct WritingDirectionMessage {
 public struct FractionalCompletionMessage {
     public var fractionalCompletion: Float
     public var cfi: String
+    public var reason: String
     public var mainDocumentURL: URL?
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String else { return nil }
+        guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
         fractionalCompletion = Float(completion)
         self.cfi = cfi
+        self.reason = reason
         if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
         }
