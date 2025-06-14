@@ -106,15 +106,16 @@ private func wataNoC(doc: Document) throws {
         }
     }
     
-    // Mysterious image transform.
-//    if let childDivs = try articleDiv.getElementsByTag("div").first()?.children() {
-//        for div in childDivs {
-//            let imgHtml = try div.getElementsByTag("img").outerHtml()
-//            let text = try div.text()
-//            try div.text(text) // Don't recall why this was necessary, maybe to deal with the image?
-//            try div.prepend(imgHtml)
-//        }
-//    }
+    // Make images block level
+    if let childDivs = try articleDiv.getElementsByTag("div").first()?.children() {
+        for div in childDivs {
+            if let firstChild = div.children().first(), firstChild.tagNameNormalUTF8() == UTF8Arrays.img {
+                let imgHtml = try firstChild.outerHtml()
+                try firstChild.remove()
+                try div.before(imgHtml)
+            }
+        }
+    }
     
     // Collapse spaces and learning markup in the text.
     try articleDiv.getElementsByTag("br").remove()
