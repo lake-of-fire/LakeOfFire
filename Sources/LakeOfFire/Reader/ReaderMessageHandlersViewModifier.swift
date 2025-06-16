@@ -80,6 +80,12 @@ internal extension ReaderMessageHandlersViewModifier {
                 }
                 guard !url.isReaderURLLoaderURL else { return }
                 
+                await scriptCaller.evaluateJavaScript("""
+                        if (document.body) {
+                            document.body.dataset.isNextLoadInReaderMode = 'false';
+                        }
+                        """)
+                
                 if readerModeViewModel.isReaderMode {
                     readerModeViewModel.isReaderMode = false
                 }
