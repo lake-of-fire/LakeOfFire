@@ -78,8 +78,15 @@ internal extension ReaderMessageHandlersViewModifier {
                     // Don't override a parent window readability result.
                     return
                 }
-                if readerModeViewModel.isReaderMode && !url.isReaderURLLoaderURL {
+                guard !url.isReaderURLLoaderURL else { return }
+                
+                if readerModeViewModel.isReaderMode {
                     readerModeViewModel.isReaderMode = false
+                }
+                
+                try? await content.asyncWrite { _, content in
+                    content.isReaderModeAvailable = false
+                    content.refreshChangeMetadata(explicitlyModified: true)
                 }
             },
             "readabilityParsed": { @MainActor message in

@@ -28,27 +28,27 @@ public class ReaderModeViewModel: ObservableObject {
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
     @Published var readabilityFrames = Set<WKFrameInfo>()
     
-    @Published var contentRules: String? = nil
+//    @Published var contentRules: String? = nil
 
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     
-    private var contentRulesForReadabilityLoading = """
-    [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
-        """
-        {
-             "trigger": {
-                 "url-filter": ".*",
-                 "resource-type": ["\($0)"]
-             },
-             "action": {
-                 "type": "block"
-             }
-         }
-        """
-    } .joined(separator: ", "))
-    ]
-    """
+//    private var contentRulesForReadabilityLoading = """
+//    [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
+//        """
+//        {
+//             "trigger": {
+//                 "url-filter": ".*",
+//                 "resource-type": ["\($0)"]
+//             },
+//             "action": {
+//                 "type": "block"
+//             }
+//         }
+//        """
+//    } .joined(separator: ", "))
+//    ]
+//    """
     
     public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && !content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
@@ -253,7 +253,7 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil
-        contentRules = nil
+//        contentRules = nil
         
         guard let content = readerContent.content else {
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
@@ -292,7 +292,7 @@ public class ReaderModeViewModel: ObservableObject {
                         html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
                     }
                     // TODO: Fix content rules... images still load...
-                    contentRules = contentRulesForReadabilityLoading
+//                    contentRules = contentRulesForReadabilityLoading
                     navigator?.loadHTML(html, baseURL: committedURL)
                     isReaderModeLoading = false
                 } else {
@@ -308,7 +308,7 @@ public class ReaderModeViewModel: ObservableObject {
         } else {
             if content.isReaderModeByDefault {
                 if content.isReaderModeAvailable {
-                    contentRules = contentRulesForReadabilityLoading
+//                    contentRules = contentRulesForReadabilityLoading
                     showReaderView(
                         readerContent: readerContent,
                         scriptCaller: scriptCaller

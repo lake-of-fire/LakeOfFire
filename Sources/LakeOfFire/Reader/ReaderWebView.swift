@@ -131,7 +131,7 @@ public struct ReaderWebView: View {
     public var body: some View {
         WebView(
             config: WebViewConfig(
-                contentRules: readerModeViewModel.contentRules,
+//                contentRules: readerModeViewModel.contentRules,
                 dataDetectorsEnabled: false, // TODO: Bugs out with Manabi Reader callbacks...
                 userScripts: readerViewModel.allScripts),
             navigator: navigator,
