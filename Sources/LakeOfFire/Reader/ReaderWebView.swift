@@ -19,7 +19,7 @@ class NavigationTaskManager: ObservableObject {
             do {
                 try await task()
             } catch {
-                if !Task.isCancelled {
+                if !(error is CancellationError) {
                     print("Error during onNavigationCommitted: \(error)")
                 }
             }
@@ -49,13 +49,15 @@ class NavigationTaskManager: ObservableObject {
     }
     
     func startOnURLChanged(task: @escaping () async -> Void) {
-        onURLChangedTask?.cancel()
-        onURLChangedTask = Task { @MainActor in
-            if let urlTask = onURLChangedTask {
-                _ = try? await urlTask.value
+        Task { @MainActor in
+            onURLChangedTask?.cancel()
+            _ = try? await onURLChangedTask?.value
+            onURLChangedTask = Task { @MainActor in
+                try Task.checkCancellation()
+                await task()
             }
-            try Task.checkCancellation()
-            await task()
+            _ = try? await onURLChangedTask?.value
+            onURLChangedTask = nil
         }
     }
 }
@@ -191,7 +193,7 @@ public struct ReaderWebView: View {
                 try await handleNewURL(state: state)
                 try await onNavigationCommitted?(state)
             } catch {
-                if Task.isCancelled {
+                if error is CancellationError {
                     print("onNavigationCommitted task was cancelled.")
                 } else {
                     print("Error during onNavigationCommitted: \(error)")

@@ -80,7 +80,7 @@ internal extension ReaderMessageHandlersViewModifier {
                 }
                 guard !url.isReaderURLLoaderURL else { return }
                 
-                await scriptCaller.evaluateJavaScript("""
+                try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
@@ -124,14 +124,14 @@ internal extension ReaderMessageHandlersViewModifier {
                         scriptCaller: scriptCaller
                     )
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
-                    await scriptCaller.evaluateJavaScript("""
+                    try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.manabiReaderModeAvailableConfidently = 'true';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
                 } else {
-                    await scriptCaller.evaluateJavaScript("""
+                    try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                         }

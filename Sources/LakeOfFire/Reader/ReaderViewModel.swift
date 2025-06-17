@@ -164,8 +164,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
         Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            await self.scriptCaller.evaluateJavaScript("""
+            guard let self else { return }
+            try await self.scriptCaller.evaluateJavaScript("""
                 if (document.body.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
                     document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
                 }

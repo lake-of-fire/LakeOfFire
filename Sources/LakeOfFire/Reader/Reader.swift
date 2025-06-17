@@ -17,7 +17,7 @@ fileprivate struct ThemeModifier: ViewModifier {
         content
             .onChange(of: lightModeTheme) { newValue in
                 Task { @MainActor in
-                    await scriptCaller.evaluateJavaScript("""
+                    try await scriptCaller.evaluateJavaScript("""
                         if (document.body?.getAttribute('data-manabi-light-theme') !== '\(newValue)') {
                             document.body?.setAttribute('data-manabi-light-theme', '\(newValue)');
                         }
@@ -26,7 +26,7 @@ fileprivate struct ThemeModifier: ViewModifier {
             }
             .onChange(of: darkModeTheme) { newValue in
                 Task { @MainActor in
-                    await scriptCaller.evaluateJavaScript("""
+                    try await scriptCaller.evaluateJavaScript("""
                         if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(newValue)') {
                             document.body?.setAttribute('data-manabi-dark-theme', '\(newValue)');
                         }
@@ -34,8 +34,12 @@ fileprivate struct ThemeModifier: ViewModifier {
                 }
             }
             .task(id: readerFontSize) { @MainActor in
-                guard let readerFontSize = readerFontSize else { return }
-                await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
+                guard let readerFontSize else { return }
+                do {
+                    try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
+                } catch {
+                    print("\(error)")
+                }
             }
     }
 }

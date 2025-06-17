@@ -204,7 +204,7 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-                    await scriptCaller.evaluateJavaScript(
+                    try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
                         if (renderToSelector) {
