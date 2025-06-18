@@ -25,18 +25,13 @@ public struct ReaderToastsView: View {
             }
 #endif
         }
-#if os(iOS)
-        .padding(.horizontal, 16)
-#else
-        .padding(.horizontal, 8)
-#endif
     }
     
     @ViewBuilder
     private var barsContent: some View {
+        // TODO: this kind of id: is bad... should be done like ToolbarItemGroup stuff
         ForEach(Array(bars.enumerated()), id: \.offset) { _, view in
             view
-//                .frame(maxWidth: 650)
         }
     }
 }
