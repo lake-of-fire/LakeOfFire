@@ -1,5 +1,4 @@
 import SwiftUI
-import LakeKit
 
 public struct ReaderModeButtonBar: View {
     @EnvironmentObject private var readerContent: ReaderContent
@@ -8,21 +7,20 @@ public struct ReaderModeButtonBar: View {
     public init() { }
     
     public var body: some View {
-        //        ZStack {
-        HStack {
-            ReaderModeButton()
-//                .padding(.horizontal, 44)
-                .padding(.leading, 5)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            
-            DismissButton(.xMark) {
+        ReaderToastBar(
+            isPresented: {
+                guard let content = readerContent.content else { return false }
+                return readerModeViewModel.isReaderModeButtonBarVisible(content: content)
+            },
+            onDismiss: {
                 Task { @MainActor in
                     guard let content = readerContent.content else { return }
                     try await readerModeViewModel.hideReaderModeButtonBar(content: content)
                 }
+            }) {
+                ReaderModeButton()
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
             }
-        }
-        .padding(2)
     }
 }
