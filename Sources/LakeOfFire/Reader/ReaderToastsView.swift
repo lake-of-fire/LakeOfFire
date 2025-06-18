@@ -15,12 +15,16 @@ public struct ReaderToastsView: View {
         Group {
 #if os(iOS)
             if horizontalSizeClass == .compact {
-                VStack(spacing: 8) { barsContent }
+                VStack(spacing: 0) {
+                    barsContent
+                }
             } else {
-                HStack(spacing: 8) { barsContent }
+                HStack(spacing: 0) {
+                    barsContent
+                }
             }
 #else
-            HStack(spacing: 8) {
+            HStack(spacing: 0) {
                 barsContent
             }
 #endif

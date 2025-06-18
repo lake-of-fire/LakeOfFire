@@ -45,6 +45,12 @@ public struct ReaderToastBar<Content: View>: View {
                 .shadow(radius: 2)
                 Spacer(minLength: 0)
             }
+#if os(iOS)
+            .padding(.horizontal, 4)
+#else
+            .padding(.horizontal, 4)
+#endif
+            .padding(.vertical, 4)
         }
     }
 }
