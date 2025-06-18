@@ -23,20 +23,26 @@ public struct ReaderToastBar<Content: View>: View {
                 Spacer(minLength: 0)
                 HStack(spacing: 0) {
                     content
+#if os(macOS)
                         .padding(.leading, 8)
-                        .padding(.trailing, onDismiss == nil ? 8 : 16)
+#elseif os(iOS)
+                        .padding(.leading, 4)
+#endif
+                        .padding(.trailing, onDismiss == nil ? 4 : 4)
 
                     if let onDismiss {
                         Spacer(minLength: 0)
                         DismissButton(.xMark) {
-                            onDismiss()
+                            withAnimation {
+                                onDismiss()
+                            }
                         }
                     }
                 }
                 .padding(2)
                 .background(.regularMaterial)
                 .clipShape(Capsule())
-                .shadow(radius: 4)
+                .shadow(radius: 2)
                 Spacer(minLength: 0)
             }
         }
