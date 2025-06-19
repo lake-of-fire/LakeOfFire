@@ -3,22 +3,22 @@ import LakeKit
 
 /// Capsule-shaped toast container reused by multiple bars.
 public struct ReaderToastBar<Content: View>: View {
-    private let isPresented: () -> Bool
+    @Binding private var isPresented: Bool
     private let onDismiss: (() -> Void)?
     private let content: Content
-
+    
     public init(
-        isPresented: @escaping () -> Bool,
+        isPresented: Binding<Bool>,
         onDismiss: (() -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
-        self.isPresented = isPresented
+        self._isPresented = isPresented
         self.onDismiss = onDismiss
         self.content = content()
     }
     
     public var body: some View {
-        if isPresented() {
+        if isPresented {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(spacing: 0) {
@@ -29,12 +29,13 @@ public struct ReaderToastBar<Content: View>: View {
                         .padding(.leading, 4)
 #endif
                         .padding(.trailing, onDismiss == nil ? 4 : 4)
-
-                    if let onDismiss {
+                    
+                    if onDismiss != nil {
                         Spacer(minLength: 0)
                         DismissButton(.xMark) {
                             withAnimation {
-                                onDismiss()
+                                isPresented = false
+                                onDismiss?()
                             }
                         }
                     }
