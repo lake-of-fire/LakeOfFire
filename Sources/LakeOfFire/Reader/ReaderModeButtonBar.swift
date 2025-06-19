@@ -29,7 +29,6 @@ public struct ReaderModeButtonBar<C: ReaderContentProtocol>: View {
     }
 }
 
-@available(iOS 16, macOS 13.0, *)
 public extension ReaderContentProtocol {
     var readerModeButtonBar: some View {
         ReaderModeButtonBar(readerContent: self)
