@@ -175,8 +175,8 @@ const getView = async (file, isCacheWarmer) => {
             //        }
         }
     if (!book) throw new Error('File type not supported')
-    const view = document.createElement('foliate-view')
-    view.dataset.isCache = isCacheWarmer;
+        const view = document.createElement('foliate-view')
+        view.dataset.isCache = isCacheWarmer;
     //if (!isCacheWarmer) {
     document.body.append(view);
     forwardShadowErrors(view.shadowRoot);
@@ -297,7 +297,7 @@ class Reader {
     }
     async open(file) {
         $('#loading-indicator').classList.add('show')
-
+        
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
         this.view.renderer.setAttribute('animated', true)
@@ -618,9 +618,9 @@ class Reader {
         slider.title = `${percent} · ${loc}`
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
             
-        if (this.hasLoadedLastPosition) {
-            this.#postUpdateReadingProgressMessage({ fraction, cfi, reason })
-        }
+            if (this.hasLoadedLastPosition) {
+                this.#postUpdateReadingProgressMessage({ fraction, cfi, reason })
+            }
         
         this.updateNavButtons();
         // Keep percent-jump input in sync with scroll
@@ -699,6 +699,7 @@ class Reader {
         };
         let nav;
         switch (type) {
+                // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'scroll-prev':
                 // In RTL view, left arrow should scroll forward
                 nav = this.isRTL ? this.view.goRight() : this.view.goLeft();
@@ -847,6 +848,15 @@ window.loadLastPosition = async ({ cfi }) => {
 window.refreshBookReadingProgress = function (articleReadingProgress) {
     globalThis.reader.markedAsFinished = !!articleReadingProgress.articleMarkedAsFinished;
     globalThis.reader.updateNavButtons();
+}
+
+window.nextSection = async () => {
+    const btn = globalThis.reader?.buttons?.next;
+    if (btn && btn.offsetParent !== null && getComputedStyle(btn).visibility !== 'hidden') {
+        btn.click();
+    } else {
+        await globalThis.reader?.view?.renderer?.nextSection?.();
+    }
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
