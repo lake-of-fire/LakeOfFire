@@ -593,39 +593,6 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
-        
-        // TODO: Should also offer "end" if last non-glossary/backmatter section
-        if (this.view.renderer.atEnd) {
-            doc.getElementById('manabi-finished-reading-book-container')?.classList.remove('manabi-hidden')
-        } else {
-            doc.getElementById('manabi-next-chapter-button')?.classList.remove('manabi-hidden')
-        }
-        if (!this.view.renderer.atStart) {
-            doc.getElementById('manabi-previous-chapter-button')?.classList.remove('manabi-hidden')
-        }
-        
-        // Add event listeners for the previous and next buttons
-        doc.getElementById('manabi-previous-chapter-button')?.addEventListener('click', function () {
-            this.view.renderer.prevSection()
-        }.bind(this))
-        doc.getElementById('manabi-next-chapter-button')?.addEventListener('click', function () {
-            this.view.renderer.nextSection()
-        }.bind(this))
-        
-        // Reorder buttons based on the writing mode and direction
-        const container = doc.getElementById('manabi-chapter-navigation-buttons-container');
-        const prevButton = doc.getElementById('manabi-previous-chapter-button');
-        const nextButton = doc.getElementById('manabi-next-chapter-button');
-        const bookDir = this.view.renderer.bookDir;
-        if (bookDir === 'rtl') {
-            if (prevButton && prevButton.nextElementSibling === nextButton) {
-                container.insertBefore(nextButton, prevButton);
-            }
-        } else {
-            if (nextButton && nextButton.nextElementSibling === prevButton) {
-                container.insertBefore(prevButton, nextButton);
-            }
-        }
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi, reason }) => {

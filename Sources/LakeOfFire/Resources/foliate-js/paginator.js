@@ -971,7 +971,6 @@ export class Paginator extends HTMLElement {
             this.start - size, this.end - size, this.#getRectMapper())
     }
     #afterScroll(reason) {
-            console.log("after scroll")
         if (this.#isCacheWarmer) {
             return;
         }

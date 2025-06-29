@@ -11,7 +11,7 @@ public struct ReaderModeButtonBar<C: ReaderContentProtocol>: View {
     }
     
     public var body: some View {
-        let _ = Self._printChanges()
+//        let _ = Self._printChanges()
         ReaderToastBar(
             isPresented: .constant({
                 return readerModeViewModel.isReaderModeButtonBarVisible(content: readerContent)
@@ -26,6 +26,7 @@ public struct ReaderModeButtonBar<C: ReaderContentProtocol>: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }
+        .background(.green.opacity(0.5))
     }
 }
 
