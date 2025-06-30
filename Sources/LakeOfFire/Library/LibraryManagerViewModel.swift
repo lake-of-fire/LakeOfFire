@@ -98,6 +98,7 @@ public extension View {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
+@MainActor
 public class LibraryManagerViewModel: NSObject, ObservableObject {
     public static let shared = LibraryManagerViewModel()
     
@@ -141,9 +142,11 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                     .map { _ in }
                     .receive(on: RunLoop.main)
                     .handleEvents(receiveOutput: { [weak self] changes in
-                        self?.exportedOPML = nil
-                        self?.exportedOPMLFileURL = nil
-                        self?.exportOPMLTask?.cancel()
+                        Task { @MainActor [weak self] in
+                            self?.exportedOPML = nil
+                            self?.exportedOPMLFileURL = nil
+                            self?.exportOPMLTask?.cancel()
+                        }
                     })
                     .debounce(for: .seconds(2), scheduler: libraryDataQueue)
                     .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in

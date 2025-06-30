@@ -22,6 +22,7 @@ public enum ReaderFileManagerError: Swift.Error {
 //    static let documents = Self(path: "Documents")
 //}
 
+@MainActor
 class CloudDriveSyncStatusModel: ObservableObject {
     @Published var status: CloudDriveSyncStatus = .loadingStatus
     private var refreshTask: Task<Void, Never>? = nil
@@ -93,9 +94,22 @@ public class ReaderFileManager: ObservableObject {
     
     private var hasInitializedUbiquityContainerIdentifier = false
     
-    /*@MainActor*/ @Published public var cloudDrive: CloudDrive?
+    /*@MainActor*/ public var cloudDrive: CloudDrive? {
+        didSet {
+            Task { @MainActor in
+                objectWillChange.send()
+            }
+        }
+    }
     //    /*@MainActor*/ @Published public var legacyCloudDrive: CloudDrive?
-    /*@MainActor*/ @Published public var localDrive: CloudDrive?
+    /*@MainActor*/ public var localDrive: CloudDrive? {
+        didSet {
+            Task { @MainActor in
+                objectWillChange.send()
+            }
+        }
+    }
+    
     public var ubiquityContainerIdentifier: String? = nil {
         didSet {
             if hasInitializedUbiquityContainerIdentifier, oldValue != ubiquityContainerIdentifier {
