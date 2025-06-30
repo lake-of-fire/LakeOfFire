@@ -92,7 +92,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
             Task { @RealmBackgroundActor in
                 guard let content = try await contentRef?.resolveOnBackgroundActor() as? HistoryRecord else { return }
-                await content.realm?.asyncRefresh()
+//                await content.realm?.asyncRefresh()
                 try await content.realm?.asyncWrite {
                     content.lastVisitedAt = Date()
                     content.refreshChangeMetadata(explicitlyModified: true)

@@ -14,21 +14,21 @@ public struct ReaderConsoleLogsUserScript {
         if (location.protocol !== "blob:" && location.protocol !== "ebook:") {
             window.onerror = function (msg, source, lineno, colno, error) {
                 window.webkit.messageHandlers.readerOnError?.postMessage({
-                    "message": msg,
-                    "source": source,
-                    "lineno": lineno,
-                    "colno": colno,
-                    "error": event.reason?.stack ?? String(event.reason)
+                    "message": String(msg),
+                    "source": source != null ? String(source) : null,
+                    "lineno": lineno != null ? Number(lineno) : null,
+                    "colno": colno != null ? Number(colno) : null,
+                    "error": (error && error.stack) ? String(error.stack) : String(error)
                 });
             };
-
+        
             window.onunhandledrejection = function (event) {
                 window.webkit.messageHandlers.readerOnError?.postMessage({
-                    message: event.reason?.message ?? "Unhandled rejection",
-                    source: null,
-                    lineno: null,
-                    colno: null,
-                    error: event.reason?.stack ?? String(event.reason)
+                    "message": event.reason && event.reason.message ? String(event.reason.message) : "Unhandled rejection",
+                    "source": null,
+                    "lineno": null,
+                    "colno": null,
+                    "error": (event.reason && event.reason.stack) ? String(event.reason.stack) : String(event.reason)
                 });
             };
         }
@@ -37,26 +37,28 @@ public struct ReaderConsoleLogsUserScript {
     private static let logScript = """
         (function() {
             let old = {};
-
+    
             let appLog = function(severity, args) {
+                const safeArgs = Array.from(args).map(arg => {
+                    const t = typeof arg;
+                    return (arg === null || t === "string" || t === "number" || t === "boolean") ? arg : String(arg);
+                });
                 window.webkit.messageHandlers.readerConsoleLog.postMessage({
                     "severity": severity,
-                    "arguments": (args.length < 2) ? args[0] : Array.from(args)
+                    "arguments": (safeArgs.length < 2) ? safeArgs[0] : safeArgs
                 });
             };
-
+    
             ["log", "debug", "info", "warn", "error"].forEach(function(fn) {
                 old[fn] = console[fn];
-
                 console[fn] = function() {
                     old[fn].apply(null, arguments);
-
                     appLog(fn, arguments);
                 };
             });
         })();
     """
-
+    
     public init() { }
     
     public var userScript: WebViewUserScript {

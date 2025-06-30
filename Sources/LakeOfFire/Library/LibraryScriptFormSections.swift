@@ -4,6 +4,8 @@ import RealmSwift
 import RealmSwiftGaps
 import SwiftUIWebView
 
+let libraryScriptFormSectionsQueue = DispatchQueue(label: "LibraryScriptFormSections")
+
 @MainActor
 class LibraryScriptFormSectionsViewModel: ObservableObject {
     var script: UserScript? {
@@ -30,6 +32,8 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
         }
     }
     
+    @Published var allowedDomainIDs: [UUID]? = nil
+
     @Published var scriptTitle = ""
     @Published var scriptText = ""
     @Published var scriptEnabled = false
@@ -143,6 +147,12 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     
     @MainActor
     func refresh() {
+        if let allowedDomainIDs = script?.allowedDomainIDs {
+            self.allowedDomainIDs = Array(allowedDomainIDs)
+        } else {
+            allowedDomainIDs = nil
+        }
+        
         scriptTitle = script?.title ?? ""
         scriptText = script?.script ?? ""
         scriptEnabled = !(script?.isArchived ?? true || script?.isDeleted ?? true)
@@ -225,11 +235,6 @@ struct LibraryScriptFormSections: View {
         return readerPreviewHeight
     }
     
-    func userScriptSection(script: UserScript) -> some View {
-        Group {
-        }
-    }
-    
     var body: some View {
         if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL)  {
             Section("Synced") {
@@ -271,8 +276,8 @@ struct LibraryScriptFormSections: View {
         }
         Section(header: Text("Allowed Domains"), footer: Text("Top-level hostnames of domains this script is allowed to run on. No support for wildcards or subdomains. All subdomains are matched against their top-level parent domain. Leave empty for access to all domains.").font(.footnote).foregroundColor(.secondary)) {
             // TODO: Cache allowedDomains in a subview struct
-            ForEach(script.getAllowedDomains() ?? []) { (domain: UserScriptAllowedDomain) in
-                UserScriptAllowedDomainCell(domain: domain)
+            ForEach(viewModel.allowedDomainIDs ?? [], id: \.self) { (domainID: UUID) in
+                UserScriptAllowedDomainCell(domainID: domainID)
                     .disabled(!script.isUserEditable)
                     .deleteDisabled(!script.isUserEditable)
                     .contextMenu {
@@ -280,7 +285,7 @@ struct LibraryScriptFormSections: View {
                             Button(role: .destructive) {
                                 Task { @MainActor in
                                     try await Realm.asyncWrite(ThreadSafeReference(to: script), configuration: LibraryDataManager.realmConfiguration) { _, script in
-                                        if let idx = script.getAllowedDomains()?.index(of: domain) {
+                                        if let idx = script.allowedDomainIDs.index(of: domainID) {
                                             script.allowedDomainIDs.remove(at: idx)
                                         }
                                     }
@@ -302,7 +307,7 @@ struct LibraryScriptFormSections: View {
                 Label("Add Domain", systemImage: "plus.circle")
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if script.allowedDomainIDs.isEmpty {
+            if viewModel.allowedDomainIDs?.isEmpty ?? false {
                 Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
             }
         }
