@@ -7,6 +7,7 @@ fileprivate actor ReaderContentCellActor {
     static var shared = ReaderContentCellActor()
 }
 
+@MainActor
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil

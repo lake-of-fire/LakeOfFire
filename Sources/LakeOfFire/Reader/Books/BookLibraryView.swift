@@ -8,6 +8,7 @@ import Combine
 import UniformTypeIdentifiers
 import LakeKit
 
+@MainActor
 public class BookLibraryModalsModel: ObservableObject {
     @Published var showingEbookCatalogs = false
     @Published var showingAddCatalog = false
@@ -221,7 +222,7 @@ public struct BookLibraryView: View {
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
             guard let loadedFiles = viewModel.loadedFiles else { return }
             Task { @RealmBackgroundActor in
-                guard !filteredFileIDs.isEmpty, let realmConfiguration = readerContentListViewModel.realmConfiguration else { return }
+                guard !filteredFileIDs.isEmpty, let realmConfiguration = await readerContentListViewModel.realmConfiguration else { return }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
                 try await loadedFiles(filteredFileIDs.compactMap { realm.object(ofType: ContentFile.self, forPrimaryKey: $0) })
             }

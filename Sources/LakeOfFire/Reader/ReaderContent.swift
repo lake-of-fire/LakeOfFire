@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
     @Published public var pageURL = URL(string: "about:blank")!

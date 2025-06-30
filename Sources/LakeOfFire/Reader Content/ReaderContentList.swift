@@ -20,6 +20,7 @@ public actor ReaderContentListActor: CachedRealmsActor {
     }
 }
 
+@MainActor
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
     @Published var confirmDeletionOf: (any DeletableReaderContent)?
@@ -77,6 +78,7 @@ public enum ReaderContentSortOrder {
     case lastVisitedAt
 }
 
+@MainActor
 public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObject {
     public init() { }
     
@@ -470,7 +472,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             do {
                 if !readerPageURL.isNativeReaderView,
                    let entrySelection = entrySelection,
-                   let idx = viewModel.filteredContentIDs.firstIndex(of: entrySelection),
+                   let idx = await viewModel.filteredContentIDs.firstIndex(of: entrySelection),
                    idx < filteredContentURLs.count,
                    !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     async let task = { @MainActor in
@@ -492,7 +494,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                 }
                 //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
                 if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
-                    let contentKey = viewModel.filteredContentIDs[idx]
+                    let contentKey = await viewModel.filteredContentIDs[idx]
                     async let task = { @MainActor in
                         try Task.checkCancellation()
                         self.entrySelection = contentKey

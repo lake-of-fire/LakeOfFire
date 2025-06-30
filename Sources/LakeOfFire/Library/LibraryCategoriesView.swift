@@ -12,6 +12,7 @@ import Combine
 
 let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
 
+@MainActor
 fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @Published var categories: [FeedCategory]? = nil
     @Published var archivedCategories: [FeedCategory]? = nil
@@ -31,7 +32,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 .map { _ in }
                 .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    self?.refreshData()
+                    Task { @MainActor [weak self] in
+                        self?.refreshData()
+                    }
                 })
                 .store(in: &cancellables)
             
@@ -41,7 +44,9 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 .map { _ in }
                 .debounce(for: .seconds(0.3), scheduler: libraryCategoriesQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
-                    self?.refreshData()
+                    Task { @MainActor [weak self] in
+                        self?.refreshData()
+                    }
                 })
                 .store(in: &cancellables)
         }

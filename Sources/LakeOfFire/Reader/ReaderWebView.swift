@@ -7,6 +7,7 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
+@MainActor
 class NavigationTaskManager: ObservableObject {
     @Published var onNavigationCommittedTask: Task<Void, Error>?
     @Published var onNavigationFinishedTask: Task<Void, Error>?
