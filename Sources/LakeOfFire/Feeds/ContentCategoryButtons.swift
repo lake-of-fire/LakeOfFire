@@ -39,7 +39,9 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .map { _ in }
                 .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    self?.objectWillChange.send() // Refresh view for LibraryConfiguration's categories
+                    Task { @MainActor [weak self] in
+                        self?.objectWillChange.send() // Refresh view for LibraryConfiguration's categories
+                    }
                 })
                 .store(in: &cancellables)
         }
