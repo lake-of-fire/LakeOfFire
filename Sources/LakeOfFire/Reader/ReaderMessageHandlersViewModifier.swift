@@ -311,7 +311,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.readerContent = readerContent
                     readerMessageHandlers.navigator = navigator
                 }
-                
+            }
+            .task(id: webViewMessageHandlers.handlers.keys) {
                 readerMessageHandlers?.webViewMessageHandlers.merge(handlers: webViewMessageHandlers)
             }
     }
