@@ -4,33 +4,35 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 
-internal struct ReaderMessageHandlersViewModifier: ViewModifier {
-    var forceReaderModeWhenAvailable = false
+fileprivate class ReaderMessageHandlers: Identifiable {
+    var forceReaderModeWhenAvailable: Bool
     
-    @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "scrolled"
+    var scriptCaller: WebViewScriptCaller
+    var readerViewModel: ReaderViewModel
+    var readerModeViewModel: ReaderModeViewModel
+    var readerContent: ReaderContent
+    var navigator: WebViewNavigator
     
-    @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
-    @EnvironmentObject internal var readerViewModel: ReaderViewModel
-    @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
-    @EnvironmentObject internal var readerContent: ReaderContent
-    @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
-    @Environment(\.webViewMessageHandlers) private var webViewMessageHandlers
+    let webViewMessageHandlers = WebViewMessageHandlers()
     
-    func body(content: Content) -> some View {
-        content
-            .environment(\.webViewMessageHandlers, webViewMessageHandlers.merging(readerMessageHandlers()) { (current, new) in
-                return { message in
-                    await current(message)
-                    await new(message)
-                }
-            })
-    }
-}
-
-internal extension ReaderMessageHandlersViewModifier {
-    func readerMessageHandlers() -> [String: (WebViewMessage) async -> Void] {
-        return [
-            "readerConsoleLog": { message in
+    init(
+        forceReaderModeWhenAvailable: Bool,
+        scriptCaller: WebViewScriptCaller,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator
+    ) {
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.scriptCaller = scriptCaller
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerContent = readerContent
+        self.navigator = navigator
+        
+        webViewMessageHandlers.add(handlers: [
+            "readerConsoleLog": { [weak self] message in
+                guard let self else { return }
                 guard let result = ConsoleLogMessage(fromMessage: message) else {
                     return
                 }
@@ -46,7 +48,8 @@ internal extension ReaderMessageHandlersViewModifier {
                     "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
                 )
             },
-            "readerOnError": { message in
+            "readerOnError": { [weak self] message in
+                guard let self else { return }
                 guard let result = ReaderOnErrorMessage(fromMessage: message) else {
                     return
                 }
@@ -56,7 +59,8 @@ internal extension ReaderMessageHandlersViewModifier {
                 
                 Logger.shared.logger.error("[JS] Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
             },
-            "readabilityFramePing": { @MainActor message in
+            "readabilityFramePing": { @MainActor [weak self] message in
+                guard let self else { return }
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {
                     debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
                     return
@@ -66,7 +70,8 @@ internal extension ReaderMessageHandlersViewModifier {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
             },
-            "readabilityModeUnavailable": { @MainActor message in
+            "readabilityModeUnavailable": { @MainActor [weak self] message in
+                guard let self else { return }
                 guard let result = ReaderModeUnavailableMessage(fromMessage: message) else {
                     return
                 }
@@ -95,7 +100,8 @@ internal extension ReaderMessageHandlersViewModifier {
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
             },
-            "readabilityParsed": { @MainActor message in
+            "readabilityParsed": { @MainActor [weak self] message in
+                guard let self else { return }
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
@@ -145,7 +151,8 @@ internal extension ReaderMessageHandlersViewModifier {
                     }
                 }
             },
-            "showReaderView": { @MainActor _ in
+            "showReaderView": { @MainActor [weak self] _ in
+                guard let self else { return }
                 //                let contentURL = readerContent.pageURL
                 //                Task { @MainActor in
                 guard readerContent.pageURL == readerViewModel.state.pageURL else {
@@ -159,9 +166,12 @@ internal extension ReaderMessageHandlersViewModifier {
                 )
                 //                }
             },
-            "showOriginal": { @MainActor _ in
-                Task { @MainActor in
+            "showOriginal": { @MainActor [weak self] _ in
+                guard let self else { return }
+                do {
                     try await showOriginal()
+                } catch {
+                    print(error)
                 }
             },
             //            "youtubeCaptions": { message in
@@ -170,8 +180,9 @@ internal extension ReaderMessageHandlersViewModifier {
             //                    debugPrint(result)
             //                }
             //            },
-            "rssURLs": { @MainActor message in
-                Task { @MainActor in
+            "rssURLs": { @MainActor [weak self] message in
+                guard let self else { return }
+                do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
                     guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let content = try await ReaderViewModel.getContent(forURL: windowURL) else { return }
                     let pairs = result.rssURLs.prefix(10)
@@ -185,31 +196,40 @@ internal extension ReaderMessageHandlersViewModifier {
                         content.isRSSAvailable = !content.rssURLs.isEmpty
                         content.refreshChangeMetadata(explicitlyModified: true)
                     }
+                } catch {
+                    print(error)
                 }
             },
-            "pageMetadataUpdated": { @MainActor message in
-                Task { @MainActor in
+            "pageMetadataUpdated": { @MainActor [weak self] message in
+                guard let self else { return }
+                do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
                     guard result.url == readerViewModel.state.pageURL else { return }
                     try await readerViewModel.pageMetadataUpdated(title: result.title, author: result.author)
+                } catch {
+                    print(error)
                 }
             },
-            "imageUpdated": { @MainActor message in
-                Task(priority: .utility) { @RealmBackgroundActor in
+            "imageUpdated": { @RealmBackgroundActor [weak self] message in
+                guard let self else { return }
+                do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
                     guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
                     let contents = try await ReaderContentLoader.loadAll(url: url)
                     for content in contents {
                         guard content.imageUrl != result.newImageURL else { continue }
-//                        await content.realm?.asyncRefresh()
+                        //                        await content.realm?.asyncRefresh()
                         try await content.realm?.asyncWrite {
                             content.imageUrl = result.newImageURL
                             content.refreshChangeMetadata(explicitlyModified: true)
                         }
                     }
+                } catch {
+                    print(error)
                 }
             },
-            "ebookViewerInitialized": { @MainActor message in
+            "ebookViewerInitialized": { @MainActor [weak self] message in
+                guard let self else { return }
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme,
                    (scheme == "ebook" || scheme == "ebook-url"),
@@ -221,26 +241,27 @@ internal extension ReaderMessageHandlersViewModifier {
                             "window.loadEBook({ url, layoutMode })",
                             arguments: [
                                 "url": loaderURL.absoluteString,
-                                "layoutMode": ebookViewerLayout
+                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "scrolled"
                             ]
                         )
                     }
                 }
             },
-            "videoStatus": { @MainActor message in
-                Task(priority: .utility) { @RealmBackgroundActor in
+            "videoStatus": { @RealmBackgroundActor [weak self] message in
+                guard let self else { return }
+                do {
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
                     //                    debugPrint("!!", result)
                     if let pageURL = result.pageURL {
                         let mediaStatus = try await MediaStatus.getOrCreate(url: pageURL)
                     }
+                } catch {
+                    print(error)
                 }
             }
-        ]
+        ])
     }
-}
-
-fileprivate extension ReaderMessageHandlersViewModifier {
+    
     // MARK: Readability
     
     @MainActor
@@ -252,5 +273,46 @@ fileprivate extension ReaderMessageHandlersViewModifier {
             }
         }
         navigator.reload()
+    }
+}
+
+internal struct ReaderMessageHandlersViewModifier: ViewModifier {
+    var forceReaderModeWhenAvailable = false
+    
+    @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "scrolled"
+    
+    @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
+    @EnvironmentObject internal var readerViewModel: ReaderViewModel
+    @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject internal var readerContent: ReaderContent
+    @EnvironmentObject internal var webViewMessageHandlers: WebViewMessageHandlers
+    @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+    
+    @State private var readerMessageHandlers: ReaderMessageHandlers?
+    
+    func body(content: Content) -> some View {
+        content
+            .environmentObject(readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
+            .task { @MainActor in
+                if readerMessageHandlers == nil {
+                    readerMessageHandlers = ReaderMessageHandlers(
+                        forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+                        scriptCaller: scriptCaller,
+                        readerViewModel: readerViewModel,
+                        readerModeViewModel: readerModeViewModel,
+                        readerContent: readerContent,
+                        navigator: navigator
+                    )
+                } else if let readerMessageHandlers {
+                    readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+                    readerMessageHandlers.scriptCaller = scriptCaller
+                    readerMessageHandlers.readerViewModel = readerViewModel
+                    readerMessageHandlers.readerModeViewModel = readerModeViewModel
+                    readerMessageHandlers.readerContent = readerContent
+                    readerMessageHandlers.navigator = navigator
+                }
+                
+                readerMessageHandlers?.webViewMessageHandlers.merge(handlers: webViewMessageHandlers)
+            }
     }
 }
