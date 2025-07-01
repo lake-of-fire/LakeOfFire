@@ -285,14 +285,14 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerContent: ReaderContent
-    @EnvironmentObject internal var webViewMessageHandlers: WebViewMessageHandlers
+    @Environment(\.webViewMessageHandlers) internal var webViewMessageHandlers
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     
     func body(content: Content) -> some View {
         content
-            .environmentObject(readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
+            .environment(\.webViewMessageHandlers, readerMessageHandlers?.webViewMessageHandlers ?? webViewMessageHandlers)
             .task { @MainActor in
                 if readerMessageHandlers == nil {
                     readerMessageHandlers = ReaderMessageHandlers(
