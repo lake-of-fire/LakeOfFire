@@ -165,10 +165,10 @@ public struct Reader: View {
     var forceReaderModeWhenAvailable = false
     var bounces = true
     let schemeHandlers: [(WKURLSchemeHandler, String)]
-    var onNavigationCommitted: ((WebViewState) async throws -> Void)?
-    var onNavigationFinished: ((WebViewState) -> Void)?
-    var onNavigationFailed: ((WebViewState) -> Void)?
-    var onURLChanged: ((WebViewState) async throws -> Void)?
+    let onNavigationCommitted: ((WebViewState) async throws -> Void)?
+    let onNavigationFinished: ((WebViewState) -> Void)?
+    let onNavigationFailed: ((WebViewState) -> Void)?
+    let onURLChanged: ((WebViewState) async throws -> Void)?
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?

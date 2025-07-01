@@ -1,12 +1,16 @@
 import SwiftUI
 
-@MainActor
-internal class NavigationTaskManager: ObservableObject {
-    @Published var onNavigationCommittedTask: Task<Void, Error>?
-    @Published var onNavigationFinishedTask: Task<Void, Error>?
-    @Published var onNavigationFailedTask: Task<Void, Error>?
-    @Published var onURLChangedTask: Task<Void, Error>?
+internal class NavigationTaskManager: Identifiable {
+    @MainActor
+    var onNavigationCommittedTask: Task<Void, Error>?
+    @MainActor
+    var onNavigationFinishedTask: Task<Void, Error>?
+    @MainActor
+    var onNavigationFailedTask: Task<Void, Error>?
+    @MainActor
+    var onURLChangedTask: Task<Void, Error>?
     
+    @MainActor
     func startOnNavigationCommitted(task: @escaping () async throws -> Void) {
         onNavigationCommittedTask?.cancel()
         onNavigationCommittedTask = Task { @MainActor in
@@ -20,6 +24,7 @@ internal class NavigationTaskManager: ObservableObject {
         }
     }
     
+    @MainActor
     func startOnNavigationFinished(task: @escaping () async -> Void) {
         onNavigationFinishedTask?.cancel()
         onNavigationFinishedTask = Task { @MainActor in
@@ -31,6 +36,7 @@ internal class NavigationTaskManager: ObservableObject {
         }
     }
     
+    @MainActor
     func startOnNavigationFailed(task: @escaping () async -> Void) {
         onNavigationFailedTask?.cancel()
         onNavigationFailedTask = Task { @MainActor in
@@ -42,6 +48,7 @@ internal class NavigationTaskManager: ObservableObject {
         }
     }
     
+    @MainActor
     func startOnURLChanged(task: @escaping () async -> Void) {
         Task { @MainActor in
             onURLChangedTask?.cancel()
