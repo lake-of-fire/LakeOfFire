@@ -51,7 +51,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         return [
             Readability.shared.userScript,
             ReadabilityImagesUserScript.shared.userScript,
-            ReaderConsoleLogsUserScript.shared.userScript,
+//            ReaderConsoleLogsUserScript.shared.userScript,
 //            ManabiReaderUserScript().userScript,
 //            YoutubeAdBlockUserScript.userScript,
 //            YoutubeAdSkipUserScript.userScript,

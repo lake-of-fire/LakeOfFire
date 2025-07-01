@@ -201,7 +201,7 @@ internal extension ReaderMessageHandlersViewModifier {
                     let contents = try await ReaderContentLoader.loadAll(url: url)
                     for content in contents {
                         guard content.imageUrl != result.newImageURL else { continue }
-                        await content.realm?.asyncRefresh()
+//                        await content.realm?.asyncRefresh()
                         try await content.realm?.asyncWrite {
                             content.imageUrl = result.newImageURL
                             content.refreshChangeMetadata(explicitlyModified: true)

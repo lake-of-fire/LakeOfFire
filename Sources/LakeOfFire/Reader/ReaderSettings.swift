@@ -77,7 +77,7 @@ public struct DataSettingsForm: View {
                     Button("Clear Unsaved Web History", role: .destructive) {
                         Task { @RealmBackgroundActor in
                              let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                            await realm.asyncRefresh()
+//                            await realm.asyncRefresh()
                             try await realm.asyncWrite {
                                 for record in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
                                     record.isDeleted = true
@@ -99,7 +99,7 @@ public struct DataSettingsForm: View {
                     Button("Clear Unsaved RSS Feed Entries", role: .destructive) {
                         Task { @RealmBackgroundActor in
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
-                            await realm.asyncRefresh()
+//                            await realm.asyncRefresh()
                             try await realm.asyncWrite {
                                 for entry in realm.objects(FeedEntry.self).where({ !$0.isDeleted }) {
                                     entry.isDeleted = true

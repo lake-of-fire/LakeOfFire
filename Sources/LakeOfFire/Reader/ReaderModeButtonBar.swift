@@ -26,7 +26,6 @@ public struct ReaderModeButtonBar<C: ReaderContentProtocol>: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }
-        .background(.green.opacity(0.5))
     }
 }
 

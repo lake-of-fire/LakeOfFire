@@ -86,7 +86,7 @@ public struct EbookFileManager {
             
             if !toUpdateWithImage.isEmpty || !toUpdateWithTitle.isEmpty || !toUpdateWithAuthor.isEmpty || !toUpdateAsPhysicalMedia.isEmpty {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                await realm.asyncRefresh()
+//                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     for (contentFile, imageURL) in toUpdateWithImage {
                         contentFile.imageUrl = imageURL

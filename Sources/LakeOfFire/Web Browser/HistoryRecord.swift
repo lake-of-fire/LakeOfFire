@@ -24,7 +24,7 @@ extension DeletableReaderContent {
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
             guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-            await content.realm?.asyncRefresh()
+//            await content.realm?.asyncRefresh()
             try await content.realm?.asyncWrite {
                 //            for videoStatus in realm.objects(VideoS)
                 content.isDeleted = true

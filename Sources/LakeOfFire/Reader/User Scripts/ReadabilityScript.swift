@@ -56,7 +56,7 @@ public struct Readability {
             source: userScriptSource,
 //            injectionTime: .atDocumentStart,
             injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false,
+            forMainFrameOnly: true,//false,
             in: .page,
             allowedDomains: Set()
         )
