@@ -106,11 +106,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             try Task.checkCancellation()
             refreshSettingsInWebView(content: content, newState: newState)
-            refreshTitleInWebView(content: content, newState: newState)
             
-            if let completion = completion {
-                completion(newState)
-            }
+            completion?(newState)
         }
     }
     

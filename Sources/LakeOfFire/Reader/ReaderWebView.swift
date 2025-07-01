@@ -98,12 +98,6 @@ public struct ReaderWebView: View {
     
     @StateObject private var navigationTaskManager = NavigationTaskManager()
     
-    private var navigationTitle: String? {
-        guard let content = readerContent.content else { return nil }
-        guard !content.isInvalidated else { return nil }
-        return content.titleForDisplay
-    }
-    
     public init(
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
