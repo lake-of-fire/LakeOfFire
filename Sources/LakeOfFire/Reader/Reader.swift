@@ -153,7 +153,7 @@ public extension WebViewNavigator {
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
             if let readerModeViewModel {
                 let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
-                readerModeViewModel.isReaderModeLoading = (previouslyLoadedContent ?? content).isReaderModeByDefault
+                readerModeViewModel.readerModeLoading((previouslyLoadedContent ?? content).isReaderModeByDefault)
             }
             load(URLRequest(url: url))
         }

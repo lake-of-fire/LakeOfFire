@@ -104,7 +104,6 @@ public struct ReaderWebView: View {
         return content.titleForDisplay
     }
     
-
     public init(
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
