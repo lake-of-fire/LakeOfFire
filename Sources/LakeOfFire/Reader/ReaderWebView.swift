@@ -110,12 +110,10 @@ fileprivate class ReaderWebViewHandler {
         navigationTaskManager.startOnURLChanged { @MainActor in
             do {
                 try await self.handleNewURL(state: state)
+            } catch is CancellationError {
+//                print("onURLChanged task was cancelled.")
             } catch {
-                if Task.isCancelled {
-                    print("onURLChanged task was cancelled.")
-                } else {
-                    print("Error during onURLChanged: \(error)")
-                }
+                print("Error during onURLChanged: \(error)")
             }
         }
     }
@@ -134,7 +132,6 @@ public struct ReaderWebView: View {
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
     
-    @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
@@ -188,6 +185,8 @@ public struct ReaderWebView: View {
                     scriptCaller: scriptCaller,
                     userScripts: readerViewModel.allScripts,
                     state: $readerViewModel.state,
+                    ebookURLSchemeHandler: ebookURLSchemeHandler,
+                    readerFileURLSchemeHandler: readerFileURLSchemeHandler,
                     handler: handler
                 )
             } else {
@@ -251,11 +250,11 @@ fileprivate struct ReaderWebViewInternal: View {
     var scriptCaller: WebViewScriptCaller
     var userScripts: [WebViewUserScript]
     @Binding var state: WebViewState
+    var ebookURLSchemeHandler: EbookURLSchemeHandler
+    var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     var handler: ReaderWebViewHandler
-    
+
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
-    @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
-    @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     

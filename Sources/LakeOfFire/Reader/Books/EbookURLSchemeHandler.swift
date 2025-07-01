@@ -156,6 +156,11 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
         
         guard let url = urlSchemeTask.request.url else { return }
+        guard let readerFileManager else {
+            print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
+            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+            return
+        }
         
         if url.path == "/process-text" {
             if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
@@ -261,7 +266,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             } else if
                 let path = loadPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                 let fileURL = URL(string: "ebook://ebook/load\(path)"),
-                let readerFileManager = readerFileManager,
                 // Security check.
                 urlSchemeTask.request.mainDocumentURL == fileURL {
                 Task {
