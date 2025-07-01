@@ -51,7 +51,7 @@ fileprivate actor EBookProcessingActor {
         return respText
     }
 }
-    
+
 fileprivate actor ZIPToEbookActor {
     static let shared = ZIPToEbookActor()
     
