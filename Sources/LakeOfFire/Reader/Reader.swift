@@ -163,6 +163,7 @@ public extension WebViewNavigator {
 public struct Reader: View {
     var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
+//    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
@@ -178,6 +179,7 @@ public struct Reader: View {
     public init(
         persistentWebViewID: String? = nil,
         forceReaderModeWhenAvailable: Bool = false,
+//        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
@@ -190,6 +192,7 @@ public struct Reader: View {
     ) {
         self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+//        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
@@ -202,30 +205,41 @@ public struct Reader: View {
     }
     
     public var body: some View {
-        GeometryReader { geo in
-            VStack(spacing: 0) {
-                ReaderWebView(
-                    persistentWebViewID: persistentWebViewID,
-                    obscuredInsets: obscuredInsets,
-                    bounces: bounces,
-                    schemeHandlers: schemeHandlers,
-                    onNavigationCommitted: onNavigationCommitted,
-                    onNavigationFinished: onNavigationFinished,
-                    onNavigationFailed: onNavigationFailed,
-                    onURLChanged: onURLChanged,
-                    hideNavigationDueToScroll: $hideNavigationDueToScroll,
-                    textSelection: $textSelection,
-                    buildMenu: buildMenu
-                )
-                .onChange(of: geo.safeAreaInsets) { safeAreaInsets in
-                    obscuredInsets = safeAreaInsets
-                }
-            }
+        //            VStack(spacing: 0) {
+        ReaderWebView(
+            persistentWebViewID: persistentWebViewID,
+            obscuredInsets: obscuredInsets,
+            bounces: bounces,
+            schemeHandlers: schemeHandlers,
+            onNavigationCommitted: onNavigationCommitted,
+            onNavigationFinished: onNavigationFinished,
+            onNavigationFailed: onNavigationFailed,
+            onURLChanged: onURLChanged,
+            hideNavigationDueToScroll: $hideNavigationDueToScroll,
+            textSelection: $textSelection,
+            buildMenu: buildMenu
+        )
 #if os(iOS)
-            .edgesIgnoringSafeArea([.top, .bottom])
+        .ignoresSafeArea(.all, edges: .all)
 #endif
-            .modifier(ReaderLoadingOverlayModifier())
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .task {
+                        obscuredInsets = geometry.safeAreaInsets
+                    }
+                    .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
+                        obscuredInsets = safeAreaInsets
+                    }
+            }
         }
+        //            }
+        //#if os(iOS)
+        //            .edgesIgnoringSafeArea([.top, .bottom])
+        //            .ignoresSafeArea(.all, edges: [.top, .bottom])
+        //#endif
+//                .ignoresSafeArea(.all, edges: [.top, .bottom])
+        .modifier(ReaderLoadingOverlayModifier())
         .modifier(ReaderMessageHandlersViewModifier(forceReaderModeWhenAvailable: forceReaderModeWhenAvailable))
         .modifier(ReaderStateChangeModifier())
         .modifier(ThemeModifier())
