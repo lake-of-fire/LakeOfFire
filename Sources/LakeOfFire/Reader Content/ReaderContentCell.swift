@@ -20,7 +20,6 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     
     @MainActor
     func load(item: C) async throws {
-//        guard let readingProgressLoader = ReaderContentReadingProgressLoader.readingProgressLoader else { return }
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let imageURL = try await item.imageURLToDisplay()
@@ -31,10 +30,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
-                
                 try await { @MainActor [weak self] in
                     try Task.checkCancellation()
-                    humanReadablePublicationDate
                     self?.title = title
                     self?.imageURL = imageURL
                     self?.humanReadablePublicationDate = humanReadablePublicationDate
