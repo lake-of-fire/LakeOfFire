@@ -85,6 +85,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         guard let readabilityContent else {
+            // FIME: WHY THIS CALLED WHEN LOAD??
             readerModeLoading(false)
             return
         }
@@ -246,12 +247,13 @@ public class ReaderModeViewModel: ObservableObject {
                             "html": transformedContent,
                             "css": Readability.shared.css,
                         ], in: frameInfo)
+                    readerModeLoading(false)
                 } else {
                     navigator?.loadHTML(transformedContent, baseURL: url)
                 }
-                try await { @MainActor in
-                    readerModeLoading(false)
-                }()
+//                try await { @MainActor in
+//                    readerModeLoading(false)
+//                }()
             }()
         }()
     }
@@ -262,30 +264,39 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContent = nil
         readabilityContainerSelector = nil
 //        contentRules = nil
-        
+        try Task.checkCancellation()
+
         guard let content = readerContent.content else {
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
             readerModeLoading(false)
             return
         }
+        try Task.checkCancellation()
+        
         let committedURL = content.url
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
             readerModeLoading(false)
             return
         }
-        
+        try Task.checkCancellation()
+
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
         let isReaderModeVerified = newState.pageURL.isEBookURL || content.isReaderModeByDefault
+        try Task.checkCancellation()
+        
         if isReaderMode != isReaderModeVerified {
             withAnimation {
                 readerModeLoading(isReaderModeVerified)
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
             }
+            try Task.checkCancellation()
         }
-
+        
         if newState.pageURL.isReaderURLLoaderURL {
-            if let readerFileManager = readerFileManager, var html = await content.htmlToDisplay(readerFileManager: readerFileManager) {
+            if let readerFileManager, var html = try await content.htmlToDisplay(readerFileManager: readerFileManager) {
+                try Task.checkCancellation()
+                
                 let currentURL = readerContent.pageURL
                 guard committedURL.matchesReaderURL(currentURL) else {
                     print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
@@ -299,10 +310,12 @@ public class ReaderModeViewModel: ObservableObject {
                     } else {
                         html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
                     }
+                    try Task.checkCancellation()
                     // TODO: Fix content rules... images still load...
 //                    contentRules = contentRulesForReadabilityLoading
+
                     navigator?.loadHTML(html, baseURL: committedURL)
-                    readerModeLoading(false)
+//                    readerModeLoading(false)
                 } else {
                     readabilityContent = html
                     showReaderView(
@@ -311,25 +324,26 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                 }
             } else {
-                navigator?.load(URLRequest(url: committedURL))
-            }
-        } else {
-            if content.isReaderModeByDefault {
-                if content.isReaderModeAvailable {
-//                    contentRules = contentRulesForReadabilityLoading
-                    showReaderView(
-                        readerContent: readerContent,
-                        scriptCaller: scriptCaller
-                    )
-                } else {
-                    readerModeLoading(false)
+                guard let navigator else {
+                    print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
+                    return
                 }
+                navigator.load(URLRequest(url: committedURL))
             }
+//        } else {
+//            debugPrint("# nav commit mid 2..", newState.pageURL, content.isReaderModeAvailable)
+//            if content.isReaderModeByDefault, !content.isReaderModeAvailable {
+//                debugPrint("# on commit, read mode NOT avail, loading false")
+//                readerModeLoading(false)
+//            }
         }
     }
     
     @MainActor
-    public func onNavigationFinished() {
+    public func onNavigationFinished(newState: WebViewState) {
+        if !newState.pageURL.isReaderURLLoaderURL {
+            readerModeLoading(false)
+        }
     }
     
     @MainActor

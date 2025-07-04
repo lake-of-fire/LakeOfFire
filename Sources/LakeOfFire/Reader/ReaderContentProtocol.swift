@@ -180,12 +180,14 @@ public extension ReaderContentProtocol {
     
     // TODO: Refactor to put on background thread
     @MainActor
-    public func htmlToDisplay(readerFileManager: ReaderFileManager) async -> String? {
+    public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
         // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
         if rssContainsFullContent || isFromClipboard {
+            try Task.checkCancellation()
             return html
         } else if url.isReaderFileURL {
             guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
+            try Task.checkCancellation()
             return String(decoding: data, as: UTF8.self)
         }
         return nil

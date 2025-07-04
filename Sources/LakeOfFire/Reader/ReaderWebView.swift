@@ -91,7 +91,7 @@ fileprivate class ReaderWebViewHandler {
     
     func onNavigationFinished(state: WebViewState) {
         navigationTaskManager.startOnNavigationFinished { @MainActor in
-            self.readerModeViewModel.onNavigationFinished()
+            self.readerModeViewModel.onNavigationFinished(newState: state)
             guard let content = self.readerContent.content else { return }
             self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
                 // no external callback here

@@ -101,6 +101,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
             },
             "readabilityParsed": { @MainActor [weak self] message in
+                debugPrint("# reader parsed")
                 guard let self else { return }
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
@@ -121,10 +122,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 guard !url.isNativeReaderView else { return }
+                debugPrint("# SET readabilityContent html")
                 readerModeViewModel.readabilityContent = result.outputHTML
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
+                    debugPrint("# show reade vie", readerModeViewModel.readabilityContent == nil)
                     readerModeViewModel.showReaderView(
                         readerContent: readerContent,
                         scriptCaller: scriptCaller
@@ -150,21 +153,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         content.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
-            },
-            "showReaderView": { @MainActor [weak self] _ in
-                guard let self else { return }
-                //                let contentURL = readerContent.pageURL
-                //                Task { @MainActor in
-                guard readerContent.pageURL == readerViewModel.state.pageURL else {
-                    print("ERROR: showReaderView called with mismatched content URL (\(readerContent.content?.url.absoluteString) vs \(readerViewModel.state.pageURL.absoluteString)")
-                    return
-                }
-                //                    guard readerContent.pageURL == contentURL else { return }
-                readerModeViewModel.showReaderView(
-                    readerContent: readerContent,
-                    scriptCaller: scriptCaller
-                )
-                //                }
             },
             "showOriginal": { @MainActor [weak self] _ in
                 guard let self else { return }

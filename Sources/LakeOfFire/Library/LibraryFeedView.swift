@@ -438,12 +438,7 @@ struct LibraryFeedFormSections: View {
     
     @ViewBuilder private var feedEntryPreviewSection: some View {
         Section {
-            if readerContent.content?.url.absoluteString != "about:blank" {
-                previewReader
-            } else {
-                Text("Enter valid RSS or Atom URL above to preview the first entry's content.")
-                    .foregroundStyle(.secondary)
-            }
+            previewReader
         } header: {
             HStack {
                 Text("Reader Preview")
@@ -488,6 +483,7 @@ struct LibraryFeedFormSections: View {
     private func reinitializeState() {
         readerFeedEntry = nil
         readerViewModel.navigator = webNavigator
+        readerModeViewModel.navigator = webNavigator
         readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
         
         refreshFromOpenGraph()
