@@ -375,12 +375,12 @@ struct LibraryFeedFormSections: View {
         Reader(
             //            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
             bounces: false)
-        .environmentObject(webNavigator)
         .environmentObject(readerContent)
         .environmentObject(readerViewModel)
         .environmentObject(readerModeViewModel)
         .environmentObject(readerLocationBarViewModel)
         .environmentObject(readerMediaPlayerViewModel)
+        .environment(\.webViewNavigator, webNavigator)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .frame(idealHeight: readerPreviewHeight)
         .padding(.horizontal, 15)
@@ -438,7 +438,7 @@ struct LibraryFeedFormSections: View {
     
     @ViewBuilder private var feedEntryPreviewSection: some View {
         Section {
-            if readerViewModel.state.pageURL.absoluteString != "about:blank" {
+            if readerContent.content?.url.absoluteString != "about:blank" {
                 previewReader
             } else {
                 Text("Enter valid RSS or Atom URL above to preview the first entry's content.")
@@ -487,6 +487,7 @@ struct LibraryFeedFormSections: View {
     
     private func reinitializeState() {
         readerFeedEntry = nil
+        readerViewModel.navigator = webNavigator
         readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
         
         refreshFromOpenGraph()
