@@ -101,7 +101,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
             },
             "readabilityParsed": { @MainActor [weak self] message in
-                debugPrint("# reader parsed")
                 guard let self else { return }
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
@@ -122,12 +121,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 guard !url.isNativeReaderView else { return }
-                debugPrint("# SET readabilityContent html")
                 readerModeViewModel.readabilityContent = result.outputHTML
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                    debugPrint("# show reade vie", readerModeViewModel.readabilityContent == nil)
                     readerModeViewModel.showReaderView(
                         readerContent: readerContent,
                         scriptCaller: scriptCaller
