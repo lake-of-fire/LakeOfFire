@@ -55,7 +55,9 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @Published var feedDisplayPublicationDate = false
     
     @Published var feedEntries: [FeedEntry]?
-
+    
+    var isEditing = false
+    
     var cancellables = Set<AnyCancellable>()
     
     @RealmBackgroundActor
@@ -76,7 +78,10 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     switch change {
                     case .change(_, _), .deleted:
                         Task { @MainActor [weak self] in
-                            self?.refresh()
+                            guard let self = self else { return }
+                            if !self.isEditing {
+                                self.refresh()
+                            }
                         }
                     case .error(let error):
                         print("An error occurred: \(error)")
@@ -97,7 +102,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     }
                 })
                 .store(in: &realmCancellables)
-
+            
             await refresh()
         }
         
@@ -228,8 +233,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         feedTitle = feed.title
         feedDescription = feed.markdownDescription
         feedEnabled = !(feed.isArchived || feed.isDeleted)
-        feedURL = feed.rssUrl.absoluteString
-        feedIconURL = feed.iconUrl.absoluteString
+        feedURL = feed.rssUrl.absoluteString == "about:blank" ? "" : feed.rssUrl.absoluteString
+        feedIconURL = feed.iconUrl.absoluteString == "about:blank" ? "" : feed.iconUrl.absoluteString
         feedIsReaderModeByDefault = feed.isReaderModeByDefault
         feedInjectEntryImageIntoHeader = feed.injectEntryImageIntoHeader
         feedExtractImageFromContent = feed.extractImageFromContent
@@ -254,11 +259,14 @@ struct LibraryFeedFormSections: View {
     
     @ScaledMetric(relativeTo: .body) private var textEditorHeight = 80
     @ScaledMetric(relativeTo: .body) private var readerPreviewHeight = 480
-    @ScaledMetric(relativeTo: .body) private var readerPreviewLocationBarHeight = 40
     
-//    @State private var readerContent: (any ReaderContentProtocol) = ReaderContentLoader.unsavedHome
-//    @State private var readerState = WebViewState.empty
-//    @State private var readerAction = WebViewAction.idle
+    // Focus management for keyboard dismissal and field navigation
+    @FocusState private var focusedField: Field?
+    private enum Field: Hashable {
+        case title, description, url, iconURL
+    }
+    
+    @StateObject private var webNavigator = WebViewNavigator()
     @StateObject private var readerContent = ReaderContent()
     @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     @StateObject private var readerModeViewModel = ReaderModeViewModel()
@@ -270,7 +278,7 @@ struct LibraryFeedFormSections: View {
     @ScaledMetric(relativeTo: .headline) private var maxContentCellHeight: CGFloat = 100
     
     @Environment(\.openURL) private var openURL
-
+    
     @ViewBuilder private var synchronizationSection: some View {
         Section("Synced") {
             Text("Manabi Reader manages this feed for you.")
@@ -285,6 +293,8 @@ struct LibraryFeedFormSections: View {
                     .textCase(nil)
                     .font(.headline)
                     .disabled(!viewModel.feed.isUserEditable())
+                    .focused($focusedField, equals: .title)
+                    .onSubmit { focusedField = nil }
             } label: {
                 if !viewModel.feed.iconUrl.isNativeReaderView {
                     LakeImage(viewModel.feed.iconUrl)
@@ -300,6 +310,8 @@ struct LibraryFeedFormSections: View {
             Toggle("Enabled", isOn: $viewModel.feedEnabled)
             HStack {
                 TextField("Feed URL", text: $viewModel.feedURL, prompt: Text("Enter URL of RSS or Atom content"), axis: .vertical)
+                    .focused($focusedField, equals: .url)
+                    .onSubmit { focusedField = nil }
                 if viewModel.feed.isUserEditable() {
                     PasteButton(payloadType: String.self) { strings in
                         viewModel.pasteRSSURL(strings: strings)
@@ -311,11 +323,20 @@ struct LibraryFeedFormSections: View {
         } footer: {
             Text("Feeds use RSS or Atom syndication formats.").font(.footnote).foregroundColor(.secondary)
         }
+        .onChange(of: viewModel.feed.rssUrl, debounceTime: 1) { _ in
+            Task { @MainActor in
+                refreshFeed()
+                refreshIcon()
+                refreshFromOpenGraph()
+            }
+        }
     }
     
     @ViewBuilder private var iconSection: some View {
         Section("Icon URL") {
             TextField("Icon URL", text: $viewModel.feedIconURL, prompt: Text("Enter website icon URL"), axis: .vertical)
+                .focused($focusedField, equals: .iconURL)
+                .onSubmit { focusedField = nil }
         }
     }
     
@@ -325,6 +346,7 @@ struct LibraryFeedFormSections: View {
                 .foregroundColor(.secondary)
                 .frame(idealHeight: textEditorHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
+                .focused($focusedField, equals: .description)
         }
     }
     
@@ -338,12 +360,22 @@ struct LibraryFeedFormSections: View {
                 Toggle("Display publication dates", isOn: $viewModel.feedDisplayPublicationDate)
             }
         }
+        .onChange(of: viewModel.feed.isReaderModeByDefault) { _ in
+            refresh(forceRefresh: true)
+        }
+        .onChange(of: viewModel.feed.injectEntryImageIntoHeader) { _ in
+            refresh(forceRefresh: true)
+        }
+        .onChange(of: viewModel.feed.rssContainsFullContent) { _ in
+            refresh(forceRefresh: true)
+        }
     }
     
     private var previewReader: some View {
         Reader(
-//            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
+            //            persistentWebViewID: "library-feed-preview-\(viewModel.feed.id.uuidString)",
             bounces: false)
+        .environmentObject(webNavigator)
         .environmentObject(readerContent)
         .environmentObject(readerViewModel)
         .environmentObject(readerModeViewModel)
@@ -361,30 +393,6 @@ struct LibraryFeedFormSections: View {
                     item: readerFeedEntry,
                     maxCellHeight: maxContentCellHeight
                 )
-                HStack(alignment: .center) {
-                    GroupBox {
-                        PageURLLinkButton()
-                            .environmentObject(readerViewModel)
-                            .padding(10)
-                    }
-                    Spacer()
-                    if readerViewModel.state.isLoading || readerViewModel.state.isProvisionallyNavigating {
-                        ProgressView()
-                            .scaleEffect(0.5)
-                    }
-                    Button {
-                        refresh(forceRefresh: true)
-                    } label: {
-                        Label("Reload", systemImage: "arrow.clockwise")
-                            .fixedSize()
-                            .padding(.horizontal)
-                    }
-                    .labelStyle(.iconOnly)
-                }
-                .frame(minHeight: readerPreviewLocationBarHeight)
-                .padding(.horizontal)
-                
-                previewReader
             } else {
                 Text("Enter valid RSS or Atom URL above.")
                     .font(.callout)
@@ -394,18 +402,21 @@ struct LibraryFeedFormSections: View {
     }
     
     @ViewBuilder private var feedPreviewSection: some View {
-        Section("Feed Preview") {
+        Section {
             feedPreview
+        } header: {
+            HStack {
+                Text("Feed Entry Preview")
+                Spacer()
+                Button {
+                    refresh(forceRefresh: true)
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                        .fixedSize()
+                }
+                .labelStyle(.iconOnly)
+            }
         }
-        .task(id: viewModel.feed.id) { @MainActor in
-            reinitializeState()
-        }
-//        .onChange(of: viewModel.feed) { [oldFeed = feed] feed in
-//            Task { @MainActor in
-//                guard oldFeed.id != feed.id else { return }
-//                reinitializeState(feed: feed)
-//            }
-//        }
         .onChange(of: viewModel.feed.rssUrl, debounceTime: 1.5) { _ in
             Task { @MainActor in
                 refreshFeed()
@@ -417,39 +428,63 @@ struct LibraryFeedFormSections: View {
             let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
             let oldEntry = oldEntries?.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) })
             Task { @MainActor in
-                if let entry = entry {
-                    readerContent.content = entry
-                } else {
-                    readerContent.content = ReaderContentLoader.unsavedHome
-                }
                 if entry?.id != oldEntry?.id {
                     refresh(entries: Array(entries))
                     refreshFromOpenGraph()
                 }
             }
         }
-        .onChange(of: viewModel.feed.isReaderModeByDefault) { _ in
-            refresh(forceRefresh: true)
+    }
+    
+    @ViewBuilder private var feedEntryPreviewSection: some View {
+        Section {
+            if readerViewModel.state.pageURL.absoluteString != "about:blank" {
+                previewReader
+            } else {
+                Text("Enter valid RSS or Atom URL above to preview the first entry's content.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack {
+                Text("Reader Preview")
+                Spacer()
+                
+                if readerViewModel.state.pageURL.absoluteString != "about:blank" {
+                    PageURLLinkButton()
+                }
+            }
         }
-        .onChange(of: viewModel.feed.injectEntryImageIntoHeader) { _ in
-            refresh(forceRefresh: true)
-        }
-        .onChange(of: viewModel.feed.rssContainsFullContent) { _ in
-            refresh(forceRefresh: true)
-        }
-     }
+    }
     
     var body: some View {
-        feedTitleSection
-        if let opmlURL = viewModel.feed.getCategory()?.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
-            synchronizationSection
+        Group {
+            feedTitleSection
+            if let opmlURL = viewModel.feed.getCategory()?.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
+                synchronizationSection
+            }
+            feedLocationSection
+            iconSection
+            stylingSection
+            feedPreviewSection
+            feedEntryPreviewSection
         }
-        feedLocationSection
-        iconSection
-        stylingSection
-        feedPreviewSection
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { focusedField = nil }
+            }
+        }
+        .onChange(of: focusedField) { newFocus in
+            viewModel.isEditing = (newFocus != nil)
+            if newFocus == nil {
+                refresh()
+            }
+        }
+        .task(id: viewModel.feed.id) { @MainActor in
+            reinitializeState()
+        }
     }
-   
+    
     private func reinitializeState() {
         readerFeedEntry = nil
         readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
@@ -499,9 +534,9 @@ struct LibraryFeedFormSections: View {
                     preferredType: .html,
                     preferences: [
                         :
-//                        .html: FaviconType.appleTouchIcon.rawValue,
-//                        .ico: "favicon.ico",
-//                        .webApplicationManifestFile: FaviconType.launcherIcon4x.rawValue
+                            //                        .html: FaviconType.appleTouchIcon.rawValue,
+                        //                        .ico: "favicon.ico",
+                        //                        .webApplicationManifestFile: FaviconType.launcherIcon4x.rawValue
                     ],
                     downloadImage: false
                 ).downloadFavicon()
@@ -518,17 +553,19 @@ struct LibraryFeedFormSections: View {
     private func refresh(entries: [FeedEntry]? = nil, forceRefresh: Bool = false) {
         guard let feed = try! Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration).object(ofType: Feed.self, forPrimaryKey: viewModel.feed.id) else {
             readerFeedEntry = nil
+            readerContent.content = nil
             readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             return
         }
         
         let entries: [FeedEntry] = entries ?? Array(feed.getEntries() ?? [])
         Task { @MainActor in
-//            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
+            //            if let entry = entries.max(by: { ($0.publicationDate ?? Date()) < ($1.publicationDate ?? Date()) }) {
             if let entry = entries.last {
                 if forceRefresh || (entry.url != readerViewModel.state.pageURL && !readerViewModel.state.isProvisionallyNavigating) {
                     readerFeedEntry = entry
-                    if let content = readerContent.content, content != entry {
+                    if readerContent.content?.url != entry.url {
+                        readerContent.content = entry
                         try await readerViewModel.navigator?.load(
                             content: entry,
                             readerModeViewModel: readerModeViewModel
@@ -537,6 +574,7 @@ struct LibraryFeedFormSections: View {
                 }
             } else {
                 readerFeedEntry = nil
+                readerContent.content = nil
                 readerViewModel.navigator?.load(URLRequest(url: URL(string: "about:blank")!))
             }
         }
@@ -547,13 +585,14 @@ fileprivate struct PageURLLinkButton: View {
     @Environment(\.openURL) private var openURL
     
     @EnvironmentObject private var readerViewModel: ReaderViewModel
-
+    
     var body: some View {
-        Button(readerViewModel.state.pageURL.absoluteString) {
+        Button {
             openURL(readerViewModel.state.pageURL)
+        } label: {
+            Label("Reload", systemImage: "safari")
+                .fixedSize()
         }
-#if os(macOS)
-        .buttonStyle(.link)
-#endif
+        .labelStyle(.iconOnly)
     }
 }

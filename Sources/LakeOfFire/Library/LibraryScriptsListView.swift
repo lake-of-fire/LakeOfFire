@@ -215,8 +215,9 @@ struct LibraryScriptsListView: View {
             }
         } label: {
             Label("Add Script", systemImage: "plus.circle")
-                .labelStyle(.titleAndIcon)
+                .bold()
         }
+        .labelStyle(.titleAndIcon)
         .keyboardShortcut("n", modifiers: [.command])
     }
 }

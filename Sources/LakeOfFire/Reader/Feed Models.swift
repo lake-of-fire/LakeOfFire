@@ -441,6 +441,7 @@ public extension Feed {
     @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
+        let iconUrl = iconUrl
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             

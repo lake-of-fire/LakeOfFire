@@ -378,17 +378,18 @@ struct LibraryCategoriesView: View {
             Task { @RealmBackgroundActor in
                 let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
                 let ref = ThreadSafeReference(to: category)
-                try await Task { @MainActor in
+                try await { @MainActor in
                     let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
                     guard let category = realm.resolve(ref) else { return }
                     categoryIDNeedsScrollTo = category.id.uuidString
-                    try await Task.sleep(nanoseconds: 100_000_000_000)
-                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
+                    try await Task.sleep(nanoseconds: 100_000_000)
+//                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
                     libraryManagerViewModel.navigationPath.append(category)
-                }.value
+                }()
             }
         } label: {
             Label("Add Category", systemImage: "plus.circle")
+                .bold()
         }
         .labelStyle(.titleAndIcon)
         .buttonStyle(.borderless)
