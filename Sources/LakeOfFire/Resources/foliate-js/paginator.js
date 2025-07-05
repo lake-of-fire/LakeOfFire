@@ -815,449 +815,442 @@ export class Paginator extends HTMLElement {
                           get pages() {
             return Math.round(this.viewSize / this.size)
         }
-    scrollBy(dx, dy) {
-        const delta = this.#vertical ? dy : dx
-        const element = this.#container
-        const { scrollProp } = this
-        const [offset, a, b] = this.#scrollBounds
-        const rtl = this.#rtl
-        const min = rtl ? offset - b : offset - a
-        const max = rtl ? offset + a : offset + b
-        element[scrollProp] = Math.max(min, Math.min(max,
-                                                     element[scrollProp] + delta))
-    }
-    snap(vx, vy) {
-        const velocity = this.#vertical ? vy : vx
-        const [offset, a, b] = this.#scrollBounds
-        const { start, end, pages, size } = this
-        const min = Math.abs(offset) - a
-        const max = Math.abs(offset) + b
-        const d = velocity * (this.#rtl ? -size : size)
-        const page = Math.floor(
-                                Math.max(min, Math.min(max, (start + end) / 2
-                                                       + (isNaN(d) ? 0 : d))) / size)
-        
-        this.#scrollToPage(page, 'snap').then(() => {
-            const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
-            if (dir) return this.#goTo({
-                index: this.#adjacentIndex(dir),
-                anchor: dir < 0 ? () => 1 : () => 0,
-            })
+                          scrollBy(dx, dy) {
+            const delta = this.#vertical ? dy : dx
+            const element = this.#container
+            const { scrollProp } = this
+            const [offset, a, b] = this.#scrollBounds
+            const rtl = this.#rtl
+            const min = rtl ? offset - b : offset - a
+            const max = rtl ? offset + a : offset + b
+            element[scrollProp] = Math.max(min, Math.min(max,
+                                                         element[scrollProp] + delta))
+        }
+                          snap(vx, vy) {
+            const velocity = this.#vertical ? vy : vx
+            const [offset, a, b] = this.#scrollBounds
+            const { start, end, pages, size } = this
+            const min = Math.abs(offset) - a
+            const max = Math.abs(offset) + b
+            const d = velocity * (this.#rtl ? -size : size)
+            const page = Math.floor(
+                                    Math.max(min, Math.min(max, (start + end) / 2
+                                                           + (isNaN(d) ? 0 : d))) / size)
+            
+            this.#scrollToPage(page, 'snap').then(() => {
+                const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
+                if (dir) return this.#goTo({
+                    index: this.#adjacentIndex(dir),
+                    anchor: dir < 0 ? () => 1 : () => 0,
                 })
-    }
-    #onTouchStart(e) {
-        const touch = e.changedTouches[0]
-        this.#touchState = {
-            x: touch?.screenX, y: touch?.screenY,
-            t: e.timeStamp,
-            vx: 0, xy: 0,
-        }
-        // Only block in paginated mode (not 'scrolled')
-        if (!this.scrolled) {
-            const sel = this.#view?.document?.getSelection?.();
-            if (sel && !sel.isCollapsed && sel.rangeCount) {
-                const range = sel.getRangeAt(0);
-                // Use getBoundingClientRect() for a single fast box
-                const rect = range.getBoundingClientRect();
-                const touch = e.changedTouches[0];
-                const x = touch.clientX, y = touch.clientY;
-                const hitTolerance = 30; // 30px hit area for handles
-                                // Check near left/top or right/bottom corners for handle proximity
-                const nearStart = (
-                                   Math.abs(x - rect.left) <= hitTolerance &&
-                                   y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
-                                   );
-                const nearEnd = (
-                                 Math.abs(x - rect.right) <= hitTolerance &&
-                                 y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
-                                 );
-                if (nearStart || nearEnd) {
-                    this.#isAdjustingSelectionHandle = true;
-                    return;
-                }
-            }
-        }
-        this.#isAdjustingSelectionHandle = false;
-    }
-    #onTouchMove(e) {
-        if (this.#isAdjustingSelectionHandle) return;
-        const state = this.#touchState
-        if (state.pinched) return
-            state.pinched = globalThis.visualViewport.scale > 1
-            if (this.scrolled || state.pinched) return
-                if (e.touches.length > 1) {
-                    if (this.#touchScrolled) e.preventDefault()
-                        return
-                        }
-        e.preventDefault()
-        const touch = e.changedTouches[0]
-        const x = touch.screenX, y = touch.screenY
-        const dx = state.x - x, dy = state.y - y
-        const dt = e.timeStamp - state.t
-        state.x = x
-        state.y = y
-        state.t = e.timeStamp
-        state.vx = dx / dt
-        state.vy = dy / dt
-        this.#touchScrolled = true
-        this.scrollBy(dx, dy)
-    }
-    #onTouchEnd(e) {
-        if (this.#isAdjustingSelectionHandle) return;
-        this.#touchScrolled = false
-        if (this.scrolled) return
-            
-            // XXX: Firefox seems to report scale as 1... sometimes...?
-            // at this point I'm basically throwing `requestAnimationFrame` at
-            // anything that doesn't work
-            requestAnimationFrame(() => {
-                if (globalThis.visualViewport.scale === 1)
-                    this.snap(this.#touchState.vx, this.#touchState.vy)
                     })
+        }
+                          #onTouchStart(e) {
+            const touch = e.changedTouches[0];
+            this.#touchState = {
+                startX: touch?.screenX, startY: touch?.screenY,
+                x: touch?.screenX, y: touch?.screenY,
+                t: e.timeStamp,
+                vx: 0, vy: 0,
+                pinched: false,
+            };
+            // Only block in paginated mode (not 'scrolled')
+            if (!this.scrolled) {
+                const sel = this.#view?.document?.getSelection?.();
+                if (sel && !sel.isCollapsed && sel.rangeCount) {
+                    const range = sel.getRangeAt(0);
+                    const rect = range.getBoundingClientRect();
+                    const x = touch.clientX, y = touch.clientY;
+                    const hitTolerance = 30;
+                    const nearStart = (
+                                       Math.abs(x - rect.left) <= hitTolerance &&
+                                       y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
+                                       );
+                    const nearEnd = (
+                                     Math.abs(x - rect.right) <= hitTolerance &&
+                                     y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
+                                     );
+                    if (nearStart || nearEnd) {
+                        this.#isAdjustingSelectionHandle = true;
+                        return;
+                    }
+                }
             }
-                      // allows one to process rects as if they were LTR and horizontal
-                      #getRectMapper() {
-        if (this.scrolled) {
-            const size = this.viewSize
-            const margin = this.#margin
-            return this.#vertical
+            this.#isAdjustingSelectionHandle = false;
+        }
+                          #onTouchMove(e) {
+            if (this.#isAdjustingSelectionHandle) return;
+            // Do not move content during touch.
+            // Still prevent default so the gesture isn't handled by browser.
+            e.preventDefault();
+            // Track the current finger position for use in touch end.
+            const touch = e.changedTouches[0];
+            const state = this.#touchState;
+            state.x = touch.screenX;
+            state.y = touch.screenY;
+            // (Optionally) record dt and velocity if you want to add a "fast swipe" option, but not needed for now.
+        }
+                          #onTouchEnd(e) {
+            if (this.#isAdjustingSelectionHandle) return;
+            // On finger lift, check swipe direction/threshold and turn page.
+            const state = this.#touchState;
+            const minSwipe = 30; // px, threshold to detect a swipe
+            const dx = state.x - state.startX;
+            const dy = state.y - state.startY;
+            // Only consider horizontal swipes that are not too vertical.
+            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
+                if (dx < 0) {
+                    // Swiped left: go to next page (respect RTL in paginator)
+                    this.#rtl ? this.prev() : this.next();
+                } else {
+                    // Swiped right: go to previous page (respect RTL in paginator)
+                    this.#rtl ? this.next() : this.prev();
+                }
+            }
+        }
+                          // allows one to process rects as if they were LTR and horizontal
+                          #getRectMapper() {
+            if (this.scrolled) {
+                const size = this.viewSize
+                const margin = this.#margin
+                return this.#vertical
+                ? ({ left, right }) =>
+                ({ left: size - right - margin, right: size - left - margin })
+                : ({ top, bottom }) => ({ left: top + margin, right: bottom + margin })
+            }
+            const pxSize = this.pages * this.size
+            return this.#rtl
             ? ({ left, right }) =>
-            ({ left: size - right - margin, right: size - left - margin })
-            : ({ top, bottom }) => ({ left: top + margin, right: bottom + margin })
+            ({ left: pxSize - right, right: pxSize - left })
+            : this.#vertical
+            ? ({ top, bottom }) => ({ left: top, right: bottom })
+            : f => f
         }
-        const pxSize = this.pages * this.size
-        return this.#rtl
-        ? ({ left, right }) =>
-        ({ left: pxSize - right, right: pxSize - left })
-        : this.#vertical
-        ? ({ top, bottom }) => ({ left: top, right: bottom })
-        : f => f
-    }
-    /**
-     * Handle mouse wheel events to paginate.
-     * Only trigger on significant horizontal wheel movement.
-     * Uses hysteresis: after a page turn, wheel delta must fall below reset threshold before another turn.
-     */
-    async #onWheel(e) {
-        if (this.scrolled) return;
-        
-        e.preventDefault();
+                          /**
+                           * Handle mouse wheel events to paginate.
+                           * Only trigger on significant horizontal wheel movement.
+                           * Uses hysteresis: after a page turn, wheel delta must fall below reset threshold before another turn.
+                           */
+                          async #onWheel(e) {
+            if (this.scrolled) return;
             
-        // Only respond to horizontal wheel, not vertical.
-        if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
-        
-        const TRIGGER_THRESHOLD = 20;
-        const RESET_THRESHOLD = 5;
-        
-        if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
-            this.#wheelArmed = false;
-            if (e.deltaX > 0) {
-                await this.prev();
-            } else {
-                await this.next();
-            }
-        } else if (!this.#wheelArmed && Math.abs(e.deltaX) < RESET_THRESHOLD) {
-            // Only re-arm once wheel momentum is near zero
-            this.#wheelArmed = true;
-        }
-    }
-    async #scrollToRect(rect, reason) {
-        if (this.scrolled) {
-            const offset = this.#getRectMapper()(rect).left - this.#margin
-            return this.#scrollTo(offset, reason)
-        }
-        const offset = this.#getRectMapper()(rect).left
-        return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
-    }
-    async #scrollTo(offset, reason, smooth) {
-        const element = this.#container
-        const { scrollProp, size } = this
-        if (element[scrollProp] === offset) {
-            this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-            this.#afterScroll(reason)
-            return
-        }
-        // FIXME: vertical-rl only, not -lr
-        if (this.scrolled && this.#vertical) offset = -offset
-            if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
-                                                                                               element[scrollProp], offset, 300, easeOutQuad,
-                                                                                               x => element[scrollProp] = x,
-                                                                                               ).then(() => {
-                                                                                                   this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                                                                                                   this.#afterScroll(reason)
-                                                                                               })
-                else {
-                    element[scrollProp] = offset
-                    this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                    this.#afterScroll(reason)
+            e.preventDefault();
+            
+            // Only respond to horizontal wheel, not vertical.
+            if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
+            
+            const TRIGGER_THRESHOLD = 20;
+            const RESET_THRESHOLD = 5;
+            
+            if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
+                this.#wheelArmed = false;
+                if (e.deltaX > 0) {
+                    await this.prev();
+                } else {
+                    await this.next();
                 }
-    }
-    async #scrollToPage(page, reason, smooth) {
-        const offset = this.size * (this.#rtl ? -page : page)
-        return this.#scrollTo(offset, reason, smooth)
-    }
-    async scrollToAnchor(anchor, select) {
-        return this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
-    }
-    async #scrollToAnchor(anchor, reason = 'anchor') {
-        this.#anchor = anchor
-        const rects = uncollapse(anchor)?.getClientRects?.()
-        // if anchor is an element or a range
-        if (rects) {
-            // when the start of the range is immediately after a hyphen in the
-            // previous column, there is an extra zero width rect in that column
-            const rect = Array.from(rects)
-            .find(r => r.width > 0 && r.height > 0) || rects[0]
-            if (!rect) return
-                await this.#scrollToRect(rect, reason)
+            } else if (!this.#wheelArmed && Math.abs(e.deltaX) < RESET_THRESHOLD) {
+                // Only re-arm once wheel momentum is near zero
+                this.#wheelArmed = true;
+            }
+        }
+                          async #scrollToRect(rect, reason) {
+            if (this.scrolled) {
+                const offset = this.#getRectMapper()(rect).left - this.#margin
+                return this.#scrollTo(offset, reason)
+            }
+            const offset = this.#getRectMapper()(rect).left
+            return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
+        }
+                          async #scrollTo(offset, reason, smooth) {
+            const element = this.#container
+            const { scrollProp, size } = this
+            if (element[scrollProp] === offset) {
+                this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                this.#afterScroll(reason)
                 return
-                }
-        // if anchor is a fraction
-        if (this.scrolled) {
-            await this.#scrollTo(anchor * this.viewSize, reason)
-            return
-        }
-        const { pages } = this
-        if (!pages) return
-            const textPages = pages - 2
-            const newPage = Math.round(anchor * (textPages - 1))
-            await this.#scrollToPage(newPage + 1, reason)
             }
-    #getVisibleRange() {
-        if (this.scrolled) return getVisibleRange(this.#view.document,
-                                                  this.start + this.#margin, this.end - this.#margin, this.#getRectMapper())
-            const size = this.#rtl ? -this.size : this.size
-            return getVisibleRange(this.#view.document,
-                                   this.start - size, this.end - size, this.#getRectMapper())
-    }
-    #afterScroll(reason) {
-        if (this.#isCacheWarmer) {
-            return;
+            // FIXME: vertical-rl only, not -lr
+            if (this.scrolled && this.#vertical) offset = -offset
+                if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
+                                                                                                   element[scrollProp], offset, 300, easeOutQuad,
+                                                                                                   x => element[scrollProp] = x,
+                                                                                                   ).then(() => {
+                                                                                                       this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                                                                                                       this.#afterScroll(reason)
+                                                                                                   })
+                    else {
+                        element[scrollProp] = offset
+                        this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                        this.#afterScroll(reason)
+                    }
         }
-        
-        const range = this.#getVisibleRange()
-        // don't set new anchor if relocation was to scroll to anchor
-        if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
-            this.#anchor = range
-            else this.#justAnchored = true
-                
-                const index = this.#index
-                const detail = { reason, range, index }
-        if (this.scrolled) detail.fraction = this.start / this.viewSize
-        else if (this.pages > 0) {
-            const { page, pages } = this
-            this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
-            detail.fraction = (page - 1) / (pages - 2)
-            detail.size = 1 / (pages - 2)
+                          async #scrollToPage(page, reason, smooth) {
+            const offset = this.size * (this.#rtl ? -page : page)
+            return this.#scrollTo(offset, reason, smooth)
         }
-        this.dispatchEvent(new CustomEvent('relocate', { detail }))
-    }
-    async #display(promise) {
-        this.#isLoading = true;
-        const { index, src, anchor, onLoad, select } = await promise
-        this.#index = index
-        if (src) {
-            const view = this.#createView()
-            const afterLoad = doc => {
-                if (doc.head) {
-                    const $styleBefore = doc.createElement('style')
-                    doc.head.prepend($styleBefore)
-                    const $style = doc.createElement('style')
-                    doc.head.append($style)
-                    this.#styleMap.set(doc, [$styleBefore, $style])
-                }
-                onLoad?.({ doc, index })
+                          async scrollToAnchor(anchor, select) {
+            return this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        }
+                          async #scrollToAnchor(anchor, reason = 'anchor') {
+            this.#anchor = anchor
+            const rects = uncollapse(anchor)?.getClientRects?.()
+            // if anchor is an element or a range
+            if (rects) {
+                // when the start of the range is immediately after a hyphen in the
+                // previous column, there is an extra zero width rect in that column
+                const rect = Array.from(rects)
+                .find(r => r.width > 0 && r.height > 0) || rects[0]
+                if (!rect) return
+                    await this.#scrollToRect(rect, reason)
+                    return
+                    }
+            // if anchor is a fraction
+            if (this.scrolled) {
+                await this.#scrollTo(anchor * this.viewSize, reason)
+                return
             }
-            const beforeRender = this.#beforeRender.bind(this)
-            await view.load(src, afterLoad, beforeRender)
-            //            this.dispatchEvent(new CustomEvent('create-overlayer', {
-            //                detail: {
-            //                    doc: view.document, index,
-            //                    attach: overlayer => view.overlayer = overlayer,
-            //                },
-            //            }))
-            this.#view = view
-        }
-        await this.scrollToAnchor((typeof anchor === 'function'
-                                   ? anchor(this.#view.document) : anchor) ?? 0, select)
-        this.#isLoading = false;
-        this.dispatchEvent(new CustomEvent('didDisplay', {}))
-    }
-    #canGoToIndex(index) {
-        return index >= 0 && index <= this.sections.length - 1
-    }
-    async #goTo({ index, anchor, select }) {
-        const willLoadNewIndex = index !== this.#index;
-        this.dispatchEvent(new CustomEvent('goTo', {
-            willLoadNewIndex: willLoadNewIndex
-        }))
-        if (!willLoadNewIndex) {
-            await this.#display({ index, anchor, select })
-        } else {
-            const oldIndex = this.#index
-            const onLoad = detail => {
-                this.sections[oldIndex]?.unload?.()
-                if (!this.#isCacheWarmer) {
-                    this.setStyles(this.#styles)
+            const { pages } = this
+            if (!pages) return
+                const textPages = pages - 2
+                const newPage = Math.round(anchor * (textPages - 1))
+                await this.#scrollToPage(newPage + 1, reason)
                 }
-                this.dispatchEvent(new CustomEvent('load', { detail }))
+                          #getVisibleRange() {
+            if (this.scrolled) return getVisibleRange(this.#view.document,
+                                                      this.start + this.#margin, this.end - this.#margin, this.#getRectMapper())
+                const size = this.#rtl ? -this.size : this.size
+                return getVisibleRange(this.#view.document,
+                                       this.start - size, this.end - size, this.#getRectMapper())
+                }
+                          #afterScroll(reason) {
+            if (this.#isCacheWarmer) {
+                return;
             }
             
-            let loadPromise;
-            if (this.#prefetchCache.has(index)) {
-                loadPromise = this.#prefetchCache.get(index);
+            const range = this.#getVisibleRange()
+            // don't set new anchor if relocation was to scroll to anchor
+            if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
+                this.#anchor = range
+                else this.#justAnchored = true
+                    
+                    const index = this.#index
+                    const detail = { reason, range, index }
+            if (this.scrolled) detail.fraction = this.start / this.viewSize
+                else if (this.pages > 0) {
+                    const { page, pages } = this
+                    this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
+                    detail.fraction = (page - 1) / (pages - 2)
+                    detail.size = 1 / (pages - 2)
+                }
+            this.dispatchEvent(new CustomEvent('relocate', { detail }))
+        }
+                          async #display(promise) {
+            this.#isLoading = true;
+            const { index, src, anchor, onLoad, select } = await promise
+            this.#index = index
+            if (src) {
+                const view = this.#createView()
+                const afterLoad = doc => {
+                    if (doc.head) {
+                        const $styleBefore = doc.createElement('style')
+                        doc.head.prepend($styleBefore)
+                        const $style = doc.createElement('style')
+                        doc.head.append($style)
+                        this.#styleMap.set(doc, [$styleBefore, $style])
+                    }
+                    onLoad?.({ doc, index })
+                }
+                const beforeRender = this.#beforeRender.bind(this)
+                await view.load(src, afterLoad, beforeRender)
+                //            this.dispatchEvent(new CustomEvent('create-overlayer', {
+                //                detail: {
+                //                    doc: view.document, index,
+                //                    attach: overlayer => view.overlayer = overlayer,
+                //                },
+                //            }))
+                this.#view = view
+            }
+            await this.scrollToAnchor((typeof anchor === 'function'
+                                       ? anchor(this.#view.document) : anchor) ?? 0, select)
+            this.#isLoading = false;
+            this.dispatchEvent(new CustomEvent('didDisplay', {}))
+        }
+                          #canGoToIndex(index) {
+            return index >= 0 && index <= this.sections.length - 1
+        }
+                          async #goTo({ index, anchor, select }) {
+            const willLoadNewIndex = index !== this.#index;
+            this.dispatchEvent(new CustomEvent('goTo', {
+                willLoadNewIndex: willLoadNewIndex
+            }))
+            if (!willLoadNewIndex) {
+                await this.#display({ index, anchor, select })
             } else {
-                loadPromise = this.sections[index].load();
-                this.#prefetchCache.set(index, loadPromise);
+                const oldIndex = this.#index
+                const onLoad = detail => {
+                    this.sections[oldIndex]?.unload?.()
+                    if (!this.#isCacheWarmer) {
+                        this.setStyles(this.#styles)
+                    }
+                    this.dispatchEvent(new CustomEvent('load', { detail }))
+                }
+                
+                let loadPromise;
+                if (this.#prefetchCache.has(index)) {
+                    loadPromise = this.#prefetchCache.get(index);
+                } else {
+                    loadPromise = this.sections[index].load();
+                    this.#prefetchCache.set(index, loadPromise);
+                }
+                await this.#display(Promise.resolve(loadPromise)
+                                    .then(src => ({ index, src, anchor, onLoad, select }))
+                                    .catch(error => {
+                                        console.error(error);
+                                        console.warn(new Error(`Failed to load section ${index}`));
+                                        return {};
+                                    }));
+                
+                clearTimeout(this.#prefetchTimer);
+                this.#prefetchTimer = setTimeout(() => {
+                    if (this.#index !== index) return;  // bail if user has moved on
+                    
+                    const wanted = [ index - 1, index + 1 ];
+                    // Keep any already cached of these two
+                    const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
+                    this.#prefetchCache = new Map(
+                                                  [...this.#prefetchCache].filter(([i]) => keep.has(i))
+                                                  );
+                    
+                    // Now prefetch any neighbor not already cached
+                    wanted.forEach(i => {
+                        if (
+                            i >= 0 &&
+                            i < this.sections.length &&
+                            this.sections[i].linear !== 'no' &&
+                            !this.#prefetchCache.has(i)
+                            ) {
+                                const p = this.sections[i].load().catch(() => {});
+                                this.#prefetchCache.set(i, p);
+                            }
+                    });
+                }, 500);
             }
-            await this.#display(Promise.resolve(loadPromise)
-                                .then(src => ({ index, src, anchor, onLoad, select }))
-                                .catch(error => {
-                                    console.error(error);
-                                    console.warn(new Error(`Failed to load section ${index}`));
-                                    return {};
-                                }));
-            
-            clearTimeout(this.#prefetchTimer);
-            this.#prefetchTimer = setTimeout(() => {
-                if (this.#index !== index) return;  // bail if user has moved on
-                
-                const wanted = [ index - 1, index + 1 ];
-                // Keep any already cached of these two
-                const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
-                this.#prefetchCache = new Map(
-                                              [...this.#prefetchCache].filter(([i]) => keep.has(i))
-                                              );
-                
-                // Now prefetch any neighbor not already cached
-                wanted.forEach(i => {
-                    if (
-                        i >= 0 &&
-                        i < this.sections.length &&
-                        this.sections[i].linear !== 'no' &&
-                        !this.#prefetchCache.has(i)
-                        ) {
-                            const p = this.sections[i].load().catch(() => {});
-                            this.#prefetchCache.set(i, p);
-                        }
-                });
-            }, 500);
         }
-    }
-    async goTo(target) {
-        if (this.#locked) return
-            const resolved = await target
-            if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
+                          async goTo(target) {
+            if (this.#locked) return
+                const resolved = await target
+                if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
+                    }
+                          #scrollPrev(distance) {
+            if (!this.#view) return true
+                if (this.scrolled) {
+                    const style = getComputedStyle(this.#container);
+                    const lineAdvance = this.#vertical
+                    ? parseFloat(style.fontSize) || 20
+                    : parseFloat(style.lineHeight) || 20;
+                    const scrollDistance = distance ?? (this.size - lineAdvance);
+                    if (this.start > 0) {
+                        return this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+                    }
+                    return true;
                 }
-                      #scrollPrev(distance) {
-        if (!this.#view) return true
-            if (this.scrolled) {
-                const style = getComputedStyle(this.#container);
-                const lineAdvance = this.#vertical
-                ? parseFloat(style.fontSize) || 20
-                : parseFloat(style.lineHeight) || 20;
-                const scrollDistance = distance ?? (this.size - lineAdvance);
-                if (this.start > 0) {
-                    return this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+            if (this.atStart) return
+                const page = this.page - 1
+                return this.#scrollToPage(page, 'page', true).then(() => page <= 0)
                 }
-                return true;
-            }
-        if (this.atStart) return
-            const page = this.page - 1
-            return this.#scrollToPage(page, 'page', true).then(() => page <= 0)
-            }
-                      #scrollNext(distance) {
-        if (!this.#view) return true
-            if (this.scrolled) {
-                const style = getComputedStyle(this.#container);
-                const lineAdvance = this.#vertical
-                ? parseFloat(style.fontSize) || 20
-                : parseFloat(style.lineHeight) || 20;
-                const scrollDistance = distance ?? (this.size - lineAdvance);
-                if (this.viewSize - this.end > 2) {
-                    return this.#scrollTo(Math.min(this.viewSize, this.start + scrollDistance), null, true);
+                          #scrollNext(distance) {
+            if (!this.#view) return true
+                if (this.scrolled) {
+                    const style = getComputedStyle(this.#container);
+                    const lineAdvance = this.#vertical
+                    ? parseFloat(style.fontSize) || 20
+                    : parseFloat(style.lineHeight) || 20;
+                    const scrollDistance = distance ?? (this.size - lineAdvance);
+                    if (this.viewSize - this.end > 2) {
+                        return this.#scrollTo(Math.min(this.viewSize, this.start + scrollDistance), null, true);
+                    }
+                    return true;
                 }
-                return true;
-            }
-        if (this.atEnd) return
-        const page = this.page + 1
-        const pages = this.pages
-        return this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
-    }
-    get atStart() {
-        return this.#adjacentIndex(-1) == null && this.page <= 1
-    }
-    get atEnd() {
-        return this.#adjacentIndex(1) == null && this.page >= this.pages - 2
-    }
-    #adjacentIndex(dir) {
-        for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
-            if (this.sections[index]?.linear !== 'no') return index
-    }
-    async #turnPage(dir, distance) {
-        if (this.#locked) return
-        this.#locked = true
-        const prev = dir === -1
-        const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
-        if (shouldGo) await this.#goTo({
-            index: this.#adjacentIndex(dir),
-            anchor: prev ? () => 1 : () => 0,
-        })
-        if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-        this.#locked = false
-    }
-    prev(distance) {
-        return this.#turnPage(-1, distance)
-    }
-    next(distance) {
-        return this.#turnPage(1, distance)
-    }
-    prevSection() {
-        return this.goTo({ index: this.#adjacentIndex(-1) })
-    }
-    nextSection() {
-        return this.goTo({ index: this.#adjacentIndex(1) })
-    }
-    firstSection() {
-        const index = this.sections.findIndex(section => section.linear !== 'no')
-        return this.goTo({ index })
-    }
-    lastSection() {
-        const index = this.sections.findLastIndex(section => section.linear !== 'no')
-        return this.goTo({ index })
-    }
-    getContents() {
-        if (this.#view) return [{
-            index: this.#index,
-            overlayer: this.#view.overlayer,
-            doc: this.#view.document,
-        }]
-        return []
-    }
-    setStyles(styles) {
-        this.#styles = styles
-        const $$styles = this.#styleMap.get(this.#view?.document)
-        if (!$$styles) return
-        const [$beforeStyle, $style] = $$styles
-        if (Array.isArray(styles)) {
-            const [beforeStyle, style] = styles
-            $beforeStyle.textContent = beforeStyle
-            $style.textContent = style
-        } else $style.textContent = styles
-            
-            // NOTE: needs `requestAnimationFrame` in Chromium
-            requestAnimationFrame(() =>
-                                  this.#background.style.background = getBackground(this.#view.document))
-            
-            // needed because the resize observer doesn't work in Firefox
-            this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
-    }
-    destroy() {
-        this.#resizeObserver.unobserve(this)
-        this.#view.destroy()
-        this.#view = null
-        this.sections[this.#index]?.unload?.()
-    }
-}
-                      
-customElements.define('foliate-paginator', Paginator)
+            if (this.atEnd) return
+                const page = this.page + 1
+                const pages = this.pages
+                return this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
+                }
+                          get atStart() {
+            return this.#adjacentIndex(-1) == null && this.page <= 1
+        }
+                          get atEnd() {
+            return this.#adjacentIndex(1) == null && this.page >= this.pages - 2
+        }
+                          #adjacentIndex(dir) {
+            for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
+                if (this.sections[index]?.linear !== 'no') return index
+                    }
+                          async #turnPage(dir, distance) {
+            if (this.#locked) return
+                this.#locked = true
+                const prev = dir === -1
+                const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
+                if (shouldGo) await this.#goTo({
+                    index: this.#adjacentIndex(dir),
+                    anchor: prev ? () => 1 : () => 0,
+                })
+                    if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+                        this.#locked = false
+                        }
+                          prev(distance) {
+            return this.#turnPage(-1, distance)
+        }
+                          next(distance) {
+            return this.#turnPage(1, distance)
+        }
+                          prevSection() {
+            return this.goTo({ index: this.#adjacentIndex(-1) })
+        }
+                          nextSection() {
+            return this.goTo({ index: this.#adjacentIndex(1) })
+        }
+                          firstSection() {
+            const index = this.sections.findIndex(section => section.linear !== 'no')
+            return this.goTo({ index })
+        }
+                          lastSection() {
+            const index = this.sections.findLastIndex(section => section.linear !== 'no')
+            return this.goTo({ index })
+        }
+                          getContents() {
+            if (this.#view) return [{
+                index: this.#index,
+                overlayer: this.#view.overlayer,
+                doc: this.#view.document,
+            }]
+                return []
+                }
+                          setStyles(styles) {
+            this.#styles = styles
+            const $$styles = this.#styleMap.get(this.#view?.document)
+            if (!$$styles) return
+                const [$beforeStyle, $style] = $$styles
+                if (Array.isArray(styles)) {
+                    const [beforeStyle, style] = styles
+                    $beforeStyle.textContent = beforeStyle
+                    $style.textContent = style
+                } else $style.textContent = styles
+                    
+                    // NOTE: needs `requestAnimationFrame` in Chromium
+                    requestAnimationFrame(() =>
+                                          this.#background.style.background = getBackground(this.#view.document))
+                    
+                    // needed because the resize observer doesn't work in Firefox
+                    this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
+                    }
+                          destroy() {
+            this.#resizeObserver.unobserve(this)
+            this.#view.destroy()
+            this.#view = null
+            this.sections[this.#index]?.unload?.()
+        }
+                          }
+                          
+                          customElements.define('foliate-paginator', Paginator)
