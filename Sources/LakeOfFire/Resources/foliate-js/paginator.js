@@ -507,6 +507,7 @@ export class Paginator extends HTMLElement {
     #prefetchCache = new Map()
     #isLoading = false
     #isAdjustingSelectionHandle = false;
+    #wheelArmed = true; // Hysteresis-based horizontal wheel paging
     constructor() {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -659,6 +660,7 @@ export class Paginator extends HTMLElement {
             doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
         })
         this.#isAdjustingSelectionHandle = false;
+        this.addEventListener('wheel', this.#onWheel.bind(this), { passive: false });
     }
     open(book, isCacheWarmer) {
         this.#isCacheWarmer = isCacheWarmer
@@ -930,6 +932,34 @@ export class Paginator extends HTMLElement {
         : this.#vertical
         ? ({ top, bottom }) => ({ left: top, right: bottom })
         : f => f
+    }
+    /**
+     * Handle mouse wheel events to paginate.
+     * Only trigger on significant horizontal wheel movement.
+     * Uses hysteresis: after a page turn, wheel delta must fall below reset threshold before another turn.
+     */
+    async #onWheel(e) {
+        if (this.scrolled) return;
+        
+        e.preventDefault();
+            
+        // Only respond to horizontal wheel, not vertical.
+        if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
+        
+        const TRIGGER_THRESHOLD = 20;
+        const RESET_THRESHOLD = 5;
+        
+        if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
+            this.#wheelArmed = false;
+            if (e.deltaX > 0) {
+                await this.next();
+            } else {
+                await this.prev();
+            }
+        } else if (!this.#wheelArmed && Math.abs(e.deltaX) < RESET_THRESHOLD) {
+            // Only re-arm once wheel momentum is near zero
+            this.#wheelArmed = true;
+        }
     }
     async #scrollToRect(rect, reason) {
         if (this.scrolled) {
