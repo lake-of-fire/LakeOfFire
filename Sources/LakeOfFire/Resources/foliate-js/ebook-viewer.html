@@ -26,13 +26,20 @@
                 }
                 body {
                     --manabi-red: #ff4500;
-                    
+                    --secondary-color: #7d7d7d;
+
                     margin: 0 auto;
                     height: 100%;
                     /*height: 100dvh;*/
                     font: menu;
                     font-family: system-ui, sans-serif;
                 }
+                @media (prefers-color-scheme: dark) {
+                    body {
+                        --secondary-color: #8f8f8f;
+                    }
+                }
+                
                 button {
                     cursor: pointer;
                 }
@@ -463,8 +470,16 @@
                     right: 0;
                 }
                 .side-nav .icon {
-                    width: 32px;
+                    width: 18px;
                     height: 48px;
+                    stroke-width: 4px;
+                    stroke: var(--secondary-color);
+                }
+                #btn-scroll-left {
+                    margin-right: 4px;
+                }
+                #btn-scroll-right {
+                    margin-left: 4px;
                 }
             </style>
     </head>
@@ -539,12 +554,15 @@
                 </div>
             </div>
         </div>
-        <!-- Side-nav scroll buttons -->
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M15 6 L9 12 L15 18"/></svg>
+            <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 7 L8 27 L16 48" />
+            </svg>
         </button>
         <button id="btn-scroll-right" class="side-nav" aria-label="Scroll right">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M9 6 L15 12 L9 18"/></svg>
+            <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 7 L16 27 L8 48" />
+            </svg>
         </button>
         <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
     </body>
