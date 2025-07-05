@@ -471,17 +471,27 @@
                     -webkit-user-select: none;
                     
                     border-radius: 12px;
-                    transition: background 0.2s;
+                }
+                .side-nav.show-next .icon {
+                    opacity: 1 !important;
+                    pointer-events: auto;
                 }
                 .side-nav .icon {
                     opacity: 0;
-                    transition: opacity 0.2s;
+                    transition: opacity 0.4s ease-out;
                     pointer-events: none;
                     
                     width: 18px;
                     height: 48px;
                     stroke-width: 4px;
                     stroke: var(--secondary-color);
+                }
+                .side-nav .icon {
+                    opacity: 0;
+                }
+                .side-nav .icon.chevron-visible {
+                    transition: opacity 0.08s ease-in;
+                    opacity: 1;
                 }
                 .side-nav:hover .icon,
                 .side-nav:active .icon {
@@ -490,13 +500,17 @@
                 }
                 #btn-scroll-left {
                     left: 0;
-                    margin-left: 10px;
                     text-align: left;
                 }
                 #btn-scroll-right {
                     right: 0;
-                    margin-right: 10px;
                     text-align: right;
+                }
+                #btn-scroll-left .icon {
+                    margin-left: 10px;
+                }
+                #btn-scroll-right .icon {
+                    margin-right: 10px;
                 }
             </style>
     </head>

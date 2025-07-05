@@ -211,9 +211,13 @@ const getView = async (file, isCacheWarmer) => {
         
         const sideNavWidth = 32;
         document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
-        if (paginator.shadowRoot.host) {
-            paginator.shadowRoot.host.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
+        // Also set --side-nav-width on the inner view, so it propagates into the iframe's shadow DOM.
+        if (view) {
+            view.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
         }
+        // if (paginator.shadowRoot.host) {
+        //     paginator.shadowRoot.host.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
+        // }
     }
     
     return view
@@ -396,6 +400,32 @@ class Reader {
         if (leftSideBtn) leftSideBtn.addEventListener('click', () => this.view.goLeft());
         const rightSideBtn = document.getElementById('btn-scroll-right');
         if (rightSideBtn) rightSideBtn.addEventListener('click', () => this.view.goRight());
+        
+        // Side-nav opacity wiring
+        // At the top of the file (module/global scope):
+        const chevronFadeTimers = {};
+        this.view.addEventListener('sideNavChevronOpacity', e => {
+            const l = document.querySelector('#btn-scroll-left .icon');
+            const r = document.querySelector('#btn-scroll-right .icon');
+            
+            function fadeWithHold(elem, value, key) {
+                if (!elem) return;
+                clearTimeout(chevronFadeTimers[key]);
+                if (value === '' || value === undefined) {
+                    // Remove visible class after delay so fade-out can happen
+                    chevronFadeTimers[key] = setTimeout(() => {
+                        elem.classList.remove('chevron-visible');
+                    }, 100);
+                } else if (Number(value) > 0) {
+                    elem.classList.add('chevron-visible');
+                } else {
+                    elem.classList.remove('chevron-visible');
+                }
+            }
+            
+            fadeWithHold(l, e.detail.leftOpacity, 'l');
+            fadeWithHold(r, e.detail.rightOpacity, 'r');
+        });
         
         // Reorder toolbar children for RTL/LTR so left/right stacks and progress are positioned correctly
         const navBar = document.getElementById('nav-bar');

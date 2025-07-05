@@ -784,6 +784,16 @@ export class Paginator extends HTMLElement {
             }))
             this.#scrollToAnchor(this.#anchor)
             }
+    #updateSideNavAtBookStart(isAtStart, isRTL) {
+        const leftBtn = this.shadowRoot?.getElementById('btn-scroll-left');
+        const rightBtn = this.shadowRoot?.getElementById('btn-scroll-right');
+        leftBtn?.classList.remove('show-next');
+        rightBtn?.classList.remove('show-next');
+        if (isAtStart) {
+            if (isRTL) leftBtn?.classList.add('show-next');
+            else rightBtn?.classList.add('show-next');
+        }
+    }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
     }
@@ -896,8 +906,12 @@ export class Paginator extends HTMLElement {
             const dy = state.y - state.startY;
             const minSwipe = 36; // px threshold
                                  // Trigger on crossing threshold, only once per gesture
+            
+            this.#updateSwipeChevron(dx);
+            
             if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
                 state.triggered = true;
+                
                 if (dx < 0) {
                     this.#rtl ? this.next() : this.prev();
                 } else {
@@ -906,7 +920,12 @@ export class Paginator extends HTMLElement {
             }
         }
                           #onTouchEnd(e) {
-            if (this.#isAdjustingSelectionHandle) return;
+            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                bubbles: true,
+                composed: true,
+                detail: { leftOpacity: '', rightOpacity: '' }
+            }));
+            //            if (this.#isAdjustingSelectionHandle) return;
             // No-op: do not trigger page turn on finger lift.
         }
                           // allows one to process rects as if they were LTR and horizontal
@@ -936,6 +955,8 @@ export class Paginator extends HTMLElement {
             if (this.scrolled) return;
             
             e.preventDefault();
+            
+            this.#updateSwipeChevron(e.deltaX);
             
             // Only respond to horizontal wheel, not vertical.
             if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
@@ -1044,7 +1065,28 @@ export class Paginator extends HTMLElement {
                     detail.fraction = (page - 1) / (pages - 2)
                     detail.size = 1 / (pages - 2)
                 }
+            
+            this.#updateSideNavAtBookStart(this.atStart && this.#index === 0, this.#rtl);
+            
             this.dispatchEvent(new CustomEvent('relocate', { detail }))
+        }
+                          #updateSwipeChevron(dx) {
+            const minSwipe = 36;
+            let leftOpacity = 0, rightOpacity = 0;
+            if (!this.#rtl) {
+                // LTR: dx > 0 is left chevron, dx < 0 is right chevron
+                if (dx > 0) rightOpacity = Math.min(1, dx / minSwipe);
+                else if (dx < 0) leftOpacity = Math.min(1, -dx / minSwipe);
+            } else {
+                // RTL: dx > 0 is right chevron, dx < 0 is left chevron
+                if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
+                else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
+            }
+            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                bubbles: true,
+                composed: true,
+                detail: { leftOpacity, rightOpacity }
+            }));
         }
                           async #display(promise) {
             this.#isLoading = true;
@@ -1190,16 +1232,42 @@ export class Paginator extends HTMLElement {
                     }
                           async #turnPage(dir, distance) {
             if (this.#locked) return
-                this.#locked = true
-                const prev = dir === -1
-                const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
-                if (shouldGo) await this.#goTo({
-                    index: this.#adjacentIndex(dir),
-                    anchor: prev ? () => 1 : () => 0,
-                })
-                    if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-                        this.#locked = false
-                        }
+                
+                // Determine which chevron should be forced visible based on direction and RTL
+                let forceSide = null;
+            if (dir === -1) {
+                // Backward
+                forceSide = this.#rtl ? 'left' : 'right';
+            } else if (dir === 1) {
+                // Forward
+                forceSide = this.#rtl ? 'right' : 'left';
+            }
+            if (forceSide) {
+                const detail = forceSide === 'left'
+                ? { leftOpacity: 1, rightOpacity: 0 }
+                : { leftOpacity: 0, rightOpacity: 1 };
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail
+                }));
+            }
+            this.#locked = true
+            const prev = dir === -1
+            const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
+            if (shouldGo) await this.#goTo({
+                index: this.#adjacentIndex(dir),
+                anchor: prev ? () => 1 : () => 0,
+            })
+                if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+                    this.#locked = false
+                    
+                    this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                        bubbles: true,
+                        composed: true,
+                        detail: { leftOpacity: '', rightOpacity: '' }
+                    }));
+        }
                           prev(distance) {
             return this.#turnPage(-1, distance)
         }
