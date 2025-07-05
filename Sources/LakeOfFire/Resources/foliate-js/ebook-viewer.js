@@ -305,7 +305,7 @@ class Reader {
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
-        this.view.renderer.setAttribute('animated', true)
+        // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
         if (typeof window.initialLayoutMode !== 'undefined') {
             this.view.renderer.setAttribute('flow', window.initialLayoutMode)
         }
