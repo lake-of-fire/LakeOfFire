@@ -526,8 +526,9 @@ export class Paginator extends HTMLElement {
         #top {
             /*--_gap: 7%;
             --_margin: 48px;*/
-            --_gap: 5%;
+            --_gap: 4%;
             --_margin: 30px;
+            --_side-margin: 32px;
             --_max-inline-size: 720px;
             --_max-block-size: 1440px;
             --_max-column-count: 2;
@@ -538,11 +539,15 @@ export class Paginator extends HTMLElement {
             --_max-height: var(--_max-block-size);
             display: grid;
             grid-template-columns:
-                minmax(var(--_half-gap), 1fr)
-                var(--_half-gap)
+                var(--_side-margin)
+                1fr
+                /*minmax(var(--_half-gap), 1fr)*/
+                /*var(--_half-gap)*/
                 minmax(0, calc(var(--_max-width) - var(--_gap)))
-                var(--_half-gap)
-                minmax(var(--_half-gap), 1fr);
+                /*var(--_half-gap)*/
+                /*minmax(var(--_half-gap), 1fr)*/
+                1fr
+                var(--_side-margin);
             grid-template-rows:
                 minmax(var(--_margin), 1fr)
                 minmax(0, var(--_max-height))
@@ -566,7 +571,7 @@ export class Paginator extends HTMLElement {
             grid-row: 1 / -1;
         }
         #container {
-            grid-column: 2 / 5;
+            grid-column: 3 / 4;
             grid-row: 2;
             overflow: hidden;
         }
@@ -576,11 +581,11 @@ export class Paginator extends HTMLElement {
             overflow: auto;
         }
         #header {
-            grid-column: 3 / 4;
+            grid-column: 4 / 5;
             grid-row: 1;
         }
         #footer {
-            grid-column: 3 / 4;
+            grid-column: 4 / 5;
             grid-row: 3;
             align-self: end;
         }
