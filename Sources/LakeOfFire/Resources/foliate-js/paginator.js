@@ -952,9 +952,9 @@ export class Paginator extends HTMLElement {
         if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
             this.#wheelArmed = false;
             if (e.deltaX > 0) {
-                await this.next();
-            } else {
                 await this.prev();
+            } else {
+                await this.next();
             }
         } else if (!this.#wheelArmed && Math.abs(e.deltaX) < RESET_THRESHOLD) {
             // Only re-arm once wheel momentum is near zero
