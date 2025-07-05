@@ -8,6 +8,12 @@
             <style>
                 body {
                     --active-bg: rgba(0, 0, 0, .05);
+                    --side-nav-width: 32px;
+                }
+                @media screen and (min-width: 960px) {
+                    body {
+                        --side-nav-width: 44px;
+                    }
                 }
                 @supports (color-scheme: light dark) {
                     @media (prefers-color-scheme: dark) {
@@ -455,16 +461,17 @@
                     position: fixed;
                     top: 30px;
                     bottom: 30px;
-                    width: 32px;
+                    width: var(--side-nav-width, 32px);
                     height: auto;
                     padding: 0;
                     background: none;
                     border: none;
                     cursor: pointer;
                     z-index: 5;
+                    -webkit-user-select: none;
                     
                     border-radius: 12px;
-                    transition: background 0.2s, box-shadow 0.2s;
+                    transition: background 0.2s;
                 }
                 .side-nav .icon {
                     opacity: 0;
@@ -483,11 +490,13 @@
                 }
                 #btn-scroll-left {
                     left: 0;
-                    margin-right: 4px;
+                    margin-left: 10px;
+                    text-align: left;
                 }
                 #btn-scroll-right {
                     right: 0;
-                    margin-left: 4px;
+                    margin-right: 10px;
+                    text-align: right;
                 }
             </style>
     </head>

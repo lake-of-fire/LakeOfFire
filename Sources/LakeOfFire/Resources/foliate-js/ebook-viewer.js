@@ -208,6 +208,12 @@ const getView = async (file, isCacheWarmer) => {
         }
     `;
         paginator.shadowRoot.appendChild(style);
+        
+        const sideNavWidth = 32;
+        document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
+        if (paginator.shadowRoot.host) {
+            paginator.shadowRoot.host.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
+        }
     }
     
     return view
@@ -217,6 +223,7 @@ const getCSS = ({ spacing, justify, hyphenate }) => `
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
         color-scheme: light dark;
+        cursor: inherit;
     }
     /* https://github.com/whatwg/html/issues/5426 */
     @media (prefers-color-scheme: dark) {

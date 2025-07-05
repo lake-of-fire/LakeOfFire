@@ -528,7 +528,7 @@ export class Paginator extends HTMLElement {
             --_margin: 48px;*/
             --_gap: 4%;
             --_margin: 30px;
-            --_side-margin: 32px;
+            --_side-margin: var(--side-nav-width, 32px);
             --_max-inline-size: 720px;
             --_max-block-size: 1440px;
             --_max-column-count: 2;
@@ -549,7 +549,8 @@ export class Paginator extends HTMLElement {
                 1fr
                 var(--_side-margin);
             grid-template-rows:
-                minmax(var(--_margin), 1fr)
+                /*minmax(var(--_margin), 1fr)*/
+                0
                 minmax(0, var(--_max-height))
                 minmax(var(--_margin), 1fr);
             &.vertical {
