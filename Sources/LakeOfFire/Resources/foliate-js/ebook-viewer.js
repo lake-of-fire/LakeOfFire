@@ -322,12 +322,10 @@ class Reader {
         
         $('#nav-bar').style.visibility = 'visible'
         this.buttons = {
-            leftScroll:  document.getElementById('btn-left-scroll'),
-            prev:        document.getElementById('btn-prev-chapter'),
-            rightScroll: document.getElementById('btn-right-scroll'),
-            next:        document.getElementById('btn-next-chapter'),
-            finish:      document.getElementById('btn-finish'),
-            restart:     document.getElementById('btn-restart'),
+            prev:    document.getElementById('btn-prev-chapter'),
+            next:    document.getElementById('btn-next-chapter'),
+            finish:  document.getElementById('btn-finish'),
+            restart: document.getElementById('btn-restart'),
         };
         // Hide all other nav buttons except spinners
         for (const btn of Object.values(this.buttons)) {
@@ -347,8 +345,6 @@ class Reader {
             
             flipChevron(this.buttons.prev, false);        // ▶
             flipChevron(this.buttons.next, true);         // ◀
-            flipChevron(this.buttons.leftScroll, false);  // ▶
-            flipChevron(this.buttons.rightScroll, true);  // ◀
             
             // Swap label/icon order for chapter buttons in RTL
             // Ensure "Next Chapter" shows "< Next Chapter"
@@ -388,6 +384,11 @@ class Reader {
         Object.values(this.buttons).forEach(btn =>
                                             btn.addEventListener('click', this.#onNavButtonClick.bind(this))
                                             );
+        // Side-nav scroll handlers
+        const leftSideBtn = document.getElementById('btn-scroll-left');
+        if (leftSideBtn) leftSideBtn.addEventListener('click', () => this.view.goLeft());
+        const rightSideBtn = document.getElementById('btn-scroll-right');
+        if (rightSideBtn) rightSideBtn.addEventListener('click', () => this.view.goRight());
         
         // Reorder toolbar children for RTL/LTR so left/right stacks and progress are positioned correctly
         const navBar = document.getElementById('nav-bar');
@@ -525,23 +526,18 @@ class Reader {
         // Update left stack: only show one, or hide both if neither needed
         if (atStart && hasPrev) {
             this.#show(this.buttons.prev, true);
-            this.#show(this.buttons.leftScroll, false);
         } else if (!atStart) {
             this.#show(this.buttons.prev, false);
-            this.#show(this.buttons.leftScroll, true);
         } else {
             this.#show(this.buttons.prev, false);
-            this.#show(this.buttons.leftScroll, false);
         }
         if (atEnd) {
             if (hasNext) {
                 this.#show(this.buttons.next, true);
                 this.#show(this.buttons.finish, false);
                 this.#show(this.buttons.restart, false);
-                this.#show(this.buttons.rightScroll, false);
             } else {
                 this.#show(this.buttons.next, false);
-                this.#show(this.buttons.rightScroll, false);
                 if (this.markedAsFinished) {
                     this.#show(this.buttons.restart, true);
                     this.#show(this.buttons.finish, false);
@@ -554,7 +550,6 @@ class Reader {
             this.#show(this.buttons.next, false);
             this.#show(this.buttons.finish, false);
             this.#show(this.buttons.restart, false);
-            this.#show(this.buttons.rightScroll, true);
         }
         // Consolidate restart icon SVG path update
         const restartBtn = this.buttons.restart;

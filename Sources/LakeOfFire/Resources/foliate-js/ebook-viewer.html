@@ -442,6 +442,28 @@
                     margin-left: auto !important;
                     margin-right: auto !important;
                 }
+                
+                /* Side-nav tall chevrons */
+                .side-nav {
+                    position: fixed;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    background: none;
+                    border: none;
+                    padding: 8px;
+                    cursor: pointer;
+                    z-index: 5;
+                }
+                #btn-scroll-left {
+                    left: 0;
+                }
+                #btn-scroll-right {
+                    right: 0;
+                }
+                .side-nav .icon {
+                    width: 24px;
+                    height: 48px;
+                }
             </style>
     </head>
     <body class="ebook-viewer">
@@ -457,7 +479,7 @@
                 <div class="ispinner-blade"></div>
             </div>
         </div>
-
+        
         <div id="dimming-overlay" aria-hidden="true"></div>
         <div id="side-bar">
             <div id="side-bar-header">
@@ -481,9 +503,6 @@
         <div id="nav-bar" class="toolbar">
             <div id="left-button-container" style="display: grid; grid-template-columns: 1fr;">
                 <div id="left-stack" class="button-stack">
-                    <button id="btn-left-scroll" data-button-type="scroll-prev" aria-label="Scroll left">
-                        <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                    </button>
                     <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
                         <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
                         <span class="button-label full">Previous</span>
@@ -498,9 +517,6 @@
             </div>
             <div id="right-button-container" style="display: grid; grid-template-columns: 1fr;">
                 <div id="right-stack" class="button-stack">
-                    <button id="btn-right-scroll" data-button-type="scroll-next" aria-label="Scroll right">
-                        <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
-                    </button>
                     <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
                         <span class="button-label full">Next</span>
                         <span class="button-label short">Next</span>
@@ -521,6 +537,13 @@
                 </div>
             </div>
         </div>
+        <!-- Side-nav scroll buttons -->
+        <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M15 6 L9 12 L15 18"/></svg>
+        </button>
+        <button id="btn-scroll-right" class="side-nav" aria-label="Scroll right">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M9 6 L15 12 L9 18"/></svg>
+        </button>
         <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
     </body>
 </html>
