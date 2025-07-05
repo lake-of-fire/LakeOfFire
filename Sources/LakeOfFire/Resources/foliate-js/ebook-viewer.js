@@ -411,14 +411,20 @@ class Reader {
             function fadeWithHold(elem, value, key) {
                 if (!elem) return;
                 clearTimeout(chevronFadeTimers[key]);
-                if (value === '' || value === undefined) {
+                if (value === '' || value === 0 || typeof value === 'undefined') {
                     // Remove visible class after delay so fade-out can happen
                     chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
+                        elem.style.removeProperty('opacity')
                     }, 100);
-                } else if (Number(value) > 0) {
+                } else if (Number(value) >= 1) {
+                    elem.style.removeProperty('opacity')
                     elem.classList.add('chevron-visible');
+                } else if (Number(value) > 0) {
+                    elem.classList.remove('chevron-visible');
+                    elem.style.opacity = value
                 } else {
+                    elem.style.removeProperty('opacity')
                     elem.classList.remove('chevron-visible');
                 }
             }

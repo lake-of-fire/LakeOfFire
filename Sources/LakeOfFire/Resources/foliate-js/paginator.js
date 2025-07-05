@@ -900,6 +900,7 @@ export class Paginator extends HTMLElement {
             e.preventDefault();
             const touch = e.changedTouches[0];
             const state = this.#touchState;
+            if (state.triggered) return;
             state.x = touch.screenX;
             state.y = touch.screenY;
             const dx = state.x - state.startX;
@@ -946,35 +947,54 @@ export class Paginator extends HTMLElement {
             ? ({ top, bottom }) => ({ left: top, right: bottom })
             : f => f
         }
-                          /**
-                           * Handle mouse wheel events to paginate.
-                           * Only trigger on significant horizontal wheel movement.
-                           * Uses hysteresis: after a page turn, wheel delta must fall below reset threshold before another turn.
-                           */
+                          #wheelCooldown = false;
+                          #lastWheelDeltaX = 0;
                           async #onWheel(e) {
             if (this.scrolled) return;
-            
             e.preventDefault();
-            
-            this.#updateSwipeChevron(e.deltaX);
-            
-            // Only respond to horizontal wheel, not vertical.
             if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
             
-            const TRIGGER_THRESHOLD = 20;
-            const RESET_THRESHOLD = 5;
+            const TRIGGER_THRESHOLD = 10;
+            const RESET_THRESHOLD = 3;
+            
+            // Early exit for "momentum falling" (hide chevrons if armed, deltaX dropping, and below threshold)
+            if (
+                this.#wheelArmed &&
+                Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
+                Math.abs(e.deltaX) < TRIGGER_THRESHOLD
+                ) {
+                    this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                        bubbles: true,
+                        composed: true,
+                        detail: { leftOpacity: '', rightOpacity: '' }
+                    }));
+                    this.#lastWheelDeltaX = e.deltaX;
+                    return;
+                }
+            
+            if (this.#wheelArmed) {
+                if (Math.abs(e.deltaX) > RESET_THRESHOLD) {
+                    this.#updateSwipeChevron(e.deltaX);
+                } else {
+                    this.#updateSwipeChevron(0);
+                }
+            }
             
             if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
                 this.#wheelArmed = false;
+                this.#wheelCooldown = true;
                 if (e.deltaX > 0) {
                     await this.prev();
                 } else {
                     await this.next();
                 }
-            } else if (!this.#wheelArmed && Math.abs(e.deltaX) < RESET_THRESHOLD) {
-                // Only re-arm once wheel momentum is near zero
+                setTimeout(() => {
+                    this.#wheelCooldown = false;
+                }, 75);
+            } else if (!this.#wheelArmed && !this.#wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
                 this.#wheelArmed = true;
             }
+            this.#lastWheelDeltaX = e.deltaX;
         }
                           async #scrollToRect(rect, reason) {
             if (this.scrolled) {
@@ -1074,13 +1094,13 @@ export class Paginator extends HTMLElement {
             const minSwipe = 36;
             let leftOpacity = 0, rightOpacity = 0;
             if (!this.#rtl) {
-                // LTR: dx > 0 is left chevron, dx < 0 is right chevron
-                if (dx > 0) rightOpacity = Math.min(1, dx / minSwipe);
-                else if (dx < 0) leftOpacity = Math.min(1, -dx / minSwipe);
-            } else {
-                // RTL: dx > 0 is right chevron, dx < 0 is left chevron
+                // LTR: dx > 0 is LEFT chevron, dx < 0 is RIGHT chevron
                 if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
                 else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
+            } else {
+                // RTL: dx > 0 is RIGHT chevron, dx < 0 is LEFT chevron
+                if (dx > 0) rightOpacity = Math.min(1, dx / minSwipe);
+                else if (dx < 0) leftOpacity = Math.min(1, -dx / minSwipe);
             }
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
