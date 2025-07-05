@@ -250,6 +250,11 @@ const getCSS = ({ spacing, justify, hyphenate }) => `
     aside[epub|type~="rearnote"] {
         display: none;
     }
+
+    h1, h2, h3, h4, h5, h6 {
+        background: inherit !important;
+        color: inherit !important;
+    }
 `
 
 const $ = document.querySelector.bind(document)
