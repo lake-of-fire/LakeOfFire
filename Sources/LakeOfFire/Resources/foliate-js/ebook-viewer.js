@@ -570,16 +570,20 @@ class Reader {
     #handleKeydown(event) {
         const k = event.key;
         const renderer = this.view.renderer;
+        const isRTL = this.isRTL;
+        
         if (k === 'ArrowLeft' || k === 'h') {
-            if (renderer.atStart) {
-                // simulate click on the "Previous Chapter" button to show spinner
+            if (isRTL && renderer.atEnd) {
+                this.buttons.next.click();
+            } else if (!isRTL && renderer.atStart) {
                 this.buttons.prev.click();
             } else {
                 this.view.goLeft();
             }
         } else if (k === 'ArrowRight' || k === 'l') {
-            if (renderer.atEnd) {
-                // simulate click on the "Next Chapter" button to show spinner
+            if (isRTL && renderer.atStart) {
+                this.buttons.prev.click();
+            } else if (!isRTL && renderer.atEnd) {
                 this.buttons.next.click();
             } else {
                 this.view.goRight();
