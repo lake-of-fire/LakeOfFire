@@ -853,6 +853,7 @@ export class Paginator extends HTMLElement {
                 t: e.timeStamp,
                 vx: 0, vy: 0,
                 pinched: false,
+                triggered: false,
             };
             // Only block in paginated mode (not 'scrolled')
             if (!this.scrolled) {
@@ -880,33 +881,27 @@ export class Paginator extends HTMLElement {
         }
                           #onTouchMove(e) {
             if (this.#isAdjustingSelectionHandle) return;
-            // Do not move content during touch.
-            // Still prevent default so the gesture isn't handled by browser.
             e.preventDefault();
-            // Track the current finger position for use in touch end.
             const touch = e.changedTouches[0];
             const state = this.#touchState;
             state.x = touch.screenX;
             state.y = touch.screenY;
-            // (Optionally) record dt and velocity if you want to add a "fast swipe" option, but not needed for now.
+            const dx = state.x - state.startX;
+            const dy = state.y - state.startY;
+            const minSwipe = 36; // px threshold
+                                 // Trigger on crossing threshold, only once per gesture
+            if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
+                state.triggered = true;
+                if (dx < 0) {
+                    this.#rtl ? this.next() : this.prev();
+                } else {
+                    this.#rtl ? this.prev() : this.next();
+                }
+            }
         }
                           #onTouchEnd(e) {
             if (this.#isAdjustingSelectionHandle) return;
-            // On finger lift, check swipe direction/threshold and turn page.
-            const state = this.#touchState;
-            const minSwipe = 30; // px, threshold to detect a swipe
-            const dx = state.x - state.startX;
-            const dy = state.y - state.startY;
-            // Only consider horizontal swipes that are not too vertical.
-            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
-                if (dx < 0) {
-                    // Swiped left: go to next page (respect RTL in paginator)
-                    this.#rtl ? this.prev() : this.next();
-                } else {
-                    // Swiped right: go to previous page (respect RTL in paginator)
-                    this.#rtl ? this.next() : this.prev();
-                }
-            }
+            // No-op: do not trigger page turn on finger lift.
         }
                           // allows one to process rects as if they were LTR and horizontal
                           #getRectMapper() {
