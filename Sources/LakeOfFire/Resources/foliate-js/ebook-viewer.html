@@ -462,23 +462,33 @@
                     border: none;
                     cursor: pointer;
                     z-index: 5;
-                }
-                #btn-scroll-left {
-                    left: 0;
-                }
-                #btn-scroll-right {
-                    right: 0;
+                    
+                    border-radius: 12px;
+                    transition: background 0.2s, box-shadow 0.2s;
                 }
                 .side-nav .icon {
+                    opacity: 0;
+                    transition: opacity 0.2s;
+                    pointer-events: none;
+                    
                     width: 18px;
                     height: 48px;
                     stroke-width: 4px;
                     stroke: var(--secondary-color);
                 }
+                .side-nav:hover .icon,
+                .side-nav:active .icon {
+                    opacity: 1;
+                    pointer-events: auto;
+                }
+                .side-nav .icon {
+                }
                 #btn-scroll-left {
+                    left: 0;
                     margin-right: 4px;
                 }
                 #btn-scroll-right {
+                    right: 0;
                     margin-left: 4px;
                 }
             </style>
