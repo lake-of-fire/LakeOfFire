@@ -476,6 +476,11 @@ class Reader {
             }
         }
         
+        slider.style.setProperty('--value', slider.value);
+        slider.style.setProperty('--min', slider.min == '' ? '0' : slider.min);
+        slider.style.setProperty('--max', slider.max == '' ? '100' : slider.max);
+        slider.addEventListener('input', () => slider.style.setProperty('--value', slider.value));
+        
         // Percent jump input/button wiring
         const percentInput = document.getElementById('percent-jump-input');
         const percentButton = document.getElementById('percent-jump-button');
@@ -666,6 +671,7 @@ class Reader {
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
         slider.value = fraction
+        slider.style.setProperty('--value', slider.value); // keep slider progress updated
         slider.title = `${percent} · ${loc}`
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
             
@@ -674,6 +680,22 @@ class Reader {
             }
         
         this.updateNavButtons();
+        
+        // Force chevron visible at start of sections
+        const renderer = this.view.renderer;
+        const isRTL = this.isRTL;
+        const atSectionStart = typeof renderer.isAtSectionStart === "function" ? renderer.isAtSectionStart() : false;
+        if (atSectionStart) {
+            this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                bubbles: true,
+                composed: true,
+                detail: {
+                    leftOpacity: isRTL ? 0.999 : 0,
+                    rightOpacity: isRTL ? 0 : 0.999
+                }
+            }));
+        }
+        
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
         const percentButton = document.getElementById('percent-jump-button');

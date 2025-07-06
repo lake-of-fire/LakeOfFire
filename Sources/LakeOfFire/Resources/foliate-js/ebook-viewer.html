@@ -12,17 +12,13 @@
                 }
                 @media screen and (min-width: 960px) {
                     body {
-                        --side-nav-width: 44px;
+                        --side-nav-width: 58px;
                     }
                 }
                 @supports (color-scheme: light dark) {
                     @media (prefers-color-scheme: dark) {
                         body {
                             --active-bg: rgba(255, 255, 255, .1);
-                        }
-                        
-                        [data-manabi-dark-theme="black"] .toolbar {
-                            background: #75757540;
                         }
                     }
                 }
@@ -32,8 +28,9 @@
                 }
                 body {
                     --manabi-red: #ff4500;
-                    --secondary-color: #7d7d7d;
-                    
+                    --secondary-color: #7a7a7a;
+                    --tertiary-color: #fbfbfb;
+
                     margin: 0 auto;
                     height: 100%;
                     /*height: 100dvh;*/
@@ -42,7 +39,8 @@
                 }
                 @media (prefers-color-scheme: dark) {
                     body {
-                        --secondary-color: #8f8f8f;
+                        --secondary-color: #7f7f7f;
+                        --tertiary-color: #1e1e1e;
                     }
                 }
                 
@@ -98,7 +96,7 @@
                     border-radius: 6px;
                     background: none;
                     border: 0;
-                    color: GrayText;
+                    color: var(--secondary-color);
                     display: flex;
                     align-items: center;
                     justify-content: start;
@@ -171,19 +169,14 @@
                     z-index: 3;
                     bottom: 0;
                     -webkit-backdrop-filter: blur(30px);
-                    background: rgba(255, 255, 255, .7);
-                }
-                @media (prefers-color-scheme: dark) {
-                    #nav-bar {
-                        background: rgba(35, 35, 35, .7);
-                    }
                 }
                 #progress-button {
                     all: unset; /* Remove default styling */
                     margin: 0 5px;
                     padding: 1px 8px;
-                    color: GrayText;
-                    border: 1px solid GrayText;
+                    color: var(--secondary-color);
+                    border: 1px solid var(--secondary-color);
+                    cursor: pointer;
                     background: none;
                     font-size: x-small;
                     font-weight: 600;
@@ -202,7 +195,7 @@
                     flex-grow: 1;
                     margin: 0 12px;
                     visibility: hidden;
-                    accent-color: GrayText;
+                    /*accent-color: GrayText;*/
                 }
                 #side-bar {
                     visibility: hidden;
@@ -235,7 +228,7 @@
                     right: 1rem;
                     font-size: 20px;
                     font-weight: bold;
-                    color: GrayText;
+                    color: var(--secondary-color);
                     cursor: pointer;
                 }
                 #side-bar-close-button:hover {
@@ -294,7 +287,7 @@
                 #side-bar-author {
                     margin: .5rem 0;
                     font-size: small;
-                    color: GrayText;
+                    color: var(--secondary-color);
                 }
                 #toc-view {
                     padding: .5rem;
@@ -319,7 +312,7 @@
                     background: var(--active-bg);
                 }
                 #toc-view span {
-                    color: GrayText;
+                    color: var(--secondary-color);
                 }
                 #toc-view svg {
                     margin-inline-start: -24px;
@@ -502,11 +495,12 @@
                 .side-nav.pressed .icon,
                 .side-nav .icon.chevron-visible {
                     opacity: 1 !important;
-                    filter: brightness(1.5);
+                    stroke: CanvasText;
                 }
                 @media (hover: hover) and (pointer: fine) {
                     .side-nav:hover .icon {
                         opacity: 1;
+                        stroke: CanvasText;
                         /*pointer-events: auto;*/
                     }
                 }
@@ -525,6 +519,57 @@
                     margin-right: calc(var(--side-nav-width, 32px) / 5);
                 }
                 
+                /* Generated with Input range slider CSS style generator (version 20211225)
+                 https://toughengineer.github.io/demo/slider-styler */
+                input[type=range].styled-slider {
+                    height: 30px;
+                    -webkit-appearance: none;
+                    background: transparent;
+                }
+                input[type=range].styled-slider:focus {
+                    outline: none;
+                }
+                input[type=range].styled-slider::-webkit-slider-thumb {
+                    -webkit-appearance: none;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 16px;
+                    background: var(--theme-background-color);
+                    border: 1px solid var(--secondary-color);
+                    /*box-shadow: 0 0 1px CanvasText;*/
+                    box-shadow: 0 0 2px var(--secondary-color);
+                    margin-top: calc(2px * 0.5 - 16px * 0.5);
+                }
+                input[type=range].styled-slider::-webkit-slider-runnable-track {
+                    height: 2px;
+                    border: none;
+                    border-radius: 2px;
+                    background: var(--secondary-color);
+                    box-shadow: none;
+                }
+                input[type=range].styled-slider::-webkit-slider-thumb:hover,
+                input[type=range].styled-slider::-webkit-slider-thumb:active {
+                    background: CanvasText;
+                    cursor: pointer;
+                }
+                input[type=range].styled-slider:hover::-webkit-slider-runnable-track,
+                input[type=range].styled-slider:active::-webkit-slider-runnable-track {
+                    cursor: pointer;
+                }
+                input[type=range].styled-slider.slider-progress::-webkit-slider-runnable-track {
+                    background: linear-gradient(to right, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                }
+                input[type=range].styled-slider.slider-progress:dir(rtl)::-webkit-slider-runnable-track {
+                    background: linear-gradient(to left, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                }
+                input[type=range].styled-slider.slider-progress {
+                    --range: calc(var(--max) - var(--min));
+                    --ratio: calc((var(--value) - var(--min)) / var(--range));
+                    --sx: calc(0.5 * 16px + var(--ratio) * (100% - 16px));
+                }
+
                 /* View Transitions */
                 /*
                 @keyframes fade-in { from { opacity: 0; } }
@@ -607,7 +652,7 @@
             </div>
             <div id="progress-wrapper" style="display: flex; flex: 1; justify-content: center; align-items: center;">
                 <button id="progress-button"></button>
-                <input id="progress-slider" type="range" min="0" max="1" step="any" list="tick-marks">
+                <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
                     <datalist id="tick-marks"></datalist>
             </div>
             <div id="right-button-container" style="display: grid; grid-template-columns: 1fr;">
