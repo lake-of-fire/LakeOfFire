@@ -487,6 +487,7 @@ export class Paginator extends HTMLElement {
         }
     })
     #top
+    #transitioning = false;
     #background
     #container
     #header
@@ -923,7 +924,7 @@ export class Paginator extends HTMLElement {
                 this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                     bubbles: true,
                     composed: true,
-                    details: {
+                    detail: {
                         leftOpacity: (dx < 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
                         rightOpacity: (dx > 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
                     }
@@ -998,10 +999,11 @@ export class Paginator extends HTMLElement {
                 } else {
                     this.next();
                 }
+                const dx = e.deltaX;
                 this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                     bubbles: true,
                     composed: true,
-                    details: {
+                    detail: {
                         leftOpacity: (dx < 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
                         rightOpacity: (dx > 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
                     }
@@ -1047,32 +1049,52 @@ export class Paginator extends HTMLElement {
                         }
             }
             
+            // Prevent new transitions while one is running
+            if (this.#transitioning) {
+                await scroll();
+                return;
+            }
+            
+            console.log(this.#view)
             if (
+                !this.#view ||
                 (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
                 typeof document.startViewTransition !== 'function'
-                ) {
-                    await scroll();
-                } else {
-                    let dir;
-                    if (offset > this.start) {
-                        dir = this.#rtl ? 'slide-right' : 'slide-left';
+            ) {
+                await scroll();
+            } else {
+                let goingForward = offset > this.start;
+                let slideFrom, slideTo;
+                
+                if (!this.#rtl) {
+                    if (goingForward) {
+                        slideFrom = 'slide-from-right';
+                        slideTo = 'slide-to-left';
                     } else {
-                        dir = this.#rtl ? 'slide-left' : 'slide-right';
+                        slideFrom = 'slide-from-left';
+                        slideTo = 'slide-to-right';
                     }
-                    
-                    document.documentElement.style.viewTransitionName = 'scroll-to';
-                    
-                    const slideFrom = dir === 'right' ? 'slide-from-right' : 'slide-from-left';
-                    const slideTo = dir === 'right' ? 'slide-to-left' : 'slide-to-right';
-                    document.documentElement.style.setProperty('--slide-from', slideFrom);
-                    document.documentElement.style.setProperty('--slide-to', slideTo);
-                    
-                    document.documentElement.classList.add(dir);
-                    
-                    await document.startViewTransition(scroll);
-                    
-                    document.documentElement.classList.remove('slide-left', 'slide-right');
+                } else {
+                    if (goingForward) {
+                        slideFrom = 'slide-from-left';
+                        slideTo = 'slide-to-right';
+                    } else {
+                        slideFrom = 'slide-from-right';
+                        slideTo = 'slide-to-left';
+                    }
                 }
+                
+                this.#view.style.viewTransitionName = 'scroll-to';
+                this.#view.style.setProperty('--slide-from', slideFrom);
+                this.#view.style.setProperty('--slide-to', slideTo);
+                
+                this.#transitioning = true;
+                try {
+                    await document.startViewTransition(scroll);
+                } finally {
+                    this.#transitioning = false;
+                }
+            }
         }
                           async #scrollToPage(page, reason, smooth) {
             const offset = this.size * (this.#rtl ? -page : page)
