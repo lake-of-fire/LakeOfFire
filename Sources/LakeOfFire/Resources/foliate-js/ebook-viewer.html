@@ -493,8 +493,10 @@
                     transition: opacity 0.08s ease-in, filter 0.2s ease-in 0.1s;
                 }
                 .side-nav:active .icon,
-                .side-nav.pressed .icon {
-                    transition: opacity 0.08s ease-in, filter ease-in 0.1s;
+                .side-nav.pressed .icon,
+                .side-nav:active .icon.chevron-visible,
+                .side-nav.pressed .icon.chevron-visible {
+                    transition: opacity 0.02s ease-in, filter ease-in 0.03s;
                 }
                 .side-nav:active .icon,
                 .side-nav.pressed .icon,
