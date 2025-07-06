@@ -401,6 +401,19 @@ class Reader {
         const rightSideBtn = document.getElementById('btn-scroll-right');
         if (rightSideBtn) rightSideBtn.addEventListener('click', () => this.view.goRight());
         
+        // Immediate tap feedback for side-nav chevrons on iOS/touch
+        document.querySelectorAll('.side-nav').forEach(nav => {
+            nav.addEventListener('touchstart', () => {
+                nav.classList.add('pressed');
+            }, {passive:true});
+            nav.addEventListener('touchend', () => {
+                nav.classList.remove('pressed');
+            });
+            nav.addEventListener('touchcancel', () => {
+                nav.classList.remove('pressed');
+            });
+        });
+
         // Side-nav opacity wiring
         // At the top of the file (module/global scope):
         const chevronFadeTimers = {};

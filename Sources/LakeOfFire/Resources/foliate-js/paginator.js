@@ -918,6 +918,14 @@ export class Paginator extends HTMLElement {
                 } else {
                     this.#rtl ? this.prev() : this.next();
                 }
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    details: {
+                        leftOpacity: (dx < 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
+                        rightOpacity: (dx > 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
+                    }
+                }));
             }
         }
                           #onTouchEnd(e) {
@@ -984,10 +992,18 @@ export class Paginator extends HTMLElement {
                 this.#wheelArmed = false;
                 this.#wheelCooldown = true;
                 if (e.deltaX > 0) {
-                    await this.prev();
+                    this.prev();
                 } else {
-                    await this.next();
+                    this.next();
                 }
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    details: {
+                        leftOpacity: (dx < 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
+                        rightOpacity: (dx > 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
+                    }
+                }));
                 setTimeout(() => {
                     this.#wheelCooldown = false;
                 }, 75);
@@ -1253,25 +1269,6 @@ export class Paginator extends HTMLElement {
                           async #turnPage(dir, distance) {
             if (this.#locked) return
                 
-                // Determine which chevron should be forced visible based on direction and RTL
-                let forceSide = null;
-            if (dir === -1) {
-                // Backward
-                forceSide = this.#rtl ? 'left' : 'right';
-            } else if (dir === 1) {
-                // Forward
-                forceSide = this.#rtl ? 'right' : 'left';
-            }
-            if (forceSide) {
-                const detail = forceSide === 'left'
-                ? { leftOpacity: 1, rightOpacity: 0 }
-                : { leftOpacity: 0, rightOpacity: 1 };
-                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                    bubbles: true,
-                    composed: true,
-                    detail
-                }));
-            }
             this.#locked = true
             const prev = dir === -1
             const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
