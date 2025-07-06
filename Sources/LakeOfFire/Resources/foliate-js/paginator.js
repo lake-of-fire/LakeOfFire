@@ -276,10 +276,10 @@ class View {
                         this.#iframe.style.display = 'block'
                         
                         this.render(layout)
-                                             
+                        
                         this.#resizeObserver.observe(doc.body)
                         this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
-       
+                        
                         // the resize observer above doesn't work in Firefox
                         // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                         // until the bug is fixed we can at least account for font load
@@ -291,7 +291,7 @@ class View {
                     this.#iframe.src = src
                 }
             })
-    }
+            }
     render(layout) {
         if (!layout) return
             this.#column = layout.flow !== 'scrolled'
@@ -514,102 +514,102 @@ export class Paginator extends HTMLElement {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
         this.#root.innerHTML = `<style>
-        :host {
-            display: block;
-            container-type: size;
-        }
-        :host, #top {
-            box-sizing: border-box;
-            position: relative;
-            overflow: hidden;
-            width: 100%;
-            height: 100%;
-        }
-        #top {
-            /*--_gap: 7%;
-            --_margin: 48px;*/
-            --_gap: 4%;
-            --_margin: 30px;
-            --_side-margin: var(--side-nav-width, 32px);
-            --_max-inline-size: 720px;
-            --_max-block-size: 1440px;
-            --_max-column-count: 2;
-            --_max-column-count-portrait: 1;
-            --_max-column-count-spread: var(--_max-column-count);
-            --_half-gap: calc(var(--_gap) / 2);
-            --_max-width: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
-            --_max-height: var(--_max-block-size);
-            display: grid;
-            grid-template-columns:
-                var(--_side-margin)
-                1fr
-                /*minmax(var(--_half-gap), 1fr)*/
-                /*var(--_half-gap)*/
-                minmax(0, calc(var(--_max-width) - var(--_gap)))
-                /*var(--_half-gap)*/
-                /*minmax(var(--_half-gap), 1fr)*/
-                1fr
-                var(--_side-margin);
-            grid-template-rows:
-                /*minmax(var(--_margin), 1fr)*/
-                0
-                minmax(0, var(--_max-height))
-                minmax(var(--_margin), 1fr);
-            &.vertical {
-                --_max-column-count-spread: var(--_max-column-count-portrait);
-                --_max-width: var(--_max-block-size);
-                --_max-height: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
+            :host {
+                display: block;
+                container-type: size;
             }
-            @container (orientation: portrait) {
-                & {
-                    --_max-column-count-spread: var(--_max-column-count-portrait);
-                }
+            :host, #top {
+                box-sizing: border-box;
+                position: relative;
+                overflow: hidden;
+                width: 100%;
+                height: 100%;
+            }
+            #top {
+                /*--_gap: 7%;
+                --_margin: 48px;*/
+                --_gap: 4%;
+                --_margin: 30px;
+                --_side-margin: var(--side-nav-width, 32px);
+                --_max-inline-size: 720px;
+                --_max-block-size: 1440px;
+                --_max-column-count: 2;
+                --_max-column-count-portrait: 1;
+                --_max-column-count-spread: var(--_max-column-count);
+                --_half-gap: calc(var(--_gap) / 2);
+                --_max-width: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
+                --_max-height: var(--_max-block-size);
+                display: grid;
+                grid-template-columns:
+                    var(--_side-margin)
+                    1fr
+                    /*minmax(var(--_half-gap), 1fr)*/
+                    /*var(--_half-gap)*/
+                    minmax(0, calc(var(--_max-width) - var(--_gap)))
+                    /*var(--_half-gap)*/
+                    /*minmax(var(--_half-gap), 1fr)*/
+                    1fr
+                    var(--_side-margin);
+                grid-template-rows:
+                    /*minmax(var(--_margin), 1fr)*/
+                    0
+                    minmax(0, var(--_max-height))
+                    minmax(var(--_margin), 1fr);
                 &.vertical {
-                    --_max-column-count-spread: var(--_max-column-count);
+                    --_max-column-count-spread: var(--_max-column-count-portrait);
+                    --_max-width: var(--_max-block-size);
+                    --_max-height: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
+                }
+                @container (orientation: portrait) {
+                    & {
+                        --_max-column-count-spread: var(--_max-column-count-portrait);
+                    }
+                    &.vertical {
+                        --_max-column-count-spread: var(--_max-column-count);
+                    }
                 }
             }
-        }
-        #background {
-            grid-column: 1 / -1;
-            grid-row: 1 / -1;
-        }
-        #container {
-            grid-column: 3 / 4;
-            grid-row: 2;
-            overflow: hidden;
-        }
-        :host([flow="scrolled"]) #container {
-            grid-column: 1 / -1;
-            grid-row: 1 / -1;
-            overflow: auto;
-        }
-        #header {
-            grid-column: 4 / 5;
-            grid-row: 1;
-        }
-        #footer {
-            grid-column: 4 / 5;
-            grid-row: 3;
-            align-self: end;
-        }
-        #header, #footer {
-            display: grid;
-            height: var(--_margin);
-        }
-        :is(#header, #footer) > * {
-            display: flex;
-            align-items: center;
-            min-width: 0;
-        }
-        :is(#header, #footer) > * > * {
-            width: 100%;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-            text-align: center;
-            font-size: .75em;
-            opacity: .6;
-        }
+            #background {
+                grid-column: 1 / -1;
+                grid-row: 1 / -1;
+            }
+            #container {
+                grid-column: 3 / 4;
+                grid-row: 2;
+                overflow: hidden;
+            }
+            :host([flow="scrolled"]) #container {
+                grid-column: 1 / -1;
+                grid-row: 1 / -1;
+                overflow: auto;
+            }
+            #header {
+                grid-column: 4 / 5;
+                grid-row: 1;
+            }
+            #footer {
+                grid-column: 4 / 5;
+                grid-row: 3;
+                align-self: end;
+            }
+            #header, #footer {
+                display: grid;
+                height: var(--_margin);
+            }
+            :is(#header, #footer) > * {
+                display: flex;
+                align-items: center;
+                min-width: 0;
+            }
+            :is(#header, #footer) > * > * {
+                width: 100%;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+                text-align: center;
+                font-size: .75em;
+                opacity: .6;
+            }
         </style>
         <div id="top">
             <div id="background" part="filter"></div>
@@ -1022,7 +1022,7 @@ export class Paginator extends HTMLElement {
             const offset = this.#getRectMapper()(rect).left
             return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
         }
-        async #scrollTo(offset, reason, smooth) {
+                          async #scrollTo(offset, reason, smooth) {
             const scroll = async () => {
                 const element = this.#container
                 const { scrollProp, size } = this
@@ -1047,11 +1047,32 @@ export class Paginator extends HTMLElement {
                         }
             }
             
-            if ((reason === 'snap' || reason === 'anchor' || reason === 'selection') || !document.startViewTransition) {
-                await scroll()
-            } else {
-                document.startViewTransition(scroll)
-            }
+            if (
+                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
+                typeof document.startViewTransition !== 'function'
+                ) {
+                    await scroll();
+                } else {
+                    let dir;
+                    if (offset > this.start) {
+                        dir = this.#rtl ? 'slide-right' : 'slide-left';
+                    } else {
+                        dir = this.#rtl ? 'slide-left' : 'slide-right';
+                    }
+                    
+                    document.documentElement.style.viewTransitionName = 'scroll-to';
+                    
+                    const slideFrom = dir === 'right' ? 'slide-from-right' : 'slide-from-left';
+                    const slideTo = dir === 'right' ? 'slide-to-left' : 'slide-to-right';
+                    document.documentElement.style.setProperty('--slide-from', slideFrom);
+                    document.documentElement.style.setProperty('--slide-to', slideTo);
+                    
+                    document.documentElement.classList.add(dir);
+                    
+                    await document.startViewTransition(scroll);
+                    
+                    document.documentElement.classList.remove('slide-left', 'slide-right');
+                }
         }
                           async #scrollToPage(page, reason, smooth) {
             const offset = this.size * (this.#rtl ? -page : page)
@@ -1134,7 +1155,7 @@ export class Paginator extends HTMLElement {
                 detail: { leftOpacity, rightOpacity }
             }));
         }
-        async #display(promise) {
+                          async #display(promise) {
             this.#isLoading = true;
             const { index, src, anchor, onLoad, select } = await promise
             this.#index = index
@@ -1168,7 +1189,7 @@ export class Paginator extends HTMLElement {
                           #canGoToIndex(index) {
             return index >= 0 && index <= this.sections.length - 1
         }
-        async #goTo({ index, anchor, select }) {
+                          async #goTo({ index, anchor, select }) {
             const willLoadNewIndex = index !== this.#index;
             this.dispatchEvent(new CustomEvent('goTo', {
                 willLoadNewIndex: willLoadNewIndex
@@ -1279,21 +1300,21 @@ export class Paginator extends HTMLElement {
                           async #turnPage(dir, distance) {
             if (this.#locked) return
                 
-            this.#locked = true
-            const prev = dir === -1
-            const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
-            if (shouldGo) await this.#goTo({
-                index: this.#adjacentIndex(dir),
-                anchor: prev ? () => 1 : () => 0,
-            })
-                if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-                    this.#locked = false
-                    
-                    this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                        bubbles: true,
-                        composed: true,
-                        detail: { leftOpacity: '', rightOpacity: '' }
-                    }));
+                this.#locked = true
+                const prev = dir === -1
+                const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
+                if (shouldGo) await this.#goTo({
+                    index: this.#adjacentIndex(dir),
+                    anchor: prev ? () => 1 : () => 0,
+                })
+                    if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+                        this.#locked = false
+                        
+                        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                            bubbles: true,
+                            composed: true,
+                            detail: { leftOpacity: '', rightOpacity: '' }
+                        }));
         }
                           prev(distance) {
             return this.#turnPage(-1, distance)

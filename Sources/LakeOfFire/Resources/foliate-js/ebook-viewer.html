@@ -519,13 +519,30 @@
                     text-align: right;
                 }
                 /*
-                #btn-scroll-left .icon {
-                    margin-left: calc(var(--side-nav-width, 32px) / 5);
-                }
-                #btn-scroll-right .icon {
-                    margin-right: calc(var(--side-nav-width, 32px) / 5);
-                }
+                 #btn-scroll-left .icon {
+                 margin-left: calc(var(--side-nav-width, 32px) / 5);
+                 }
+                 #btn-scroll-right .icon {
+                 margin-right: calc(var(--side-nav-width, 32px) / 5);
+                 }
                  */
+                
+                @keyframes fade-in { from { opacity: 0; } }
+                @keyframes fade-out { to { opacity: 0; } }
+                @keyframes slide-from-left { from { transform: translateX(-30px); } }
+                @keyframes slide-from-right { from { transform: translateX(30px); } }
+                @keyframes slide-to-left { to { transform: translateX(-30px); } }
+                @keyframes slide-to-right { to { transform: translateX(30px); } }
+                
+                ::view-transition-old(scroll-to) {
+                    animation: 90ms cubic-bezier(0.4, 0, 1, 1) both fade-out,
+                    300ms cubic-bezier(0.4, 0, 0.2, 1) both var(--slide-to);
+                }
+                
+                ::view-transition-new(scroll-to) {
+                    animation: 210ms cubic-bezier(0, 0, 0.2, 1) 90ms both fade-in,
+                    300ms cubic-bezier(0.4, 0, 0.2, 1) both var(--slide-from);
+                }
             </style>
     </head>
     <body class="ebook-viewer">
