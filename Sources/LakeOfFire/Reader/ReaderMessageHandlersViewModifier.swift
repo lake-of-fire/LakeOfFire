@@ -226,7 +226,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "window.loadEBook({ url, layoutMode })",
                             arguments: [
                                 "url": loaderURL.absoluteString,
-                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "scrolled"
+                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
                             ]
                         )
                     }
@@ -264,7 +264,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
     
-    @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "scrolled"
+    @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "paginated"
     
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel

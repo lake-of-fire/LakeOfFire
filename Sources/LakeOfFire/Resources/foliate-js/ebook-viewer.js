@@ -212,9 +212,17 @@ const getView = async (file, isCacheWarmer) => {
         const sideNavWidth = 32;
         document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
         // Also set --side-nav-width on the inner view, so it propagates into the iframe's shadow DOM.
-        if (view) {
-            view.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
-        }
+        const syncSideNavWidth = () => {
+            const width = getComputedStyle(document.documentElement)
+            .getPropertyValue('--side-nav-width').trim();
+            if (view) {
+                view.style.setProperty('--side-nav-width', width);
+            }
+        };
+        // On resize (media query triggers), update foliate-view
+        window.addEventListener('resize', syncSideNavWidth);
+        // Also ensure it runs once immediately
+        syncSideNavWidth();
         // if (paginator.shadowRoot.host) {
         //     paginator.shadowRoot.host.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
         // }
@@ -603,6 +611,23 @@ class Reader {
             this.#show(this.buttons.restart, false);
         }
         
+        // RTL/LTR logic for disabling/hiding side chevrons
+        const btnScrollLeft = document.getElementById('btn-scroll-left');
+        const btnScrollRight = document.getElementById('btn-scroll-right');
+        if (btnScrollLeft && btnScrollRight) {
+            if (this.isRTL) {
+                // In RTL, left chevron = go forward, right chevron = go backward
+                // Disable left at end, right at start
+                btnScrollLeft.disabled = (atSectionEnd && !hasNextSection);
+                btnScrollRight.disabled = (atSectionStart && !hasPrevSection);
+            } else {
+                // LTR, left chevron = backward, right chevron = forward
+                // Disable left at start, right at end
+                btnScrollLeft.disabled = (atSectionStart && !hasPrevSection);
+                btnScrollRight.disabled = (atSectionEnd && !hasNextSection);
+            }
+        }
+        
         // Consolidate restart icon SVG path update
         const restartBtn = this.buttons.restart;
         if (restartBtn) {
@@ -820,7 +845,7 @@ class CacheWarmer {
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
         const { book } = this.view
-        this.view.renderer.setAttribute('flow', 'scrolled')
+        this.view.renderer.setAttribute('flow', 'paginated')
         //        this.view.renderer.next()
         
         await this.view.renderer.firstSection()
