@@ -413,7 +413,7 @@ class Reader {
                 nav.classList.remove('pressed');
             });
         });
-
+        
         // Side-nav opacity wiring
         // At the top of the file (module/global scope):
         const chevronFadeTimers = {};
@@ -570,43 +570,34 @@ class Reader {
         });
         if (!this.view?.renderer) return;
         const r = this.view.renderer;
-        const atStart = r.start <= 1;
-        const atEnd = r.viewSize - r.end <= 1;
-        let hasPrev = false, hasNext = false;
-        if (typeof r.getContents === 'function' && r.sections) {
-            const currentIndex = r.getContents()?.[0]?.index ?? 0;
-            const sections = r.sections;
-            hasPrev = sections.slice(0, currentIndex).some(s => s.linear !== 'no');
-            hasNext = sections.slice(currentIndex + 1).some(s => s.linear !== 'no');
-        }
-        // Update left stack: only show one, or hide both if neither needed
-        if (atStart && hasPrev) {
-            this.#show(this.buttons.prev, true);
-        } else if (!atStart) {
-            this.#show(this.buttons.prev, false);
-        } else {
-            this.#show(this.buttons.prev, false);
-        }
-        if (atEnd) {
-            if (hasNext) {
-                this.#show(this.buttons.next, true);
+        // Use new section start/end helpers if available
+        const atSectionStart = typeof r.isAtSectionStart === "function" ? r.isAtSectionStart() : false;
+        const atSectionEnd = typeof r.isAtSectionEnd === "function" ? r.isAtSectionEnd() : false;
+        // Use public helpers to detect prev/next section
+        const hasPrevSection = typeof r.getHasPrevSection === "function" ? r.getHasPrevSection() : true;
+        const hasNextSection = typeof r.getHasNextSection === "function" ? r.getHasNextSection() : true;
+        
+        this.#show(this.buttons.prev, atSectionStart && hasPrevSection);
+        
+        if (atSectionEnd && hasNextSection) {
+            this.#show(this.buttons.next, true);
+            this.#show(this.buttons.finish, false);
+            this.#show(this.buttons.restart, false);
+        } else if (atSectionEnd && !hasNextSection) {
+            this.#show(this.buttons.next, false);
+            if (this.markedAsFinished) {
+                this.#show(this.buttons.restart, true);
                 this.#show(this.buttons.finish, false);
-                this.#show(this.buttons.restart, false);
             } else {
-                this.#show(this.buttons.next, false);
-                if (this.markedAsFinished) {
-                    this.#show(this.buttons.restart, true);
-                    this.#show(this.buttons.finish, false);
-                } else {
-                    this.#show(this.buttons.finish, true);
-                    this.#show(this.buttons.restart, false);
-                }
+                this.#show(this.buttons.finish, true);
+                this.#show(this.buttons.restart, false);
             }
         } else {
             this.#show(this.buttons.next, false);
             this.#show(this.buttons.finish, false);
             this.#show(this.buttons.restart, false);
         }
+        
         // Consolidate restart icon SVG path update
         const restartBtn = this.buttons.restart;
         if (restartBtn) {

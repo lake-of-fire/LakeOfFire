@@ -1049,58 +1049,58 @@ export class Paginator extends HTMLElement {
                         }
             }
             
-//            // Prevent new transitions while one is running
-//            if (this.#transitioning) {
-//                await scroll();
-//                return;
-//            }
+            //            // Prevent new transitions while one is running
+            //            if (this.#transitioning) {
+            //                await scroll();
+            //                return;
+            //            }
             
-//            if (
-//                !this.#view ||
-//                document.visibilityState !== 'visible' ||
-//                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
-//                typeof document.startViewTransition !== 'function'
-//                ) {
-                    await scroll();
-//                } else {
-//                    let goingForward = offset > this.start;
-//                    let slideFrom, slideTo;
-//                    
-//                    if (!this.#rtl) {
-//                        if (goingForward) {
-//                            slideFrom = 'slide-from-right';
-//                            slideTo = 'slide-to-left';
-//                        } else {
-//                            slideFrom = 'slide-from-left';
-//                            slideTo = 'slide-to-right';
-//                        }
-//                    } else {
-//                        if (goingForward) {
-//                            slideFrom = 'slide-from-left';
-//                            slideTo = 'slide-to-right';
-//                        } else {
-//                            slideFrom = 'slide-from-right';
-//                            slideTo = 'slide-to-left';
-//                        }
-//                    }
-//                    
-//                    this.dispatchEvent(new CustomEvent('setViewTransition', {
-//                        bubbles: true,
-//                        composed: true,
-//                        detail: {
-//                            viewTransitionName: 'scroll-to',
-//                            slideFrom,
-//                            slideTo
-//                        }
-//                    }));
-//                    
-//                    this.#transitioning = true;
-//                    try {
-//                        await document.startViewTransition(scroll);
-//                    } finally {
-//                        this.#transitioning = false;
-//                    }
-//                }
+            //            if (
+            //                !this.#view ||
+            //                document.visibilityState !== 'visible' ||
+            //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
+            //                typeof document.startViewTransition !== 'function'
+            //                ) {
+            await scroll();
+            //                } else {
+            //                    let goingForward = offset > this.start;
+            //                    let slideFrom, slideTo;
+            //
+            //                    if (!this.#rtl) {
+            //                        if (goingForward) {
+            //                            slideFrom = 'slide-from-right';
+            //                            slideTo = 'slide-to-left';
+            //                        } else {
+            //                            slideFrom = 'slide-from-left';
+            //                            slideTo = 'slide-to-right';
+            //                        }
+            //                    } else {
+            //                        if (goingForward) {
+            //                            slideFrom = 'slide-from-left';
+            //                            slideTo = 'slide-to-right';
+            //                        } else {
+            //                            slideFrom = 'slide-from-right';
+            //                            slideTo = 'slide-to-left';
+            //                        }
+            //                    }
+            //
+            //                    this.dispatchEvent(new CustomEvent('setViewTransition', {
+            //                        bubbles: true,
+            //                        composed: true,
+            //                        detail: {
+            //                            viewTransitionName: 'scroll-to',
+            //                            slideFrom,
+            //                            slideTo
+            //                        }
+            //                    }));
+            //
+            //                    this.#transitioning = true;
+            //                    try {
+            //                        await document.startViewTransition(scroll);
+            //                    } finally {
+            //                        this.#transitioning = false;
+            //                    }
+            //                }
         }
                           async #scrollToPage(page, reason, smooth) {
             const offset = this.size * (this.#rtl ? -page : page)
@@ -1395,6 +1395,42 @@ export class Paginator extends HTMLElement {
             this.#view.destroy()
             this.#view = null
             this.sections[this.#index]?.unload?.()
+        }
+                          // Public navigation edge detection methods
+                          canTurnPrev() {
+            if (!this.#view) return false;
+            if (this.scrolled) {
+                return this.start > 0;
+            }
+            // If at the start page and no previous section, cannot turn
+            if (this.page <= 1 && this.#adjacentIndex(-1) == null) return false;
+            return true;
+        }
+                          canTurnNext() {
+            if (!this.#view) return false;
+            if (this.scrolled) {
+                return this.viewSize - this.end > 2;
+            }
+            // If at the end page and no next section, cannot turn
+            if (this.page >= this.pages - 2 && this.#adjacentIndex(1) == null) return false;
+            return true;
+        }
+                          
+                          // Public helpers for adjacent sections
+                          getHasPrevSection() {
+            return this.#adjacentIndex(-1) != null;
+        }
+                          getHasNextSection() {
+            return this.#adjacentIndex(1) != null;
+        }
+                          
+                          // Public: At first page of current section
+                          isAtSectionStart() {
+            return this.page <= 1;
+        }
+                          // Public: At last page of current section
+                          isAtSectionEnd() {
+            return this.page >= this.pages - 2;
         }
                           }
                           
