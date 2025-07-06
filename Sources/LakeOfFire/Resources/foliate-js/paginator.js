@@ -1049,52 +1049,58 @@ export class Paginator extends HTMLElement {
                         }
             }
             
-            // Prevent new transitions while one is running
-            if (this.#transitioning) {
-                await scroll();
-                return;
-            }
+//            // Prevent new transitions while one is running
+//            if (this.#transitioning) {
+//                await scroll();
+//                return;
+//            }
             
-            console.log(this.#view)
-            if (
-                !this.#view ||
-                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
-                typeof document.startViewTransition !== 'function'
-            ) {
-                await scroll();
-            } else {
-                let goingForward = offset > this.start;
-                let slideFrom, slideTo;
-                
-                if (!this.#rtl) {
-                    if (goingForward) {
-                        slideFrom = 'slide-from-right';
-                        slideTo = 'slide-to-left';
-                    } else {
-                        slideFrom = 'slide-from-left';
-                        slideTo = 'slide-to-right';
-                    }
-                } else {
-                    if (goingForward) {
-                        slideFrom = 'slide-from-left';
-                        slideTo = 'slide-to-right';
-                    } else {
-                        slideFrom = 'slide-from-right';
-                        slideTo = 'slide-to-left';
-                    }
-                }
-                
-                this.#view.style.viewTransitionName = 'scroll-to';
-                this.#view.style.setProperty('--slide-from', slideFrom);
-                this.#view.style.setProperty('--slide-to', slideTo);
-                
-                this.#transitioning = true;
-                try {
-                    await document.startViewTransition(scroll);
-                } finally {
-                    this.#transitioning = false;
-                }
-            }
+//            if (
+//                !this.#view ||
+//                document.visibilityState !== 'visible' ||
+//                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
+//                typeof document.startViewTransition !== 'function'
+//                ) {
+                    await scroll();
+//                } else {
+//                    let goingForward = offset > this.start;
+//                    let slideFrom, slideTo;
+//                    
+//                    if (!this.#rtl) {
+//                        if (goingForward) {
+//                            slideFrom = 'slide-from-right';
+//                            slideTo = 'slide-to-left';
+//                        } else {
+//                            slideFrom = 'slide-from-left';
+//                            slideTo = 'slide-to-right';
+//                        }
+//                    } else {
+//                        if (goingForward) {
+//                            slideFrom = 'slide-from-left';
+//                            slideTo = 'slide-to-right';
+//                        } else {
+//                            slideFrom = 'slide-from-right';
+//                            slideTo = 'slide-to-left';
+//                        }
+//                    }
+//                    
+//                    this.dispatchEvent(new CustomEvent('setViewTransition', {
+//                        bubbles: true,
+//                        composed: true,
+//                        detail: {
+//                            viewTransitionName: 'scroll-to',
+//                            slideFrom,
+//                            slideTo
+//                        }
+//                    }));
+//                    
+//                    this.#transitioning = true;
+//                    try {
+//                        await document.startViewTransition(scroll);
+//                    } finally {
+//                        this.#transitioning = false;
+//                    }
+//                }
         }
                           async #scrollToPage(page, reason, smooth) {
             const offset = this.size * (this.#rtl ? -page : page)

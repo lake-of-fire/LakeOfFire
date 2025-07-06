@@ -10,10 +10,10 @@ class History extends EventTarget {
     pushState(x) {
         const last = this.#arr[this.#index]
         if (last === x || last?.fraction && last.fraction === x.fraction) return
-        this.#arr[++this.#index] = x
-        this.#arr.length = this.#index + 1
-        this.dispatchEvent(new Event('index-change'))
-    }
+            this.#arr[++this.#index] = x
+            this.#arr.length = this.#index + 1
+            this.dispatchEvent(new Event('index-change'))
+            }
     replaceState(x) {
         const index = this.#index
         this.#arr[index] = x
@@ -21,7 +21,7 @@ class History extends EventTarget {
     back() {
         const index = this.#index
         if (index <= 0) return
-        const detail = { state: this.#arr[index - 1] }
+            const detail = { state: this.#arr[index - 1] }
         this.#index = index - 1
         this.dispatchEvent(new CustomEvent('popstate', { detail }))
         this.dispatchEvent(new Event('index-change'))
@@ -29,7 +29,7 @@ class History extends EventTarget {
     forward() {
         const index = this.#index
         if (index >= this.#arr.length - 1) return
-        const detail = { state: this.#arr[index + 1] }
+            const detail = { state: this.#arr[index + 1] }
         this.#index = index + 1
         this.dispatchEvent(new CustomEvent('popstate', { detail }))
         this.dispatchEvent(new Event('index-change'))
@@ -48,27 +48,27 @@ class History extends EventTarget {
 
 const textWalker = function* (doc, func) {
     const filter = NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
-        | NodeFilter.SHOW_CDATA_SECTION
+    | NodeFilter.SHOW_CDATA_SECTION
     const { FILTER_ACCEPT, FILTER_REJECT, FILTER_SKIP } = NodeFilter
     const acceptNode = node => {
         const name = node.localName?.toLowerCase()
         if (name === 'script' || name === 'style') return FILTER_REJECT
-        if (node.nodeType === 1) return FILTER_SKIP
-        return FILTER_ACCEPT
-    }
+            if (node.nodeType === 1) return FILTER_SKIP
+                return FILTER_ACCEPT
+                }
     const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
     const nodes = []
     for (let node = walker.nextNode(); node; node = walker.nextNode())
         nodes.push(node)
-    const strs = nodes.map(node => node.nodeValue)
-    const makeRange = (startIndex, startOffset, endIndex, endOffset) => {
-        const range = doc.createRange()
-        range.setStart(nodes[startIndex], startOffset)
-        range.setEnd(nodes[endIndex], endOffset)
-        return range
-    }
+        const strs = nodes.map(node => node.nodeValue)
+        const makeRange = (startIndex, startOffset, endIndex, endOffset) => {
+            const range = doc.createRange()
+            range.setStart(nodes[startIndex], startOffset)
+            range.setEnd(nodes[endIndex], endOffset)
+            return range
+        }
     for (const match of func(strs, makeRange)) yield match
-}
+        }
 
 const languageInfo = lang => {
     if (!lang) return {}
@@ -105,7 +105,7 @@ export class View extends HTMLElement {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
         this.#isCacheWarmer = isCacheWarmer
-
+        
         if (book.splitTOCHref && book.getTOCFragment) {
             const ids = book.sections.map(s => s.id)
             this.#sectionProgress = new SectionProgress(book.sections, 1500, 1600)
@@ -116,7 +116,7 @@ export class View extends HTMLElement {
             this.#pageProgress = new TOCProgress({
                 toc: book.pageList ?? [], ids, splitHref, getFragment })
         }
-
+        
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
         if (this.isFixedLayout) {
             await import('./fixed-layout.js')
@@ -130,8 +130,22 @@ export class View extends HTMLElement {
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
         if (!this.#isCacheWarmer) {
             this.renderer.addEventListener('create-overlayer', e =>
-               e.detail.attach(this.#createOverlayer(e.detail)))
+                                           e.detail.attach(this.#createOverlayer(e.detail)))
+//            this.renderer.addEventListener('setViewTransition', e => {
+//                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
+//                this.style.setProperty('display', 'block');
+//                this.style.setProperty('width', '100%');
+//                this.style.setProperty('height', '100%');
+//
+//                this.style.viewTransitionName = e.detail.viewTransitionName;
+//                this.style.setProperty('--slide-from', e.detail.slideFrom);
+//                this.style.setProperty('--slide-to', e.detail.slideTo);
+////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
+////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
+////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
+//            });
         }
+        
         this.renderer.open(book, isCacheWarmer)
         this.#root.append(this.renderer)
     }
@@ -147,8 +161,8 @@ export class View extends HTMLElement {
     }
     goToTextStart() {
         return this.goTo(this.book.landmarks
-            ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
-            ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
+                         ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
+                         ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
     }
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
@@ -157,10 +171,10 @@ export class View extends HTMLElement {
             this.history.pushState(lastLocation)
         }
         else if (showTextStart) await this.goToTextStart()
-        else {
-            this.history.pushState(0)
-            await this.next()
-        }
+            else {
+                this.history.pushState(0)
+                await this.next()
+            }
     }
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
@@ -173,18 +187,18 @@ export class View extends HTMLElement {
         this.lastLocation = { ...progress, tocItem, pageItem, cfi, range, reason }
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
-        this.#emit('relocate', this.lastLocation)
-    }
+            this.#emit('relocate', this.lastLocation)
+            }
     #onLoad({ doc, index }) {
         // set language and dir if not already set
         doc.documentElement.lang ||= this.language.canonical ?? ''
         if (!this.language.isCJK)
             doc.documentElement.dir ||= this.language.direction ?? ''
-
-        this.#handleLinks(doc, index)
-
-        this.#emit('load', { doc, index })
-    }
+            
+            this.#handleLinks(doc, index)
+            
+            this.#emit('load', { doc, index })
+            }
     #handleLinks(doc, index) {
         const { book } = this
         const section = book.sections[index]
@@ -195,13 +209,13 @@ export class View extends HTMLElement {
                 const href = section?.resolveHref?.(href_) ?? href_
                 if (book?.isExternal?.(href))
                     Promise.resolve(this.#emit('external-link', { a, href }, true))
-                        .then(x => x ? globalThis.open(href, '_blank') : null)
-                        .catch(e => console.error(e))
-                else Promise.resolve(this.#emit('link', { a, href }, true))
-                    .then(x => x ? this.goTo(href) : null)
+                    .then(x => x ? globalThis.open(href, '_blank') : null)
                     .catch(e => console.error(e))
-            })
-    }
+                    else Promise.resolve(this.#emit('link', { a, href }, true))
+                        .then(x => x ? this.goTo(href) : null)
+                        .catch(e => console.error(e))
+                        })
+            }
     async addAnnotation(annotation, remove) {
         const { value } = annotation
         if (value.startsWith(SEARCH_PREFIX)) {
@@ -238,7 +252,7 @@ export class View extends HTMLElement {
     }
     #getOverlayer(index) {
         return this.renderer.getContents()
-            .find(x => x.index === index && x.overlayer)
+        .find(x => x.index === index && x.overlayer)
     }
     #createOverlayer({ doc, index }) {
         const overlayer = new Overlayer()
@@ -248,13 +262,13 @@ export class View extends HTMLElement {
                 this.#emit('show-annotation', { value, range })
             }
         }, false)
-
+        
         const list = this.#searchResults.get(index)
         if (list) for (const item of list) this.addAnnotation(item)
-
-        this.#emit('create-overlay', { index })
-        return overlayer
-    }
+            
+            this.#emit('create-overlay', { index })
+            return overlayer
+            }
     async showAnnotation(annotation) {
         const { value } = annotation
         const resolved = await this.goTo(value)
@@ -268,17 +282,17 @@ export class View extends HTMLElement {
     getCFI(index, range) {
         const baseCFI = this.book.sections[index].cfi ?? CFI.fake.fromIndex(index)
         if (!range) return baseCFI
-        return CFI.joinIndir(baseCFI, CFI.fromRange(range))
-    }
+            return CFI.joinIndir(baseCFI, CFI.fromRange(range))
+            }
     resolveCFI(cfi) {
         if (this.book.resolveCFI)
             return this.book.resolveCFI(cfi)
-        else {
-            const parts = CFI.parse(cfi)
-            const index = CFI.fake.toIndex((parts.parent ?? parts).shift())
-            const anchor = doc => CFI.toRange(doc, parts)
-            return { index, anchor }
-        }
+            else {
+                const parts = CFI.parse(cfi)
+                const index = CFI.fake.toIndex((parts.parent ?? parts).shift())
+                const anchor = doc => CFI.toRange(doc, parts)
+                return { index, anchor }
+            }
     }
     resolveNavigation(target) {
         try {
@@ -288,15 +302,15 @@ export class View extends HTMLElement {
                 return { index, anchor }
             }
             if (CFI.isCFI.test(target)) return this.resolveCFI(target)
-            return this.book.resolveHref(target)
-        } catch (e) {
-            console.error(e)
-            console.error(`Could not resolve target ${target}`)
-        }
+                return this.book.resolveHref(target)
+                } catch (e) {
+                    console.error(e)
+                    console.error(`Could not resolve target ${target}`)
+                }
     }
     async goTo(target) {
-//        this.#emit('is-loading', true)
- 
+        //        this.#emit('is-loading', true)
+        
         const resolved = this.resolveNavigation(target)
         try {
             await this.renderer.goTo(resolved)
@@ -305,10 +319,10 @@ export class View extends HTMLElement {
         } catch(e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
-//            return
+            //            return
         }
-//        this.#emit('is-loading', false)
-//        return resolved
+        //        this.#emit('is-loading', false)
+        //        return resolved
     }
     async goToFraction(frac) {
         const [index, anchor] = this.#sectionProgress.getSection(frac)
@@ -328,7 +342,7 @@ export class View extends HTMLElement {
     deselect() {
         for (const { doc } of this.renderer.getContents())
             doc.defaultView.getSelection().removeAllRanges()
-    }
+            }
     async getTOCItemOf(target) {
         try {
             const { index, anchor } = await this.resolveNavigation(target)
@@ -337,11 +351,11 @@ export class View extends HTMLElement {
             const isRange = frag instanceof Range
             const range = isRange ? frag : doc.createRange()
             if (!isRange) range.selectNodeContents(frag)
-            return this.#tocProgress.getProgress(index, range)
-        } catch(e) {
-            console.error(e)
-            console.error(`Could not get ${target}`)
-        }
+                return this.#tocProgress.getProgress(index, range)
+                } catch(e) {
+                    console.error(e)
+                    console.error(`Could not get ${target}`)
+                }
     }
     async prev(distance) {
         await this.renderer.prev(distance)
@@ -364,11 +378,11 @@ export class View extends HTMLElement {
         const { sections } = this.book
         for (const [index, { createDocument }] of sections.entries()) {
             if (!createDocument) continue
-            const doc = await createDocument()
-            const subitems = Array.from(matcher(doc, query), ({ range, excerpt }) =>
-                ({ cfi: this.getCFI(index, range), excerpt }))
-            const progress = (index + 1) / sections.length
-            yield { progress }
+                const doc = await createDocument()
+                const subitems = Array.from(matcher(doc, query), ({ range, excerpt }) =>
+                                            ({ cfi: this.getCFI(index, range), excerpt }))
+                const progress = (index + 1) / sections.length
+                yield { progress }
             if (subitems.length) yield { index, subitems }
         }
     }
@@ -377,24 +391,24 @@ export class View extends HTMLElement {
         const { searchMatcher } = await import('./search.js')
         const { query, index } = opts
         const matcher = searchMatcher(textWalker,
-            { defaultLocale: this.language, ...opts })
+                                      { defaultLocale: this.language, ...opts })
         const iter = index != null
-            ? this.#searchSection(matcher, query, index)
-            : this.#searchBook(matcher, query)
-
+        ? this.#searchSection(matcher, query, index)
+        : this.#searchBook(matcher, query)
+        
         const list = []
         this.#searchResults.set(index, list)
-
+        
         for await (const result of iter) {
             if (result.subitems){
                 const list = result.subitems
-                    .map(({ cfi }) => ({ value: SEARCH_PREFIX + cfi }))
+                .map(({ cfi }) => ({ value: SEARCH_PREFIX + cfi }))
                 this.#searchResults.set(result.index, list)
                 for (const item of list) this.addAnnotation(item)
-                yield {
-                    label: this.#tocProgress.getProgress(result.index)?.label ?? '',
-                    subitems: result.subitems,
-                }
+                    yield {
+                        label: this.#tocProgress.getProgress(result.index)?.label ?? '',
+                        subitems: result.subitems,
+                    }
             }
             else {
                 if (result.cfi) {
@@ -410,8 +424,8 @@ export class View extends HTMLElement {
     clearSearch() {
         for (const list of this.#searchResults.values())
             for (const item of list) this.deleteAnnotation(item)
-        this.#searchResults.clear()
-    }
+                this.#searchResults.clear()
+                }
 }
 
 customElements.define('foliate-view', View)
