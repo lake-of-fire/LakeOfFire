@@ -274,10 +274,12 @@ class View {
                         this.#contentRange.selectNodeContents(doc.body)
                         const layout = beforeRender?.({ vertical, rtl, background })
                         this.#iframe.style.display = 'block'
+                        
                         this.render(layout)
+                                             
                         this.#resizeObserver.observe(doc.body)
                         this.#mutationObserver.observe(doc.body, { childList: true, subtree: true, attributes: false })
-                        
+       
                         // the resize observer above doesn't work in Firefox
                         // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                         // until the bug is fixed we can at least account for font load
@@ -289,7 +291,7 @@ class View {
                     this.#iframe.src = src
                 }
             })
-            }
+    }
     render(layout) {
         if (!layout) return
             this.#column = layout.flow !== 'scrolled'
@@ -1020,28 +1022,36 @@ export class Paginator extends HTMLElement {
             const offset = this.#getRectMapper()(rect).left
             return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
         }
-                          async #scrollTo(offset, reason, smooth) {
-            const element = this.#container
-            const { scrollProp, size } = this
-            if (element[scrollProp] === offset) {
-                this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                this.#afterScroll(reason)
-                return
+        async #scrollTo(offset, reason, smooth) {
+            const scroll = async () => {
+                const element = this.#container
+                const { scrollProp, size } = this
+                if (element[scrollProp] === offset) {
+                    this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                    this.#afterScroll(reason)
+                    return
+                }
+                // FIXME: vertical-rl only, not -lr
+                if (this.scrolled && this.#vertical) offset = -offset
+                    if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
+                                                                                                       element[scrollProp], offset, 300, easeOutQuad,
+                                                                                                       x => element[scrollProp] = x,
+                                                                                                       ).then(() => {
+                                                                                                           this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                                                                                                           this.#afterScroll(reason)
+                                                                                                       })
+                        else {
+                            element[scrollProp] = offset
+                            this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                            this.#afterScroll(reason)
+                        }
             }
-            // FIXME: vertical-rl only, not -lr
-            if (this.scrolled && this.#vertical) offset = -offset
-                if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
-                                                                                                   element[scrollProp], offset, 300, easeOutQuad,
-                                                                                                   x => element[scrollProp] = x,
-                                                                                                   ).then(() => {
-                                                                                                       this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                                                                                                       this.#afterScroll(reason)
-                                                                                                   })
-                    else {
-                        element[scrollProp] = offset
-                        this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                        this.#afterScroll(reason)
-                    }
+            
+            if ((reason === 'snap' || reason === 'anchor' || reason === 'selection') || !document.startViewTransition) {
+                await scroll()
+            } else {
+                document.startViewTransition(scroll)
+            }
         }
                           async #scrollToPage(page, reason, smooth) {
             const offset = this.size * (this.#rtl ? -page : page)
@@ -1124,7 +1134,7 @@ export class Paginator extends HTMLElement {
                 detail: { leftOpacity, rightOpacity }
             }));
         }
-                          async #display(promise) {
+        async #display(promise) {
             this.#isLoading = true;
             const { index, src, anchor, onLoad, select } = await promise
             this.#index = index
@@ -1158,7 +1168,7 @@ export class Paginator extends HTMLElement {
                           #canGoToIndex(index) {
             return index >= 0 && index <= this.sections.length - 1
         }
-                          async #goTo({ index, anchor, select }) {
+        async #goTo({ index, anchor, select }) {
             const willLoadNewIndex = index !== this.#index;
             this.dispatchEvent(new CustomEvent('goTo', {
                 willLoadNewIndex: willLoadNewIndex
