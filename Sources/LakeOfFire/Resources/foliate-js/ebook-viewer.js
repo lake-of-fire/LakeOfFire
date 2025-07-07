@@ -478,6 +478,8 @@ class Reader {
             this.view.goToFraction(parseFloat(e.target.value))
         }, 250);
         slider.addEventListener('input', debouncedGoToFraction)
+        
+        // Section ticks
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
         if (sizes.length < 100) {
             const total = sizes.reduce((a, b) => a + b, 0)
