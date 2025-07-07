@@ -246,20 +246,15 @@
                     transition: visibility 0s linear 300ms, opacity 300ms ease;
                 }
                 #loading-indicator {
-                    background: rgba(0, 0, 0, .6);
+                    background: rgba(255, 255, 255, .6);
                 }
                 @media (prefers-color-scheme: dark) {
                     #loading-indicator {
-                        background: rgba(255, 255, 255, .6);
+                        background: rgba(0, 0, 0, .6);
                     }
                 }
                 #dimming-overlay {
                     background: rgba(0, 0, 0, .2);
-                }
-                #loading-indicator.show, #dimming-overlay.show {
-                    visibility: visible;
-                    opacity: 1;
-                    transition-delay: 0s;
                 }
                 #side-bar-header {
                     padding: 1rem;
@@ -337,6 +332,21 @@
                     display: none;
                 }
                 
+                body.loading #loading-indicator {
+                    visibility: visible !important;
+                    opacity: 1 !important;
+                    transition-delay: 0s !important;
+                    pointer-events: auto !important;
+                }
+                body.loading .side-nav,
+                body.loading #btn-prev-chapter,
+                body.loading #btn-next-chapter,
+                body.loading #btn-finish,
+                body.loading #btn-restart {
+                    visibility: hidden !important;
+                    pointer-events: none !important;
+                }
+
                 /* From https://github.com/swordray/ispinner/blob/3e3b49eac80c9ba7494cb9485bb85f17e712292c/ispinner.css */
                 .ispinner {
                     position: relative;

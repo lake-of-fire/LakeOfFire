@@ -114,6 +114,7 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .modifier(ReaderLoadingProgressOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading))
+//            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }
 //            .overlay {
 //                Text(readerModeViewModel.isReaderModeLoading.description)
 //                    .font(.title)

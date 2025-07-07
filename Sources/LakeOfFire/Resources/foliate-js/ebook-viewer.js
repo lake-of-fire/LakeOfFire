@@ -1,3 +1,4 @@
+// Global timers for side-nav chevron fades
 import './view.js'
 import { createTOCView } from './ui/tree.js'
 import { Overlayer } from '../foliate-js/overlayer.js'
@@ -290,7 +291,11 @@ class Reader {
             btn.style.visibility = 'hidden';
         }
     }
+    setLoadingIndicator(visible) {
+        document.body.classList.toggle('loading', !!visible);
+    }
     #tocView
+    #chevronFadeTimers = { l: null, r: null }
     hasLoadedLastPosition = false
     markedAsFinished = false;
     lastPercentValue = null;
@@ -319,7 +324,7 @@ class Reader {
         $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
     }
     async open(file) {
-        $('#loading-indicator').classList.add('show')
+        this.setLoadingIndicator(true);
         
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
@@ -422,18 +427,18 @@ class Reader {
         });
         
         // Side-nav opacity wiring
-        // At the top of the file (module/global scope):
-        const chevronFadeTimers = {};
         this.view.addEventListener('sideNavChevronOpacity', e => {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
             
-            function fadeWithHold(elem, value, key) {
+            console.log("opacity ")
+            console.log(e)
+            const fadeWithHold = (elem, value, key) => {
                 if (!elem) return;
-                clearTimeout(chevronFadeTimers[key]);
+                clearTimeout(this.#chevronFadeTimers[key]);
                 if (value === '' || value === 0 || typeof value === 'undefined') {
                     // Remove visible class after delay so fade-out can happen
-                    chevronFadeTimers[key] = setTimeout(() => {
+                    this.#chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
                         elem.style.removeProperty('opacity')
                     }, 100);
@@ -452,6 +457,8 @@ class Reader {
             fadeWithHold(l, e.detail.leftOpacity, 'l');
             fadeWithHold(r, e.detail.rightOpacity, 'r');
         });
+        // Listen for resetSideNavChevrons custom event to reset chevrons
+        document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
         
         // Reorder toolbar children for RTL/LTR so left/right stacks and progress are positioned correctly
         const navBar = document.getElementById('nav-bar');
@@ -662,10 +669,10 @@ class Reader {
         }
     }
     #onGoTo({ willLoadNewIndex }) {
-        $('#loading-indicator').classList.add('show')
+        this.setLoadingIndicator(true);
     }
     #onDidDisplay({ }) {
-        $('#loading-indicator').classList.remove('show')
+        this.setLoadingIndicator(false);
     }
     #onLoad({ detail: { doc } }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
@@ -673,6 +680,21 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
+    }
+    
+    #resetSideNavChevrons() {
+        console.log("reset chevvy")
+        // Clear any fade timers
+        clearTimeout(this.#chevronFadeTimers.l);
+        clearTimeout(this.#chevronFadeTimers.r);
+        // Remove visible class & reset opacity immediately
+        const leftIcon = document.querySelector('#btn-scroll-left .icon');
+        const rightIcon = document.querySelector('#btn-scroll-right .icon');
+        [leftIcon, rightIcon].forEach(icon => {
+            if (!icon) return;
+            icon.classList.remove('chevron-visible');
+            icon.style.opacity = '';
+        });
     }
     
     #postUpdateReadingProgressMessage = debounce(({ fraction, cfi, reason }) => {
@@ -704,21 +726,6 @@ class Reader {
             }
         
         this.updateNavButtons();
-        
-        // Force chevron visible at start of sections
-        const renderer = this.view.renderer;
-        const isRTL = this.isRTL;
-        const atSectionStart = typeof renderer.isAtSectionStart === "function" ? renderer.isAtSectionStart() : false;
-        if (atSectionStart) {
-            this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: isRTL ? 0.999 : 0,
-                    rightOpacity: isRTL ? 0 : 0.999
-                }
-            }));
-        }
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');

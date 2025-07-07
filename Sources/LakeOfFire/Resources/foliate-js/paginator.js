@@ -162,7 +162,8 @@ const getDirection = doc => {
     const rtl = doc.body.dir === 'rtl'
     || direction === 'rtl'
     || doc.documentElement.dir === 'rtl'
-    return { vertical, rtl }
+    const verticalRTL = writingMode === 'vertical-rl'
+    return { vertical, verticalRTL, rtl }
 }
 
 const getBackground = doc => {
@@ -211,6 +212,7 @@ class View {
     #contentRange = document.createRange()
     #overlayer
     #vertical = false
+    #verticalRTL = false
     #rtl = false
     #column = true
     #size
@@ -264,11 +266,12 @@ class View {
                         
                         // it needs to be visible for Firefox to get computed style
                         this.#iframe.style.display = 'block'
-                        const { vertical, rtl } = getDirection(doc)
+                        const { vertical, verticalRTL, rtl } = getDirection(doc)
                         const background = getBackground(doc)
                         this.#iframe.style.display = 'none'
                         
                         this.#vertical = vertical
+                        this.#verticalRTL = verticalRTL
                         this.#rtl = rtl
                         
                         this.#contentRange.selectNodeContents(doc.body)
@@ -494,6 +497,7 @@ export class Paginator extends HTMLElement {
     #footer
     #view
     #vertical = false
+    #verticalRTL = false
     #rtl = false
     #margin = 0
     #index = -1
@@ -509,6 +513,7 @@ export class Paginator extends HTMLElement {
     #prefetchTimer = null
     #prefetchCache = new Map()
     #isLoading = false
+    #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false;
     #wheelArmed = true; // Hysteresis-based horizontal wheel paging
     constructor() {
@@ -614,11 +619,11 @@ export class Paginator extends HTMLElement {
         
             /* For page-turning */
             .view-fade {
-                opacity: 0;
-                transition: opacity 0.1s ease-out;
+                opacity: 0.4;
+                transition: opacity 0.115s ease-out;
             }
             .view-faded {
-                opacity: 0;
+                opacity: 0.4;
             }
         </style>
         <div id="top">
@@ -716,8 +721,9 @@ export class Paginator extends HTMLElement {
             this.#view.needsRenderForMutation = false
         }
     }
-    #beforeRender({ vertical, rtl, background }) {
+    #beforeRender({ vertical, verticalRTL, rtl, background }) {
         this.#vertical = vertical
+        this.#verticalRTL = verticalRTL
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
         
@@ -757,7 +763,7 @@ export class Paginator extends HTMLElement {
         const flow = this.getAttribute('flow')
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
-            this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
+            //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
             const columnWidth = maxInlineSize
             
@@ -800,16 +806,6 @@ export class Paginator extends HTMLElement {
             }))
             this.#scrollToAnchor(this.#anchor)
             }
-    #updateSideNavAtBookStart(isAtStart, isRTL) {
-        const leftBtn = this.shadowRoot?.getElementById('btn-scroll-left');
-        const rightBtn = this.shadowRoot?.getElementById('btn-scroll-right');
-        leftBtn?.classList.remove('show-next');
-        rightBtn?.classList.remove('show-next');
-        if (isAtStart) {
-            if (isRTL) leftBtn?.classList.add('show-next');
-            else rightBtn?.classList.add('show-next');
-        }
-    }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
     }
@@ -939,28 +935,25 @@ export class Paginator extends HTMLElement {
                 state.triggered = true;
                 
                 if (dx < 0) {
-                    this.#rtl ? this.next() : this.prev();
+                    (this.#rtl || this.#verticalRTL) ? this.next() : this.prev();
                 } else {
-                    this.#rtl ? this.prev() : this.next();
+                    (this.#rtl || this.#verticalRTL) ? this.prev() : this.next();
                 }
-                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                    bubbles: true,
-                    composed: true,
-                    detail: {
-                        leftOpacity: (dx < 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
-                        rightOpacity: (dx > 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
-                    }
-                }));
+                this.#updateSwipeChevron(dx, minSwipe)
             }
         }
                           #onTouchEnd(e) {
+            this.#touchState = null;
+            // If we just loaded a new section, skip the opacity reset
+            if (this.#skipTouchEndOpacity) {
+                this.#skipTouchEndOpacity = false
+                return
+            }
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
                 detail: { leftOpacity: '', rightOpacity: '' }
-            }));
-            //            if (this.#isAdjustingSelectionHandle) return;
-            // No-op: do not trigger page turn on finger lift.
+            }))
         }
                           // allows one to process rects as if they were LTR and horizontal
                           #getRectMapper() {
@@ -1080,7 +1073,7 @@ export class Paginator extends HTMLElement {
                 await scroll()
             } else {
                 this.#container.classList.add('view-fade')
-                // Allow the browser to repaint after adding the fade
+                // Allow the browser to paint the fade
                 await new Promise(r => setTimeout(r, 50));
                 this.#container.classList.add('view-faded')
                 await scroll()
@@ -1186,13 +1179,24 @@ export class Paginator extends HTMLElement {
                     detail.size = 1 / (pages - 2)
                 }
             
-            this.#updateSideNavAtBookStart(this.atStart && this.#index === 0, this.#rtl);
-            
             this.dispatchEvent(new CustomEvent('relocate', { detail }))
+            
+            // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
+            if (this.isAtSectionStart()) {
+                this.#skipTouchEndOpacity = true
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail: {
+                        leftOpacity: (this.#rtl || this.#verticalRTL) ? 0 : 0.999,
+                        rightOpacity: (this.#rtl || this.#verticalRTL) ? 0.999 : 0,
+                    }
+                }));
+            }
         }
                           #updateSwipeChevron(dx, minSwipe) {
             let leftOpacity = 0, rightOpacity = 0;
-            if (!this.#rtl) {
+            if (!(this.#rtl || this.#verticalRTL)) {
                 // LTR: dx > 0 is LEFT chevron, dx < 0 is RIGHT chevron
                 if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
                 else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
@@ -1206,12 +1210,21 @@ export class Paginator extends HTMLElement {
                 composed: true,
                 detail: { leftOpacity, rightOpacity }
             }));
+            if (Math.abs(dx) > minSwipe) {
+                // Enqueue the reset after meeting threshold
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail: { leftOpacity: '', rightOpacity: '' }
+                }))
+            }
         }
                           async #display(promise) {
             this.#isLoading = true;
             const { index, src, anchor, onLoad, select } = await promise
             this.#index = index
             if (src) {
+                this.#skipTouchEndOpacity = true
                 const view = this.#createView()
                 const afterLoad = doc => {
                     if (doc.head) {
@@ -1225,6 +1238,8 @@ export class Paginator extends HTMLElement {
                 }
                 const beforeRender = this.#beforeRender.bind(this)
                 await view.load(src, afterLoad, beforeRender)
+                // Reset chevrons when loading new section
+                document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
                 //            this.dispatchEvent(new CustomEvent('create-overlayer', {
                 //                detail: {
                 //                    doc: view.document, index,
@@ -1361,13 +1376,7 @@ export class Paginator extends HTMLElement {
                 })
                     if (shouldGo || !this.hasAttribute('animated')) await wait(100)
                         this.#locked = false
-                        
-                        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                            bubbles: true,
-                            composed: true,
-                            detail: { leftOpacity: '', rightOpacity: '' }
-                        }));
-        }
+                        }
                           prev(distance) {
             return this.#turnPage(-1, distance)
         }
