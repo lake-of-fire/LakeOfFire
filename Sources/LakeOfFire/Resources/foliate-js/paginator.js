@@ -671,10 +671,14 @@ export class Paginator extends HTMLElement {
         this.#isAdjustingSelectionHandle = false;
         this.addEventListener('wheel', this.#onWheel.bind(this), { passive: false });
     }
+    
     open(book, isCacheWarmer) {
         this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
         this.sections = book.sections
+    }
+    setSideNavWidth(widthPx) {
+        this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
     #createView() {
         if (this.#view) {

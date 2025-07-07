@@ -213,19 +213,18 @@ const getView = async (file, isCacheWarmer) => {
         document.documentElement.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
         // Also set --side-nav-width on the inner view, so it propagates into the iframe's shadow DOM.
         const syncSideNavWidth = () => {
-            const width = getComputedStyle(document.documentElement)
+            const width = getComputedStyle(document.body)
             .getPropertyValue('--side-nav-width').trim();
             if (view) {
                 view.style.setProperty('--side-nav-width', width);
+                // Also update the renderer's CSS variable, if setSideNavWidth exists
+                if (view.renderer && typeof view.renderer.setSideNavWidth === "function") {
+                    view.renderer.setSideNavWidth(width);
+                }
             }
         };
-        // On resize (media query triggers), update foliate-view
         window.addEventListener('resize', syncSideNavWidth);
-        // Also ensure it runs once immediately
         syncSideNavWidth();
-        // if (paginator.shadowRoot.host) {
-        //     paginator.shadowRoot.host.style.setProperty('--side-nav-width', `${sideNavWidth}px`);
-        // }
     }
     
     return view
