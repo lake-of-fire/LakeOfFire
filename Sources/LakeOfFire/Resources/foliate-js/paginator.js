@@ -89,6 +89,23 @@ const {
 
 const filter = SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION
 
+const async asyncGetBoundingClientRect = (element) => {
+    return new Promise(function (resolve) {
+        requestAnimationFrame(function () {
+            resolve(element.getBoundingClientRect())
+        })
+    })
+}
+
+const async asyncGetClientRects = (element) => {
+    return new Promise(function (resolve) {
+        requestAnimationFrame(function () {
+            resolve(element.getClientRects())
+        })
+    })
+}
+
+
 // needed cause there seems to be a bug in `getBoundingClientRect()` in Firefox
 // where it fails to include rects that have zero width and non-zero height
 // (CSSOM spec says "rectangles [...] of which the height or width is not zero")
