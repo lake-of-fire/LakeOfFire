@@ -870,6 +870,14 @@ export class Paginator extends HTMLElement {
         }
                           #onTouchStart(e) {
             const touch = e.changedTouches[0];
+            // Determine if touch began in host container or inside the iframe’s document
+            const target = touch.target;
+            const inHost = this.#container.contains(target);
+            const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
+            if (!inHost && !inIframe) {
+                this.#touchState = null;
+                return;
+            }
             this.#touchState = {
                 startX: touch?.screenX, startY: touch?.screenY,
                 x: touch?.screenX, y: touch?.screenY,
@@ -903,6 +911,8 @@ export class Paginator extends HTMLElement {
             this.#isAdjustingSelectionHandle = false;
         }
                           #onTouchMove(e) {
+            // If touchStart was ignored or missing, do nothing
+            if (!this.#touchState) return;
             if (this.#isAdjustingSelectionHandle) return;
             e.preventDefault();
             const touch = e.changedTouches[0];
@@ -971,7 +981,7 @@ export class Paginator extends HTMLElement {
             const TRIGGER_THRESHOLD = 12;
             const RESET_THRESHOLD = 3;
             const REVEAL_CHEVRON_THRESHOLD = 5;
-
+            
             // Early exit for "momentum falling" (hide chevrons if armed, deltaX dropping, and below threshold)
             if (
                 this.#wheelArmed &&
