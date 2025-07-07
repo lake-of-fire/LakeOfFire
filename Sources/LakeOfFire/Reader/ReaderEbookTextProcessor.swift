@@ -50,7 +50,7 @@ internal func ebookTextProcessor(
             defaultTitle: nil,
             imageURL: nil,
             injectEntryImageIntoHeader: false,
-            defaultFontSize: 18 // TODO: Pass this in from ReaderViewModel...
+            defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
         
         doc.outputSettings().charset(.utf8)

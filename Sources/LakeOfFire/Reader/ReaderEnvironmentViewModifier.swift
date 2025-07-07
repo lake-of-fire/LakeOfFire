@@ -104,7 +104,7 @@ fileprivate struct ReaderNavigatorModifier: ViewModifier {
 }
 
 fileprivate struct ReaderFontSizeModifier: ViewModifier {
-    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 2
+    @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     
     func body(content: Content) -> some View {

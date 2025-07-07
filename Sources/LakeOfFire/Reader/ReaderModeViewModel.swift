@@ -189,7 +189,7 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultTitle: titleForDisplay,
                 imageURL: imageURLToDisplay,
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
-                defaultFontSize: defaultFontSize ?? 18
+                defaultFontSize: defaultFontSize ?? 20
             )
 
             doc.outputSettings().charset(.utf8)

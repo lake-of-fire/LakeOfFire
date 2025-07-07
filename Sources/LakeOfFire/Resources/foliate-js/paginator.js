@@ -913,9 +913,8 @@ export class Paginator extends HTMLElement {
             const dx = state.x - state.startX;
             const dy = state.y - state.startY;
             const minSwipe = 36; // px threshold
-                                 // Trigger on crossing threshold, only once per gesture
             
-            this.#updateSwipeChevron(dx);
+            this.#updateSwipeChevron(dx, minSwipe);
             
             if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
                 state.triggered = true;
@@ -969,9 +968,10 @@ export class Paginator extends HTMLElement {
             e.preventDefault();
             if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
             
-            const TRIGGER_THRESHOLD = 10;
+            const TRIGGER_THRESHOLD = 12;
             const RESET_THRESHOLD = 3;
-            
+            const REVEAL_CHEVRON_THRESHOLD = 5;
+
             // Early exit for "momentum falling" (hide chevrons if armed, deltaX dropping, and below threshold)
             if (
                 this.#wheelArmed &&
@@ -988,10 +988,10 @@ export class Paginator extends HTMLElement {
                 }
             
             if (this.#wheelArmed) {
-                if (Math.abs(e.deltaX) > RESET_THRESHOLD) {
-                    this.#updateSwipeChevron(e.deltaX);
+                if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
+                    this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD);
                 } else {
-                    this.#updateSwipeChevron(0);
+                    this.#updateSwipeChevron(0, TRIGGER_THRESHOLD);
                 }
             }
             
@@ -1003,18 +1003,10 @@ export class Paginator extends HTMLElement {
                 } else {
                     this.next();
                 }
-                const dx = e.deltaX;
-                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                    bubbles: true,
-                    composed: true,
-                    detail: {
-                        leftOpacity: (dx < 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
-                        rightOpacity: (dx > 0 ? (this.#rtl ? 1 : 0) : (this.#rtl ? 0 : 1)),
-                    }
-                }));
+                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD)
                 setTimeout(() => {
                     this.#wheelCooldown = false;
-                }, 75);
+                }, 100);
             } else if (!this.#wheelArmed && !this.#wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
                 this.#wheelArmed = true;
             }
@@ -1169,8 +1161,7 @@ export class Paginator extends HTMLElement {
             
             this.dispatchEvent(new CustomEvent('relocate', { detail }))
         }
-                          #updateSwipeChevron(dx) {
-            const minSwipe = 36;
+                          #updateSwipeChevron(dx, minSwipe) {
             let leftOpacity = 0, rightOpacity = 0;
             if (!this.#rtl) {
                 // LTR: dx > 0 is LEFT chevron, dx < 0 is RIGHT chevron
