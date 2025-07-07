@@ -131,22 +131,22 @@ export class View extends HTMLElement {
         if (!this.#isCacheWarmer) {
             this.renderer.addEventListener('create-overlayer', e =>
                                            e.detail.attach(this.#createOverlayer(e.detail)))
-//            this.renderer.addEventListener('setViewTransition', e => {
-//                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
-//                this.style.setProperty('display', 'block');
-//                this.style.setProperty('width', '100%');
-//                this.style.setProperty('height', '100%');
-//
-//                this.style.viewTransitionName = e.detail.viewTransitionName;
-//                this.style.setProperty('--slide-from', e.detail.slideFrom);
-//                this.style.setProperty('--slide-to', e.detail.slideTo);
-////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
-////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
-////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
-//            });
+            //            this.renderer.addEventListener('setViewTransition', e => {
+            //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
+            //                this.style.setProperty('display', 'block');
+            //                this.style.setProperty('width', '100%');
+            //                this.style.setProperty('height', '100%');
+            //
+            //                this.style.viewTransitionName = e.detail.viewTransitionName;
+            //                this.style.setProperty('--slide-from', e.detail.slideFrom);
+            //                this.style.setProperty('--slide-to', e.detail.slideTo);
+            ////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
+            ////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
+            ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
+            //            });
         }
         
-        this.renderer.open(book, isCacheWarmer)
+        await this.renderer.open(book, isCacheWarmer)
         this.#root.append(this.renderer)
     }
     close() {
@@ -363,11 +363,11 @@ export class View extends HTMLElement {
     async next(distance) {
         await this.renderer.next(distance)
     }
-    goLeft() {
-        return this.book.dir === 'rtl' ? this.next() : this.prev()
+    async goLeft() {
+        return this.book.dir === 'rtl' ? await this.next() : await this.prev()
     }
-    goRight() {
-        return this.book.dir === 'rtl' ? this.prev() : this.next()
+    async goRight() {
+        return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()

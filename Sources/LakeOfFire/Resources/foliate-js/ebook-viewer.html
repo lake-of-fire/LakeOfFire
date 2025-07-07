@@ -584,41 +584,6 @@
                     --ratio: calc((var(--value) - var(--min)) / var(--range));
                     --sx: calc(0.5 * 16px + var(--ratio) * (100% - 16px));
                 }
-                
-                /* View Transitions */
-                /*
-                 @keyframes fade-in { from { opacity: 0; } }
-                 @keyframes fade-out { to { opacity: 0; } }
-                 @keyframes slide-from-left { from { transform: translateX(-30px); } }
-                 @keyframes slide-from-right { from { transform: translateX(30px); } }
-                 @keyframes slide-to-left { to { transform: translateX(-30px); } }
-                 @keyframes slide-to-right { to { transform: translateX(30px); } }
-                 
-                 ::view-transition-image-pair(root) {
-                 isolation: auto;
-                 }
-                 
-                 ::view-transition-old(root),
-                 ::view-transition-new(root) {
-                 animation: none;
-                 mix-blend-mode: normal;
-                 display: block;
-                 }
-                 
-                 ::view-transition-old(scroll-to) {
-                 animation: 90ms cubic-bezier(0.4, 0, 1, 1) both fade-out,
-                 300ms cubic-bezier(0.4, 0, 0.2, 1) both var(--slide-to);
-                 filter: brightness(0.93) grayscale(0.08);
-                 z-index: 0;
-                 }
-                 
-                 ::view-transition-new(scroll-to) {
-                 animation: 210ms cubic-bezier(0, 0, 0.2, 1) 90ms both fade-in,
-                 300ms cubic-bezier(0.4, 0, 0.2, 1) both var(--slide-from);
-                 box-shadow: -8px 0 18px rgba(0,0,0,0.14), -2px 0 2px rgba(0,0,0,0.10);
-                 z-index: 1;
-                 }
-                 */
             </style>
     </head>
     <body class="ebook-viewer">
