@@ -611,6 +611,15 @@ export class Paginator extends HTMLElement {
                 font-size: .75em;
                 opacity: .6;
             }
+        
+            /* For page-turning */
+            .view-fade {
+                opacity: 0;
+                transition: opacity 0.1s ease-out;
+            }
+            .view-faded {
+                opacity: 0;
+            }
         </style>
         <div id="top">
             <div id="background" part="filter"></div>
@@ -1067,7 +1076,17 @@ export class Paginator extends HTMLElement {
             //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
             //                typeof document.startViewTransition !== 'function'
             //                ) {
-            await scroll();
+            if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
+                await scroll()
+            } else {
+                this.#container.classList.add('view-fade')
+                // Allow the browser to repaint after adding the fade
+                await new Promise(r => setTimeout(r, 50));
+                this.#container.classList.add('view-faded')
+                await scroll()
+                this.#container.classList.remove('view-faded')
+                this.#container.classList.remove('view-fade')
+            }
             //                } else {
             //                    let goingForward = offset > this.start;
             //                    let slideFrom, slideTo;
