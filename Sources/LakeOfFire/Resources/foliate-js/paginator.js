@@ -941,6 +941,7 @@ export class Paginator extends HTMLElement {
             this.#scrollToAnchor(this.#anchor)
         } finally {
             requestAnimationFrame(() => {
+                this.#hasResizeObserverTriggered = false
                 this.#resizeObserver.observe(this.#container);
                 console.log('render() scrollto...done')
             })
