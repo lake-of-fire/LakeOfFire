@@ -146,21 +146,17 @@ async function getElementVisibilities(rootElement) {
 }
 
 const getVisibleRange = async (doc, start, end, mapRect) => {
-    console.log('getVisibleRange...')
     // Grab the set of elements currently in-view (if any)
 
     const {
         visibleElements,
         nonVisibleElements
     } = await getElementVisibilities(doc.body)
-    //    console.log(visibleElements)
-    //    console.log(nonVisibleElements)
 
     // first get all visible nodes
     const acceptNode = node => {
         // If we have a visibility set and this element isn’t intersecting, skip it
         if (node.nodeType === 1 && nonVisibleElements.has(node)) {
-            //            console.log("Rejected " + node.localName)
             return FILTER_REJECT
         }
 
@@ -377,14 +373,12 @@ class View {
             newSize.left === old.left;
 
         if (unchanged) {
-            console.log('View resizer SAME')
             return
         }
 
         this.#lastResizerRect = newSize
         this.#cachedContentRangeRect = null
 
-        console.log("View RESIZER OBS");
         requestAnimationFrame(() => {
             this.#debouncedExpand();
         })
@@ -483,9 +477,7 @@ class View {
 
                     this.#cachedContentRangeRect = null
 
-                    console.log('load before render')
                     this.render(layout)
-                    console.log('load after render')
 
                     this.#resizeObserver.observe(doc.body)
                     //                    this.#mutationObserver.observe(doc.body, {
@@ -510,18 +502,15 @@ class View {
     }
     render(layout) {
         if (!layout) return
-        console.log("render(layout)")
         this.#column = layout.flow !== 'scrolled'
         this.#layout = layout
         if (this.#column) this.columnize(layout)
         else this.scrolled(layout)
-        console.log("render(layout) DONE")
     }
     scrolled({
         gap,
         columnWidth
     }) {
-        console.log("!!!!! vert IN scrolled")
         const vertical = this.#vertical
         const doc = this.document
         setStylesImportant(doc.documentElement, {
@@ -558,8 +547,8 @@ class View {
             'margin': 'auto',
         })
         this.setImageSize()
-        this.#debouncedExpand()
-        //this.expand()
+//        this.#debouncedExpand()
+        this.expand()
     }
     columnize({
         width,
@@ -567,7 +556,6 @@ class View {
         gap,
         columnWidth
     }) {
-        console.log("!!!!! vert in colu")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
 
@@ -616,7 +604,6 @@ class View {
             height,
             margin
         } = this.#layout
-        console.log("!!!!! vert in setimag")
         const vertical = this.#vertical
         const doc = this.document
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
@@ -643,7 +630,6 @@ class View {
         //        const { documentElement } = this.document
         const documentElement = this.document?.documentElement
         if (this.#column) {
-            console.log("!!!!! vert in expand")
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
             const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
@@ -652,7 +638,6 @@ class View {
                 const rootRect = documentElement.getBoundingClientRect()
                 // offset caused by column break at the start of the page
                 // which seem to be supported only by WebKit and only for horizontal writing
-                console.log("!!!!! RTL IN EXPAND")
                 const contentStart = this.#vertical ? 0 :
                     this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
                 contentSize = contentStart + contentRect[side]
@@ -677,7 +662,6 @@ class View {
                 this.#overlayer.redraw()
             }
         } else {
-            console.log("!!!!! vert in expand")
             const side = this.#vertical ? 'width' : 'height'
             const otherSide = this.#vertical ? 'height' : 'width'
             const contentSize = documentElement?.getBoundingClientRect()?.[side]
@@ -754,12 +738,8 @@ export class Paginator extends HTMLElement {
             newSize.left === old.left
 
         if (unchanged) {
-            console.log('Pagi resizer SAME')
             return
         }
-        console.log("Pagi RESIZER OBS");
-        console.log(old)
-        console.log(newSize)
 
         this.#lastResizerRect = newSize
         this.#cachedSize = null
@@ -934,7 +914,6 @@ export class Paginator extends HTMLElement {
         this.#container.addEventListener('scroll', debounce(async () => {
             if (this.#isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
-                console.log("getVisibleRange for scroll..")
                 const range = await this.#getVisibleRange();
                 const index = this.#index;
                 let fraction = 0;
@@ -1123,13 +1102,11 @@ export class Paginator extends HTMLElement {
     }
     render() {
         if (!this.#view) return
-        console.log('render()')
 
         // Remove resize observer before render to avoid unwanted triggers
         this.#resizeObserver.unobserve(this.#container);
 
         try {
-            console.log("!!!!! RTL IN RENDER()")
             this.#view.render(this.#beforeRender({
                 vertical: this.#vertical,
                 rtl: this.#rtl,
@@ -1190,7 +1167,6 @@ export class Paginator extends HTMLElement {
             scrollProp
         } = this
         const [offset, a, b] = this.#scrollBounds
-        console.log("!!!!! RTL IN SCROLLBY")
         const rtl = this.#rtl
         const min = rtl ? offset - b : offset - a
         const max = rtl ? offset + a : offset + b
@@ -1208,7 +1184,6 @@ export class Paginator extends HTMLElement {
         } = this
         const min = Math.abs(offset) - a
         const max = Math.abs(offset) + b
-        console.log("!!!!! RTL IN snap")
         const d = velocity * (this.#rtl ? -size : size)
         const page = Math.floor(
             Math.max(min, Math.min(max, (start + end) / 2 +
@@ -1334,7 +1309,6 @@ export class Paginator extends HTMLElement {
                 })
         }
         const pxSize = this.pages * this.size
-        console.log("!!!!! RTL IN getrectrmap")
         return this.#rtl ?
             ({
                 left,
@@ -1414,7 +1388,6 @@ export class Paginator extends HTMLElement {
             return this.#scrollTo(offset, reason)
         }
         const offset = this.#getRectMapper()(rect).left
-        console.log("!!!!! RTL  scrolltorect")
         return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
     }
     async #scrollTo(offset, reason, smooth) {
@@ -1509,7 +1482,6 @@ export class Paginator extends HTMLElement {
         //                }
     }
     async #scrollToPage(page, reason, smooth) {
-        console.log("!!!!! RTL IN scrolltopage")
         const offset = this.size * (this.#rtl ? -page : page)
         return await this.#scrollTo(offset, reason, smooth)
     }
@@ -1549,7 +1521,6 @@ export class Paginator extends HTMLElement {
                     resolve(await getVisibleRange(this.#view.document,
                         this.start + this.#margin, this.end - this.#margin, this.#getRectMapper()))
                 } else {
-                    console.log("!!!!! RTL IN get vis rang")
                     const size = this.#rtl ? -this.size : this.size
                     resolve(await getVisibleRange(this.#view.document,
                         this.start - size, this.end - size, this.#getRectMapper()))
@@ -1562,7 +1533,6 @@ export class Paginator extends HTMLElement {
             return;
         }
 
-        console.log("getVisibleRange for afterScroll...")
         const range = await this.#getVisibleRange()
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
@@ -1593,7 +1563,6 @@ export class Paginator extends HTMLElement {
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (this.isAtSectionStart()) {
             this.#skipTouchEndOpacity = true
-            console.log("!!!!! RTL IN afterscr")
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
@@ -1607,7 +1576,6 @@ export class Paginator extends HTMLElement {
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
             rightOpacity = 0;
-        console.log("!!!!! RTL IN update chev")
         if (!(this.#rtl || this.#verticalRTL)) {
             // LTR: dx > 0 is LEFT chevron, dx < 0 is RIGHT chevron
             if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
@@ -1659,12 +1627,10 @@ export class Paginator extends HTMLElement {
                     doc.head.append($style)
                     this.#styleMap.set(doc, [$styleBefore, $style])
                 }
-                console.log('after load 1')
                 onLoad?.({
                     doc,
                     index
                 })
-                console.log('after load 2')
             }
             const beforeRender = this.#beforeRender.bind(this)
             await view.load(src, afterLoad, beforeRender)
@@ -1875,7 +1841,7 @@ export class Paginator extends HTMLElement {
             this.#background.style.background = getBackground(this.#view.document))
 
         // needed because the resize observer doesn't work in Firefox
-        this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
+//        this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
     }
     destroy() {
         this.#resizeObserver.unobserve(this)
