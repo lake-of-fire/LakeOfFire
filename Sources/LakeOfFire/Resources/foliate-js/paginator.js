@@ -149,17 +149,20 @@ const getVisibleRange = async (doc, start, end, mapRect) => {
     console.log('getVisibleRange...')
     // Grab the set of elements currently in-view (if any)
 
-        const { visibleElements, nonVisibleElements } = await getElementVisibilities(doc.body)
+    const {
+        visibleElements,
+        nonVisibleElements
+    } = await getElementVisibilities(doc.body)
     //    console.log(visibleElements)
     //    console.log(nonVisibleElements)
 
     // first get all visible nodes
     const acceptNode = node => {
         // If we have a visibility set and this element isn’t intersecting, skip it
-                if (node.nodeType === 1 && nonVisibleElements.has(node)) {
-        //            console.log("Rejected " + node.localName)
-                    return FILTER_REJECT
-                }
+        if (node.nodeType === 1 && nonVisibleElements.has(node)) {
+            //            console.log("Rejected " + node.localName)
+            return FILTER_REJECT
+        }
 
         const name = node.localName?.toLowerCase()
         // ignore all scripts, styles, and their children
@@ -233,64 +236,87 @@ const getVisibleRange = async (doc, start, end, mapRect) => {
     return range
 }
 
-// Determine vertical/RTL by cloning only head and empty body in hidden iframe to avoid style/layout calculations on full document
-const getDirection = (sourceDoc) => {
-    const computed = sourceDoc.defaultView.getComputedStyle(sourceDoc.body);
-    const writingMode = computed.writingMode;
-    const direction = computed.direction;
+// Determine vertical/RTL by cloning only head and empty body in hidden iframe
+const getDirection = async (sourceDoc) => {
+    // 1. Clone a minimal document
+    const cloneDoc = document.implementation.createHTMLDocument();
+
+    // 2. Deep-clone the <head>, stripping unwanted styles/scripts
+    const clonedHead = sourceDoc.head.cloneNode(true);
+    ['manabi-font-data', 'manabi-custom-fonts'].forEach(id => {
+        const el = clonedHead.querySelector(`#${id}`);
+        if (el) el.remove();
+    });
+    // Refresh blob-based CSS
+    for (const link of clonedHead.querySelectorAll('link[rel="stylesheet"][href^="blob:"]')) {
+        try {
+            const css = await fetch(link.href).then(r => r.text());
+            const blobUrl = URL.createObjectURL(new Blob([css], {
+                type: 'text/css'
+            }));
+            link.href = blobUrl;
+        } catch {
+            link.remove();
+        }
+    }
+    clonedHead.querySelectorAll('script').forEach(el => el.remove());
+    cloneDoc.head.replaceWith(clonedHead);
+
+    // 3. Shallow-clone the <body> (to preserve dir, but empty)
+    const bodyClone = sourceDoc.body.cloneNode(false);
+    cloneDoc.body.replaceWith(bodyClone);
+    // Copy all attributes from the source <html> (e.g. xmlns, xml:lang, class, lang)
+    for (const {
+            name,
+            value
+        }
+        of sourceDoc.documentElement.attributes) {
+        cloneDoc.documentElement.setAttribute(name, value);
+    }
+    // Override or add the 'dir' attribute explicitly
+    cloneDoc.documentElement.setAttribute(
+        'dir',
+        sourceDoc.documentElement.getAttribute('dir') || ''
+    );
+
+    // 4. Serialize the cloneDoc to HTML and create a Blob URL
+    const html = '<!doctype html>' + cloneDoc.documentElement.outerHTML;
+    const blob = new Blob([html], {
+        type: 'text/html'
+    });
+    const blobUrl = URL.createObjectURL(blob);
+
+    // 5. Create a hidden iframe, append, and wait for load
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;';
+    document.documentElement.appendChild(iframe);
+    await new Promise(resolve => {
+        iframe.onload = resolve;
+        iframe.src = blobUrl;
+    });
+
+    // 6. Compute writing-mode and direction
+    const doc = iframe.contentDocument;
+    const cs = iframe.contentWindow.getComputedStyle(doc.body);
+    const writingMode = cs.writingMode;
+    const direction = cs.direction;
     const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
     const verticalRTL = writingMode === 'vertical-rl';
     const rtl =
-    sourceDoc.body.dir === 'rtl' ||
-    direction === 'rtl' ||
-    sourceDoc.documentElement.dir === 'rtl';
+        doc.body.dir === 'rtl' ||
+        direction === 'rtl' ||
+        doc.documentElement.dir === 'rtl';
+
+    // 7. Cleanup
+    URL.revokeObjectURL(blobUrl);
+    iframe.remove();
+
     return {
         vertical,
         verticalRTL,
         rtl
     };
-}
-
-//const getDirection = async (sourceDoc) => {
-//    const cloneDoc = document.implementation.createHTMLDocument();
-//
-//    // Deep clone the <head> (includes <style> and <link> tags)
-//    cloneDoc.head.replaceWith(sourceDoc.head.cloneNode(true));
-//
-//    // Shallow clone the <body> to keep writing-mode and dir attributes
-//    const bodyClone = sourceDoc.body.cloneNode(false);
-//    cloneDoc.body.replaceWith(bodyClone);
-//
-//    // Optional: copy over dir attributes from html if relevant
-//    cloneDoc.documentElement.setAttribute('dir', sourceDoc.documentElement.getAttribute('dir') || '');
-//
-//    // Force synchronous layout (only needed in some cases)
-//    const iframe = document.createElement('iframe');
-//    iframe.style.display = 'none';
-//    document.body.appendChild(iframe);
-//    iframe.srcdoc = cloneDoc.documentElement.outerHTML;
-//
-//    await new Promise(resolve => iframe.onload = resolve);
-//
-//    const computed = iframe.contentWindow.getComputedStyle(iframe.contentDocument.body);
-//    const writingMode = computed.writingMode;
-//    const direction = computed.direction;
-//
-//    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
-//    const verticalRTL = writingMode === 'vertical-rl';
-//    const rtl =
-//        iframe.contentDocument.body.dir === 'rtl' ||
-//        direction === 'rtl' ||
-//        iframe.contentDocument.documentElement.dir === 'rtl';
-//
-//    iframe.remove();
-//
-//    return {
-//        vertical,
-//        verticalRTL,
-//        rtl
-//    };
-//}
+};
 
 const getBackground = doc => {
     const bodyStyle = doc.defaultView.getComputedStyle(doc.body)
@@ -438,22 +464,19 @@ class View {
 
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
-                    const {
-                        vertical,
-                        verticalRTL,
-                        rtl
-                    } = await getDirection(doc)
+
+                    const direction = await getDirection(doc);
+                    this.#vertical = direction.vertical;
+                    this.#verticalRTL = direction.verticalRTL;
+                    this.#rtl = direction.rtl;
+
                     const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
 
-                    this.#vertical = vertical
-                    this.#verticalRTL = verticalRTL
-                    this.#rtl = rtl
-
                     this.#contentRange.selectNodeContents(doc.body)
                     const layout = beforeRender?.({
-                        vertical,
-                        rtl,
+                        vertical: direction.vertical,
+                        rtl: direction.rtl,
                         background
                     })
                     this.#iframe.style.display = 'block'
@@ -498,6 +521,7 @@ class View {
         gap,
         columnWidth
     }) {
+        console.log("!!!!! vert IN scrolled")
         const vertical = this.#vertical
         const doc = this.document
         setStylesImportant(doc.documentElement, {
@@ -543,6 +567,7 @@ class View {
         gap,
         columnWidth
     }) {
+        console.log("!!!!! vert in colu")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
 
@@ -591,6 +616,7 @@ class View {
             height,
             margin
         } = this.#layout
+        console.log("!!!!! vert in setimag")
         const vertical = this.#vertical
         const doc = this.document
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
@@ -617,6 +643,7 @@ class View {
         //        const { documentElement } = this.document
         const documentElement = this.document?.documentElement
         if (this.#column) {
+            console.log("!!!!! vert in expand")
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
             const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
@@ -625,6 +652,7 @@ class View {
                 const rootRect = documentElement.getBoundingClientRect()
                 // offset caused by column break at the start of the page
                 // which seem to be supported only by WebKit and only for horizontal writing
+                console.log("!!!!! RTL IN EXPAND")
                 const contentStart = this.#vertical ? 0 :
                     this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
                 contentSize = contentStart + contentRect[side]
@@ -649,6 +677,7 @@ class View {
                 this.#overlayer.redraw()
             }
         } else {
+            console.log("!!!!! vert in expand")
             const side = this.#vertical ? 'width' : 'height'
             const otherSide = this.#vertical ? 'height' : 'width'
             const contentSize = documentElement?.getBoundingClientRect()?.[side]
@@ -1100,6 +1129,7 @@ export class Paginator extends HTMLElement {
         this.#resizeObserver.unobserve(this.#container);
 
         try {
+            console.log("!!!!! RTL IN RENDER()")
             this.#view.render(this.#beforeRender({
                 vertical: this.#vertical,
                 rtl: this.#rtl,
@@ -1160,6 +1190,7 @@ export class Paginator extends HTMLElement {
             scrollProp
         } = this
         const [offset, a, b] = this.#scrollBounds
+        console.log("!!!!! RTL IN SCROLLBY")
         const rtl = this.#rtl
         const min = rtl ? offset - b : offset - a
         const max = rtl ? offset + a : offset + b
@@ -1177,6 +1208,7 @@ export class Paginator extends HTMLElement {
         } = this
         const min = Math.abs(offset) - a
         const max = Math.abs(offset) + b
+        console.log("!!!!! RTL IN snap")
         const d = velocity * (this.#rtl ? -size : size)
         const page = Math.floor(
             Math.max(min, Math.min(max, (start + end) / 2 +
@@ -1302,6 +1334,7 @@ export class Paginator extends HTMLElement {
                 })
         }
         const pxSize = this.pages * this.size
+        console.log("!!!!! RTL IN getrectrmap")
         return this.#rtl ?
             ({
                 left,
@@ -1381,6 +1414,7 @@ export class Paginator extends HTMLElement {
             return this.#scrollTo(offset, reason)
         }
         const offset = this.#getRectMapper()(rect).left
+        console.log("!!!!! RTL  scrolltorect")
         return this.#scrollToPage(Math.floor(offset / this.size) + (this.#rtl ? -1 : 1), reason)
     }
     async #scrollTo(offset, reason, smooth) {
@@ -1475,6 +1509,7 @@ export class Paginator extends HTMLElement {
         //                }
     }
     async #scrollToPage(page, reason, smooth) {
+        console.log("!!!!! RTL IN scrolltopage")
         const offset = this.size * (this.#rtl ? -page : page)
         return await this.#scrollTo(offset, reason, smooth)
     }
@@ -1508,11 +1543,19 @@ export class Paginator extends HTMLElement {
         await this.#scrollToPage(newPage + 1, reason)
     }
     async #getVisibleRange() {
-        if (this.scrolled) return await getVisibleRange(this.#view.document,
-            this.start + this.#margin, this.end - this.#margin, this.#getRectMapper())
-        const size = this.#rtl ? -this.size : this.size
-        return await getVisibleRange(this.#view.document,
-            this.start - size, this.end - size, this.#getRectMapper())
+        return new Promise((resolve) => {
+            requestAnimationFrame(async () => {
+                if (this.scrolled) {
+                    resolve(await getVisibleRange(this.#view.document,
+                        this.start + this.#margin, this.end - this.#margin, this.#getRectMapper()))
+                } else {
+                    console.log("!!!!! RTL IN get vis rang")
+                    const size = this.#rtl ? -this.size : this.size
+                    resolve(await getVisibleRange(this.#view.document,
+                        this.start - size, this.end - size, this.#getRectMapper()))
+                }
+            })
+        });
     }
     async #afterScroll(reason) {
         if (this.#isCacheWarmer) {
@@ -1550,6 +1593,7 @@ export class Paginator extends HTMLElement {
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (this.isAtSectionStart()) {
             this.#skipTouchEndOpacity = true
+            console.log("!!!!! RTL IN afterscr")
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
@@ -1563,6 +1607,7 @@ export class Paginator extends HTMLElement {
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
             rightOpacity = 0;
+        console.log("!!!!! RTL IN update chev")
         if (!(this.#rtl || this.#verticalRTL)) {
             // LTR: dx > 0 is LEFT chevron, dx < 0 is RIGHT chevron
             if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
