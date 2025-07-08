@@ -240,7 +240,10 @@ class View {
             this.#hasResizeObserverTriggered = true
             return
         }
-        this.#debouncedExpand()
+        
+        requestAnimationFrame(() => {
+            this.#debouncedExpand()
+        })
     })
     //    #mutationObserver = new MutationObserver(async () => {
     //        //        return ;
@@ -583,7 +586,9 @@ export class Paginator extends HTMLElement {
         this.#cachedSize = null
         this.#cachedViewSize = null
         
-        this.#debouncedRender()
+        requestAnimationFrame(() => {
+            this.#debouncedRender()
+        })
     })
     #top
     #transitioning = false;
@@ -633,7 +638,8 @@ export class Paginator extends HTMLElement {
                 /*--_gap: 7%;
                 --_margin: 48px;*/
                 --_gap: 4%;
-                --_margin: 30px;
+                /*--_margin: 30px;*/
+                --_margin: 12px;
                 --_side-margin: var(--side-nav-width, 32px);
                 --_max-inline-size: 720px;
                 --_max-block-size: 1440px;
@@ -645,18 +651,20 @@ export class Paginator extends HTMLElement {
                 --_max-height: var(--_max-block-size);
                 display: grid;
                 grid-template-columns:
+                    /*
+                    minmax(var(--_half-gap), 1fr)
+                    var(--_half-gap)
+                    minmax(0, calc(var(--_max-width) - var(--_gap)))
+                    var(--_half-gap)
+                    minmax(var(--_half-gap), 1fr);
+                    */
                     var(--_side-margin)
                     1fr
-                    /*minmax(var(--_half-gap), 1fr)*/
-                    /*var(--_half-gap)*/
                     minmax(0, calc(var(--_max-width) - var(--_gap)))
-                    /*var(--_half-gap)*/
-                    /*minmax(var(--_half-gap), 1fr)*/
                     1fr
-                    var(--_side-margin);
+                    var(--_side-margin); 
                 grid-template-rows:
-                    /*minmax(var(--_margin), 1fr)*/
-                    0
+                    minmax(var(--_margin), 1fr)
                     minmax(0, var(--_max-height))
                     minmax(var(--_margin), 1fr);
                 &.vertical {
@@ -678,7 +686,7 @@ export class Paginator extends HTMLElement {
                 grid-row: 1 / -1;
             }
             #container {
-                grid-column: 3 / 4;
+                grid-column: 2 / 5;
                 grid-row: 2;
                 overflow: hidden;
             }
@@ -688,11 +696,11 @@ export class Paginator extends HTMLElement {
                 overflow: auto;
             }
             #header {
-                grid-column: 4 / 5;
+                grid-column: 3 / 4;
                 grid-row: 1;
             }
             #footer {
-                grid-column: 4 / 5;
+                grid-column: 3 / 4;
                 grid-row: 3;
                 align-self: end;
             }
@@ -713,8 +721,7 @@ export class Paginator extends HTMLElement {
                 text-align: center;
                 font-size: .75em;
                 opacity: .6;
-            }
-        
+            }        
             /* For page-turning */
             .view-fade {
                 opacity: 0.4;
