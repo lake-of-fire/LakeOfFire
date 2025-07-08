@@ -110,6 +110,7 @@ const getBoundingClientRect = target => {
 /**
  * Sets up an IntersectionObserver for the given document and root element.
  * Resolves with lists of visible and non-visible elements after the first observation.
+ * The lists may not be complete! It is not thorough.
  * @param {Document} docRoot - The iframe document whose body children we’ll observe.
  * @param {HTMLElement} rootElement - The scrolling container (the View element).
  * @returns {Promise<{ visibleElements: Element[], nonVisibleElements: Element[] }>}
@@ -138,25 +139,27 @@ async function getElementVisibilities(rootElement) {
             threshold: [0]
         });
 
-        rootElement.querySelectorAll('*').forEach(el => io.observe(el));
+        rootElement.querySelectorAll('#reader-content > *, manabi-tracking-section, manabi-container').forEach(el => {
+            io.observe(el)
+        });
     })
 }
 
-const getVisibleRange = /*async*/ (doc, start, end, mapRect) => {
+const getVisibleRange = async (doc, start, end, mapRect) => {
     console.log('getVisibleRange...')
     // Grab the set of elements currently in-view (if any)
 
-    //    const { visibleElements, nonVisibleElements } = await getElementVisibilities(doc.body)
+        const { visibleElements, nonVisibleElements } = await getElementVisibilities(doc.body)
     //    console.log(visibleElements)
     //    console.log(nonVisibleElements)
 
     // first get all visible nodes
     const acceptNode = node => {
         // If we have a visibility set and this element isn’t intersecting, skip it
-        //        if (node.nodeType === 1 && nonVisibleElements.has(node)) {
-        ////            console.log("Rejected " + node.localName)
-        //            return FILTER_REJECT
-        //        }
+                if (node.nodeType === 1 && nonVisibleElements.has(node)) {
+        //            console.log("Rejected " + node.localName)
+                    return FILTER_REJECT
+                }
 
         const name = node.localName?.toLowerCase()
         // ignore all scripts, styles, and their children
@@ -903,7 +906,7 @@ export class Paginator extends HTMLElement {
             if (this.#isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
                 console.log("getVisibleRange for scroll..")
-                const range = /*await*/ this.#getVisibleRange();
+                const range = await this.#getVisibleRange();
                 const index = this.#index;
                 let fraction = 0;
                 if (this.scrolled) {
@@ -932,8 +935,7 @@ export class Paginator extends HTMLElement {
                 if (this.#justAnchored) {
                     this.#justAnchored = false
                 } else {
-                    /*await*/
-                    this.#afterScroll('scroll')
+                    await this.#afterScroll('scroll')
                 }
             }
         }, 450))
@@ -1390,8 +1392,7 @@ export class Paginator extends HTMLElement {
             } = this
             if (element[scrollProp] === offset) {
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                /*await*/
-                this.#afterScroll(reason)
+                await this.#afterScroll(reason)
                 return
             }
             // FIXME: vertical-rl only, not -lr
@@ -1401,14 +1402,12 @@ export class Paginator extends HTMLElement {
                 x => element[scrollProp] = x,
             ).then(async () => {
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                /*await*/
-                this.#afterScroll(reason)
+                await this.#afterScroll(reason)
             })
             else {
                 element[scrollProp] = offset
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
-                /*await*/
-                this.#afterScroll(reason)
+                await this.#afterScroll(reason)
             }
         }
 
@@ -1477,7 +1476,7 @@ export class Paginator extends HTMLElement {
     }
     async #scrollToPage(page, reason, smooth) {
         const offset = this.size * (this.#rtl ? -page : page)
-        return this.#scrollTo(offset, reason, smooth)
+        return await this.#scrollTo(offset, reason, smooth)
     }
     async scrollToAnchor(anchor, select) {
         return this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
@@ -1508,21 +1507,20 @@ export class Paginator extends HTMLElement {
         const newPage = Math.round(anchor * (textPages - 1))
         await this.#scrollToPage(newPage + 1, reason)
     }
-    /*async*/ #getVisibleRange() {
-        if (this.scrolled) return /*await*/ getVisibleRange(this.#view.document,
+    async #getVisibleRange() {
+        if (this.scrolled) return await getVisibleRange(this.#view.document,
             this.start + this.#margin, this.end - this.#margin, this.#getRectMapper())
         const size = this.#rtl ? -this.size : this.size
-        return /*await*/ getVisibleRange(this.#view.document,
+        return await getVisibleRange(this.#view.document,
             this.start - size, this.end - size, this.#getRectMapper())
     }
-    /*async*/
-    #afterScroll(reason) {
+    async #afterScroll(reason) {
         if (this.#isCacheWarmer) {
             return;
         }
 
         console.log("getVisibleRange for afterScroll...")
-        const range = /*await*/ this.#getVisibleRange()
+        const range = await this.#getVisibleRange()
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
@@ -1722,7 +1720,7 @@ export class Paginator extends HTMLElement {
         const resolved = await target
         if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
     }
-    #scrollPrev(distance) {
+    async #scrollPrev(distance) {
         if (!this.#view) return true
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
@@ -1737,9 +1735,9 @@ export class Paginator extends HTMLElement {
         }
         if (this.atStart) return
         const page = this.page - 1
-        return this.#scrollToPage(page, 'page', true).then(() => page <= 0)
+        return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
     }
-    #scrollNext(distance) {
+    async #scrollNext(distance) {
         if (!this.#view) return true
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
@@ -1755,7 +1753,7 @@ export class Paginator extends HTMLElement {
         if (this.atEnd) return
         const page = this.page + 1
         const pages = this.pages
-        return this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
+        return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     get atStart() {
         return this.#adjacentIndex(-1) == null && this.page <= 1
@@ -1772,7 +1770,7 @@ export class Paginator extends HTMLElement {
 
         this.#locked = true
         const prev = dir === -1
-        const shouldGo = await (prev ? this.#scrollPrev(distance) : this.#scrollNext(distance))
+        const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
         if (shouldGo) await this.#goTo({
             index: this.#adjacentIndex(dir),
             anchor: prev ? () => 1 : () => 0,
