@@ -293,6 +293,11 @@ class View {
     //    #resizeObserver = new ResizeObserver(() => this.expand())
     #resizeObserver = new ResizeObserver(async () => {
         if (!this.#isCacheWarmer) {
+            if (this.#isExpanding) {
+                this.#skippedExpandWhileWorking = true
+                return
+            }
+
             console.log("VIEW resize Observer expand...")
             this.#debouncedExpand()
         }
@@ -318,6 +323,8 @@ class View {
     #column = true
     #size
     #layout = {}
+    #isExpanding = false
+    #skippedExpandWhileWorking = false
     #isCacheWarmer
     constructor({
         container,
@@ -551,65 +558,76 @@ class View {
     }
     async expand() {
         console.log("expand()...")
-        //        const { documentElement } = this.document
-        const documentElement = this.document?.documentElement
-        if (this.#column) {
-            const side = this.#vertical ? 'height' : 'width'
-            const otherSide = this.#vertical ? 'width' : 'height'
-            const contentRect = await asyncGetBoundingClientRect(this.#contentRange);
-            let contentSize
-            if (documentElement) {
-                const rootRect = await asyncGetBoundingClientRect(documentElement);
-                // offset caused by column break at the start of the page
-                // which seem to be supported only by WebKit and only for horizontal writing
-                const contentStart = this.#vertical ? 0 :
+        this.#isExpanding = true
+        try {
+            //        const { documentElement } = this.document
+            const documentElement = this.document?.documentElement
+            if (this.#column) {
+                const side = this.#vertical ? 'height' : 'width'
+                const otherSide = this.#vertical ? 'width' : 'height'
+                const contentRect = await asyncGetBoundingClientRect(this.#contentRange);
+                let contentSize
+                if (documentElement) {
+                    const rootRect = await asyncGetBoundingClientRect(documentElement);
+                    // offset caused by column break at the start of the page
+                    // which seem to be supported only by WebKit and only for horizontal writing
+                    const contentStart = this.#vertical ? 0 :
                     this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                contentSize = contentStart + contentRect[side]
+                    contentSize = contentStart + contentRect[side]
+                } else {
+                    const cr = await asyncGetBoundingClientRect(this.#contentRange);
+                    contentSize = cr[side];
+                }
+                const pageCount = Math.ceil(contentSize / this.#size)
+                const expandedSize = pageCount * this.#size
+                this.#element.style.padding = '0'
+                this.#iframe.style[side] = `${expandedSize}px`
+                this.#element.style[side] = `${expandedSize + this.#size * 2}px`
+                this.#iframe.style[otherSide] = '100%'
+                this.#element.style[otherSide] = '100%'
+                if (documentElement) {
+                    documentElement.style[side] = `${this.#size}px`
+                }
+                if (this.#overlayer) {
+                    this.#overlayer.element.style.margin = '0'
+                    this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
+                    this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
+                    this.#overlayer.element.style[side] = `${expandedSize}px`
+                    this.#overlayer.redraw()
+                }
             } else {
-                const cr = await asyncGetBoundingClientRect(this.#contentRange);
-                contentSize = cr[side];
-            }
-            const pageCount = Math.ceil(contentSize / this.#size)
-            const expandedSize = pageCount * this.#size
-            this.#element.style.padding = '0'
-            this.#iframe.style[side] = `${expandedSize}px`
-            this.#element.style[side] = `${expandedSize + this.#size * 2}px`
-            this.#iframe.style[otherSide] = '100%'
-            this.#element.style[otherSide] = '100%'
-            if (documentElement) {
-                documentElement.style[side] = `${this.#size}px`
-            }
-            if (this.#overlayer) {
-                this.#overlayer.element.style.margin = '0'
-                this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
-                this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
-                this.#overlayer.element.style[side] = `${expandedSize}px`
-                this.#overlayer.redraw()
-            }
-        } else {
-            const side = this.#vertical ? 'width' : 'height'
-            const otherSide = this.#vertical ? 'height' : 'width'
-            const contentSize = documentElement ?
+                const side = this.#vertical ? 'width' : 'height'
+                const otherSide = this.#vertical ? 'height' : 'width'
+                const contentSize = documentElement ?
                 (await asyncGetBoundingClientRect(documentElement))[side] :
                 undefined;
-            const expandedSize = contentSize
-            const {
-                margin
-            } = this.#layout
-            const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
-            this.#element.style.padding = padding
-            this.#iframe.style[side] = `${expandedSize}px`
-            this.#element.style[side] = `${expandedSize}px`
-            this.#iframe.style[otherSide] = '100%'
-            this.#element.style[otherSide] = '100%'
-            if (this.#overlayer) {
-                this.#overlayer.element.style.margin = padding
-                this.#overlayer.element.style.left = '0'
-                this.#overlayer.element.style.top = '0'
-                this.#overlayer.element.style[side] = `${expandedSize}px`
-                this.#overlayer.redraw()
+                const expandedSize = contentSize
+                const {
+                    margin
+                } = this.#layout
+                const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
+                this.#element.style.padding = padding
+                this.#iframe.style[side] = `${expandedSize}px`
+                this.#element.style[side] = `${expandedSize}px`
+                this.#iframe.style[otherSide] = '100%'
+                this.#element.style[otherSide] = '100%'
+                if (this.#overlayer) {
+                    this.#overlayer.element.style.margin = padding
+                    this.#overlayer.element.style.left = '0'
+                    this.#overlayer.element.style.top = '0'
+                    this.#overlayer.element.style[side] = `${expandedSize}px`
+                    this.#overlayer.redraw()
+                }
             }
+        } finally {
+            this.#isExpanding = false
         }
+        if (this.#skippedExpandWhileWorking) {
+            this.#skippedExpandWhileWorking = false
+            console.log("Skipped expand while working, expand()...")
+//            this.#debouncedExpand()
+        }
+        console.log("finish expand()... call onExpand")
         await this.onExpand()
     }
     set overlayer(overlayer) {
@@ -1022,7 +1040,8 @@ export class Paginator extends HTMLElement {
         this.#isRendering = false
         if (this.#skippedRenderWhileWorking) {
             this.#skippedRenderWhileWorking = false
-            this.#debouncedRender()
+            console.log("Skipped render while working, render() from render()...")
+//            this.#debouncedRender()
         }
     }
     get scrolled() {
@@ -1542,7 +1561,8 @@ export class Paginator extends HTMLElement {
         this.#isLoading = false;
         if (this.#skippedRenderWhileWorking) {
             this.#skippedRenderWhileWorking = false
-            this.#debouncedRender()
+            console.log("Skipped render while working , render() from #display...")
+//            this.#debouncedRender()
         }
         console.log("# async #display done loading")
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
