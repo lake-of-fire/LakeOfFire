@@ -240,7 +240,7 @@ class View {
             this.#hasResizeObserverTriggered = true
             return
         }
-        
+
         requestAnimationFrame(() => {
             this.#debouncedExpand()
         })
@@ -582,10 +582,10 @@ export class Paginator extends HTMLElement {
             this.#hasResizeObserverTriggered = true
             return
         }
-        
+
         this.#cachedSize = null
         this.#cachedViewSize = null
-        
+
         requestAnimationFrame(() => {
             this.#debouncedRender()
         })
@@ -689,6 +689,9 @@ export class Paginator extends HTMLElement {
                 grid-column: 2 / 5;
                 grid-row: 2;
                 overflow: hidden;
+                contain: layout style;
+                will-change: transform;
+                transform: translateZ(0);
             }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
