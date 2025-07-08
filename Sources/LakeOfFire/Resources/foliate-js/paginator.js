@@ -231,13 +231,16 @@ const setStylesImportant = (el, styles) => {
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
-    //    #resizeObserver = new ResizeObserver(() => this.expand())
+    #hasResizeObserverTriggered = false
     #resizeObserver = new ResizeObserver(async () => {
-        if (!this.#isCacheWarmer) {
-            console.log("resize observer expand()")
-            this.#debouncedExpand()
+        if (this.#isCacheWarmer) {
+            return
         }
-        //        this.expand()
+        if (!this.#hasResizeObserverTriggered) {
+            this.#hasResizeObserverTriggered = true
+            return
+        }
+        this.#debouncedExpand()
     })
     //    #mutationObserver = new MutationObserver(async () => {
     //        //        return ;
@@ -568,18 +571,19 @@ export class Paginator extends HTMLElement {
     })
     #debouncedRender = debounce(this.render.bind(this), 333)
     #hasResizeObserverTriggered = false
-    //    #resizeObserver = new ResizeObserver(() => this.render())
     #resizeObserver = new ResizeObserver(() => {
-        if (!this.#isCacheWarmer) {
-            if (!this.#hasResizeObserverTriggered) {
-                //            // Skip initial observation on start
-                this.#hasResizeObserverTriggered = true
-                return
-            }
-            console.log("resize observer render()")
-            this.#debouncedRender()
-            //        this.render()
+        if (this.#isCacheWarmer) {
+            return
         }
+        if (!this.#hasResizeObserverTriggered) {
+            this.#hasResizeObserverTriggered = true
+            return
+        }
+        
+        this.#cachedSize = null
+        this.#cachedViewSize = null
+        
+        this.#debouncedRender()
     })
     #top
     #transitioning = false;
@@ -607,7 +611,9 @@ export class Paginator extends HTMLElement {
     #isLoading = false
     #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false
-    #wheelArmed = true; // Hysteresis-based horizontal wheel paging
+    #wheelArmed = true // Hysteresis-based horizontal wheel paging
+    #cachedSize = null
+    #cachedViewSize = null
     constructor() {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -937,13 +943,11 @@ export class Paginator extends HTMLElement {
                 vertical: this.#vertical,
                 rtl: this.#rtl,
             }))
-            console.log('render() scrollto...')
             this.#scrollToAnchor(this.#anchor)
         } finally {
             requestAnimationFrame(() => {
                 this.#hasResizeObserverTriggered = false
                 this.#resizeObserver.observe(this.#container);
-                console.log('render() scrollto...done')
             })
         }
     }
@@ -965,16 +969,18 @@ export class Paginator extends HTMLElement {
             scrolled ? 'height' : 'width'
     }
     get size() {
-        if (this.#isCacheWarmer) {
-            return 0
+        if (this.#isCacheWarmer) return 0
+        if (this.#cachedSize === null) {
+            this.#cachedSize = this.#container.getBoundingClientRect()[this.sideProp]
         }
-        return this.#container.getBoundingClientRect()[this.sideProp]
+        return this.#cachedSize
     }
     get viewSize() {
-        if (this.#isCacheWarmer) {
-            return 0
+        if (this.#isCacheWarmer) return 0
+        if (this.#cachedViewSize === null) {
+            this.#cachedViewSize = this.#view.element.getBoundingClientRect()[this.sideProp]
         }
-        return this.#view.element.getBoundingClientRect()[this.sideProp]
+        return this.#cachedViewSize
     }
     get start() {
         return Math.abs(this.#container[this.scrollProp])
