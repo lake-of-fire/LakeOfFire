@@ -231,18 +231,45 @@ const setStylesImportant = (el, styles) => {
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
-    #hasResizeObserverTriggered = false
-    #resizeObserver = new ResizeObserver(async () => {
-        if (this.#isCacheWarmer) {
-            return
+    #hasResizerObserverTriggered = false
+    #lastResizerRect = null
+    #resizeObserver = new ResizeObserver(entries => {
+        if (this.#isCacheWarmer) return;
+
+        const entry = entries[0];
+        const rect = entry.contentRect;
+
+        const newSize = {
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            top: Math.round(rect.top),
+            left: Math.round(rect.left),
+        };
+
+        if (!this.#hasResizerObserverTriggered) {
+            this.#hasResizerObserverTriggered = true;
+            this.#lastResizerRect = newSize;
+            return;
         }
-        if (!this.#hasResizeObserverTriggered) {
-            this.#hasResizeObserverTriggered = true
+
+        const old = this.#lastResizerRect;
+        const unchanged =
+            old &&
+            newSize.width === old.width &&
+            newSize.height === old.height &&
+            newSize.top === old.top &&
+            newSize.left === old.left;
+
+        if (unchanged) {
+            console.log('View resizer SAME')
             return
         }
 
+        this.#lastResizerRect = newSize;
+
+        console.log("View RESIZER OBS");
         requestAnimationFrame(() => {
-            this.#debouncedExpand()
+            this.#debouncedExpand();
         })
     })
     //    #mutationObserver = new MutationObserver(async () => {
@@ -498,6 +525,8 @@ class View {
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
             const contentRect = this.#contentRange.getBoundingClientRect()
+            console.log("new context rect ")
+            console.log(contentRect)
             let contentSize
             if (documentElement) {
                 const rootRect = documentElement.getBoundingClientRect()
@@ -574,20 +603,48 @@ export class Paginator extends HTMLElement {
     })
     #debouncedRender = debounce(this.render.bind(this), 333)
     #hasResizeObserverTriggered = false
-    #resizeObserver = new ResizeObserver(() => {
-        if (this.#isCacheWarmer) {
-            return
-        }
+    #lastResizerRect = null
+    #resizeObserver = new ResizeObserver(entries => {
+        if (this.#isCacheWarmer) return;
+
+        const entry = entries[0];
+        const rect = entry.contentRect;
+
+        const newSize = {
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            top: Math.round(rect.top),
+            left: Math.round(rect.left),
+        };
+
         if (!this.#hasResizeObserverTriggered) {
             this.#hasResizeObserverTriggered = true
+            this.#lastResizerRect = newSize
             return
         }
 
+        const old = this.#lastResizerRect
+        const unchanged =
+            old &&
+            newSize.width === old.width &&
+            newSize.height === old.height &&
+            newSize.top === old.top &&
+            newSize.left === old.left
+
+        if (unchanged) {
+            console.log('Pagi resizer SAME')
+            return
+        }
+        console.log("Pagi RESIZER OBS");
+        console.log(old)
+        console.log(newSize)
+
+        this.#lastResizerRect = newSize
         this.#cachedSize = null
         this.#cachedViewSize = null
 
         requestAnimationFrame(() => {
-            this.#debouncedRender()
+            this.#debouncedRender();
         })
     })
     #top
