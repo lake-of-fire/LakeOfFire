@@ -985,6 +985,7 @@ window.loadLastPosition = async ({ cfi }) => {
     globalThis.reader.hasLoadedLastPosition = true
     
     // Don't overlap cache warming with initial page load
+    return ;
     await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
