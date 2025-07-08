@@ -107,9 +107,57 @@ const getBoundingClientRect = target => {
     return new DOMRect(left, top, right - left, bottom - top)
 }
 
-const getVisibleRange = (doc, start, end, mapRect) => {
+/**
+ * Sets up an IntersectionObserver for the given document and root element.
+ * Resolves with lists of visible and non-visible elements after the first observation.
+ * @param {Document} docRoot - The iframe document whose body children we’ll observe.
+ * @param {HTMLElement} rootElement - The scrolling container (the View element).
+ * @returns {Promise<{ visibleElements: Element[], nonVisibleElements: Element[] }>}
+ */
+async function getElementVisibilities(rootElement) {
+    await new Promise(requestAnimationFrame);
+    return new Promise(resolve => {
+        const visibleElements = new WeakSet();
+        const nonVisibleElements = new WeakSet();
+
+        const io = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                if (entry.isIntersecting) {
+                    visibleElements.add(entry.target);
+                } else {
+                    nonVisibleElements.add(entry.target);
+                }
+            }
+            io.disconnect();
+            resolve({
+                visibleElements,
+                nonVisibleElements
+            });
+        }, {
+            root: rootElement,
+            threshold: [0]
+        });
+
+        rootElement.querySelectorAll('*').forEach(el => io.observe(el));
+    })
+}
+
+const getVisibleRange = /*async*/ (doc, start, end, mapRect) => {
+    console.log('getVisibleRange...')
+    // Grab the set of elements currently in-view (if any)
+
+    //    const { visibleElements, nonVisibleElements } = await getElementVisibilities(doc.body)
+    //    console.log(visibleElements)
+    //    console.log(nonVisibleElements)
+
     // first get all visible nodes
     const acceptNode = node => {
+        // If we have a visibility set and this element isn’t intersecting, skip it
+        //        if (node.nodeType === 1 && nonVisibleElements.has(node)) {
+        ////            console.log("Rejected " + node.localName)
+        //            return FILTER_REJECT
+        //        }
+
         const name = node.localName?.toLowerCase()
         // ignore all scripts, styles, and their children
         if (name === 'script' || name === 'style') return FILTER_REJECT
@@ -183,43 +231,64 @@ const getVisibleRange = (doc, start, end, mapRect) => {
 }
 
 // Determine vertical/RTL by cloning only head and empty body in hidden iframe to avoid style/layout calculations on full document
-const getDirection = async (sourceDoc) => {
-    const cloneDoc = document.implementation.createHTMLDocument();
-    
-    // Deep clone the <head> (includes <style> and <link> tags)
-    cloneDoc.head.replaceWith(sourceDoc.head.cloneNode(true));
-    
-    // Shallow clone the <body> to keep writing-mode and dir attributes
-    const bodyClone = sourceDoc.body.cloneNode(false);
-    cloneDoc.body.replaceWith(bodyClone);
-    
-    // Optional: copy over dir attributes from html if relevant
-    cloneDoc.documentElement.setAttribute('dir', sourceDoc.documentElement.getAttribute('dir') || '');
-    
-    // Force synchronous layout (only needed in some cases)
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
-    iframe.srcdoc = cloneDoc.documentElement.outerHTML;
-    
-    await new Promise(resolve => iframe.onload = resolve);
-    
-    const computed = iframe.contentWindow.getComputedStyle(iframe.contentDocument.body);
+const getDirection = (sourceDoc) => {
+    const computed = sourceDoc.defaultView.getComputedStyle(sourceDoc.body);
     const writingMode = computed.writingMode;
     const direction = computed.direction;
-    
     const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
     const verticalRTL = writingMode === 'vertical-rl';
     const rtl =
-    iframe.contentDocument.body.dir === 'rtl' ||
+    sourceDoc.body.dir === 'rtl' ||
     direction === 'rtl' ||
-    iframe.contentDocument.documentElement.dir === 'rtl';
-    
-    iframe.remove();
-    
-    return { vertical, verticalRTL, rtl };
+    sourceDoc.documentElement.dir === 'rtl';
+    return {
+        vertical,
+        verticalRTL,
+        rtl
+    };
 }
-    
+
+//const getDirection = async (sourceDoc) => {
+//    const cloneDoc = document.implementation.createHTMLDocument();
+//
+//    // Deep clone the <head> (includes <style> and <link> tags)
+//    cloneDoc.head.replaceWith(sourceDoc.head.cloneNode(true));
+//
+//    // Shallow clone the <body> to keep writing-mode and dir attributes
+//    const bodyClone = sourceDoc.body.cloneNode(false);
+//    cloneDoc.body.replaceWith(bodyClone);
+//
+//    // Optional: copy over dir attributes from html if relevant
+//    cloneDoc.documentElement.setAttribute('dir', sourceDoc.documentElement.getAttribute('dir') || '');
+//
+//    // Force synchronous layout (only needed in some cases)
+//    const iframe = document.createElement('iframe');
+//    iframe.style.display = 'none';
+//    document.body.appendChild(iframe);
+//    iframe.srcdoc = cloneDoc.documentElement.outerHTML;
+//
+//    await new Promise(resolve => iframe.onload = resolve);
+//
+//    const computed = iframe.contentWindow.getComputedStyle(iframe.contentDocument.body);
+//    const writingMode = computed.writingMode;
+//    const direction = computed.direction;
+//
+//    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+//    const verticalRTL = writingMode === 'vertical-rl';
+//    const rtl =
+//        iframe.contentDocument.body.dir === 'rtl' ||
+//        direction === 'rtl' ||
+//        iframe.contentDocument.documentElement.dir === 'rtl';
+//
+//    iframe.remove();
+//
+//    return {
+//        vertical,
+//        verticalRTL,
+//        rtl
+//    };
+//}
+
 const getBackground = doc => {
     const bodyStyle = doc.defaultView.getComputedStyle(doc.body)
     return bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
@@ -387,8 +456,10 @@ class View {
                     this.#iframe.style.display = 'block'
 
                     this.#cachedContentRangeRect = null
-                    
+
+                    console.log('load before render')
                     this.render(layout)
+                    console.log('load after render')
 
                     this.#resizeObserver.observe(doc.body)
                     //                    this.#mutationObserver.observe(doc.body, {
@@ -400,7 +471,7 @@ class View {
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                     // until the bug is fixed we can at least account for font load
-                    doc.fonts.ready.then(() => this.expand())
+                    //                        doc.fonts.ready.then(() => this.expand())
                     //                doc.fonts.ready.then(() => this.#debouncedExpand())
 
                     resolve()
@@ -828,10 +899,11 @@ export class Paginator extends HTMLElement {
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
 
         // Continuously fire relocate during scroll
-        this.#container.addEventListener('scroll', debounce(() => {
+        this.#container.addEventListener('scroll', debounce(async () => {
             if (this.#isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
-                const range = this.#getVisibleRange();
+                console.log("getVisibleRange for scroll..")
+                const range = /*await*/ this.#getVisibleRange();
                 const index = this.#index;
                 let fraction = 0;
                 if (this.scrolled) {
@@ -855,11 +927,12 @@ export class Paginator extends HTMLElement {
             }
         }, 450));
 
-        this.#container.addEventListener('scroll', debounce(() => {
+        this.#container.addEventListener('scroll', debounce(async () => {
             if (this.scrolled) {
                 if (this.#justAnchored) {
                     this.#justAnchored = false
                 } else {
+                    /*await*/
                     this.#afterScroll('scroll')
                 }
             }
@@ -1317,6 +1390,7 @@ export class Paginator extends HTMLElement {
             } = this
             if (element[scrollProp] === offset) {
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                /*await*/
                 this.#afterScroll(reason)
                 return
             }
@@ -1325,13 +1399,15 @@ export class Paginator extends HTMLElement {
             if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
                 element[scrollProp], offset, 300, easeOutQuad,
                 x => element[scrollProp] = x,
-            ).then(() => {
+            ).then(async () => {
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                /*await*/
                 this.#afterScroll(reason)
             })
             else {
                 element[scrollProp] = offset
                 this.#scrollBounds = [offset, this.atStart ? 0 : size, this.atEnd ? 0 : size]
+                /*await*/
                 this.#afterScroll(reason)
             }
         }
@@ -1432,19 +1508,21 @@ export class Paginator extends HTMLElement {
         const newPage = Math.round(anchor * (textPages - 1))
         await this.#scrollToPage(newPage + 1, reason)
     }
-    #getVisibleRange() {
-        if (this.scrolled) return getVisibleRange(this.#view.document,
+    /*async*/ #getVisibleRange() {
+        if (this.scrolled) return /*await*/ getVisibleRange(this.#view.document,
             this.start + this.#margin, this.end - this.#margin, this.#getRectMapper())
         const size = this.#rtl ? -this.size : this.size
-        return getVisibleRange(this.#view.document,
+        return /*await*/ getVisibleRange(this.#view.document,
             this.start - size, this.end - size, this.#getRectMapper())
     }
+    /*async*/
     #afterScroll(reason) {
         if (this.#isCacheWarmer) {
             return;
         }
 
-        const range = this.#getVisibleRange()
+        console.log("getVisibleRange for afterScroll...")
+        const range = /*await*/ this.#getVisibleRange()
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
@@ -1529,6 +1607,7 @@ export class Paginator extends HTMLElement {
         if (src) {
             this.#skipTouchEndOpacity = true
             const view = this.#createView()
+
             const afterLoad = doc => {
                 if (doc.head) {
                     const $styleBefore = doc.createElement('style')
@@ -1537,10 +1616,12 @@ export class Paginator extends HTMLElement {
                     doc.head.append($style)
                     this.#styleMap.set(doc, [$styleBefore, $style])
                 }
+                console.log('after load 1')
                 onLoad?.({
                     doc,
                     index
                 })
+                console.log('after load 2')
             }
             const beforeRender = this.#beforeRender.bind(this)
             await view.load(src, afterLoad, beforeRender)

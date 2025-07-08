@@ -431,8 +431,6 @@ class Reader {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
             
-            console.log("opacity ")
-            console.log(e)
             const fadeWithHold = (elem, value, key) => {
                 if (!elem) return;
                 clearTimeout(this.#chevronFadeTimers[key]);
@@ -724,7 +722,6 @@ class Reader {
     }
     
     #resetSideNavChevrons() {
-        console.log("reset chevvy")
         // Clear any fade timers
         clearTimeout(this.#chevronFadeTimers.l);
         clearTimeout(this.#chevronFadeTimers.r);
