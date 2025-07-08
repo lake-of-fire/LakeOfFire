@@ -182,27 +182,44 @@ const getVisibleRange = (doc, start, end, mapRect) => {
     return range
 }
 
-const getDirection = doc => {
-    const {
-        defaultView
-    } = doc
-    const {
-        writingMode,
-        direction
-    } = defaultView.getComputedStyle(doc.body)
-    const vertical = writingMode === 'vertical-rl' ||
-        writingMode === 'vertical-lr'
-    const rtl = doc.body.dir === 'rtl' ||
-        direction === 'rtl' ||
-        doc.documentElement.dir === 'rtl'
-    const verticalRTL = writingMode === 'vertical-rl'
-    return {
-        vertical,
-        verticalRTL,
-        rtl
-    }
+// Determine vertical/RTL by cloning only head and empty body in hidden iframe to avoid style/layout calculations on full document
+const getDirection = async (sourceDoc) => {
+    const cloneDoc = document.implementation.createHTMLDocument();
+    
+    // Deep clone the <head> (includes <style> and <link> tags)
+    cloneDoc.head.replaceWith(sourceDoc.head.cloneNode(true));
+    
+    // Shallow clone the <body> to keep writing-mode and dir attributes
+    const bodyClone = sourceDoc.body.cloneNode(false);
+    cloneDoc.body.replaceWith(bodyClone);
+    
+    // Optional: copy over dir attributes from html if relevant
+    cloneDoc.documentElement.setAttribute('dir', sourceDoc.documentElement.getAttribute('dir') || '');
+    
+    // Force synchronous layout (only needed in some cases)
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    iframe.srcdoc = cloneDoc.documentElement.outerHTML;
+    
+    await new Promise(resolve => iframe.onload = resolve);
+    
+    const computed = iframe.contentWindow.getComputedStyle(iframe.contentDocument.body);
+    const writingMode = computed.writingMode;
+    const direction = computed.direction;
+    
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+    iframe.contentDocument.body.dir === 'rtl' ||
+    direction === 'rtl' ||
+    iframe.contentDocument.documentElement.dir === 'rtl';
+    
+    iframe.remove();
+    
+    return { vertical, verticalRTL, rtl };
 }
-
+    
 const getBackground = doc => {
     const bodyStyle = doc.defaultView.getComputedStyle(doc.body)
     return bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
@@ -233,6 +250,7 @@ class View {
     #debouncedExpand
     #hasResizerObserverTriggered = false
     #lastResizerRect = null
+    #cachedContentRangeRect = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
 
@@ -265,7 +283,8 @@ class View {
             return
         }
 
-        this.#lastResizerRect = newSize;
+        this.#lastResizerRect = newSize
+        this.#cachedContentRangeRect = null
 
         console.log("View RESIZER OBS");
         requestAnimationFrame(() => {
@@ -341,7 +360,7 @@ class View {
                 afterLoad?.(doc)
                 resolve()
             } else {
-                this.#iframe.addEventListener('load', () => {
+                this.#iframe.addEventListener('load', async () => {
                     const doc = this.document
                     afterLoad?.(doc)
 
@@ -351,7 +370,7 @@ class View {
                         vertical,
                         verticalRTL,
                         rtl
-                    } = getDirection(doc)
+                    } = await getDirection(doc)
                     const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
 
@@ -367,6 +386,8 @@ class View {
                     })
                     this.#iframe.style.display = 'block'
 
+                    this.#cachedContentRangeRect = null
+                    
                     this.render(layout)
 
                     this.#resizeObserver.observe(doc.body)
@@ -524,9 +545,7 @@ class View {
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
-            const contentRect = this.#contentRange.getBoundingClientRect()
-            console.log("new context rect ")
-            console.log(contentRect)
+            const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
             let contentSize
             if (documentElement) {
                 const rootRect = documentElement.getBoundingClientRect()
