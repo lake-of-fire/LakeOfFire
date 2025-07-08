@@ -89,23 +89,6 @@ const {
 
 const filter = SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION
 
-const async asyncGetBoundingClientRect = (element) => {
-    return new Promise(function (resolve) {
-        requestAnimationFrame(function () {
-            resolve(element.getBoundingClientRect())
-        })
-    })
-}
-
-const async asyncGetClientRects = (element) => {
-    return new Promise(function (resolve) {
-        requestAnimationFrame(function () {
-            resolve(element.getClientRects())
-        })
-    })
-}
-
-
 // needed cause there seems to be a bug in `getBoundingClientRect()` in Firefox
 // where it fails to include rects that have zero width and non-zero height
 // (CSSOM spec says "rectangles [...] of which the height or width is not zero")
@@ -162,6 +145,14 @@ const getVisibleRange = (doc, start, end, mapRect) => {
         acceptNode
     })
     const nodes = []
+    // Memoize mapRect(getBoundingClientRect(range)) per range
+    const rectCache = new WeakMap();
+    const safeRect = range => {
+        if (rectCache.has(range)) return rectCache.get(range);
+        const rect = mapRect(getBoundingClientRect(range));
+        rectCache.set(range, rect);
+        return rect;
+    };
     for (let node = walker.nextNode(); node; node = walker.nextNode())
         nodes.push(node)
 
@@ -172,15 +163,15 @@ const getVisibleRange = (doc, start, end, mapRect) => {
     // find the offset at which visibility changes
     const startOffset = from.nodeType === 1 ? 0 :
         bisectNode(doc, from, (a, b) => {
-            const p = mapRect(getBoundingClientRect(a))
-            const q = mapRect(getBoundingClientRect(b))
+            const p = safeRect(a);
+            const q = safeRect(b);
             if (p.right < start && q.left > start) return 0
             return q.left > start ? -1 : 1
         })
     const endOffset = to.nodeType === 1 ? 0 :
         bisectNode(doc, to, (a, b) => {
-            const p = mapRect(getBoundingClientRect(a))
-            const q = mapRect(getBoundingClientRect(b))
+            const p = safeRect(a);
+            const q = safeRect(b);
             if (p.right < end && q.left > end) return 0
             return q.left > end ? -1 : 1
         })
@@ -243,20 +234,21 @@ class View {
     //    #resizeObserver = new ResizeObserver(() => this.expand())
     #resizeObserver = new ResizeObserver(async () => {
         if (!this.#isCacheWarmer) {
+            console.log("resize observer expand()")
             this.#debouncedExpand()
         }
         //        this.expand()
     })
-    #mutationObserver = new MutationObserver(async () => {
-        //        return ;
-        if (!this.#isCacheWarmer) {
-            if (this.#column) {
-                // TODO: Needed still?
-                this.needsRenderForMutation = true
-            }
-        }
-    })
-    needsRenderForMutation = false
+    //    #mutationObserver = new MutationObserver(async () => {
+    //        //        return ;
+    //        if (!this.#isCacheWarmer) {
+    //            if (this.#column) {
+    //                // TODO: Needed still?
+    //                this.needsRenderForMutation = true
+    //            }
+    //        }
+    //    })
+    //    needsRenderForMutation = false
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
     #contentRange = document.createRange()
@@ -345,11 +337,11 @@ class View {
                     this.render(layout)
 
                     this.#resizeObserver.observe(doc.body)
-                    this.#mutationObserver.observe(doc.body, {
-                        childList: true,
-                        subtree: true,
-                        attributes: false
-                    })
+                    //                    this.#mutationObserver.observe(doc.body, {
+                    //                        childList: true,
+                    //                        subtree: true,
+                    //                        attributes: false
+                    //                    })
 
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
@@ -367,10 +359,12 @@ class View {
     }
     render(layout) {
         if (!layout) return
+        console.log("render(layout)")
         this.#column = layout.flow !== 'scrolled'
         this.#layout = layout
         if (this.#column) this.columnize(layout)
         else this.scrolled(layout)
+        console.log("render(layout) DONE")
     }
     scrolled({
         gap,
@@ -430,13 +424,11 @@ class View {
             'column-width': `${Math.trunc(columnWidth)}px`,
             'column-gap': `${gap}px`,
             'column-fill': 'auto',
-            ...(vertical ?
-                {
-                    'width': `${width}px`
-                } :
-                {
-                    'height': `${height}px`
-                }),
+            ...(vertical ? {
+                'width': `${width}px`
+            } : {
+                'height': `${height}px`
+            }),
             'padding': vertical ? `${gap / 2}px 0` : `0 ${gap / 2}px`,
             'overflow': 'hidden',
             // force wrap long words
@@ -460,10 +452,10 @@ class View {
         })
         this.setImageSize()
         // Don't infinite loop.
-        if (!this.needsRenderForMutation) {
-            this.expand()
-            //            this.#debouncedExpand()
-        }
+        //        if (!this.needsRenderForMutation) {
+        this.expand()
+        //            //            this.#debouncedExpand()
+        //        }
     }
     setImageSize() {
         const {
@@ -483,11 +475,9 @@ class View {
             //            const maxWidth = el.style.maxWidth || 'none';
             setStylesImportant(el, {
                 'max-height': vertical ?
-                    (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%') :
-                    `${height - margin * 2}px`,
+                    (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%') : `${height - margin * 2}px`,
                 'max-width': vertical ?
-                    `${width - margin * 2}px` :
-                    (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+                    `${width - margin * 2}px` : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
                 'object-fit': 'contain',
                 'page-break-inside': 'avoid',
                 'break-inside': 'avoid',
@@ -511,7 +501,7 @@ class View {
                     this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
                 contentSize = contentStart + contentRect[side]
             } else {
-                contentSize = this.#contentRange.getBoundingClientRect()[side]
+                contentSize = contentRect[side]
             }
             const pageCount = Math.ceil(contentSize / this.#size)
             const expandedSize = pageCount * this.#size
@@ -563,7 +553,7 @@ class View {
     }
     destroy() {
         if (this.document) this.#resizeObserver.unobserve(this.document.body)
-        if (this.document) this.#mutationObserver.disconnect()
+        //        if (this.document) this.#mutationObserver.disconnect()
     }
 }
 
@@ -586,6 +576,7 @@ export class Paginator extends HTMLElement {
                 this.#hasResizeObserverTriggered = true
                 return
             }
+            console.log("resize observer render()")
             this.#debouncedRender()
             //        this.render()
         }
@@ -615,7 +606,7 @@ export class Paginator extends HTMLElement {
     #prefetchCache = new Map()
     #isLoading = false
     #skipTouchEndOpacity = false
-    #isAdjustingSelectionHandle = false;
+    #isAdjustingSelectionHandle = false
     #wheelArmed = true; // Hysteresis-based horizontal wheel paging
     constructor() {
         super()
@@ -829,14 +820,14 @@ export class Paginator extends HTMLElement {
         await this.#scrollToAnchor(this.#anchor)
         //                this.#scrollToAnchor.bind(this),
         //        await this.#scrollToAnchor(this.#anchor);
-        if (this.#view.needsRenderForMutation) {
-            this.#view.render(this.#beforeRender({
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-            }));
-            await this.#scrollToAnchor();
-            this.#view.needsRenderForMutation = false
-        }
+        //        if (this.#view.needsRenderForMutation) {
+        //            this.#view.render(this.#beforeRender({
+        //                vertical: this.#vertical,
+        //                rtl: this.#rtl,
+        //            }));
+        //            await this.#scrollToAnchor();
+        //            this.#view.needsRenderForMutation = false
+        //        }
     }
     #beforeRender({
         vertical,
@@ -936,11 +927,24 @@ export class Paginator extends HTMLElement {
     }
     render() {
         if (!this.#view) return
-        this.#view.render(this.#beforeRender({
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-        }))
-        this.#scrollToAnchor(this.#anchor)
+        console.log('render()')
+
+        // Remove resize observer before render to avoid unwanted triggers
+        this.#resizeObserver.unobserve(this.#container);
+
+        try {
+            this.#view.render(this.#beforeRender({
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+            }))
+            console.log('render() scrollto...')
+            this.#scrollToAnchor(this.#anchor)
+        } finally {
+            requestAnimationFrame(() => {
+                this.#resizeObserver.observe(this.#container);
+                console.log('render() scrollto...done')
+            })
+        }
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
