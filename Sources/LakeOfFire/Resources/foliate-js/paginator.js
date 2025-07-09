@@ -756,6 +756,7 @@ export class Paginator extends HTMLElement {
             newSize.left === old.left
 
         if (!unchanged) {
+            console.log("Resize changed, clear caches")
             this.#lastResizerRect = newSize
             this.#cachedSizes = {
                 width: newSize.width,
@@ -1184,8 +1185,9 @@ export class Paginator extends HTMLElement {
     }
     async sizes() {
         await this.#awaitDirection();
+        console.log("sizes()")
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedSizes === null) {
+        if (this.#cachedSizes === null) {
             const rect = this.#container.getBoundingClientRect()
             this.#cachedSizes = {
                 width: rect.width,
@@ -1203,8 +1205,9 @@ export class Paginator extends HTMLElement {
     }
     async viewSize() {
         await this.#awaitDirection();
+        console.log("viewSize()")
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedViewSize === null) {
+        if (this.#cachedViewSize === null) {
             this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
         }
         return this.#cachedViewSize
@@ -1711,6 +1714,10 @@ export class Paginator extends HTMLElement {
                 })
             }
             const beforeRender = this.#beforeRender.bind(this)
+            
+            this.#cachedSizes = null
+            this.#cachedViewSize = null
+
             await view.load(src, afterLoad, beforeRender)
             // Reset chevrons when loading new section
             document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
