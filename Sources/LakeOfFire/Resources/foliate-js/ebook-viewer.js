@@ -627,8 +627,8 @@ class Reader {
         if (!this.view?.renderer) return;
         const r = this.view.renderer;
         // Use new section start/end helpers if available
-        const atSectionStart = typeof r.isAtSectionStart === "function" ? r.isAtSectionStart() : false;
-        const atSectionEnd = typeof r.isAtSectionEnd === "function" ? r.isAtSectionEnd() : false;
+        const atSectionStart = typeof r.isAtSectionStart === "function" ? await r.isAtSectionStart() : false;
+        const atSectionEnd = typeof r.isAtSectionEnd === "function" ? await r.isAtSectionEnd() : false;
         // Use public helpers to detect prev/next section
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
@@ -688,17 +688,17 @@ class Reader {
         const isRTL = this.isRTL;
         
         if (k === 'ArrowLeft' || k === 'h') {
-            if (isRTL && renderer.atEnd) {
+            if (isRTL && await renderer.atEnd()) {
                 this.buttons.next.click();
-            } else if (!isRTL && renderer.atStart) {
+            } else if (!isRTL && await renderer.atStart()) {
                 this.buttons.prev.click();
             } else {
                 await this.view.goLeft();
             }
         } else if (k === 'ArrowRight' || k === 'l') {
-            if (isRTL && renderer.atStart) {
+            if (isRTL && await renderer.atStart()) {
                 this.buttons.prev.click();
-            } else if (!isRTL && renderer.atEnd) {
+            } else if (!isRTL && await renderer.atEnd()) {
                 this.buttons.next.click();
             } else {
                 await this.view.goRight();
@@ -893,13 +893,13 @@ class CacheWarmer {
         await this.view.renderer.firstSection()
     }
     
-    #onLoad({ detail: { doc } }) {
+    async #onLoad({ detail: { doc } }) {
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
             frameURL: event.detail.doc.location.href,
         })
         
-        if (!this.view.renderer.atEnd) {
+        if (!(await this.view.renderer.atEnd())) {
             window.webkit.messageHandlers.ebookCacheWarmerReadyToLoadNextSection.postMessage({
                 topWindowURL: window.top.location.href,
             })

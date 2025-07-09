@@ -952,7 +952,7 @@ export class Paginator extends HTMLElement {
                 let fraction = 0;
                 if (this.scrolled) {
                     fraction = (await this.start()) / (await this.viewSize());
-                } else if (this.pages > 0) {
+                } else if ((await this.pages()) > 0) {
                     const {
                         page,
                         pages
@@ -1177,7 +1177,7 @@ export class Paginator extends HTMLElement {
     async size() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedSize === null) {
+        if (true || this.#cachedSize === null) {
             this.#cachedSize = this.#container.getBoundingClientRect()[await this.sideProp()]
         }
         return this.#cachedSize
@@ -1185,7 +1185,7 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedViewSize === null) {
+        if (true || this.#cachedViewSize === null) {
             this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
         }
         return this.#cachedViewSize
@@ -1445,8 +1445,8 @@ export class Paginator extends HTMLElement {
             const element = this.#container
             const scrollProp = await this.scrollProp()
             const size = await this.size()
-            const atStart = this.atStart
-            const atEnd = this.atEnd
+            const atStart = await this.atStart()
+            const atEnd = await this.atEnd()
             if (element[scrollProp] === offset) {
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
                 await this.#afterScroll(reason)
@@ -1617,7 +1617,7 @@ export class Paginator extends HTMLElement {
         }))
 
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
-        if (this.isAtSectionStart()) {
+        if (await this.isAtSectionStart()) {
             this.#skipTouchEndOpacity = true
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
@@ -1813,8 +1813,8 @@ export class Paginator extends HTMLElement {
             }
             return true;
         }
-        if (this.atStart) return
-        const page = this.page - 1
+        if (await this.atStart()) return
+        const page = await this.page() - 1
         return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
     }
     async #scrollNext(distance) {
@@ -1831,16 +1831,16 @@ export class Paginator extends HTMLElement {
             }
             return true;
         }
-        if (this.atEnd) return
-        const page = this.page + 1
-        const pages = this.pages
+        if (await this.atEnd()) return
+        const page = await this.page() + 1
+        const pages = await this.pages()
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
-    get atStart() {
-        return this.#adjacentIndex(-1) == null && this.page <= 1
+    async atStart() {
+        return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
     }
-    get atEnd() {
-        return this.#adjacentIndex(1) == null && this.page >= this.pages - 2
+    async atEnd() {
+        return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
     }
     #adjacentIndex(dir) {
         for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
@@ -1920,22 +1920,22 @@ export class Paginator extends HTMLElement {
         this.sections[this.#index]?.unload?.()
     }
     // Public navigation edge detection methods
-    canTurnPrev() {
+    async canTurnPrev() {
         if (!this.#view) return false;
         if (this.scrolled) {
             return this.start > 0;
         }
         // If at the start page and no previous section, cannot turn
-        if (this.page <= 1 && this.#adjacentIndex(-1) == null) return false;
+        if ((await this.page()) <= 1 && this.#adjacentIndex(-1) == null) return false;
         return true;
     }
-    canTurnNext() {
+    async canTurnNext() {
         if (!this.#view) return false;
         if (this.scrolled) {
             return this.viewSize - this.end > 2;
         }
         // If at the end page and no next section, cannot turn
-        if (this.page >= this.pages - 2 && this.#adjacentIndex(1) == null) return false;
+        if ((await this.page()) >= (await this.pages()) - 2 && this.#adjacentIndex(1) == null) return false;
         return true;
     }
 
@@ -1948,12 +1948,12 @@ export class Paginator extends HTMLElement {
     }
 
     // Public: At first page of current section
-    isAtSectionStart() {
-        return this.page <= 1;
+    async isAtSectionStart() {
+        return (await this.page()) <= 1;
     }
     // Public: At last page of current section
-    isAtSectionEnd() {
-        return this.page >= this.pages - 2;
+    async isAtSectionEnd() {
+        return (await this.page()) >= (await this.pages()) - 2;
     }
 }
 
