@@ -870,9 +870,9 @@ export class Paginator extends HTMLElement {
                 grid-row: 2;
                 overflow: hidden;
         
-                /*contain: layout style;
+                contain: layout style;
                 will-change: transform;
-                transform: translateZ(0);*/
+                transform: translateZ(0);
             }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
