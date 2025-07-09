@@ -465,16 +465,11 @@ class View {
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
 
-//                    console.log("get dir...")
                     const direction = await getDirection(doc);
-//                    console.log("got dir")
-//                    console.log(direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
-//                    console.log("resolving dir..")
                     this.#directionReadyResolve?.();
-//                    console.log("resolved dir")
 
                     const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
@@ -491,7 +486,6 @@ class View {
                     })
                     this.#iframe.style.display = 'block'
                     
-                    console.log('load listener... render(layout)')
                     await this.render(layout)
 
 //                    this.#resizeObserver.observe(doc.body)
@@ -574,7 +568,6 @@ class View {
     }) {
         await this.#awaitDirection();
         const vertical = this.#vertical
-        console.log('columnize ' + vertical  + "-" + height + "-" + width)
         this.#size = vertical ? height : width
 
         const doc = this.document
@@ -649,7 +642,6 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
-        console.log("expand!")
         //        const { documentElement } = this.document
         const documentElement = this.document?.documentElement
         if (this.#column) {
@@ -736,7 +728,6 @@ export class Paginator extends HTMLElement {
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
 
-        console.log("RESIZE OBS!!!!")
         const entry = entries[0];
         const rect = entry.contentRect;
 
@@ -756,7 +747,6 @@ export class Paginator extends HTMLElement {
             newSize.left === old.left
 
         if (!unchanged) {
-            console.log("Resize changed, clear caches")
             this.#lastResizerRect = newSize
             this.#cachedSizes = {
                 width: newSize.width,
@@ -774,11 +764,7 @@ export class Paginator extends HTMLElement {
             return
         }
 
-        console.log("RESIZED! GONNA RENDER!!!!!")
-        console.log(newSize)
-
         requestAnimationFrame(() => {
-            console.log("resized observer - render(...)")
             this.#debouncedRender();
         })
     })
@@ -1047,7 +1033,6 @@ export class Paginator extends HTMLElement {
         rtl,
         background
     }) {
-        console.log("#beforeRender")
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
@@ -1062,9 +1047,6 @@ export class Paginator extends HTMLElement {
             width,
             height
         } = await this.sizes()
-        console.log(await this.sizes())
-        console.log(vertical)
-        console.log("before render ^^")
         const size = vertical ? height : width
 
         const style = getComputedStyle(this.#top)
@@ -1145,10 +1127,7 @@ export class Paginator extends HTMLElement {
     async render() {
         if (!this.#view) return
 
-            console.log("RENDER")
-        // Remove resize observer before render to avoid unwanted triggers
-        //this.#resizeObserver.unobserve(this.#container);
-
+        // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
         this.#resizeObserver.observe(this.#container);
         
@@ -1160,9 +1139,7 @@ export class Paginator extends HTMLElement {
             await this.#scrollToAnchor(this.#anchor)
         } finally {
             this.#hasResizeObserverTriggered = false
-//            this.#resizeObserver.observe(this.#container);
         }
-        console.log("RENDER FINISHED")
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
@@ -1185,7 +1162,6 @@ export class Paginator extends HTMLElement {
     }
     async sizes() {
         await this.#awaitDirection();
-        console.log("sizes()")
         if (this.#isCacheWarmer) return 0
         if (this.#cachedSizes === null) {
             const rect = this.#container.getBoundingClientRect()
@@ -1197,15 +1173,10 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
-//        console.log(await this.sizes())
-//        console.log("size() sizes ^^")
-//        console.log(await this.sideProp())
-//        console.log("size() sideprop ^^")
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
         await this.#awaitDirection();
-        console.log("viewSize()")
         if (this.#isCacheWarmer) return 0
         if (this.#cachedViewSize === null) {
             this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
@@ -1226,10 +1197,6 @@ export class Paginator extends HTMLElement {
     }
     async pages() {
         await this.#awaitDirection();
-            console.log(await this.viewSize())
-            console.log('pages() ^ viewsize')
-            console.log(await this.size())
-            console.log('pages() ^ size')
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1564,7 +1531,6 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
     async #scrollToAnchor(anchor, reason = 'anchor') {
-//            console.log('scroll to anchor...')
         await this.#awaitDirection();
         this.#anchor = anchor
         const rects = uncollapse(anchor)?.getClientRects?.()
@@ -1972,11 +1938,6 @@ export class Paginator extends HTMLElement {
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
-//            console.log("at sec end?")
-//            console.log(await this.page())
-//            console.log("at sec end? page^")
-//            console.log(await this.pages())
-//            console.log("at sec end? pages^")
         return (await this.page()) >= (await this.pages()) - 2;
     }
 }
