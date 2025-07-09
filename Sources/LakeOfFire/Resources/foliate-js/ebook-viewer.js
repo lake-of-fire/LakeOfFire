@@ -479,54 +479,52 @@ class Reader {
         
         // Section ticks
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
-        {
-            const total = sizes.reduce((a, b) => a + b, 0)
-            let sum = 0
-            // Calculate all tick positions as fractions
-            let ticks = [];
-            for (const size of sizes.slice(0, -1)) {
-                sum += size;
-                ticks.push(sum / total);
-            }
-            if (sizes.length >= 50) {
-                // Collapse ticks that are close to each other, never collapse more than those within that window.
-                const THRESHOLD = 0.01;
-                let collapsed = [];
-                let group = [];
-                for (let i = 0; i < ticks.length; ++i) {
-                    group.push(ticks[i]);
-                    // If next tick is far enough, close group
-                    if (i === ticks.length - 1 || Math.abs(ticks[i + 1] - ticks[i]) > THRESHOLD) {
-                        // Collapse group if there's more than one tick in threshold
-                        if (group.length > 1) {
-                            // Pick the tick closest to the middle of the group
-                            const avg = group.reduce((a, b) => a + b, 0) / group.length;
-                            let closest = group[0];
-                            let minDist = Math.abs(avg - closest);
-                            for (const t of group) {
-                                const dist = Math.abs(avg - t);
-                                if (dist < minDist) {
-                                    minDist = dist;
-                                    closest = t;
-                                }
+        const total = sizes.reduce((a, b) => a + b, 0)
+        let sum = 0
+        // Calculate all tick positions as fractions
+        let ticks = [];
+        for (const size of sizes.slice(0, -1)) {
+            sum += size;
+            ticks.push(sum / total);
+        }
+        if (sizes.length >= 50) {
+            // Collapse ticks that are close to each other, never collapse more than those within that window.
+            const THRESHOLD = 0.01;
+            let collapsed = [];
+            let group = [];
+            for (let i = 0; i < ticks.length; ++i) {
+                group.push(ticks[i]);
+                // If next tick is far enough, close group
+                if (i === ticks.length - 1 || Math.abs(ticks[i + 1] - ticks[i]) > THRESHOLD) {
+                    // Collapse group if there's more than one tick in threshold
+                    if (group.length > 1) {
+                        // Pick the tick closest to the middle of the group
+                        const avg = group.reduce((a, b) => a + b, 0) / group.length;
+                        let closest = group[0];
+                        let minDist = Math.abs(avg - closest);
+                        for (const t of group) {
+                            const dist = Math.abs(avg - t);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closest = t;
                             }
-                            collapsed.push(closest);
-                        } else {
-                            collapsed.push(group[0]);
                         }
-                        group = [];
+                        collapsed.push(closest);
+                    } else {
+                        collapsed.push(group[0]);
                     }
+                    group = [];
                 }
-                ticks = collapsed;
             }
-            // Clear any previous ticks
-            const tickMarks = $('#tick-marks');
-            tickMarks.innerHTML = '';
-            for (const tick of ticks) {
-                const option = document.createElement('option');
-                option.value = tick;
-                tickMarks.append(option);
-            }
+            ticks = collapsed;
+        }
+        // Clear any previous ticks
+        const tickMarks = $('#tick-marks');
+        tickMarks.innerHTML = '';
+        for (const tick of ticks) {
+            const option = document.createElement('option');
+            option.value = tick;
+            tickMarks.append(option);
         }
         
         slider.style.setProperty('--value', slider.value);

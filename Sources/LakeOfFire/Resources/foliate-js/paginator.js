@@ -462,16 +462,30 @@ class View {
                     const doc = this.document
 
                     await afterLoad?.(doc)
+ 
+                    // it needs to be visible for Firefox to get computed style
+                    this.#iframe.style.display = 'block'
+                   
+                    const oldgetDirection = doc => {
+                        const { defaultView } = doc
+                        const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
+                        const vertical = writingMode === 'vertical-rl'
+                        || writingMode === 'vertical-lr'
+                        const verticalRTL = writingMode === 'vertical-rl'
+                        const rtl = doc.body.dir === 'rtl'
+                        || direction === 'rtl'
+                        || doc.documentElement.dir === 'rtl'
+                        return { vertical, verticalRTL, rtl }
+                    }
+                    const direction = oldgetDirection(doc);
 
-                    const direction = await getDirection(doc);
+//                    const direction = await getDirection(doc);
                     console.log('GOT DIRECTION!')
+                    console.log(direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
                     this.#directionReadyResolve?.();
-
-                    // it needs to be visible for Firefox to get computed style
-                    this.#iframe.style.display = 'block'
 
                     const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
@@ -938,7 +952,7 @@ export class Paginator extends HTMLElement {
                 const index = this.#index;
                 let fraction = 0;
                 if (this.scrolled) {
-                    fraction = this.start / this.viewSize;
+                    fraction = (await this.start()) / (await this.viewSize());
                 } else if (this.pages > 0) {
                     const {
                         page,
@@ -1419,7 +1433,7 @@ export class Paginator extends HTMLElement {
         if (this.scrolled) {
             const rectMapper = await this.#getRectMapper();
             const offset = rectMapper(rect).left - this.#margin
-            return this.#scrollTo(offset, reason)
+            return await this.#scrollTo(offset, reason)
         }
         const rectMapper = await this.#getRectMapper();
         const offset = rectMapper(rect).left
@@ -1795,8 +1809,8 @@ export class Paginator extends HTMLElement {
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
             const scrollDistance = distance ?? (this.size - lineAdvance);
-            if (this.start > 0) {
-                return this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+            if ((await this.start()) > 0) {
+                return await this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
             }
             return true;
         }
@@ -1813,8 +1827,8 @@ export class Paginator extends HTMLElement {
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
             const scrollDistance = distance ?? (this.size - lineAdvance);
-            if (this.viewSize - this.end > 2) {
-                return this.#scrollTo(Math.min(this.viewSize, this.start + scrollDistance), null, true);
+            if ((await this.viewSize()) - (await this.end()) > 2) {
+                return await this.#scrollTo(Math.min(await this.viewSize(), (await this.start()) + scrollDistance), null, true);
             }
             return true;
         }
