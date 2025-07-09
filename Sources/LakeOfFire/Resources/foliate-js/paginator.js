@@ -465,11 +465,16 @@ class View {
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
 
+                    console.log("get dir...")
                     const direction = await getDirection(doc);
+                    console.log("got dir")
+                    console.log(direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
+                    console.log("resolving dir..")
                     this.#directionReadyResolve?.();
+                    console.log("resolved dir")
 
                     const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
@@ -657,7 +662,7 @@ class View {
                 contentSize = contentRect[side]
             }
             const pageCount = Math.ceil(contentSize / this.#size)
-            const expandedSize = pageCount * this.#size
+            const expandedSize = pageCount * await this.#size
             this.#element.style.padding = '0'
             this.#iframe.style[side] = `${expandedSize}px`
             this.#element.style[side] = `${expandedSize + this.#size * 2}px`
@@ -754,7 +759,7 @@ export class Paginator extends HTMLElement {
         }
 
         this.#lastResizerRect = newSize
-        this.#cachedSize = null
+        this.#cachedSizes = null
         this.#cachedViewSize = null
 
         requestAnimationFrame(() => {
@@ -790,7 +795,7 @@ export class Paginator extends HTMLElement {
     #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
-    #cachedSize = null
+    #cachedSizes = null
     #cachedViewSize = null
     constructor() {
         super()
@@ -863,9 +868,9 @@ export class Paginator extends HTMLElement {
                 grid-row: 2;
                 overflow: hidden;
         
-                contain: layout style;
+                /*contain: layout style;
                 will-change: transform;
-                transform: translateZ(0);
+                transform: translateZ(0);*/
             }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
@@ -1026,6 +1031,7 @@ export class Paginator extends HTMLElement {
         rtl,
         background
     }) {
+        console.log("#beforeRender")
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
@@ -1039,7 +1045,9 @@ export class Paginator extends HTMLElement {
         const {
             width,
             height
-        } = await this.size()
+        } = await this.sizes()
+        console.log(await this.sizes())
+        console.log(vertical)
         const size = vertical ? height : width
 
         const style = getComputedStyle(this.#top)
@@ -1153,13 +1161,20 @@ export class Paginator extends HTMLElement {
         return this.#vertical ? (scrolled ? 'width' : 'height') :
             scrolled ? 'height' : 'width'
     }
-    async size() {
+    async sizes() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedSize === null) {
-            this.#cachedSize = this.#container.getBoundingClientRect()[await this.sideProp()]
+        if (this.#cachedSizes === null) {
+            const rect = this.#container.getBoundingClientRect()
+            this.#cachedSizes = {
+                width: rect.width,
+                height: rect.height,
+            }
         }
-        return this.#cachedSize
+        return this.#cachedSizes
+    }
+    async size() {
+        return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
         await this.#awaitDirection();
@@ -1183,6 +1198,9 @@ export class Paginator extends HTMLElement {
     }
     async pages() {
         await this.#awaitDirection();
+            console.log('pages()')
+            console.log(await this.viewSize())
+            console.log(await this.size())
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1921,6 +1939,9 @@ export class Paginator extends HTMLElement {
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
+            console.log("at sec end?")
+            console.log(await this.page())
+            console.log(await this.pages())
         return (await this.page()) >= (await this.pages()) - 2;
     }
 }
