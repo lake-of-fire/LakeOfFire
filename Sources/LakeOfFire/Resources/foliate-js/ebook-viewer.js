@@ -553,6 +553,19 @@ class Reader {
         
         document.addEventListener('keydown', this.#handleKeydown.bind(this))
         
+        const processTouchStart = function (event) {
+            // Ignore touches inside foliate-js viewer iframe
+            if (event.target && event.target.ownerDocument !== document) return
+            
+            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                touchedEntryWithElementId: null,
+                wasAlreadySelected: false,
+            })
+        }
+        document.addEventListener('touchstart', processTouchStart, { passive: true })
+        document.addEventListener('mousedown', processTouchStart, { passive: true })
+
+        
         const title = book.metadata?.title ?? 'Untitled Book'
         document.title = title
         $('#side-bar-title').innerText = title
