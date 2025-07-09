@@ -465,16 +465,16 @@ class View {
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
 
-                    console.log("get dir...")
+//                    console.log("get dir...")
                     const direction = await getDirection(doc);
-                    console.log("got dir")
-                    console.log(direction)
+//                    console.log("got dir")
+//                    console.log(direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
-                    console.log("resolving dir..")
+//                    console.log("resolving dir..")
                     this.#directionReadyResolve?.();
-                    console.log("resolved dir")
+//                    console.log("resolved dir")
 
                     const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
@@ -482,12 +482,14 @@ class View {
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
 
-                    const layout = beforeRender?.({
+                    const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
                         background
                     })
                     this.#iframe.style.display = 'block'
+                    
+                    console.log('load listener... render(layout)')
                     await this.render(layout)
 
                     this.#resizeObserver.observe(doc.body)
@@ -570,6 +572,7 @@ class View {
     }) {
         await this.#awaitDirection();
         const vertical = this.#vertical
+        console.log('columnize ' + vertical  + "-" + height + "-" + width)
         this.#size = vertical ? height : width
 
         const doc = this.document
@@ -644,6 +647,7 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
+        console.log("expand!")
         //        const { documentElement } = this.document
         const documentElement = this.document?.documentElement
         if (this.#column) {
@@ -758,11 +762,14 @@ export class Paginator extends HTMLElement {
             return
         }
 
+//        console.log("RESIZED!")
+//        console.log(newSize)
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
         this.#cachedViewSize = null
 
         requestAnimationFrame(() => {
+            console.log("resized observer - render(...)")
             this.#debouncedRender();
         })
     })
@@ -816,8 +823,8 @@ export class Paginator extends HTMLElement {
                 /*--_gap: 7%;
                 --_margin: 48px;*/
                 --_gap: 4%;
-                /*--_margin: 30px;*/
-                --_margin: 12px;
+                --_top-margin: 12px;
+                --_bottom-margin: 32px;
                 --_side-margin: var(--side-nav-width, 32px);
                 --_max-inline-size: 720px;
                 --_max-block-size: 1440px;
@@ -842,9 +849,9 @@ export class Paginator extends HTMLElement {
                     1fr
                     var(--_side-margin); 
                 grid-template-rows:
-                    minmax(var(--_margin), 1fr)
+                    minmax(var(--_top-margin), 1fr)
                     minmax(0, var(--_max-height))
-                    minmax(var(--_margin), 1fr);
+                    minmax(var(--_bottom-margin), 1fr);
                 &.vertical {
                     --_max-column-count-spread: var(--_max-column-count-portrait);
                     --_max-width: var(--_max-block-size);
@@ -1048,6 +1055,7 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         console.log(await this.sizes())
         console.log(vertical)
+        console.log("before render ^^")
         const size = vertical ? height : width
 
         const style = getComputedStyle(this.#top)
@@ -1128,6 +1136,7 @@ export class Paginator extends HTMLElement {
     async render() {
         if (!this.#view) return
 
+            console.log("RENDER")
         // Remove resize observer before render to avoid unwanted triggers
         this.#resizeObserver.unobserve(this.#container);
 
@@ -1164,7 +1173,7 @@ export class Paginator extends HTMLElement {
     async sizes() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedSizes === null) {
+        if (true || this.#cachedSizes === null) {
             const rect = this.#container.getBoundingClientRect()
             this.#cachedSizes = {
                 width: rect.width,
@@ -1174,6 +1183,10 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
+//        console.log(await this.sizes())
+//        console.log("size() sizes ^^")
+//        console.log(await this.sideProp())
+//        console.log("size() sideprop ^^")
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
@@ -1198,9 +1211,9 @@ export class Paginator extends HTMLElement {
     }
     async pages() {
         await this.#awaitDirection();
-            console.log('pages()')
-            console.log(await this.viewSize())
-            console.log(await this.size())
+//            console.log('pages()')
+//            console.log(await this.viewSize())
+//            console.log(await this.size())
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1535,7 +1548,7 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
     async #scrollToAnchor(anchor, reason = 'anchor') {
-            console.log('scroll to anchor...')
+//            console.log('scroll to anchor...')
         await this.#awaitDirection();
         this.#anchor = anchor
         const rects = uncollapse(anchor)?.getClientRects?.()
@@ -1684,7 +1697,7 @@ export class Paginator extends HTMLElement {
                     index
                 })
             }
-            const beforeRender = await this.#beforeRender.bind(this)
+            const beforeRender = this.#beforeRender.bind(this)
             await view.load(src, afterLoad, beforeRender)
             // Reset chevrons when loading new section
             document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
@@ -1939,9 +1952,11 @@ export class Paginator extends HTMLElement {
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
-            console.log("at sec end?")
-            console.log(await this.page())
-            console.log(await this.pages())
+//            console.log("at sec end?")
+//            console.log(await this.page())
+//            console.log("at sec end? page^")
+//            console.log(await this.pages())
+//            console.log("at sec end? pages^")
         return (await this.page()) >= (await this.pages()) - 2;
     }
 }
