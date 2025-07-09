@@ -1090,7 +1090,7 @@ export class Paginator extends HTMLElement {
         const gap = -g / (g - 1) * size
 
         const flow = this.getAttribute('flow')
-        if (this.#isSingleMediaElementWithoutText() || flow === 'scrolled') {
+        if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
@@ -1109,8 +1109,14 @@ export class Paginator extends HTMLElement {
             }
         }
 
-        const divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
-        const columnWidth = (size / divisor) - gap
+        let divisor, columnWidth
+        if (this.#isSingleMediaElementWithoutText()) {
+            columnWidth = maxInlineSize
+        } else {
+            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+            columnWidth = (size / divisor) - gap
+        }
+        
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 
         const marginalDivisor = vertical ?
