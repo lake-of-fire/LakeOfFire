@@ -1,9 +1,13 @@
 // Global timers for side-nav chevron fades
 import './view.js'
-import { createTOCView } from './ui/tree.js'
-import { Overlayer } from '../foliate-js/overlayer.js'
+import {
+    createTOCView
+} from './ui/tree.js'
+import {
+    Overlayer
+} from '../foliate-js/overlayer.js'
 
-window.onerror = function (msg, source, lineno, colno, error) {
+window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: msg,
         source: source,
@@ -13,7 +17,7 @@ window.onerror = function (msg, source, lineno, colno, error) {
     });
 };
 
-window.onunhandledrejection = function (event) {
+window.onunhandledrejection = function(event) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: event.reason?.message ?? "Unhandled rejection",
         source: window.location.href,
@@ -47,7 +51,7 @@ function forwardShadowErrors(root) {
 
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
-    if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html'/* && mediaType !== 'application/xml'*/) {
+    if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
         return text;
     }
     const headers = {
@@ -85,7 +89,7 @@ const debounce = (fn, delay) => {
     let timeout;
     let isLeadingInvoked = false;
     
-    return function (...args) {
+    return function(...args) {
         const context = this;
         
         if (!timeout) {
@@ -110,9 +114,17 @@ const isZip = async file => {
 }
 
 const makeZipLoader = async (file, isCacheWarmer) => {
-    const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
+    const {
+        configure,
+        ZipReader,
+        BlobReader,
+        TextWriter,
+        BlobWriter
+    } =
     await import('./vendor/zip.js')
-    configure({ useWebWorkers: false })
+    configure({
+        useWebWorkers: false
+    })
     const reader = new ZipReader(new BlobReader(file))
     const entries = await reader.getEntries()
     const map = new Map(entries.map(entry => [entry.filename, entry]))
@@ -125,24 +137,39 @@ const makeZipLoader = async (file, isCacheWarmer) => {
     //        replaceText(href, text, mediaType, isCacheWarmer)
     //    })
     const replaceText = makeReplaceText(isCacheWarmer)
-    return { entries, loadText, loadBlob, getSize, replaceText }
+    return {
+        entries,
+        loadText,
+        loadBlob,
+        getSize,
+        replaceText
+    }
 }
 
-const getFileEntries = async entry => entry.isFile ? entry
-: (await Promise.all(Array.from(
-                                await new Promise((resolve, reject) => entry.createReader()
-                                                  .readEntries(entries => resolve(entries), error => reject(error))),
-                                getFileEntries))).flat()
+const getFileEntries = async entry => entry.isFile ? entry :
+(await Promise.all(Array.from(
+                              await new Promise((resolve, reject) => entry.createReader()
+                                                .readEntries(entries => resolve(entries), error => reject(error))),
+                              getFileEntries))).flat()
 
-const isCBZ = ({ name, type }) =>
+const isCBZ = ({
+    name,
+    type
+}) =>
 type === 'application/vnd.comicbook+zip' || name.endsWith('.cbz')
 
-const isFB2 = ({ name, type }) =>
+const isFB2 = ({
+    name,
+    type
+}) =>
 type === 'application/x-fictionbook+xml' || name.endsWith('.fb2')
 
-const isFBZ = ({ name, type }) =>
-type === 'application/x-zip-compressed-fb2'
-|| name.endsWith('.fb2.zip') || name.endsWith('.fbz')
+const isFBZ = ({
+    name,
+    type
+}) =>
+type === 'application/x-zip-compressed-fb2' ||
+name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
 const getView = async (file, isCacheWarmer) => {
     let book
@@ -161,7 +188,9 @@ const getView = async (file, isCacheWarmer) => {
                 //            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
                 //            book = await makeFB2(blob)
             } else {
-                const { EPUB } = await import('./epub.js')
+                const {
+                    EPUB
+                } = await import('./epub.js')
                 book = await new EPUB(loader).init()
             }
         } else {
@@ -231,7 +260,11 @@ const getView = async (file, isCacheWarmer) => {
     return view
 }
 
-const getCSS = ({ spacing, justify, hyphenate }) => `
+const getCSS = ({
+    spacing,
+    justify,
+    hyphenate
+}) => `
     @namespace epub "http://www.idpf.org/2007/ops";
     html {
         color-scheme: light dark;
@@ -279,7 +312,9 @@ const getCSS = ({ spacing, justify, hyphenate }) => `
 const $ = document.querySelector.bind(document)
 
 const locales = 'en'
-const percentFormat = new Intl.NumberFormat(locales, { style: 'percent' })
+const percentFormat = new Intl.NumberFormat(locales, {
+    style: 'percent'
+})
 
 class Reader {
     #show(btn, show = true) {
@@ -295,7 +330,10 @@ class Reader {
         document.body.classList.toggle('loading', !!visible);
     }
     #tocView
-    #chevronFadeTimers = { l: null, r: null }
+    #chevronFadeTimers = {
+        l: null,
+        r: null
+    }
     hasLoadedLastPosition = false
     markedAsFinished = false;
     lastPercentValue = null;
@@ -337,17 +375,19 @@ class Reader {
         this.view.addEventListener('load', this.#onLoad.bind(this))
         this.view.addEventListener('relocate', this.#onRelocate.bind(this))
         
-        const { book } = this.view
+        const {
+            book
+        } = this.view
         this.bookDir = book.dir || 'ltr';
-        this.isRTL   = this.bookDir === 'rtl';
+        this.isRTL = this.bookDir === 'rtl';
         this.view.renderer.setStyles?.(getCSS(this.style))
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
         this.buttons = {
-            prev:    document.getElementById('btn-prev-chapter'),
-            next:    document.getElementById('btn-next-chapter'),
-            finish:  document.getElementById('btn-finish'),
+            prev: document.getElementById('btn-prev-chapter'),
+            next: document.getElementById('btn-next-chapter'),
+            finish: document.getElementById('btn-finish'),
             restart: document.getElementById('btn-restart'),
         };
         // Hide all other nav buttons except spinners
@@ -360,20 +400,21 @@ class Reader {
             const flipChevron = (btn, leftArrow) => {
                 const path = btn.querySelector('path');
                 if (path) {
-                    path.setAttribute('d', leftArrow
-                                      ? 'M 15 6 L 9 12 L 15 18'  // left chevron (◀)
-                                      : 'M 9 6 L 15 12 L 9 18'); // right chevron (▶)
+                    path.setAttribute('d', leftArrow ?
+                                      'M 15 6 L 9 12 L 15 18' // left chevron (◀)
+                                      :
+                                      'M 9 6 L 15 12 L 9 18'); // right chevron (▶)
                 }
             };
             
-            flipChevron(this.buttons.prev, false);        // ▶
-            flipChevron(this.buttons.next, true);         // ◀
+            flipChevron(this.buttons.prev, false); // ▶
+            flipChevron(this.buttons.next, true); // ◀
             
             // Swap label/icon order for chapter buttons in RTL
             // Ensure "Next Chapter" shows "< Next Chapter"
             const nextBtn = this.buttons.next;
             const nextLabel = nextBtn.querySelector('.button-label');
-            const nextIcon  = nextBtn.querySelector('svg');
+            const nextIcon = nextBtn.querySelector('svg');
             if (nextIcon && nextLabel && nextIcon !== nextLabel.previousSibling) {
                 nextBtn.insertBefore(nextIcon, nextLabel);
             }
@@ -381,7 +422,7 @@ class Reader {
             // Ensure "Previous Chapter" shows "Previous Chapter >"
             const prevBtn = this.buttons.prev;
             const prevLabel = prevBtn.querySelector('.button-label');
-            const prevIcon  = prevBtn.querySelector('svg');
+            const prevIcon = prevBtn.querySelector('svg');
             if (prevIcon && prevLabel && prevLabel !== prevIcon.previousSibling) {
                 prevBtn.insertBefore(prevLabel, prevIcon);
             }
@@ -417,7 +458,9 @@ class Reader {
         document.querySelectorAll('.side-nav').forEach(nav => {
             nav.addEventListener('touchstart', () => {
                 nav.classList.add('pressed');
-            }, {passive:true});
+            }, {
+                passive: true
+            });
             nav.addEventListener('touchend', () => {
                 nav.classList.remove('pressed');
             });
@@ -431,26 +474,40 @@ class Reader {
             const l = document.querySelector('#btn-scroll-left .icon');
             const r = document.querySelector('#btn-scroll-right .icon');
             
+            const FADER_DELAY = 180;
             const fadeWithHold = (elem, value, key) => {
                 if (!elem) return;
+                
                 clearTimeout(this.#chevronFadeTimers[key]);
-                if (value === '' || value === 0 || typeof value === 'undefined') {
-                    // Remove visible class after delay so fade-out can happen
+                this.#chevronFadeTimers[key] = null;
+                
+                // Show chevron at full opacity
+                if (Number(value) >= 1) {
+                    elem.style.removeProperty('opacity');
+                    elem.classList.add('chevron-visible');
+                    return;
+                }
+                
+                // Show chevron at partial opacity
+                if (Number(value) > 0) {
+                    elem.classList.remove('chevron-visible');
+                    elem.style.opacity = value;
+                    return;
+                }
+                
+                // Hide chevron, but only after a delay and only if currently visible
+                if (elem.classList.contains('chevron-visible')) {
                     this.#chevronFadeTimers[key] = setTimeout(() => {
                         elem.classList.remove('chevron-visible');
-                        elem.style.removeProperty('opacity')
-                    }, 100);
-                } else if (Number(value) >= 1) {
-                    elem.style.removeProperty('opacity')
-                    elem.classList.add('chevron-visible');
-                } else if (Number(value) > 0) {
-                    elem.classList.remove('chevron-visible');
-                    elem.style.opacity = value
+                        elem.style.removeProperty('opacity');
+                        this.#chevronFadeTimers[key] = null;
+                    }, FADER_DELAY);
                 } else {
-                    elem.style.removeProperty('opacity')
+                    // Already hidden: do nothing
+                    elem.style.removeProperty('opacity');
                     elem.classList.remove('chevron-visible');
                 }
-            }
+            };
             
             fadeWithHold(l, e.detail.leftOpacity, 'l');
             fadeWithHold(r, e.detail.rightOpacity, 'r');
@@ -553,31 +610,38 @@ class Reader {
         
         document.addEventListener('keydown', this.#handleKeydown.bind(this))
         
-        const processTouchStart = function (event) {
+        const processTouchStart = function(event) {
             // Ignore touches inside foliate-js viewer iframe
             if (event.target && event.target.ownerDocument !== document) return
-            
-            window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
-                touchedEntryWithElementId: null,
-                wasAlreadySelected: false,
-            })
-        }
-        document.addEventListener('touchstart', processTouchStart, { passive: true })
-        document.addEventListener('mousedown', processTouchStart, { passive: true })
-
+                
+                window.webkit?.messageHandlers?.touchstartCallbackHandler?.postMessage?.({
+                    touchedEntryWithElementId: null,
+                    wasAlreadySelected: false,
+                })
+                }
+        document.addEventListener('touchstart', processTouchStart, {
+            passive: true
+        })
+        document.addEventListener('mousedown', processTouchStart, {
+            passive: true
+        })
+        
         
         const title = book.metadata?.title ?? 'Untitled Book'
         document.title = title
         $('#side-bar-title').innerText = title
         const author = book.metadata?.author
-        let authorText = typeof author === 'string' ? author
-        : author
+        let authorText = typeof author === 'string' ? author :
+        author
         ?.map(author => typeof author === 'string' ? author : author.name)
-        ?.join(', ')
-        ?? ''
+        ?.join(', ') ??
+        ''
         $('#side-bar-author').innerText = authorText
         window.webkit.messageHandlers.pageMetadataUpdated.postMessage({
-            'title': title, 'author': authorText, 'url': window.top.location.href})
+            'title': title,
+            'author': authorText,
+            'url': window.top.location.href
+        })
         
         Promise.resolve(book.getCover?.())?.then(blob => {
             blob ? $('#side-bar-cover').src = URL.createObjectURL(blob) : null
@@ -595,13 +659,19 @@ class Reader {
         // load and show highlights embedded in the file by Calibre
         const bookmarks = await book.getCalibreBookmarks?.()
         if (bookmarks) {
-            const { fromCalibreHighlight } = await import('./epubcfi.js')
+            const {
+                fromCalibreHighlight
+            } = await import('./epubcfi.js')
             for (const obj of bookmarks) {
                 if (obj.type === 'highlight') {
                     const value = fromCalibreHighlight(obj)
                     const color = obj.style.which
                     const note = obj.notes
-                    const annotation = { value, color, note }
+                    const annotation = {
+                        value,
+                        color,
+                        note
+                    }
                     const list = this.annotations.get(obj.spine_index)
                     if (list) list.push(annotation)
                         else this.annotations.set(obj.spine_index, [annotation])
@@ -609,15 +679,25 @@ class Reader {
                             }
             }
             this.view.addEventListener('create-overlay', e => {
-                const { index } = e.detail
+                const {
+                    index
+                } = e.detail
                 const list = this.annotations.get(index)
-                if (list) for (const annotation of list)
-                    this.view.addAnnotation(annotation)
-                    })
+                if (list)
+                    for (const annotation of list)
+                        this.view.addAnnotation(annotation)
+                        })
             this.view.addEventListener('draw-annotation', e => {
-                const { draw, annotation } = e.detail
-                const { color } = annotation
-                draw(Overlayer.highlight, { color })
+                const {
+                    draw,
+                    annotation
+                } = e.detail
+                const {
+                    color
+                } = annotation
+                draw(Overlayer.highlight, {
+                    color
+                })
             })
             this.view.addEventListener('show-annotation', e => {
                 const annotation = this.annotationsByValue.get(e.detail.value)
@@ -718,13 +798,19 @@ class Reader {
             }
         }
     }
-    #onGoTo({ willLoadNewIndex }) {
+    #onGoTo({
+        willLoadNewIndex
+    }) {
         this.setLoadingIndicator(true);
     }
-    #onDidDisplay({ }) {
+    #onDidDisplay({}) {
         this.setLoadingIndicator(false);
     }
-    #onLoad({ detail: { doc } }) {
+    #onLoad({
+        detail: {
+            doc
+        }
+    }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
@@ -746,7 +832,11 @@ class Reader {
         });
     }
     
-    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi, reason }) => {
+    #postUpdateReadingProgressMessage = debounce(({
+        fraction,
+        cfi,
+        reason
+    }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
@@ -756,8 +846,17 @@ class Reader {
         })
     }, 400)
     
-    async #onRelocate({ detail }) {
-        const { fraction, location, tocItem, pageItem, cfi, reason } = detail
+    async #onRelocate({
+        detail
+    }) {
+        const {
+            fraction,
+            location,
+            tocItem,
+            pageItem,
+            cfi,
+            reason
+        } = detail
         const percent = percentFormat.format(fraction)
         const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
         const progressButton = $('#progress-button')
@@ -771,7 +870,11 @@ class Reader {
         if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
             
             if (this.hasLoadedLastPosition) {
-                this.#postUpdateReadingProgressMessage({ fraction, cfi, reason })
+                this.#postUpdateReadingProgressMessage({
+                    fraction,
+                    cfi,
+                    reason
+                })
             }
         
         await this.updateNavButtons();
@@ -793,25 +896,6 @@ class Reader {
         // For spinner placement
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
-        // Only show spinner for prev/next/finish/restart chapter nav
-        if (
-            type !== 'prev' &&
-            type !== 'next' &&
-            type !== 'finish' &&
-            type !== 'restart'
-            ) {
-                switch (type) {
-                    case 'scroll-prev':
-                        // In RTL view, left arrow should scroll forward
-                        this.isRTL ? await this.view.goRight() : await this.view.goLeft();
-                        break;
-                    case 'scroll-next':
-                        // In RTL view, right arrow should scroll backward
-                        this.isRTL ? await this.view.goLeft() : await this.view.goRight();
-                        break;
-                }
-                return;
-            }
         // Hide the label while loading
         if (label) label.style.visibility = 'hidden';
         // Replace SVG icon with spinner, respecting spinner placement
@@ -853,14 +937,6 @@ class Reader {
         let nav;
         switch (type) {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
-            case 'scroll-prev':
-                // In RTL view, left arrow should scroll forward
-                nav = this.isRTL ? await this.view.goRight() : await this.view.goLeft();
-                break;
-            case 'scroll-next':
-                // In RTL view, right arrow should scroll backward
-                nav = this.isRTL ? await this.view.goLeft() : await this.view.goRight();
-                break;
             case 'prev':
                 // Go to previous section, then jump to its end
                 nav = this.view.renderer.prevSection().then(() => {
@@ -899,14 +975,20 @@ class CacheWarmer {
         this.view = await getView(file, true)
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
-        const { book } = this.view
+        const {
+            book
+        } = this.view
         this.view.renderer.setAttribute('flow', 'paginated')
         //        this.view.renderer.next()
         
         await this.view.renderer.firstSection()
     }
     
-    async #onLoad({ detail: { doc } }) {
+    async #onLoad({
+        detail: {
+            doc
+        }
+    }) {
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
             frameURL: event.detail.doc.location.href,
@@ -959,7 +1041,10 @@ window.loadNextCacheWarmerSection = async () => {
     await window.cacheWarmer.view.renderer.nextSection()
 }
 
-window.loadEBook = ({ url, layoutMode }) => {
+window.loadEBook = ({
+    url,
+    layoutMode
+}) => {
     let reader = new Reader()
     globalThis.reader = reader
     
@@ -984,7 +1069,9 @@ window.loadEBook = ({ url, layoutMode }) => {
         //.catch(e => console.error(e))
         }
 
-window.loadLastPosition = async ({ cfi }) => {
+window.loadLastPosition = async ({
+    cfi
+}) => {
     //console.log("load last pos")
     //console.log(cfi)
     if (cfi.length > 0) {

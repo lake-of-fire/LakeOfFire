@@ -1017,23 +1017,29 @@ export class Paginator extends HTMLElement {
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
-    #isSingleMediaElement() {
+    #isSingleMediaElementWithoutText() {
         const container = this.#view.document.getElementById('reader-content');
         if (!container) return false;
+        const mediaTags = ['img', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
+        let mediaElement = null;
         
-        const children = Array.from(container.childNodes).filter(node => {
-            if (node.nodeType === Node.ELEMENT_NODE) return true;
-            if (node.nodeType === Node.TEXT_NODE) return node.textContent.trim() !== '';
-            return false;
-        });
+        for (const node of container.childNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                const tag = node.tagName?.toLowerCase();
+                const isMedia = mediaTags.includes(tag);
+                
+                if (isMedia) {
+                    if (mediaElement) return false; // more than one media element
+                    mediaElement = node;
+                } else {
+                    if (node.textContent.trim() !== '') return false;
+                }
+            } else if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== '') {
+                return false;
+            }
+        }
         
-        if (children.length !== 1) return false;
-        
-        
-        const el = children[0];
-        if (el.nodeType !== Node.ELEMENT_NODE) return false;
-
-        return ['img', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'].includes(el.tagName.toLowerCase())
+        return !!mediaElement;
     }
     async #beforeRender({
         vertical,
@@ -1084,7 +1090,7 @@ export class Paginator extends HTMLElement {
         const gap = -g / (g - 1) * size
 
         const flow = this.getAttribute('flow')
-        if (this.#isSingleMediaElement() || flow === 'scrolled') {
+        if (this.#isSingleMediaElementWithoutText() || flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
@@ -1308,9 +1314,9 @@ export class Paginator extends HTMLElement {
             state.triggered = true;
 
             if (dx < 0) {
-                (this.#rtl || this.#verticalRTL) ? await this.next(): await this.prev();
+                (this.bookDir === 'rtl') ? await this.prev(): await this.next();
             } else {
-                (this.#rtl || this.#verticalRTL) ? await this.prev(): await this.next();
+                (this.bookDir === 'rtl') ? await this.next(): await this.prev();
             }
             this.#updateSwipeChevron(dx, minSwipe)
         }
@@ -1631,15 +1637,8 @@ export class Paginator extends HTMLElement {
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
             rightOpacity = 0;
-        if (!(this.#rtl || this.#verticalRTL)) {
-            // LTR: dx > 0 is LEFT chevron, dx < 0 is RIGHT chevron
-            if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
-            else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
-        } else {
-            // RTL: dx > 0 is RIGHT chevron, dx < 0 is LEFT chevron
-            if (dx > 0) rightOpacity = Math.min(1, dx / minSwipe);
-            else if (dx < 0) leftOpacity = Math.min(1, -dx / minSwipe);
-        }
+        if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
+        else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
