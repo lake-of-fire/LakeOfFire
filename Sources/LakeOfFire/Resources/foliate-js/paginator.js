@@ -481,6 +481,8 @@ class View {
 
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
+                    
+                    this.#resizeObserver.observe(doc.body)
 
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
@@ -492,7 +494,7 @@ class View {
                     console.log('load listener... render(layout)')
                     await this.render(layout)
 
-                    this.#resizeObserver.observe(doc.body)
+//                    this.#resizeObserver.observe(doc.body)
                     //                    this.#mutationObserver.observe(doc.body, {
                     //                        childList: true,
                     //                        subtree: true,
@@ -734,6 +736,7 @@ export class Paginator extends HTMLElement {
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
 
+        console.log("RESIZE OBS!!!!")
         const entry = entries[0];
         const rect = entry.contentRect;
 
@@ -743,13 +746,7 @@ export class Paginator extends HTMLElement {
             top: Math.round(rect.top),
             left: Math.round(rect.left),
         };
-
-        if (!this.#hasResizeObserverTriggered) {
-            this.#hasResizeObserverTriggered = true
-            this.#lastResizerRect = newSize
-            return
-        }
-
+        
         const old = this.#lastResizerRect
         const unchanged =
             old &&
@@ -758,15 +755,26 @@ export class Paginator extends HTMLElement {
             newSize.top === old.top &&
             newSize.left === old.left
 
+        if (!unchanged) {
+            this.#lastResizerRect = newSize
+            this.#cachedSizes = {
+                width: newSize.width,
+                height: newSize.height,
+            }
+            this.#cachedViewSize = null
+        }
+        
+        if (!this.#hasResizeObserverTriggered) {
+            this.#hasResizeObserverTriggered = true
+            return
+        }
+
         if (unchanged) {
             return
         }
 
-//        console.log("RESIZED!")
-//        console.log(newSize)
-        this.#lastResizerRect = newSize
-        this.#cachedSizes = null
-        this.#cachedViewSize = null
+        console.log("RESIZED! GONNA RENDER!!!!!")
+        console.log(newSize)
 
         requestAnimationFrame(() => {
             console.log("resized observer - render(...)")
@@ -914,7 +922,7 @@ export class Paginator extends HTMLElement {
             /* For page-turning */
             .view-fade {
                 opacity: 0.4;
-                transition: opacity 0.115s ease-out;
+                transition: opacity 0.75s ease-out;
             }
             .view-faded {
                 opacity: 0.4;
@@ -1138,8 +1146,11 @@ export class Paginator extends HTMLElement {
 
             console.log("RENDER")
         // Remove resize observer before render to avoid unwanted triggers
-        this.#resizeObserver.unobserve(this.#container);
+        //this.#resizeObserver.unobserve(this.#container);
 
+        this.#hasResizeObserverTriggered = false
+        this.#resizeObserver.observe(this.#container);
+        
         try {
             await this.#view.render(await this.#beforeRender({
                 vertical: this.#vertical,
@@ -1148,8 +1159,9 @@ export class Paginator extends HTMLElement {
             await this.#scrollToAnchor(this.#anchor)
         } finally {
             this.#hasResizeObserverTriggered = false
-            this.#resizeObserver.observe(this.#container);
+//            this.#resizeObserver.observe(this.#container);
         }
+        console.log("RENDER FINISHED")
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
@@ -1192,7 +1204,7 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedViewSize === null) {
+        if (true || this.#cachedViewSize === null) {
             this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
         }
         return this.#cachedViewSize
@@ -1211,9 +1223,10 @@ export class Paginator extends HTMLElement {
     }
     async pages() {
         await this.#awaitDirection();
-//            console.log('pages()')
-//            console.log(await this.viewSize())
-//            console.log(await this.size())
+            console.log(await this.viewSize())
+            console.log('pages() ^ viewsize')
+            console.log(await this.size())
+            console.log('pages() ^ size')
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1493,7 +1506,7 @@ export class Paginator extends HTMLElement {
         } else {
             this.#container.classList.add('view-fade')
             // Allow the browser to paint the fade
-            await new Promise(r => setTimeout(r, 50));
+            await new Promise(r => setTimeout(r, 40));
             this.#container.classList.add('view-faded')
             await scroll()
             this.#container.classList.remove('view-faded')
