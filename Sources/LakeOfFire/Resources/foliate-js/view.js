@@ -96,9 +96,9 @@ export class View extends HTMLElement {
     history = new History()
     constructor() {
         super()
-        this.history.addEventListener('popstate', ({ detail }) => {
+        this.history.addEventListener('popstate', async ({ detail }) => {
             const resolved = this.resolveNavigation(detail.state)
-            this.renderer.goTo(resolved)
+            await this.renderer.goTo(resolved)
         })
     }
     async open(book, isCacheWarmer) {
@@ -159,8 +159,8 @@ export class View extends HTMLElement {
         this.lastLocation = null
         this.history.clear()
     }
-    goToTextStart() {
-        return this.goTo(this.book.landmarks
+    async goToTextStart() {
+        return await this.goTo(this.book.landmarks
                          ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
                          ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
     }
@@ -212,7 +212,7 @@ export class View extends HTMLElement {
                     .then(x => x ? globalThis.open(href, '_blank') : null)
                     .catch(e => console.error(e))
                     else Promise.resolve(this.#emit('link', { a, href }, true))
-                        .then(x => x ? this.goTo(href) : null)
+                        .then(async x => x ? await this.goTo(href) : null)
                         .catch(e => console.error(e))
                         })
             }
@@ -363,11 +363,11 @@ export class View extends HTMLElement {
     async next(distance) {
         await this.renderer.next(distance)
     }
-    goLeft() {
-        return this.book.dir === 'rtl' ? this.next() : this.prev()
+    async goLeft() {
+        return this.book.dir === 'rtl' ? await this.next() : await this.prev()
     }
-    goRight() {
-        return this.book.dir === 'rtl' ? this.prev() : this.next()
+    async goRight() {
+        return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()

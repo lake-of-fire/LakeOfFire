@@ -409,9 +409,9 @@ class Reader {
                                             );
         // Side-nav scroll handlers
         const leftSideBtn = document.getElementById('btn-scroll-left');
-        if (leftSideBtn) leftSideBtn.addEventListener('click', () => this.view.goLeft());
+        if (leftSideBtn) leftSideBtn.addEventListener('click', async () => await this.view.goLeft());
         const rightSideBtn = document.getElementById('btn-scroll-right');
-        if (rightSideBtn) rightSideBtn.addEventListener('click', () => this.view.goRight());
+        if (rightSideBtn) rightSideBtn.addEventListener('click', async () => await this.view.goRight());
         
         // Immediate tap feedback for side-nav chevrons on iOS/touch
         document.querySelectorAll('.side-nav').forEach(nav => {
@@ -574,8 +574,8 @@ class Reader {
         
         const toc = book.toc
         if (toc) {
-            this.#tocView = createTOCView(toc, href => {
-                this.view.goTo(href).catch(e => console.error(e))
+            this.#tocView = createTOCView(toc, async (href) => {
+                await this.view.goTo(href).catch(e => console.error(e))
                 this.closeSideBar()
             })
             $('#toc-view').append(this.#tocView.element)
@@ -615,7 +615,7 @@ class Reader {
         }
     }
     
-    updateNavButtons() {
+    async updateNavButtons() {
         // Remove any nav-spinner left over from finish/restart click
         document.querySelectorAll('.ispinner.nav-spinner').forEach(spinner => {
             const btn = spinner.closest('button');
@@ -632,8 +632,8 @@ class Reader {
         const atSectionStart = typeof r.isAtSectionStart === "function" ? r.isAtSectionStart() : false;
         const atSectionEnd = typeof r.isAtSectionEnd === "function" ? r.isAtSectionEnd() : false;
         // Use public helpers to detect prev/next section
-        const hasPrevSection = typeof r.getHasPrevSection === "function" ? r.getHasPrevSection() : true;
-        const hasNextSection = typeof r.getHasNextSection === "function" ? r.getHasNextSection() : true;
+        const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
+        const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
         
         this.#show(this.buttons.prev, atSectionStart && hasPrevSection);
         
@@ -684,7 +684,7 @@ class Reader {
             }
         }
     }
-    #handleKeydown(event) {
+    async #handleKeydown(event) {
         const k = event.key;
         const renderer = this.view.renderer;
         const isRTL = this.isRTL;
@@ -695,7 +695,7 @@ class Reader {
             } else if (!isRTL && renderer.atStart) {
                 this.buttons.prev.click();
             } else {
-                this.view.goLeft();
+                await this.view.goLeft();
             }
         } else if (k === 'ArrowRight' || k === 'l') {
             if (isRTL && renderer.atStart) {
@@ -703,7 +703,7 @@ class Reader {
             } else if (!isRTL && renderer.atEnd) {
                 this.buttons.next.click();
             } else {
-                this.view.goRight();
+                await this.view.goRight();
             }
         }
     }
@@ -745,7 +745,7 @@ class Reader {
         })
     }, 400)
     
-    #onRelocate({ detail }) {
+    async #onRelocate({ detail }) {
         const { fraction, location, tocItem, pageItem, cfi, reason } = detail
         const percent = percentFormat.format(fraction)
         const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
@@ -763,7 +763,7 @@ class Reader {
                 this.#postUpdateReadingProgressMessage({ fraction, cfi, reason })
             }
         
-        this.updateNavButtons();
+        await this.updateNavButtons();
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
@@ -776,7 +776,7 @@ class Reader {
         }
     }
     
-    #onNavButtonClick(e) {
+    async #onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
         // For spinner placement
@@ -792,11 +792,11 @@ class Reader {
                 switch (type) {
                     case 'scroll-prev':
                         // In RTL view, left arrow should scroll forward
-                        this.isRTL ? this.view.goRight() : this.view.goLeft();
+                        this.isRTL ? await this.view.goRight() : await this.view.goLeft();
                         break;
                     case 'scroll-next':
                         // In RTL view, right arrow should scroll backward
-                        this.isRTL ? this.view.goLeft() : this.view.goRight();
+                        this.isRTL ? await this.view.goLeft() : await this.view.goRight();
                         break;
                 }
                 return;
@@ -844,11 +844,11 @@ class Reader {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'scroll-prev':
                 // In RTL view, left arrow should scroll forward
-                nav = this.isRTL ? this.view.goRight() : this.view.goLeft();
+                nav = this.isRTL ? await this.view.goRight() : await this.view.goLeft();
                 break;
             case 'scroll-next':
                 // In RTL view, right arrow should scroll backward
-                nav = this.isRTL ? this.view.goLeft() : this.view.goRight();
+                nav = this.isRTL ? await this.view.goLeft() : await this.view.goRight();
                 break;
             case 'prev':
                 // Go to previous section, then jump to its end
@@ -868,7 +868,7 @@ class Reader {
                 break;
             case 'restart':
                 window.webkit.messageHandlers.startOver.postMessage({});
-                this.view.renderer.firstSection();
+                await this.view.renderer.firstSection();
                 nav = Promise.resolve();
                 break;
         }
@@ -987,9 +987,9 @@ window.loadLastPosition = async ({ cfi }) => {
 //    await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
 }
 
-window.refreshBookReadingProgress = function (articleReadingProgress) {
+window.refreshBookReadingProgress = async (articleReadingProgress) => {
     globalThis.reader.markedAsFinished = !!articleReadingProgress.articleMarkedAsFinished;
-    globalThis.reader.updateNavButtons();
+    await globalThis.reader.updateNavButtons();
 }
 
 window.nextSection = async () => {
