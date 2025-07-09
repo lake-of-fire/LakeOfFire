@@ -466,20 +466,20 @@ class View {
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
                    
-                    const oldgetDirection = doc => {
-                        const { defaultView } = doc
-                        const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
-                        const vertical = writingMode === 'vertical-rl'
-                        || writingMode === 'vertical-lr'
-                        const verticalRTL = writingMode === 'vertical-rl'
-                        const rtl = doc.body.dir === 'rtl'
-                        || direction === 'rtl'
-                        || doc.documentElement.dir === 'rtl'
-                        return { vertical, verticalRTL, rtl }
-                    }
-                    const direction = oldgetDirection(doc);
+//                    const oldgetDirection = doc => {
+//                        const { defaultView } = doc
+//                        const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
+//                        const vertical = writingMode === 'vertical-rl'
+//                        || writingMode === 'vertical-lr'
+//                        const verticalRTL = writingMode === 'vertical-rl'
+//                        const rtl = doc.body.dir === 'rtl'
+//                        || direction === 'rtl'
+//                        || doc.documentElement.dir === 'rtl'
+//                        return { vertical, verticalRTL, rtl }
+//                    }
+//                    const direction = oldgetDirection(doc);
 
-//                    const direction = await getDirection(doc);
+                    const direction = await getDirection(doc);
                     console.log('GOT DIRECTION!')
                     console.log(direction)
                     this.#vertical = direction.vertical;
@@ -511,7 +511,7 @@ class View {
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                     // until the bug is fixed we can at least account for font load
-                    //                        doc.fonts.ready.then(() => this.expand())
+//                    doc.fonts.ready.then(async () => { await this.expand() })
                     //                doc.fonts.ready.then(() => this.#debouncedExpand())
 
                     resolve()
@@ -881,9 +881,9 @@ export class Paginator extends HTMLElement {
                 grid-column: 2 / 5;
                 grid-row: 2;
                 overflow: hidden;
-                contain: layout style;
+                /*contain: layout style;
                 will-change: transform;
-                transform: translateZ(0);
+                transform: translateZ(0);*/
             }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
@@ -945,7 +945,6 @@ export class Paginator extends HTMLElement {
 
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', debounce(async () => {
-            console.log("SCRIOLL BACK...")
             if (this.#isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
                 const range = await this.#getVisibleRange();
@@ -1234,7 +1233,7 @@ export class Paginator extends HTMLElement {
             Math.max(min, Math.min(max, (start + end) / 2 +
                 (isNaN(d) ? 0 : d))) / size)
 
-        this.#scrollToPage(page, 'snap').then(async () => {
+        await this.#scrollToPage(page, 'snap').then(async () => {
             const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
             if (dir) return await this.#goTo({
                 index: this.#adjacentIndex(dir),
@@ -1437,7 +1436,7 @@ export class Paginator extends HTMLElement {
         }
         const rectMapper = await this.#getRectMapper();
         const offset = rectMapper(rect).left
-        return this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
+        return await this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
     }
     async #scrollTo(offset, reason, smooth) {
         await this.#awaitDirection();
@@ -1912,7 +1911,7 @@ export class Paginator extends HTMLElement {
             this.#background.style.background = getBackground(this.#view.document))
 
         // needed because the resize observer doesn't work in Firefox
-        //        this.#view?.document?.fonts?.ready?.then(() => this.#view.expand())
+//            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
     destroy() {
         this.#resizeObserver.unobserve(this)
