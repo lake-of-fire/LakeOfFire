@@ -458,30 +458,14 @@ class View {
                 resolve()
             } else {
                 this.#iframe.addEventListener('load', async () => {
-                    console.log("IFRAME LOAD CALLBACK...")
                     const doc = this.document
 
                     await afterLoad?.(doc)
  
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
-                   
-//                    const oldgetDirection = doc => {
-//                        const { defaultView } = doc
-//                        const { writingMode, direction } = defaultView.getComputedStyle(doc.body)
-//                        const vertical = writingMode === 'vertical-rl'
-//                        || writingMode === 'vertical-lr'
-//                        const verticalRTL = writingMode === 'vertical-rl'
-//                        const rtl = doc.body.dir === 'rtl'
-//                        || direction === 'rtl'
-//                        || doc.documentElement.dir === 'rtl'
-//                        return { vertical, verticalRTL, rtl }
-//                    }
-//                    const direction = oldgetDirection(doc);
 
                     const direction = await getDirection(doc);
-                    console.log('GOT DIRECTION!')
-                    console.log(direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
@@ -580,7 +564,6 @@ class View {
         columnWidth
     }) {
         await this.#awaitDirection();
-        console.log('!! column vert')
         const vertical = this.#vertical
         this.#size = vertical ? height : width
 
@@ -630,7 +613,6 @@ class View {
             height,
             margin
         } = this.#layout
-        console.log('!! img vert')
         const vertical = this.#vertical
         const doc = this.document
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
@@ -659,7 +641,6 @@ class View {
     async expand() {
         //        const { documentElement } = this.document
         const documentElement = this.document?.documentElement
-        console.log('!! expand vert')
         if (this.#column) {
             const side = this.#vertical ? 'height' : 'width'
             const otherSide = this.#vertical ? 'width' : 'height'
@@ -881,9 +862,10 @@ export class Paginator extends HTMLElement {
                 grid-column: 2 / 5;
                 grid-row: 2;
                 overflow: hidden;
-                /*contain: layout style;
+        
+                contain: layout style;
                 will-change: transform;
-                transform: translateZ(0);*/
+                transform: translateZ(0);
             }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
@@ -1023,7 +1005,6 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #onExpand() {
-        console.log('onexpand()')
         await this.#scrollToAnchor(this.#anchor)
         //                this.#scrollToAnchor.bind(this),
         //        await this.#scrollToAnchor(this.#anchor);
@@ -1039,7 +1020,7 @@ export class Paginator extends HTMLElement {
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
-    #beforeRender({
+    async #beforeRender({
         vertical,
         verticalRTL,
         rtl,
@@ -1058,7 +1039,7 @@ export class Paginator extends HTMLElement {
         const {
             width,
             height
-        } = this.#container.getBoundingClientRect()
+        } = await this.size()
         const size = vertical ? height : width
 
         const style = getComputedStyle(this.#top)
@@ -1143,7 +1124,7 @@ export class Paginator extends HTMLElement {
         this.#resizeObserver.unobserve(this.#container);
 
         try {
-            await this.#view.render(this.#beforeRender({
+            await this.#view.render(await this.#beforeRender({
                 vertical: this.#vertical,
                 rtl: this.#rtl,
             }))
@@ -1161,7 +1142,6 @@ export class Paginator extends HTMLElement {
         const {
             scrolled
         } = this
-        console.log('!! scroll prop')
         return this.#vertical ? (scrolled ? 'scrollLeft' : 'scrollTop') :
             scrolled ? 'scrollTop' : 'scrollLeft'
     }
@@ -1170,14 +1150,13 @@ export class Paginator extends HTMLElement {
         const {
             scrolled
         } = this
-        console.log('!! sideprop')
         return this.#vertical ? (scrolled ? 'width' : 'height') :
             scrolled ? 'height' : 'width'
     }
     async size() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedSize === null) {
+        if (this.#cachedSize === null) {
             this.#cachedSize = this.#container.getBoundingClientRect()[await this.sideProp()]
         }
         return this.#cachedSize
@@ -1185,7 +1164,7 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedViewSize === null) {
+        if (this.#cachedViewSize === null) {
             this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
         }
         return this.#cachedViewSize
@@ -1333,7 +1312,6 @@ export class Paginator extends HTMLElement {
     // allows one to process rects as if they were LTR and horizontal
     async #getRectMapper() {
         await this.#awaitDirection();
-        console.log('!! rmap vert')
         if (this.scrolled) {
             const size = await this.viewSize()
             const margin = this.#margin
@@ -1440,7 +1418,6 @@ export class Paginator extends HTMLElement {
     }
     async #scrollTo(offset, reason, smooth) {
         await this.#awaitDirection();
-        console.log('!! scrollto vert')
         const scroll = async () => {
             const element = this.#container
             const scrollProp = await this.scrollProp()
@@ -1540,6 +1517,7 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
     async #scrollToAnchor(anchor, reason = 'anchor') {
+            console.log('scroll to anchor...')
         await this.#awaitDirection();
         this.#anchor = anchor
         const rects = uncollapse(anchor)?.getClientRects?.()
@@ -1630,7 +1608,6 @@ export class Paginator extends HTMLElement {
         }
     }
     #updateSwipeChevron(dx, minSwipe) {
-        console.log('!! update chev')
         let leftOpacity = 0,
             rightOpacity = 0;
         if (!(this.#rtl || this.#verticalRTL)) {
@@ -1689,7 +1666,7 @@ export class Paginator extends HTMLElement {
                     index
                 })
             }
-            const beforeRender = this.#beforeRender.bind(this)
+            const beforeRender = await this.#beforeRender.bind(this)
             await view.load(src, afterLoad, beforeRender)
             // Reset chevrons when loading new section
             document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
@@ -1734,14 +1711,6 @@ export class Paginator extends HTMLElement {
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
                 }
-                console.log('onLOAD LOAD')
-
-//                const direction = await getDirection(detail.doc);
-//                console.log('GOT DIRECTION!')
-//                this.#vertical = direction.vertical;
-//                this.#verticalRTL = direction.verticalRTL;
-//                this.#rtl = direction.rtl;
-//                this.#directionReadyResolve?.();
 
                 this.dispatchEvent(new CustomEvent('load', {
                     detail
@@ -1821,7 +1790,6 @@ export class Paginator extends HTMLElement {
         if (!this.#view) return true
         if (this.scrolled) {
             const style = getComputedStyle(this.#container);
-            console.log('!! scroll next vert')
             const lineAdvance = this.#vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
