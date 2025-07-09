@@ -1013,19 +1013,27 @@ export class Paginator extends HTMLElement {
     }
     async #onExpand() {
         await this.#scrollToAnchor(this.#anchor)
-        //                this.#scrollToAnchor.bind(this),
-        //        await this.#scrollToAnchor(this.#anchor);
-        //        if (this.#view.needsRenderForMutation) {
-        //            this.#view.render(this.#beforeRender({
-        //                vertical: this.#vertical,
-        //                rtl: this.#rtl,
-        //            }));
-        //            await this.#scrollToAnchor();
-        //            this.#view.needsRenderForMutation = false
-        //        }
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
+    }
+    #isSingleMediaElement() {
+        const container = this.#view.document.getElementById('reader-content');
+        if (!container) return false;
+        
+        const children = Array.from(container.childNodes).filter(node => {
+            if (node.nodeType === Node.ELEMENT_NODE) return true;
+            if (node.nodeType === Node.TEXT_NODE) return node.textContent.trim() !== '';
+            return false;
+        });
+        
+        if (children.length !== 1) return false;
+        
+        
+        const el = children[0];
+        if (el.nodeType !== Node.ELEMENT_NODE) return false;
+
+        return ['img', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'].includes(el.tagName.toLowerCase())
     }
     async #beforeRender({
         vertical,
@@ -1076,7 +1084,7 @@ export class Paginator extends HTMLElement {
         const gap = -g / (g - 1) * size
 
         const flow = this.getAttribute('flow')
-        if (flow === 'scrolled') {
+        if (this.#isSingleMediaElement() || flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
@@ -1614,8 +1622,8 @@ export class Paginator extends HTMLElement {
                 bubbles: true,
                 composed: true,
                 detail: {
-                    leftOpacity: (this.#rtl || this.#verticalRTL) ? 0 : 0.999,
-                    rightOpacity: (this.#rtl || this.#verticalRTL) ? 0.999 : 0,
+                    leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
+                    rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
                 }
             }));
         }
