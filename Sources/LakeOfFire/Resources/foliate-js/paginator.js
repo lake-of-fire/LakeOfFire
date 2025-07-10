@@ -461,7 +461,7 @@ class View {
                     const doc = this.document
 
                     await afterLoad?.(doc)
- 
+
                     // it needs to be visible for Firefox to get computed style
                     this.#iframe.style.display = 'block'
 
@@ -476,7 +476,7 @@ class View {
 
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
-                    
+
                     this.#resizeObserver.observe(doc.body)
 
                     const layout = await beforeRender?.({
@@ -485,10 +485,10 @@ class View {
                         background
                     })
                     this.#iframe.style.display = 'block'
-                    
+
                     await this.render(layout)
 
-//                    this.#resizeObserver.observe(doc.body)
+                    //                    this.#resizeObserver.observe(doc.body)
                     //                    this.#mutationObserver.observe(doc.body, {
                     //                        childList: true,
                     //                        subtree: true,
@@ -498,7 +498,7 @@ class View {
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                     // until the bug is fixed we can at least account for font load
-//                    doc.fonts.ready.then(async () => { await this.expand() })
+                    //                    doc.fonts.ready.then(async () => { await this.expand() })
                     //                doc.fonts.ready.then(() => this.#debouncedExpand())
 
                     resolve()
@@ -614,28 +614,35 @@ class View {
         const {
             width,
             height,
-            margin
+            topMargin,
+            bottomMargin
         } = this.#layout
         const vertical = this.#vertical
         const doc = this.document
+        const availableHeight = height - topMargin - bottomMargin;
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
-            // preserve max size if they are already set, avoiding ebook stylesheet values
-            const {
-                maxHeight,
-                maxWidth
-            } = doc.defaultView.getComputedStyle(el)
-            //            const maxHeight = el.style.maxHeight || 'none';
-            //            const maxWidth = el.style.maxWidth || 'none';
+            // Temporarily remove our inline max-height to get the CSS value
+            const previousInline = el.style.getPropertyValue('max-height');
+            el.style.removeProperty('max-height');
+            const computed = doc.defaultView.getComputedStyle(el);
+            const existingMaxHeight = computed.getPropertyValue('max-height');
+            // Restore previous inline max-height if needed (not strictly necessary, setStylesImportant below will override)
+            // (We do not restore it because setStylesImportant will always set it.)
+            const maxHeightValue = (existingMaxHeight && existingMaxHeight !== 'none') ?
+                `min(${existingMaxHeight}, ${availableHeight}px)` :
+                `${availableHeight}px`;
+            const maxWidth = computed.getPropertyValue('max-width');
             setStylesImportant(el, {
-                'max-height': vertical ?
-                    (maxHeight !== 'none' && maxHeight !== '0px' ? maxHeight : '100%') : `${height - margin * 2}px`,
+                'max-height': maxHeightValue,
+                'height': 'auto',
                 'max-width': vertical ?
-                    `${width - margin * 2}px` : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+                    `${width - topMargin - bottomMargin}px` :
+                    (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
                 'object-fit': 'contain',
                 'page-break-inside': 'avoid',
                 'break-inside': 'avoid',
                 'box-sizing': 'border-box',
-            })
+            });
         }
     }
     async #awaitDirection() {
@@ -682,16 +689,38 @@ class View {
             const contentSize = documentElement?.getBoundingClientRect()?.[side]
             const expandedSize = contentSize
             const {
-                margin
+                topMargin,
+                bottomMargin
             } = this.#layout
-            const padding = this.#vertical ? `0 ${margin}px` : `${margin}px 0`
-            this.#element.style.padding = padding
+            const paddingTop = `${marginTop}px`
+            const paddingBottom = `${marginBottom}px`
+            if (this.#vertical) {
+                this.#element.style.paddingLeft = paddingTop
+                this.#element.style.paddingRight = paddingBottom
+                this.#element.style.paddingTop = '0'
+                this.#element.style.paddingBottom = '0'
+            } else {
+                this.#element.style.paddingLeft = '0'
+                this.#element.style.paddingRight = '0'
+                this.#element.style.paddingTop = paddingTop
+                this.#element.style.paddingBottom = paddingBottom
+            }
             this.#iframe.style[side] = `${expandedSize}px`
             this.#element.style[side] = `${expandedSize}px`
             this.#iframe.style[otherSide] = '100%'
             this.#element.style[otherSide] = '100%'
             if (this.#overlayer) {
-                this.#overlayer.element.style.margin = padding
+                if (this.#vertical) {
+                    this.#overlayer.element.style.marginLeft = paddingTop
+                    this.#overlayer.element.style.marginRight = paddingBottom
+                    this.#overlayer.element.style.marginTop = '0'
+                    this.#overlayer.element.style.marginBottom = '0'
+                } else {
+                    this.#overlayer.element.style.marginLeft = '0'
+                    this.#overlayer.element.style.marginRight = '0'
+                    this.#overlayer.element.style.marginTop = paddingTop
+                    this.#overlayer.element.style.marginBottom = paddingBottom
+                }
                 this.#overlayer.element.style.left = '0'
                 this.#overlayer.element.style.top = '0'
                 this.#overlayer.element.style[side] = `${expandedSize}px`
@@ -716,7 +745,7 @@ class View {
 // NOTE: everything here assumes the so-called "negative scroll type" for RTL
 export class Paginator extends HTMLElement {
     static observedAttributes = [
-        'flow', 'gap', 'margin',
+        'flow', 'gap', 'marginTop', 'marginBottom',
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
     #root = this.attachShadow({
@@ -737,7 +766,7 @@ export class Paginator extends HTMLElement {
             top: Math.round(rect.top),
             left: Math.round(rect.left),
         };
-        
+
         const old = this.#lastResizerRect
         const unchanged =
             old &&
@@ -754,7 +783,7 @@ export class Paginator extends HTMLElement {
             }
             this.#cachedViewSize = null
         }
-        
+
         if (!this.#hasResizeObserverTriggered) {
             this.#hasResizeObserverTriggered = true
             return
@@ -780,7 +809,8 @@ export class Paginator extends HTMLElement {
     #rtl = null
     #directionReadyResolve = null;
     #directionReady = new Promise(r => (this.#directionReadyResolve = r));
-    #margin = 0
+    #topMargin = 0
+    #bottomMargin = 0
     #index = -1
     #anchor = 0 // anchor view to a fraction (0-1), Range, or Element
     #justAnchored = false
@@ -890,7 +920,12 @@ export class Paginator extends HTMLElement {
             }
             #header, #footer {
                 display: grid;
-                height: var(--_margin);
+            }
+            #header {
+                height: var(--_top-margin);
+            }
+            #footer {
+                height: var(--_bottom-margin);
             }
             :is(#header, #footer) > * {
                 display: flex;
@@ -1022,12 +1057,12 @@ export class Paginator extends HTMLElement {
         if (!container) return false;
         const mediaTags = ['img', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
         let mediaElement = null;
-        
+
         for (const node of container.childNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
                 const tag = node.tagName?.toLowerCase();
                 const isMedia = mediaTags.includes(tag);
-                
+
                 if (isMedia) {
                     if (mediaElement) return false; // more than one media element
                     mediaElement = node;
@@ -1038,7 +1073,7 @@ export class Paginator extends HTMLElement {
                 return false;
             }
         }
-        
+
         return !!mediaElement;
     }
     async #beforeRender({
@@ -1066,8 +1101,10 @@ export class Paginator extends HTMLElement {
         const style = getComputedStyle(this.#top)
         const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
         const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-        const margin = parseFloat(style.getPropertyValue('--_margin'))
-        this.#margin = margin
+        const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
+        const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+        this.#topMargin = topMargin
+        this.#bottomMargin = bottomMargin
 
         const g = parseFloat(style.getPropertyValue('--_gap')) / 100
         // The gap will be a percentage of the #container, not the whole view.
@@ -1103,7 +1140,8 @@ export class Paginator extends HTMLElement {
 
             return {
                 flow,
-                margin,
+                topMargin,
+                bottomMargin,
                 gap,
                 columnWidth
             }
@@ -1116,7 +1154,7 @@ export class Paginator extends HTMLElement {
             divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
             columnWidth = (size / divisor) - gap
         }
-        
+
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 
         const marginalDivisor = vertical ?
@@ -1139,7 +1177,8 @@ export class Paginator extends HTMLElement {
         return {
             height,
             width,
-            margin,
+            topMargin,
+            bottomMargin,
             gap,
             columnWidth
         }
@@ -1150,7 +1189,7 @@ export class Paginator extends HTMLElement {
         // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
         this.#resizeObserver.observe(this.#container);
-        
+
         try {
             await this.#view.render(await this.#beforeRender({
                 vertical: this.#vertical,
@@ -1348,22 +1387,23 @@ export class Paginator extends HTMLElement {
         await this.#awaitDirection();
         if (this.scrolled) {
             const size = await this.viewSize()
-            const margin = this.#margin
+            const topMargin = this.#topMargin
+            const bottomMargin = this.#bottomMargin
             return this.#vertical ?
                 ({
                     left,
                     right
                 }) =>
                 ({
-                    left: size - right - margin,
-                    right: size - left - margin
+                    left: size - right - topMargin,
+                    right: size - left - bottomMargin
                 }) :
                 ({
                     top,
                     bottom
                 }) => ({
-                    left: top + margin,
-                    right: bottom + margin
+                    left: top + topMargin,
+                    right: bottom + bottomMargin
                 })
         }
         const pxSize = (await this.pages()) * (await this.size())
@@ -1443,7 +1483,7 @@ export class Paginator extends HTMLElement {
     async #scrollToRect(rect, reason) {
         if (this.scrolled) {
             const rectMapper = await this.#getRectMapper();
-            const offset = rectMapper(rect).left - this.#margin
+            const offset = rectMapper(rect).left - this.#topMargin
             return await this.#scrollTo(offset, reason)
         }
         const rectMapper = await this.#getRectMapper();
@@ -1584,7 +1624,7 @@ export class Paginator extends HTMLElement {
                     const end = await this.end()
                     const rectMapper = await this.#getRectMapper()
                     resolve(await getVisibleRange(this.#view.document,
-                        start + this.#margin, end - this.#margin, rectMapper))
+                        start + this.#topMargin, end - this.#bottomMargin, rectMapper))
                 } else {
                     const size = this.#rtl ? -(await this.size()) : await this.size()
                     const start = await this.start()
@@ -1693,7 +1733,7 @@ export class Paginator extends HTMLElement {
                 })
             }
             const beforeRender = this.#beforeRender.bind(this)
-            
+
             this.#cachedSizes = null
             this.#cachedViewSize = null
 
@@ -1909,7 +1949,7 @@ export class Paginator extends HTMLElement {
             this.#background.style.background = getBackground(this.#view.document))
 
         // needed because the resize observer doesn't work in Firefox
-//            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+        //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
     destroy() {
         this.#resizeObserver.unobserve(this)
