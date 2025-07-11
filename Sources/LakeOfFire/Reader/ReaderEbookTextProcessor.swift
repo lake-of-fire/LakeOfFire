@@ -3,7 +3,7 @@ import SwiftSoup
 import LRUCache
 import LakeKit
 
-fileprivate extension URL {
+internal extension URL {
     /// Backport of iOS 16+ `appending(queryItems:)` for iOS 15
     func appending(queryItems items: [URLQueryItem]) -> URL {
         guard var components = URLComponents(url: self, resolvingAgainstBaseURL: true) else {

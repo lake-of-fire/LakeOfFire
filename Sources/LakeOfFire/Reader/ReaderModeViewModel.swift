@@ -15,7 +15,7 @@ fileprivate actor ReaderViewModelActor {
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
+    public var ebookTextProcessorCacheHits: ((URL) async throws -> Bool)? = nil
     public var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)? = nil
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
@@ -450,9 +450,11 @@ public func processForReaderMode(
             } catch { }
         }
         
-        do {
-            try fixAnnoyingTitlesWithPipes(doc: doc)
-        } catch { }
+        if !isEBook {
+            do {
+                try fixAnnoyingTitlesWithPipes(doc: doc)
+            } catch { }
+        }
         
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
             do {

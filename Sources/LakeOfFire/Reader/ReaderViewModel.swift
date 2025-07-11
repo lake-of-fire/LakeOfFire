@@ -138,7 +138,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func pageMetadataUpdated(title: String?, author: String? = nil) async throws {
         guard !state.pageURL.isNativeReaderView, let title = title?.replacingOccurrences(of: String("\u{fffc}").trimmingCharacters(in: .whitespacesAndNewlines), with: ""), !title.isEmpty else { return }
-        let newTitle = fixAnnoyingTitlesWithPipes(title: title)
+        let newTitle: String
+        if state.pageURL.isEBookURL {
+            newTitle = title
+        } else {
+            newTitle = fixAnnoyingTitlesWithPipes(title: title)
+        }
         let contentRefs = try await { @RealmBackgroundActor in
             let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
