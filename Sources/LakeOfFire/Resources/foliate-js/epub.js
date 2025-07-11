@@ -29,48 +29,47 @@ const camel = x => x.toLowerCase().replace(/[-:](.)/g, (_, g) => g.toUpperCase()
 // strip and collapse ASCII whitespace
 // https://infra.spec.whatwg.org/#strip-and-collapse-ascii-whitespace
 const normalizeWhitespace = str => str ? str
-.replace(/[\t\n\f\r ]+/g, ' ')
-.replace(/^[\t\n\f\r ]+/, '')
-.replace(/[\t\n\f\r ]+$/, '') : ''
+    .replace(/[\t\n\f\r ]+/g, ' ')
+    .replace(/^[\t\n\f\r ]+/, '')
+    .replace(/[\t\n\f\r ]+$/, '') : ''
 
-const filterAttribute = (attr, value, isList) => isList
-? el => el.getAttribute(attr)?.split(/\s/)?.includes(value)
-: typeof value === 'function'
-? el => value(el.getAttribute(attr))
-: el => el.getAttribute(attr) === value
+const filterAttribute = (attr, value, isList) => isList ?
+    el => el.getAttribute(attr)?.split(/\s/)?.includes(value) :
+    typeof value === 'function' ?
+    el => value(el.getAttribute(attr)) :
+    el => el.getAttribute(attr) === value
 
 const getAttributes = (...xs) => el =>
-el ? Object.fromEntries(xs.map(x => [camel(x), el.getAttribute(x)])) : null
+    el ? Object.fromEntries(xs.map(x => [camel(x), el.getAttribute(x)])) : null
 
 const getElementText = el => normalizeWhitespace(el?.textContent)
 
 const childGetter = (doc, ns) => {
     // ignore the namespace if it doesn't appear in document at all
     const useNS = doc.lookupNamespaceURI(null) === ns || doc.lookupPrefix(ns)
-    const f = useNS
-    ? (el, name) => el => el.namespaceURI === ns && el.localName === name
-    : (el, name) => el => el.localName === name
+    const f = useNS ?
+        (el, name) => el => el.namespaceURI === ns && el.localName === name :
+        (el, name) => el => el.localName === name
     return {
         $: (el, name) => [...el.children].find(f(el, name)),
         $$: (el, name) => [...el.children].filter(f(el, name)),
-        $$$: useNS
-        ? (el, name) => [...el.getElementsByTagNameNS(ns, name)]
-        : (el, name) => [...el.getElementsByTagName(name)],
+        $$$: useNS ?
+            (el, name) => [...el.getElementsByTagNameNS(ns, name)] : (el, name) => [...el.getElementsByTagName(name)],
     }
 }
 
 const resolveURL = (url, relativeTo) => {
     try {
         if (relativeTo.includes(':')) return new URL(url, relativeTo)
-            // the base needs to be a valid URL, so set a base URL and then remove it
-            const root = 'https://invalid.invalid/'
-            const obj = new URL(url, root + relativeTo)
-            obj.search = ''
-            return decodeURI(obj.href.replace(root, ''))
-            } catch(e) {
-                console.warn(e)
-                return url
-            }
+        // the base needs to be a valid URL, so set a base URL and then remove it
+        const root = 'https://invalid.invalid/'
+        const obj = new URL(url, root + relativeTo)
+        obj.search = ''
+        return decodeURI(obj.href.replace(root, ''))
+    } catch (e) {
+        console.warn(e)
+        return url
+    }
 }
 
 const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
@@ -78,11 +77,11 @@ const isExternal = uri => /^(?!blob)\w+:/i.test(uri)
 // like `path.relative()` in Node.js
 const pathRelative = (from, to) => {
     if (!from) return to
-        const as = from.replace(/\/$/, '').split('/')
-        const bs = to.replace(/\/$/, '').split('/')
-        const i = (as.length > bs.length ? as : bs).findIndex((_, i) => as[i] !== bs[i])
-        return i < 0 ? '' : Array(as.length - i).fill('..').concat(bs.slice(i)).join('/')
-        }
+    const as = from.replace(/\/$/, '').split('/')
+    const bs = to.replace(/\/$/, '').split('/')
+    const i = (as.length > bs.length ? as : bs).findIndex((_, i) => as[i] !== bs[i])
+    return i < 0 ? '' : Array(as.length - i).fill('..').concat(bs.slice(i)).join('/')
+}
 
 const pathDirname = str => str.slice(0, str.lastIndexOf('/') + 1)
 
@@ -93,40 +92,94 @@ const replaceSeries = async (str, regex, f) => {
     str.replace(regex, (...args) => (matches.push(args), null))
     const results = []
     for (const args of matches) results.push(await f(...args))
-        return str.replace(regex, () => results.shift())
-        }
+    return str.replace(regex, () => results.shift())
+}
 
 const regexEscape = str => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
 
-const LANGS = { attrs: ['dir', 'xml:lang'] }
-const ALTS = { name: 'alternate-script', many: true, ...LANGS, props: ['file-as'] }
-const CONTRIB = {
-    many: true, ...LANGS,
-    props: [{ name: 'role', many: true, attrs: ['scheme'] }, 'file-as', ALTS],
+const LANGS = {
+    attrs: ['dir', 'xml:lang']
 }
-const METADATA = [
-    {
-        name: 'title', many: true, ...LANGS,
+const ALTS = {
+    name: 'alternate-script',
+    many: true,
+    ...LANGS,
+    props: ['file-as']
+}
+const CONTRIB = {
+    many: true,
+    ...LANGS,
+    props: [{
+        name: 'role',
+        many: true,
+        attrs: ['scheme']
+    }, 'file-as', ALTS],
+}
+const METADATA = [{
+        name: 'title',
+        many: true,
+        ...LANGS,
         props: ['title-type', 'display-seq', 'file-as', ALTS],
     },
     {
-        name: 'identifier', many: true,
-        props: [{ name: 'identifier-type', attrs: ['scheme'] }],
+        name: 'identifier',
+        many: true,
+        props: [{
+            name: 'identifier-type',
+            attrs: ['scheme']
+        }],
     },
-    { name: 'language', many: true },
-    { name: 'creator', ...CONTRIB },
-    { name: 'contributor', ...CONTRIB },
-    { name: 'publisher', ...LANGS, props: ['file-as', ALTS] },
-    { name: 'description', ...LANGS, props: [ALTS] },
-    { name: 'rights', ...LANGS, props: [ALTS] },
-    { name: 'date' },
-    { name: 'dcterms:modified', type: 'meta' },
-    { name: 'subject', many: true, ...LANGS, props: ['term', 'authority', ALTS] },
     {
-        name: 'belongs-to-collection', type: 'meta', many: true, ...LANGS,
+        name: 'language',
+        many: true
+    },
+    {
+        name: 'creator',
+        ...CONTRIB
+    },
+    {
+        name: 'contributor',
+        ...CONTRIB
+    },
+    {
+        name: 'publisher',
+        ...LANGS,
+        props: ['file-as', ALTS]
+    },
+    {
+        name: 'description',
+        ...LANGS,
+        props: [ALTS]
+    },
+    {
+        name: 'rights',
+        ...LANGS,
+        props: [ALTS]
+    },
+    {
+        name: 'date'
+    },
+    {
+        name: 'dcterms:modified',
+        type: 'meta'
+    },
+    {
+        name: 'subject',
+        many: true,
+        ...LANGS,
+        props: ['term', 'authority', ALTS]
+    },
+    {
+        name: 'belongs-to-collection',
+        type: 'meta',
+        many: true,
+        ...LANGS,
         props: [
             'collection-type', 'group-position', 'dcterms:identifier', 'file-as',
-            ALTS, { name: 'belongs-to-collection', recursive: true },
+            ALTS, {
+                name: 'belongs-to-collection',
+                recursive: true
+            },
         ],
     },
 ]
@@ -135,49 +188,74 @@ const METADATA = [
 // which is used in EPUB 3.0, deprecated in 3.1, then restored in 3.2;
 // no support for `opf:` attributes of 2.0 and 3.1
 const getMetadata = opf => {
-    const { $, $$ } = childGetter(opf, NS.OPF)
+    const {
+        $,
+        $$
+    } = childGetter(opf, NS.OPF)
     const $metadata = $(opf.documentElement, 'metadata')
     const els = Array.from($metadata.children)
     const getValue = (obj, el) => {
         if (!el) return null
-            const { props = [], attrs = [] } = obj
+        const {
+            props = [], attrs = []
+        } = obj
         const value = getElementText(el)
         if (!props.length && !attrs.length) return value
-            const id = el.getAttribute('id')
-            const refines = id ? els.filter(filterAttribute('refines', '#' + id)) : []
-            return Object.fromEntries([['value', value]]
-                                      .concat(props.map(prop => {
-                                          const { many, recursive } = prop
-                                          const name = typeof prop === 'string' ? prop : prop.name
-                                          const filter = filterAttribute('property', name)
-                                          const subobj = recursive ? obj : prop
-                                          return [camel(name), many
-                                                  ? refines.filter(filter).map(el => getValue(subobj, el))
-                                                  : getValue(subobj, refines.find(filter))]
-                                      }))
-                                      .concat(attrs.map(attr => [camel(attr), el.getAttribute(attr)])))
-            }
+        const id = el.getAttribute('id')
+        const refines = id ? els.filter(filterAttribute('refines', '#' + id)) : []
+        return Object.fromEntries([
+                ['value', value]
+            ]
+            .concat(props.map(prop => {
+                const {
+                    many,
+                    recursive
+                } = prop
+                const name = typeof prop === 'string' ? prop : prop.name
+                const filter = filterAttribute('property', name)
+                const subobj = recursive ? obj : prop
+                return [camel(name), many ?
+                    refines.filter(filter).map(el => getValue(subobj, el)) :
+                    getValue(subobj, refines.find(filter))
+                ]
+            }))
+            .concat(attrs.map(attr => [camel(attr), el.getAttribute(attr)])))
+    }
     const arr = els.filter(filterAttribute('refines', null))
     const metadata = Object.fromEntries(METADATA.map(obj => {
-        const { type, name, many } = obj
-        const filter = type === 'meta'
-        ? el => el.namespaceURI === NS.OPF && el.getAttribute('property') === name
-        : el => el.namespaceURI === NS.DC && el.localName === name
-        return [camel(name), many ? arr.filter(filter).map(el => getValue(obj, el))
-                : getValue(obj, arr.find(filter))]
+        const {
+            type,
+            name,
+            many
+        } = obj
+        const filter = type === 'meta' ?
+            el => el.namespaceURI === NS.OPF && el.getAttribute('property') === name :
+            el => el.namespaceURI === NS.DC && el.localName === name
+        return [camel(name), many ? arr.filter(filter).map(el => getValue(obj, el)) :
+            getValue(obj, arr.find(filter))
+        ]
     }))
-    
+
     const getProperties = prefix => Object.fromEntries($$($metadata, 'meta')
-                                                       .filter(filterAttribute('property', x => x?.startsWith(prefix)))
-                                                       .map(el => [el.getAttribute('property').replace(prefix, ''),
-                                                                   getElementText(el)]))
+        .filter(filterAttribute('property', x => x?.startsWith(prefix)))
+        .map(el => [el.getAttribute('property').replace(prefix, ''),
+            getElementText(el)
+        ]))
     const rendition = getProperties('rendition:')
     const media = getProperties('media:')
-    return { metadata, rendition, media }
+    return {
+        metadata,
+        rendition,
+        media
+    }
 }
 
 const parseNav = (doc, resolve = f => f) => {
-    const { $, $$, $$$ } = childGetter(doc, NS.XHTML)
+    const {
+        $,
+        $$,
+        $$$
+    } = childGetter(doc, NS.XHTML)
     const resolveHref = href => href ? decodeURI(resolve(href)) : null
     const parseLI = getType => $li => {
         const $a = $($li, 'a') ?? $($li, 'span')
@@ -185,30 +263,46 @@ const parseNav = (doc, resolve = f => f) => {
         const href = resolveHref($a?.getAttribute('href'))
         const label = getElementText($a) || $a?.getAttribute('title')
         // TODO: get and concat alt/title texts in content
-        const result = { label, href, subitems: parseOL($ol) }
+        const result = {
+            label,
+            href,
+            subitems: parseOL($ol)
+        }
         if (getType) result.type = $a?.getAttributeNS(NS.EPUB, 'type')?.split(/\s/)
-            return result
-            }
+        return result
+    }
     const parseOL = ($ol, getType) => $ol ? $$($ol, 'li').map(parseLI(getType)) : null
     const parseNav = ($nav, getType) => parseOL($($nav, 'ol'), getType)
-    
+
     const $$nav = $$$(doc, 'nav')
-    let toc = null, pageList = null, landmarks = null, others = []
+    let toc = null,
+        pageList = null,
+        landmarks = null,
+        others = []
     for (const $nav of $$nav) {
         const type = $nav.getAttributeNS(NS.EPUB, 'type')?.split(/\s/) ?? []
         if (type.includes('toc')) toc ??= parseNav($nav)
-            else if (type.includes('page-list')) pageList ??= parseNav($nav)
-                else if (type.includes('landmarks')) landmarks ??= parseNav($nav, true)
-                    else others.push({
-                        label: getElementText($nav.firstElementChild), type,
-                        list: parseNav($nav),
-                    })
-                        }
-    return { toc, pageList, landmarks, others }
+        else if (type.includes('page-list')) pageList ??= parseNav($nav)
+        else if (type.includes('landmarks')) landmarks ??= parseNav($nav, true)
+        else others.push({
+            label: getElementText($nav.firstElementChild),
+            type,
+            list: parseNav($nav),
+        })
+    }
+    return {
+        toc,
+        pageList,
+        landmarks,
+        others
+    }
 }
 
 const parseNCX = (doc, resolve = f => f) => {
-    const { $, $$ } = childGetter(doc, NS.NCX)
+    const {
+        $,
+        $$
+    } = childGetter(doc, NS.NCX)
     const resolveHref = href => href ? decodeURI(resolve(href)) : null
     const parseItem = el => {
         const $label = $(el, 'navLabel')
@@ -217,9 +311,16 @@ const parseNCX = (doc, resolve = f => f) => {
         const href = resolveHref($content.getAttribute('src'))
         if (el.localName === 'navPoint') {
             const els = $$(el, 'navPoint')
-            return { label, href, subitems: els.length ? els.map(parseItem) : null }
+            return {
+                label,
+                href,
+                subitems: els.length ? els.map(parseItem) : null
+            }
         }
-        return { label, href }
+        return {
+            label,
+            href
+        }
     }
     const parseList = (el, itemName) => $$(el, itemName).map(parseItem)
     const getSingle = (container, itemName) => {
@@ -238,26 +339,29 @@ const parseNCX = (doc, resolve = f => f) => {
 
 const parseClock = str => {
     if (!str) return
-        const parts = str.split(':').map(x => parseFloat(x))
-        if (parts.length === 3) {
-            const [h, m, s] = parts
-            return h * 60 * 60 + m * 60 + s
-        }
+    const parts = str.split(':').map(x => parseFloat(x))
+    if (parts.length === 3) {
+        const [h, m, s] = parts
+        return h * 60 * 60 + m * 60 + s
+    }
     if (parts.length === 2) {
         const [m, s] = parts
         return m * 60 + s
     }
     const [x, unit] = str.split(/(?=[^\d.])/)
     const n = parseFloat(x)
-    const f = unit === 'h' ? 60 * 60
-    : unit === 'min' ? 60
-    : unit === 'ms' ? .001
-    : 1
+    const f = unit === 'h' ? 60 * 60 :
+        unit === 'min' ? 60 :
+        unit === 'ms' ? .001 :
+        1
     return n * f
 }
 
 const parseSMIL = (doc, resolve = f => f) => {
-    const { $, $$$ } = childGetter(doc, NS.SMIL)
+    const {
+        $,
+        $$$
+    } = childGetter(doc, NS.SMIL)
     const resolveHref = href => href ? decodeURI(resolve(href)) : null
     return $$$(doc, 'par').map($par => {
         const id = $($par, 'text')?.getAttribute('src')?.split('#')?.[1]
@@ -269,7 +373,9 @@ const parseSMIL = (doc, resolve = f => f) => {
                 clipBegin: parseClock($audio.getAttribute('clipBegin')),
                 clipEnd: parseClock($audio.getAttribute('clipEnd')),
             },
-        } : { id }
+        } : {
+            id
+        }
     })
 }
 
@@ -279,21 +385,23 @@ const getUUID = opf => {
     for (const el of opf.getElementsByTagNameNS(NS.DC, 'identifier')) {
         const [id] = getElementText(el).split(':').slice(-1)
         if (isUUID.test(id)) return id
-            }
+    }
     return ''
 }
 
 const getIdentifier = opf => getElementText(
-                                            opf.getElementById(opf.documentElement.getAttribute('unique-identifier'))
-                                            ?? opf.getElementsByTagNameNS(NS.DC, 'identifier')[0])
+    opf.getElementById(opf.documentElement.getAttribute('unique-identifier')) ??
+    opf.getElementsByTagNameNS(NS.DC, 'identifier')[0])
 
 // https://www.w3.org/publishing/epub32/epub-ocf.html#sec-resource-obfuscation
 const deobfuscate = async (key, length, blob) => {
     const array = new Uint8Array(await blob.slice(0, length).arrayBuffer())
     length = Math.min(length, array.length)
     for (var i = 0; i < length; i++) array[i] = array[i] ^ key[i % key.length]
-        return new Blob([array, blob.slice(length)], { type: blob.type })
-        }
+    return new Blob([array, blob.slice(length)], {
+        type: blob.type
+    })
+}
 
 const WebCryptoSHA1 = async str => {
     const data = new TextEncoder().encode(str)
@@ -304,15 +412,17 @@ const WebCryptoSHA1 = async str => {
 const deobfuscators = (sha1 = WebCryptoSHA1) => ({
     'http://www.idpf.org/2008/embedding': {
         key: opf => sha1(getIdentifier(opf)
-                         // eslint-disable-next-line no-control-regex
-                         .replaceAll(/[\u0020\u0009\u000d\u000a]/g, '')),
+            // eslint-disable-next-line no-control-regex
+            .replaceAll(/[\u0020\u0009\u000d\u000a]/g, '')),
         decode: (key, blob) => deobfuscate(key, 1040, blob),
     },
     'http://ns.adobe.com/pdf/enc#RC': {
         key: opf => {
             const uuid = getUUID(opf).replaceAll('-', '')
-            return Uint8Array.from({ length: 16 }, (_, i) =>
-                                   parseInt(uuid.slice(i * 2, i * 2 + 2), 16))
+            return Uint8Array.from({
+                    length: 16
+                }, (_, i) =>
+                parseInt(uuid.slice(i * 2, i * 2 + 2), 16))
         },
         decode: (key, blob) => deobfuscate(key, 1024, blob),
     },
@@ -327,25 +437,29 @@ class Encryption {
     }
     async init(encryption, opf) {
         if (!encryption) return
-            const data = Array.from(
-                                    encryption.getElementsByTagNameNS(NS.ENC, 'EncryptedData'), el => ({
-                                        algorithm: el.getElementsByTagNameNS(NS.ENC, 'EncryptionMethod')[0]
-                                        ?.getAttribute('Algorithm'),
-                                        uri: el.getElementsByTagNameNS(NS.ENC, 'CipherReference')[0]
-                                        ?.getAttribute('URI'),
-                                    }))
-            for (const { algorithm, uri } of data) {
-                if (!this.#decoders.has(algorithm)) {
-                    const algo = this.#algorithms[algorithm]
-                    if (!algo) {
-                        console.warn('Unknown encryption algorithm')
-                        continue
-                    }
-                    const key = await algo.key(opf)
-                    this.#decoders.set(algorithm, blob => algo.decode(key, blob))
-                }
-                this.#uris.set(uri, algorithm)
+        const data = Array.from(
+            encryption.getElementsByTagNameNS(NS.ENC, 'EncryptedData'), el => ({
+                algorithm: el.getElementsByTagNameNS(NS.ENC, 'EncryptionMethod')[0]
+                    ?.getAttribute('Algorithm'),
+                uri: el.getElementsByTagNameNS(NS.ENC, 'CipherReference')[0]
+                    ?.getAttribute('URI'),
+            }))
+        for (const {
+                algorithm,
+                uri
             }
+            of data) {
+            if (!this.#decoders.has(algorithm)) {
+                const algo = this.#algorithms[algorithm]
+                if (!algo) {
+                    console.warn('Unknown encryption algorithm')
+                    continue
+                }
+                const key = await algo.key(opf)
+                this.#decoders.set(algorithm, blob => algo.decode(key, blob))
+            }
+            this.#uris.set(uri, algorithm)
+        }
     }
     getDecoder(uri) {
         return this.#decoders.get(this.#uris.get(uri)) ?? (x => x)
@@ -353,50 +467,62 @@ class Encryption {
 }
 
 class Resources {
-    constructor({ opf, resolveHref }) {
+    constructor({
+        opf,
+        resolveHref
+    }) {
         this.opf = opf
-        const { $, $$, $$$ } = childGetter(opf, NS.OPF)
-        
+        const {
+            $,
+            $$,
+            $$$
+        } = childGetter(opf, NS.OPF)
+
         const $manifest = $(opf.documentElement, 'manifest')
         const $spine = $(opf.documentElement, 'spine')
         const $$itemref = $$($spine, 'itemref')
-        
+
         this.manifest = $$($manifest, 'item')
-        .map(getAttributes('href', 'id', 'media-type', 'properties', 'media-overlay'))
-        .map(item => {
-            item.href = resolveHref(item.href)
-            item.properties = item.properties?.split(/\s/)
-            return item
-        })
+            .map(getAttributes('href', 'id', 'media-type', 'properties', 'media-overlay'))
+            .map(item => {
+                item.href = resolveHref(item.href)
+                item.properties = item.properties?.split(/\s/)
+                return item
+            })
         this.spine = $$itemref
-        .map(getAttributes('idref', 'id', 'linear', 'properties'))
-        .map(item => (item.properties = item.properties?.split(/\s/), item))
+            .map(getAttributes('idref', 'id', 'linear', 'properties'))
+            .map(item => (item.properties = item.properties?.split(/\s/), item))
         this.pageProgressionDirection = $spine
-        .getAttribute('page-progression-direction')
-        
+            .getAttribute('page-progression-direction')
+
         this.navPath = this.getItemByProperty('nav')?.href
-        this.ncxPath = (this.getItemByID($spine.getAttribute('toc'))
-                        ?? this.manifest.find(item => item.mediaType === MIME.NCX))?.href
-        
+        this.ncxPath = (this.getItemByID($spine.getAttribute('toc')) ??
+            this.manifest.find(item => item.mediaType === MIME.NCX))?.href
+
         const $guide = $(opf.documentElement, 'guide')
         if ($guide) this.guide = $$($guide, 'reference')
             .map(getAttributes('type', 'title', 'href'))
-            .map(({ type, title, href }) => ({
+            .map(({
+                type,
+                title,
+                href
+            }) => ({
                 label: title,
                 type: type.split(/\s/),
                 href: resolveHref(href),
             }))
-            
-            this.cover = this.getItemByProperty('cover-image')
+
+        this.cover = this.getItemByProperty('cover-image')
             // EPUB 2 compat
-            ?? this.getItemByID($$$(opf, 'meta')
-                                .find(filterAttribute('name', 'cover'))
-                                ?.getAttribute('content'))
-            ?? this.getItemByHref(this.guide
-                                  ?.find(ref => ref.type.includes('cover'))?.href)
-            
-            this.cfis = CFI.fromElements($$itemref)
-            }
+            ??
+            this.getItemByID($$$(opf, 'meta')
+                .find(filterAttribute('name', 'cover'))
+                ?.getAttribute('content')) ??
+            this.getItemByHref(this.guide
+                ?.find(ref => ref.type.includes('cover'))?.href)
+
+        this.cfis = CFI.fromElements($$itemref)
+    }
     getItemByID(id) {
         return this.manifest.find(item => item.id === id)
     }
@@ -420,7 +546,10 @@ class Resources {
         const idref = $itemref?.getAttribute('idref')
         const index = this.spine.findIndex(item => item.idref === idref)
         const anchor = doc => CFI.toRange(doc, parts)
-        return { index, anchor }
+        return {
+            index,
+            anchor
+        }
     }
 }
 
@@ -429,7 +558,12 @@ class Loader {
     #children = new Map()
     #refCount = new Map()
     allowScript = false
-    constructor({ loadText, loadBlob, resources, replaceText }) {
+    constructor({
+        loadText,
+        loadBlob,
+        resources,
+        replaceText
+    }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.manifest = resources.manifest
@@ -440,14 +574,16 @@ class Loader {
     }
     createURL(href, data, type, parent) {
         if (!data) return ''
-            const url = URL.createObjectURL(new Blob([data], { type }))
-            this.#cache.set(href, url)
-            this.#refCount.set(href, 1)
-            if (parent) {
-                const childList = this.#children.get(parent)
-                if (childList) childList.push(href)
-                    else this.#children.set(parent, [href])
-                        }
+        const url = URL.createObjectURL(new Blob([data], {
+            type
+        }))
+        this.#cache.set(href, url)
+        this.#refCount.set(href, 1)
+        if (parent) {
+            const childList = this.#children.get(parent)
+            if (childList) childList.push(href)
+            else this.#children.set(parent, [href])
+        }
         return url
     }
     ref(href, parent) {
@@ -456,70 +592,83 @@ class Loader {
             this.#refCount.set(href, this.#refCount.get(href) + 1)
             //console.log(`referencing ${href}, now ${this.#refCount.get(href)}`)
             if (childList) childList.push(href)
-                else this.#children.set(parent, [href])
-                    }
+            else this.#children.set(parent, [href])
+        }
         return this.#cache.get(href)
     }
     unref(href) {
         if (!this.#refCount.has(href)) return
-            const count = this.#refCount.get(href) - 1
-            //console.log(`unreferencing ${href}, now ${count}`)
-            if (count < 1) {
-                //console.log(`unloading ${href}`)
-                URL.revokeObjectURL(this.#cache.get(href))
-                this.#cache.delete(href)
-                this.#refCount.delete(href)
-                // unref children
-                const childList = this.#children.get(href)
-                if (childList) while (childList.length) this.unref(childList.pop())
-                    this.#children.delete(href)
-                    } else this.#refCount.set(href, count)
-                        }
+        const count = this.#refCount.get(href) - 1
+        //console.log(`unreferencing ${href}, now ${count}`)
+        if (count < 1) {
+            //console.log(`unloading ${href}`)
+            URL.revokeObjectURL(this.#cache.get(href))
+            this.#cache.delete(href)
+            this.#refCount.delete(href)
+            // unref children
+            const childList = this.#children.get(href)
+            if (childList)
+                while (childList.length) this.unref(childList.pop())
+            this.#children.delete(href)
+        } else this.#refCount.set(href, count)
+    }
     // load manifest item, recursively loading all resources as needed
     async loadItem(item, parents = []) {
         if (!item) return null
-            const { href, mediaType } = item
-        
+        const {
+            href,
+            mediaType
+        } = item
+
         const isScript = MIME.JS.test(item.mediaType)
         if (isScript && !this.allowScript) return null
-            
-            const parent = parents.at(-1)
-            if (this.#cache.has(href)) return this.ref(href, parent)
-                
-                const shouldReplace =
-                (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
-                // prevent circular references
-                && parents.every(p => p !== href)
-                if (shouldReplace) return this.loadReplaced(item, parents)
-                    return this.createURL(href, await this.loadBlob(href), mediaType, parent)
-                    }
+
+        const parent = parents.at(-1)
+        if (this.#cache.has(href)) return this.ref(href, parent)
+
+        const shouldReplace =
+            (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
+            // prevent circular references
+            &&
+            parents.every(p => p !== href)
+        if (shouldReplace) return this.loadReplaced(item, parents)
+        return this.createURL(href, await this.loadBlob(href), mediaType, parent)
+    }
     async loadHref(href, base, parents = []) {
         if (isExternal(href)) return href
-            const path = resolveURL(href, base)
-            const item = this.manifest.find(item => item.href === path)
-            if (!item) return href
-                return this.loadItem(item, parents.concat(base))
-                }
+        const path = resolveURL(href, base)
+        const item = this.manifest.find(item => item.href === path)
+        if (!item) return href
+        return this.loadItem(item, parents.concat(base))
+    }
     async loadReplaced(item, parents = []) {
-        const { href, mediaType } = item
+        const {
+            href,
+            mediaType
+        } = item
         const parent = parents.at(-1)
         const str = await this.loadText(href)
         if (!str) return null
-            // note that one can also just use `replaceString` for everything:
-            // ```
-            // const replaced = await this.replaceString(str, href, parents)
-            // return this.createURL(href, replaced, mediaType, parent)
-            // ```
-            // which is basically what Epub.js does, which is simpler, but will
-            // break things like iframes (because you don't want to replace links)
-            // or text that just happen to be paths
-            
-            // Call replaceText with the original, unmodified text BEFORE any DOM parsing/rewriting
-            let replacedStr = str
-            if (this.replaceText) {
-                replacedStr = await this.replaceText(href, str, mediaType)
-            }
-        
+
+        // note that one can also just use `replaceString` for everything:
+        // ```
+        // const replaced = await this.replaceString(str, href, parents)
+        // return this.createURL(href, replaced, mediaType, parent)
+        // ```
+        // which is basically what Epub.js does, which is simpler, but will
+        // break things like iframes (because you don't want to replace links)
+        // or text that just happen to be paths
+
+        // Call replaceText with the original, unmodified text BEFORE any DOM parsing/rewriting
+        let replacedStr = str
+        if (this.replaceText) {
+            replacedStr = await this.replaceText(href, str, mediaType)
+        }
+
+        if (!replacedStr) {
+            return null
+        }
+
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
             let doc = new DOMParser().parseFromString(replacedStr, mediaType)
@@ -536,11 +685,11 @@ class Loader {
                 while (child instanceof ProcessingInstruction) {
                     if (child.data) {
                         const replacedData = await replaceSeries(child.data,
-                                                                 /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
-                                                                 (_, p1, p2, p3) => this.loadHref(p2, href, parents)
-                                                                 .then(p2 => `${p1}${p2}${p3}`))
+                            /(?:^|\s*)(href\s*=\s*['"])([^'"]*)(['"])/i,
+                            (_, p1, p2, p3) => this.loadHref(p2, href, parents)
+                            .then(p2 => `${p1}${p2}${p3}`))
                         child.replaceWith(doc.createProcessingInstruction(
-                                                                          child.target, replacedData))
+                            child.target, replacedData))
                     }
                     child = child.nextSibling
                 }
@@ -548,7 +697,7 @@ class Loader {
             // replace hrefs (excluding anchors)
             // TODO: srcset?
             const replace = async (el, attr) => el.setAttribute(attr,
-                                                                await this.loadHref(el.getAttribute(attr), href, parents))
+                await this.loadHref(el.getAttribute(attr), href, parents))
             for (const el of doc.querySelectorAll('link[href]')) await replace(el, 'href')
             for (const el of doc.querySelectorAll('[src]')) await replace(el, 'src')
             for (const el of doc.querySelectorAll('[poster]')) await replace(el, 'poster')
@@ -567,33 +716,33 @@ class Loader {
             const textResult = new XMLSerializer().serializeToString(doc)
             return this.createURL(href, textResult, item.mediaType, parent)
         }
-        
-        const result = mediaType === MIME.CSS
-            ? await this.replaceCSS(replacedStr, href, parents)
-            : await this.replaceString(replacedStr, href, parents)
+
+        const result = mediaType === MIME.CSS ?
+            await this.replaceCSS(replacedStr, href, parents) :
+            await this.replaceString(replacedStr, href, parents)
         return this.createURL(href, result, mediaType, parent)
     }
     async replaceCSS(str, href, parents = []) {
         const replacedUrls = await replaceSeries(str,
-                                                 /url\(\s*["']?([^'"\n]*?)\s*["']?\s*\)/gi,
-                                                 (_, url) => this.loadHref(url, href, parents)
-                                                 .then(url => `url("${url}")`))
+            /url\(\s*["']?([^'"\n]*?)\s*["']?\s*\)/gi,
+            (_, url) => this.loadHref(url, href, parents)
+            .then(url => `url("${url}")`))
         // apart from `url()`, strings can be used for `@import` (but why?!)
         const replacedImports = await replaceSeries(replacedUrls,
-                                                    /@import\s*["']([^"'\n]*?)["']/gi,
-                                                    (_, url) => this.loadHref(url, href, parents)
-                                                    .then(url => `@import "${url}"`))
+            /@import\s*["']([^"'\n]*?)["']/gi,
+            (_, url) => this.loadHref(url, href, parents)
+            .then(url => `@import "${url}"`))
         const w = window?.innerWidth ?? 800
         const h = window?.innerHeight ?? 600
         return replacedImports
-        // unprefix as most of the props are (only) supported unprefixed
-        .replace(/-epub-/gi, '')
-        // replace vw and vh as they cause problems with layout
-        .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
-        .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
-        // `page-break-*` unsupported in columns; replace with `column-break-*`
-        .replace(/page-break-(after|before|inside)/gi, (_, x) =>
-                 `-webkit-column-break-${x}`)
+            // unprefix as most of the props are (only) supported unprefixed
+            .replace(/-epub-/gi, '')
+            // replace vw and vh as they cause problems with layout
+            .replace(/(\d*\.?\d+)vw/gi, (_, d) => parseFloat(d) * w / 100 + 'px')
+            .replace(/(\d*\.?\d+)vh/gi, (_, d) => parseFloat(d) * h / 100 + 'px')
+            // `page-break-*` unsupported in columns; replace with `column-break-*`
+            .replace(/page-break-(after|before|inside)/gi, (_, x) =>
+                `-webkit-column-break-${x}`)
     }
     // find & replace all possible relative paths for all assets without parsing
     replaceString(str, href, parents = []) {
@@ -601,47 +750,53 @@ class Loader {
         const urls = this.assets.map(asset => {
             // do not replace references to the file itself
             if (asset.href === href) return
-                // href was decoded and resolved when parsing the manifest
-                const relative = pathRelative(pathDirname(href), asset.href)
-                const relativeEnc = encodeURI(relative)
-                const rootRelative = '/' + asset.href
-                const rootRelativeEnc = encodeURI(rootRelative)
-                const set = new Set([relative, relativeEnc, rootRelative, rootRelativeEnc])
-                for (const url of set) assetMap.set(url, asset)
-                    return Array.from(set)
-                    }).flat().filter(x => x)
+            // href was decoded and resolved when parsing the manifest
+            const relative = pathRelative(pathDirname(href), asset.href)
+            const relativeEnc = encodeURI(relative)
+            const rootRelative = '/' + asset.href
+            const rootRelativeEnc = encodeURI(rootRelative)
+            const set = new Set([relative, relativeEnc, rootRelative, rootRelativeEnc])
+            for (const url of set) assetMap.set(url, asset)
+            return Array.from(set)
+        }).flat().filter(x => x)
         if (!urls.length) return str
-            const regex = new RegExp(urls.map(regexEscape).join('|'), 'g')
-            return replaceSeries(str, regex, async match =>
-                                 this.loadItem(assetMap.get(match.replace(/^\//, '')),
-                                               parents.concat(href)))
-            }
+        const regex = new RegExp(urls.map(regexEscape).join('|'), 'g')
+        return replaceSeries(str, regex, async match =>
+            this.loadItem(assetMap.get(match.replace(/^\//, '')),
+                parents.concat(href)))
+    }
     unloadItem(item) {
         this.unref(item?.href)
     }
     destroy() {
         for (const url of this.#cache.values()) URL.revokeObjectURL(url)
-            }
+    }
 }
 
-const getHTMLFragment = (doc, id) => doc.getElementById(id)
-?? doc.querySelector(`[name="${CSS.escape(id)}"]`)
+const getHTMLFragment = (doc, id) => doc.getElementById(id) ??
+    doc.querySelector(`[name="${CSS.escape(id)}"]`)
 
 const getPageSpread = properties => {
     for (const p of properties) {
         if (p === 'page-spread-left' || p === 'rendition:page-spread-left')
             return 'left'
-            if (p === 'page-spread-right' || p === 'rendition:page-spread-right')
-                return 'right'
-                if (p === 'rendition:page-spread-center') return 'center'
-                    }
+        if (p === 'page-spread-right' || p === 'rendition:page-spread-right')
+            return 'right'
+        if (p === 'rendition:page-spread-center') return 'center'
+    }
 }
 
 export class EPUB {
     parser = new DOMParser()
     #loader
     #encryption
-    constructor({ loadText, loadBlob, getSize, replaceText, sha1 }) {
+    constructor({
+        loadText,
+        loadBlob,
+        getSize,
+        replaceText,
+        sha1
+    }) {
         this.loadText = loadText
         this.loadBlob = loadBlob
         this.getSize = getSize
@@ -651,69 +806,76 @@ export class EPUB {
     async #loadXML(uri) {
         const str = await this.loadText(uri)
         if (!str) return null
-            const doc = this.parser.parseFromString(str, MIME.XML)
-            if (doc.querySelector('parsererror'))
-                throw new Error(`XML parsing error: ${uri}
+        const doc = this.parser.parseFromString(str, MIME.XML)
+        if (doc.querySelector('parsererror'))
+            throw new Error(`XML parsing error: ${uri}
 ${doc.querySelector('parsererror').innerText}`)
-                return doc
-                }
+        return doc
+    }
     async init() {
         const $container = await this.#loadXML('META-INF/container.xml')
         if (!$container) throw new Error('Failed to load container file')
-            
-            const opfs = Array.from(
-                                    $container.getElementsByTagNameNS(NS.CONTAINER, 'rootfile'),
-                                    getAttributes('full-path', 'media-type'))
+
+        const opfs = Array.from(
+                $container.getElementsByTagNameNS(NS.CONTAINER, 'rootfile'),
+                getAttributes('full-path', 'media-type'))
             .filter(file => file.mediaType === 'application/oebps-package+xml')
-            
-            if (!opfs.length) throw new Error('No package document defined in container')
-                const opfPath = opfs[0].fullPath
-                const opf = await this.#loadXML(opfPath)
-                if (!opf) throw new Error('Failed to load package document')
-                    
-                    const $encryption = await this.#loadXML('META-INF/encryption.xml')
-                    await this.#encryption.init($encryption, opf)
-                    
-                    this.resources = new Resources({
-                        opf,
-                        resolveHref: url => resolveURL(url, opfPath),
-                    })
-                    this.#loader = new Loader({
-                        loadText: this.loadText,
-                        loadBlob: uri => Promise.resolve(this.loadBlob(uri))
-                        .then(this.#encryption.getDecoder(uri)),
-                        resources: this.resources,
-                        replaceText: this.replaceText,
-                    })
-                    this.sections = this.resources.spine.map((spineItem, index) => {
-                        const { idref, linear, properties = [] } = spineItem
-                        const item = this.resources.getItemByID(idref)
-                        if (!item) {
-                            console.warn(`Could not find item with ID "${idref}" in manifest`)
-                            return null
-                        }
-                        return {
-                            id: this.resources.getItemByID(idref)?.href,
-                            load: () => this.#loader.loadItem(item),
-                            unload: () => this.#loader.unloadItem(item),
-                            createDocument: () => this.loadDocument(item),
-                            size: this.getSize(item.href),
-                            cfi: this.resources.cfis[index],
-                            linear,
-                            pageSpread: getPageSpread(properties),
-                            resolveHref: href => resolveURL(href, item.href),
-                            loadMediaOverlay: () => this.loadMediaOverlay(item),
-                        }
-                    }).filter(s => s)
-                    
-                    const { navPath, ncxPath } = this.resources
+
+        if (!opfs.length) throw new Error('No package document defined in container')
+        const opfPath = opfs[0].fullPath
+        const opf = await this.#loadXML(opfPath)
+        if (!opf) throw new Error('Failed to load package document')
+
+        const $encryption = await this.#loadXML('META-INF/encryption.xml')
+        await this.#encryption.init($encryption, opf)
+
+        this.resources = new Resources({
+            opf,
+            resolveHref: url => resolveURL(url, opfPath),
+        })
+        this.#loader = new Loader({
+            loadText: this.loadText,
+            loadBlob: uri => Promise.resolve(this.loadBlob(uri))
+                .then(this.#encryption.getDecoder(uri)),
+            resources: this.resources,
+            replaceText: this.replaceText,
+        })
+        this.sections = this.resources.spine.map((spineItem, index) => {
+            const {
+                idref,
+                linear,
+                properties = []
+            } = spineItem
+            const item = this.resources.getItemByID(idref)
+            if (!item) {
+                console.warn(`Could not find item with ID "${idref}" in manifest`)
+                return null
+            }
+            return {
+                id: this.resources.getItemByID(idref)?.href,
+                load: () => this.#loader.loadItem(item),
+                unload: () => this.#loader.unloadItem(item),
+                createDocument: () => this.loadDocument(item),
+                size: this.getSize(item.href),
+                cfi: this.resources.cfis[index],
+                linear,
+                pageSpread: getPageSpread(properties),
+                resolveHref: href => resolveURL(href, item.href),
+                loadMediaOverlay: () => this.loadMediaOverlay(item),
+            }
+        }).filter(s => s)
+
+        const {
+            navPath,
+            ncxPath
+        } = this.resources
         if (navPath) try {
             const resolve = url => resolveURL(url, navPath)
             const nav = parseNav(await this.#loadXML(navPath), resolve)
             this.toc = nav.toc
             this.pageList = nav.pageList
             this.landmarks = nav.landmarks
-        } catch(e) {
+        } catch (e) {
             console.warn(e)
         }
         if (!this.toc && ncxPath) try {
@@ -721,17 +883,21 @@ ${doc.querySelector('parsererror').innerText}`)
             const ncx = parseNCX(await this.#loadXML(ncxPath), resolve)
             this.toc = ncx.toc
             this.pageList = ncx.pageList
-        } catch(e) {
+        } catch (e) {
             console.warn(e)
         }
         this.landmarks ??= this.resources.guide
-        
-        const { metadata, rendition, media } = getMetadata(opf)
+
+        const {
+            metadata,
+            rendition,
+            media
+        } = getMetadata(opf)
         this.rendition = rendition
         this.media = media
         media.duration = parseClock(media.duration)
         this.dir = this.resources.pageProgressionDirection
-        
+
         this.rawMetadata = metadata // useful for debugging, i guess
         const title = metadata?.title?.[0]
         this.metadata = {
@@ -745,8 +911,19 @@ ${doc.querySelector('parsererror').innerText}`)
             published: metadata?.date,
             modified: metadata?.dctermsModified,
             subject: metadata?.subject
-            ?.filter(({ value, code }) => value || code)
-            ?.map(({ value, code, scheme }) => ({ name: value, code, scheme })),
+                ?.filter(({
+                    value,
+                    code
+                }) => value || code)
+                ?.map(({
+                    value,
+                    code,
+                    scheme
+                }) => ({
+                    name: value,
+                    code,
+                    scheme
+                })),
             rights: metadata?.rights?.value,
         }
         const relators = {
@@ -760,19 +937,25 @@ ${doc.querySelector('parsererror').innerText}`)
             pbl: 'publisher',
         }
         const mapContributor = defaultKey => obj => {
-            const keys = [...new Set(obj.role?.map(({ value, scheme }) =>
-                                                   (!scheme || scheme === 'marc:relators' ? relators[value] : null)
-                                                   ?? defaultKey))]
-            const value = { name: obj.value, sortAs: obj.fileAs }
+            const keys = [...new Set(obj.role?.map(({
+                    value,
+                    scheme
+                }) =>
+                (!scheme || scheme === 'marc:relators' ? relators[value] : null) ??
+                defaultKey))]
+            const value = {
+                name: obj.value,
+                sortAs: obj.fileAs
+            }
             return [keys?.length ? keys : [defaultKey], value]
         }
         metadata?.creator?.map(mapContributor('author'))
-        ?.concat(metadata?.contributor?.map?.(mapContributor('contributor')))
-        ?.forEach(([keys, value]) => keys.forEach(key => {
-            if (this.metadata[key]) this.metadata[key].push(value)
+            ?.concat(metadata?.contributor?.map?.(mapContributor('contributor')))
+            ?.forEach(([keys, value]) => keys.forEach(key => {
+                if (this.metadata[key]) this.metadata[key].push(value)
                 else this.metadata[key] = [value]
-                    }))
-        
+            }))
+
         return this
     }
     async loadDocument(item) {
@@ -782,11 +965,11 @@ ${doc.querySelector('parsererror').innerText}`)
     async loadMediaOverlay(item) {
         const id = item.mediaOverlay
         if (!id) return null
-            const media = this.resources.getItemByID(id)
-            const doc = await this.#loadXML(media.href)
-            const parsed = parseSMIL(doc, url => resolveURL(url, media.href))
-            return parsed
-            }
+        const media = this.resources.getItemByID(id)
+        const doc = await this.#loadXML(media.href)
+        const parsed = parseSMIL(doc, url => resolveURL(url, media.href))
+        return parsed
+    }
     resolveCFI(cfi) {
         return this.resources.resolveCFI(cfi)
     }
@@ -794,25 +977,32 @@ ${doc.querySelector('parsererror').innerText}`)
         const [path, hash] = href.split('#')
         const item = this.resources.getItemByHref(decodeURI(path))
         if (!item) return null
-            const index = this.resources.spine.findIndex(({ idref }) => idref === item.id)
-            const anchor = hash ? doc => getHTMLFragment(doc, hash) : () => 0
-            return { index, anchor }
+        const index = this.resources.spine.findIndex(({
+            idref
+        }) => idref === item.id)
+        const anchor = hash ? doc => getHTMLFragment(doc, hash) : () => 0
+        return {
+            index,
+            anchor
+        }
     }
     splitTOCHref(href) {
         return href?.split('#') ?? []
     }
     getTOCFragment(doc, id) {
-        return doc.getElementById(id)
-        ?? doc.querySelector(`[name="${CSS.escape(id)}"]`)
+        return doc.getElementById(id) ??
+            doc.querySelector(`[name="${CSS.escape(id)}"]`)
     }
     isExternal(uri) {
         return isExternal(uri)
     }
     async getCover() {
         const cover = this.resources?.cover
-        return cover?.href
-        ? new Blob([await this.loadBlob(cover.href)], { type: cover.mediaType })
-        : null
+        return cover?.href ?
+            new Blob([await this.loadBlob(cover.href)], {
+                type: cover.mediaType
+            }) :
+            null
     }
     async getCalibreBookmarks() {
         const txt = await this.loadText('META-INF/calibre_bookmarks.txt')

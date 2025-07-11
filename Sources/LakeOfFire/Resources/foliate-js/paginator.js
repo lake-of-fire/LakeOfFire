@@ -107,131 +107,6 @@ const getBoundingClientRect = target => {
     return new DOMRect(left, top, right - left, bottom - top)
 }
 
-/**
- * Sets up an IntersectionObserver for the given document and root element.
- * Resolves with lists of visible and non-visible elements after the first observation.
- * The lists may not be complete! It is not thorough.
- * @param {Document} docRoot - The iframe document whose body children we’ll observe.
- * @param {HTMLElement} rootElement - The scrolling container (the View element).
- * @returns {Promise<{ visibleElements: Element[], nonVisibleElements: Element[] }>}
- */
-async function getElementVisibilities(rootElement) {
-    await new Promise(requestAnimationFrame);
-    return new Promise(resolve => {
-        const visibleElements = new WeakSet();
-        const nonVisibleElements = new WeakSet();
-
-        const io = new IntersectionObserver(entries => {
-            for (const entry of entries) {
-                if (entry.isIntersecting) {
-                    visibleElements.add(entry.target);
-                } else {
-                    nonVisibleElements.add(entry.target);
-                }
-            }
-            io.disconnect();
-            resolve({
-                visibleElements,
-                nonVisibleElements
-            });
-        }, {
-            root: rootElement,
-            threshold: [0]
-        });
-
-        rootElement.querySelectorAll('#reader-content > *, manabi-tracking-section, manabi-container').forEach(el => {
-            io.observe(el)
-        });
-    })
-}
-
-const getVisibleRange = async (doc, start, end, mapRect) => {
-    // Grab the set of elements currently in-view (if any)
-
-    const {
-        visibleElements,
-        nonVisibleElements
-    } = await getElementVisibilities(doc.body)
-
-    // first get all visible nodes
-    const acceptNode = node => {
-        // If we have a visibility set and this element isn’t intersecting, skip it
-        if (node.nodeType === 1 && nonVisibleElements.has(node)) {
-            return FILTER_REJECT
-        }
-
-        const name = node.localName?.toLowerCase()
-        // ignore all scripts, styles, and their children
-        if (name === 'script' || name === 'style') return FILTER_REJECT
-        if (node.nodeType === 1) {
-            const {
-                left,
-                right
-            } = mapRect(node.getBoundingClientRect())
-            // no need to check child nodes if it's completely out of view
-            if (right < start || left > end) return FILTER_REJECT
-            // elements must be completely in view to be considered visible
-            // because you can't specify offsets for elements
-            if (left >= start && right <= end) return FILTER_ACCEPT
-            // TODO: it should probably allow elements that do not contain text
-            // because they can exceed the whole viewport in both directions
-            // especially in scrolled mode
-        } else {
-            // ignore empty text nodes
-            if (!node.nodeValue?.trim()) return FILTER_SKIP
-            // create range to get rect
-            const range = doc.createRange()
-            range.selectNodeContents(node)
-            const {
-                left,
-                right
-            } = mapRect(range.getBoundingClientRect())
-            // it's visible if any part of it is in view
-            if (right >= start && left <= end) return FILTER_ACCEPT
-        }
-        return FILTER_SKIP
-    }
-    const walker = doc.createTreeWalker(doc.body, filter, {
-        acceptNode
-    })
-    const nodes = []
-    // Memoize mapRect(getBoundingClientRect(range)) per range
-    const rectCache = new WeakMap();
-    const safeRect = range => {
-        if (rectCache.has(range)) return rectCache.get(range);
-        const rect = mapRect(getBoundingClientRect(range));
-        rectCache.set(range, rect);
-        return rect;
-    };
-    for (let node = walker.nextNode(); node; node = walker.nextNode())
-        nodes.push(node)
-
-    // we're only interested in the first and last visible nodes
-    const from = nodes[0] ?? doc.body
-    const to = nodes[nodes.length - 1] ?? from
-
-    // find the offset at which visibility changes
-    const startOffset = from.nodeType === 1 ? 0 :
-        bisectNode(doc, from, (a, b) => {
-            const p = safeRect(a);
-            const q = safeRect(b);
-            if (p.right < start && q.left > start) return 0
-            return q.left > start ? -1 : 1
-        })
-    const endOffset = to.nodeType === 1 ? 0 :
-        bisectNode(doc, to, (a, b) => {
-            const p = safeRect(a);
-            const q = safeRect(b);
-            if (p.right < end && q.left > end) return 0
-            return q.left > end ? -1 : 1
-        })
-
-    const range = doc.createRange()
-    range.setStart(from, startOffset)
-    range.setEnd(to, endOffset)
-    return range
-}
-
 // Determine vertical/RTL by cloning only head and empty body in hidden iframe
 const getDirection = async (sourceDoc) => {
     // 1. Clone a minimal document
@@ -636,8 +511,7 @@ class View {
                 'max-height': maxHeightValue,
                 'height': 'auto',
                 'max-width': vertical ?
-                    `${width - topMargin - bottomMargin}px` :
-                    (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
+                    `${width - topMargin - bottomMargin}px` : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
                 'object-fit': 'contain',
                 'page-break-inside': 'avoid',
                 'break-inside': 'avoid',
@@ -829,6 +703,10 @@ export class Paginator extends HTMLElement {
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #cachedSizes = null
     #cachedViewSize = null
+    #visibleElements = new WeakSet()
+    #nonVisibleElements = new WeakSet()
+    #elementVisibilityObserver = null
+    #elementMutationObserver = null
     constructor() {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -943,11 +821,11 @@ export class Paginator extends HTMLElement {
             }        
             /* For page-turning */
             .view-fade {
-                opacity: 0.4;
-                transition: opacity 0.75s ease-out;
+                opacity: 0.45;
+                transition: opacity 0.85s ease-out;
             }
             .view-faded {
-                opacity: 0.4;
+                opacity: 0.45;
             }
         </style>
         <div id="top">
@@ -1051,6 +929,66 @@ export class Paginator extends HTMLElement {
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
+    }
+    #trackElementVisibilities() {
+        this.#disconnectElementVisibilityObserver();
+
+        this.#visibleElements = new WeakSet();
+        this.#nonVisibleElements = new WeakSet();
+
+        this.#elementVisibilityObserver = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                const el = entry.target;
+                if (entry.isIntersecting) {
+                    this.#visibleElements.add(el);
+                    el.classList.remove('manabi-off-screen');
+                    this.#nonVisibleElements.delete(el);
+                } else {
+                    this.#nonVisibleElements.add(el);
+                    el.classList.add('manabi-off-screen');
+                    this.#visibleElements.delete(el);
+                }
+            }
+        }, {
+            root: null,
+            threshold: [0],
+            //rootMargin: '100%'
+        });
+
+        const selector = '#reader-content > *, manabi-tracking-section, manabi-container';
+        this.#elementMutationObserver = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node instanceof Element && node.matches(selector)) {
+                        this.#elementVisibilityObserver.observe(node);
+                    }
+                }
+                for (const node of mutation.removedNodes) {
+                    if (node instanceof Element && node.matches(selector)) {
+                        this.#elementVisibilityObserver.unobserve(node);
+                        this.#visibleElements.delete(node);
+                        this.#nonVisibleElements.delete(node);
+                    }
+                }
+            }
+        });
+
+        this.#view.document.body.querySelectorAll('#reader-content > *, manabi-tracking-section, manabi-container')
+            .forEach(el => this.#elementVisibilityObserver.observe(el));
+        this.#elementMutationObserver.observe(this.#view.document.body, {
+            childList: true,
+            subtree: true
+        });
+    }
+    #disconnectElementVisibilityObserver() {
+        if (this.#elementVisibilityObserver) {
+            this.#elementVisibilityObserver.disconnect();
+            this.#elementVisibilityObserver = null;
+        }
+        if (this.#elementMutationObserver) {
+            this.#elementMutationObserver.disconnect();
+            this.#elementMutationObserver = null;
+        }
     }
     #isSingleMediaElementWithoutText() {
         const container = this.#view.document.getElementById('reader-content');
@@ -1173,6 +1111,8 @@ export class Paginator extends HTMLElement {
         this.feet = feet.map(el => el.children[0])
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
+
+        this.#trackElementVisibilities()
 
         return {
             height,
@@ -1536,7 +1476,7 @@ export class Paginator extends HTMLElement {
         } else {
             this.#container.classList.add('view-fade')
             // Allow the browser to paint the fade
-            await new Promise(r => setTimeout(r, 40));
+            await new Promise(r => setTimeout(r, 65));
             this.#container.classList.add('view-faded')
             await scroll()
             this.#container.classList.remove('view-faded')
@@ -1623,18 +1563,87 @@ export class Paginator extends HTMLElement {
                     const start = await this.start()
                     const end = await this.end()
                     const rectMapper = await this.#getRectMapper()
-                    resolve(await getVisibleRange(this.#view.document,
+                    resolve(this.#getVisibleRangeFrom(this.#view.document,
                         start + this.#topMargin, end - this.#bottomMargin, rectMapper))
                 } else {
                     const size = this.#rtl ? -(await this.size()) : await this.size()
                     const start = await this.start()
                     const end = await this.end()
                     const rectMapper = await this.#getRectMapper()
-                    resolve(await getVisibleRange(this.#view.document,
+                    resolve(this.#getVisibleRangeFrom(this.#view.document,
                         start - size, end - size, rectMapper))
                 }
             })
         });
+    }
+    #getVisibleRangeFrom(doc, start, end, mapRect) {
+        const acceptNode = node => {
+            if (node.nodeType === 1 && this.#nonVisibleElements.has(node)) {
+                return FILTER_REJECT;
+            }
+
+            const name = node.localName?.toLowerCase();
+            if (name === 'script' || name === 'style') return FILTER_REJECT;
+
+            if (node.nodeType === 1) {
+                const {
+                    left,
+                    right
+                } = mapRect(node.getBoundingClientRect());
+                if (right < start || left > end) return FILTER_REJECT;
+                if (left >= start && right <= end) return FILTER_ACCEPT;
+            } else {
+                if (!node.nodeValue?.trim()) return FILTER_SKIP;
+                const range = doc.createRange();
+                range.selectNodeContents(node);
+                const {
+                    left,
+                    right
+                } = mapRect(range.getBoundingClientRect());
+                if (right >= start && left <= end) return FILTER_ACCEPT;
+            }
+
+            return FILTER_SKIP;
+        };
+
+        const walker = doc.createTreeWalker(doc.body, filter, {
+            acceptNode
+        });
+        const nodes = [];
+        const rectCache = new WeakMap();
+        const safeRect = range => {
+            if (rectCache.has(range)) return rectCache.get(range);
+            const rect = mapRect(getBoundingClientRect(range));
+            rectCache.set(range, rect);
+            return rect;
+        };
+
+        for (let node = walker.nextNode(); node; node = walker.nextNode())
+            nodes.push(node);
+
+        const from = nodes[0] ?? doc.body;
+        const to = nodes[nodes.length - 1] ?? from;
+
+        const startOffset = from.nodeType === 1 ? 0 :
+            bisectNode(doc, from, (a, b) => {
+                const p = safeRect(a);
+                const q = safeRect(b);
+                if (p.right < start && q.left > start) return 0;
+                return q.left > start ? -1 : 1;
+            });
+
+        const endOffset = to.nodeType === 1 ? 0 :
+            bisectNode(doc, to, (a, b) => {
+                const p = safeRect(a);
+                const q = safeRect(b);
+                if (p.right < end && q.left > end) return 0;
+                return q.left > end ? -1 : 1;
+            });
+
+        const range = doc.createRange();
+        range.setStart(from, startOffset);
+        range.setEnd(to, endOffset);
+        return range;
     }
     async #afterScroll(reason) {
         await this.#awaitDirection();
@@ -1952,6 +1961,7 @@ export class Paginator extends HTMLElement {
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
     destroy() {
+        this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
         this.#view.destroy()
         this.#view = null

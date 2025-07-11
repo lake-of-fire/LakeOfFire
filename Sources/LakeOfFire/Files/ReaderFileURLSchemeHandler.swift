@@ -12,8 +12,16 @@ fileprivate extension URL {
 
 fileprivate let zipArchiveExtensions = ["zip", "epub"]
 
+@globalActor
+public actor ReaderFileURLSchemeActor {
+    public static var shared = ReaderFileURLSchemeActor()
+    
+    public init() { }
+}
+
+
 final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    @MainActor var readerFileManager: ReaderFileManager? = nil
+    @ReaderFileURLSchemeActor var readerFileManager: ReaderFileManager? = nil
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     
@@ -34,8 +42,8 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
         
         guard let url = urlSchemeTask.request.url else { return }
         
-        Task { @MainActor in
-            guard let readerFileManager = readerFileManager else {
+        Task { @ReaderFileURLSchemeActor in
+            guard let readerFileManager else {
                 urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                 return
             }

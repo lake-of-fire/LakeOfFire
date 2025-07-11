@@ -131,6 +131,13 @@ fileprivate actor ZIPToEbookActor {
     }
 }
 
+@globalActor
+public actor EbookURLSchemeActor {
+    public static var shared = EbookURLSchemeActor()
+    
+    public init() { }
+}
+
 public extension URL {
     var isEBookURL: Bool {
         return (isFileURL || scheme == "https" || scheme == "http" || scheme == "ebook" || scheme == "ebook-url") && pathExtension.lowercased() == "epub"
@@ -193,7 +200,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 expectedContentLength: respData.count,
                                 textEncodingName: "utf-8"
                             )
-                            await { @MainActor in
+                            await { @EbookURLSchemeActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                     //                                    if !isCacheWarmer {
                                     //                                        print("# ebook proc text endpoint", replacedTextLocation, "receive...", respText)
@@ -248,7 +255,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             at: viewerHtmlPath,
                             originalURL: url
                         )
-                        await { @MainActor in
+                        await { @EbookURLSchemeActor in
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                 urlSchemeTask.didReceive(response)
                                 urlSchemeTask.didReceive(data)
@@ -258,7 +265,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }()
                     } catch {
                         print(error)
-                        await { @MainActor in
+                        await { @EbookURLSchemeActor in
                             urlSchemeTask.didFailWithError(error)
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }()
@@ -279,7 +286,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             readerFileManager: readerFileManager
                         )
                         
-                        await { @MainActor in
+                        await { @EbookURLSchemeActor in
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                 urlSchemeTask.didReceive(response)
                                 urlSchemeTask.didReceive(data)
@@ -289,7 +296,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }()
                     } catch {
                         print("Error: \(error)")
-                        await { @MainActor in
+                        await { @EbookURLSchemeActor in
                             urlSchemeTask.didFailWithError(error)
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }()
