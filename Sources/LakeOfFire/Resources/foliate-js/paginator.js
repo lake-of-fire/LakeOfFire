@@ -640,8 +640,6 @@ export class Paginator extends HTMLElement {
     #lastResizerRect = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
-        console.log("RESIZE OBSERVER")
-        console.log(entries)
 
         const entry = entries[0];
         const rect = entry.contentRect;
@@ -862,7 +860,6 @@ export class Paginator extends HTMLElement {
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', debounce(async () => {
             if (this.#isLoading) return;
-            console.log("scroll callback getVisibleRange()...")
             if (this.scrolled && !this.#isCacheWarmer) {
                 const range = await this.#getVisibleRange();
                 const index = this.#index;
@@ -954,7 +951,6 @@ export class Paginator extends HTMLElement {
         this.#nonVisibleElements = new WeakSet()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
-            console.log("element vis observer " + entries.length)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
@@ -1195,14 +1191,10 @@ export class Paginator extends HTMLElement {
                         width: rect.width,
                         height: rect.height,
                     }
-//                    console.log("sizes() returning real: ")
-//                    console.log(this.#cachedSizes)
                     resolve(this.#cachedSizes)
                 })
             })
         }
-//        console.log("sizes() returning cached: ")
-//        console.log(this.#cachedSizes)
         return this.#cachedSizes
     }
     async size() {
@@ -1215,16 +1207,10 @@ export class Paginator extends HTMLElement {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
-                                        console.log("viewsize() returning real: ")
-                                        console.log(this.#cachedViewSize)
                     resolve(this.#cachedViewSize)
                 })
             })
         }
-        console.log("viewsize() returning cached: ")
-        console.log(this.#cachedViewSize)
-        console.log("vs real:")
-        console.log(this.#view.element.getBoundingClientRect()[await this.sideProp()])
         return this.#cachedViewSize
     }
     async start() {
@@ -1237,18 +1223,10 @@ export class Paginator extends HTMLElement {
     }
     async page() {
         await this.#awaitDirection();
-        console.log("page:")
-        console.log(await this.start())
-        console.log(await this.end())
-        console.log(Math.floor(((await this.start() + await this.end()) / 2) / (await this.size())))
         return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
     }
     async pages() {
         await this.#awaitDirection();
-            console.log("pages:")
-            console.log(await this.viewSize())
-            console.log(await this.size())
-            console.log((await this.viewSize()) / (await this.size()))
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1634,7 +1612,7 @@ export class Paginator extends HTMLElement {
                     return
                 }
 
-                const interval = 5;
+                const interval = 10;
                 var idx = 0;
                 let charCount = 0;
                 let nextThreshold = interval;
@@ -1732,9 +1710,6 @@ export class Paginator extends HTMLElement {
             range.selectNodeContents(doc.body);
             range.collapse(true);
         }
-        console.log("Vis range from...")
-        console.log(this.#visibleElements)
-        console.log(range)
         return range;
     }
     async #afterScroll(reason) {
@@ -1976,13 +1951,9 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     async atStart() {
-            console.log("at start:")
-        console.log(this.#adjacentIndex(-1) == null && (await this.page()) <= 1)
-            return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
+        return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
     }
     async atEnd() {
-            console.log("at end:")
-            console.log(this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2)
         return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
     }
     #adjacentIndex(dir) {
