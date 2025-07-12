@@ -1,3 +1,64 @@
+
+const getVisibleRange = (doc, start, end, mapRect) => {
+    // first get all visible nodes
+    const acceptNode = node => {
+        const name = node.localName?.toLowerCase()
+        // ignore all scripts, styles, and their children
+        if (name === 'script' || name === 'style') return FILTER_REJECT
+            if (node.nodeType === 1) {
+                const { left, right } = mapRect(node.getBoundingClientRect())
+                // no need to check child nodes if it's completely out of view
+                if (right < start || left > end) return FILTER_REJECT
+                    // elements must be completely in view to be considered visible
+                    // because you can't specify offsets for elements
+                    if (left >= start && right <= end) return FILTER_ACCEPT
+                        // TODO: it should probably allow elements that do not contain text
+                        // because they can exceed the whole viewport in both directions
+                        // especially in scrolled mode
+                        } else {
+                            // ignore empty text nodes
+                            if (!node.nodeValue?.trim()) return FILTER_SKIP
+                                // create range to get rect
+                                const range = doc.createRange()
+                                range.selectNodeContents(node)
+                                const { left, right } = mapRect(range.getBoundingClientRect())
+                            // it's visible if any part of it is in view
+                            if (right >= start && left <= end) return FILTER_ACCEPT
+                                }
+        return FILTER_SKIP
+    }
+    const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
+    const nodes = []
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+        nodes.push(node)
+        
+        // we're only interested in the first and last visible nodes
+        const from = nodes[0] ?? doc.body
+        const to = nodes[nodes.length - 1] ?? from
+        
+        // find the offset at which visibility changes
+        const startOffset = from.nodeType === 1 ? 0
+        : bisectNode(doc, from, (a, b) => {
+            const p = mapRect(getBoundingClientRect(a))
+            const q = mapRect(getBoundingClientRect(b))
+            if (p.right < start && q.left > start) return 0
+                return q.left > start ? -1 : 1
+                })
+        const endOffset = to.nodeType === 1 ? 0
+        : bisectNode(doc, to, (a, b) => {
+            const p = mapRect(getBoundingClientRect(a))
+            const q = mapRect(getBoundingClientRect(b))
+            if (p.right < end && q.left > end) return 0
+                return q.left > end ? -1 : 1
+                })
+        
+        const range = doc.createRange()
+        range.setStart(from, startOffset)
+        range.setEnd(to, endOffset)
+        return range
+        }
+
+
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -854,7 +915,7 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#resizeObserver.observe(this.#container)
-        
+
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
 
         // Continuously fire relocate during scroll
@@ -1618,7 +1679,64 @@ export class Paginator extends HTMLElement {
                     return
                 }
 
-                const interval = 10;
+                const interval = 8;
+
+                function findSplitOffset(text, desiredOffset, maxDistance) {
+                    function category(ch) {
+                        if (!ch || typeof ch !== 'string') return 'other';
+                        const cp = ch.codePointAt(0);
+                        if (/\s/.test(ch)) return 'ws';
+                        if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch)) return 'punct';
+                        if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
+                            (cp >= 0x3400 && cp <= 0x4DBF) ||
+                            (cp >= 0x20000 && cp <= 0x2A6DF) ||
+                            (cp >= 0x2A700 && cp <= 0x2B73F)) return 'cjk';
+                        if (cp >= 0x3040 && cp <= 0x309F) return 'hiragana';
+                        if (cp >= 0x30A0 && cp <= 0x30FF) return 'katakana';
+                        return 'other';
+                    }
+                    const len = text.length;
+                    // Do not split at start or end of text node
+                    if (desiredOffset <= 0 || desiredOffset >= len) return desiredOffset;
+                    
+                    let bestOffset = desiredOffset;
+                    let bestScore = -Infinity;
+                    
+                    // Scan outward from desiredOffset (prioritize close, prefer "good" break)
+                    for (let dist = 0; dist <= maxDistance; dist++) {
+                        for (const offset of [desiredOffset - dist, desiredOffset + dist]) {
+                            if (offset <= 0 || offset >= len) continue;
+                            const ch = text[offset];
+                            const prev = text[offset - 1];
+                            // Prefer:
+                            // - At whitespace or punctuation,
+                            // - At element boundary (not directly detectable here),
+                            // - At transition: kanji <-> kana, hiragana <-> katakana, kana <-> other, etc.
+                            let score = 0;
+                            if (/\s/.test(ch) || /\s/.test(prev)) score += 3;
+                            if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch) ||
+                                /[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(prev)) score += 3;
+                            if (category(prev) !== category(ch)) score += 2;
+                            // Prefer to avoid splitting in the middle of CJK words (kanji->kanji)
+                            if (category(prev) === 'cjk' && category(ch) === 'cjk') score -= 2;
+                            // Avoid splitting mid-latin word
+                            if (category(prev) === 'other' && category(ch) === 'other' &&
+                                /[a-zA-Z0-9]/.test(prev) && /[a-zA-Z0-9]/.test(ch)) score -= 4;
+                            // Strongly avoid start/end of node
+                            if (offset === 0 || offset === len) score -= 5;
+                            // Penalty for distance
+                            score -= Math.abs(offset - desiredOffset) * 0.5;
+                            
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestOffset = offset;
+                            }
+                            if (bestScore >= 3) break; // Early out for "good enough" score
+                }
+                    }
+                    return bestOffset;
+                }
+
                 var idx = 0;
                 let charCount = 0;
                 let nextThreshold = interval;
@@ -1629,8 +1747,9 @@ export class Paginator extends HTMLElement {
                     let remainingText = textNode.nodeValue || "";
                     let offsetInNode = 0;
                     while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
-                        const splitOffset = nextThreshold - charCount - offsetInNode;
-                        const postSplit = textNode.splitText(splitOffset);
+                        const desiredOffset = nextThreshold - charCount - offsetInNode;
+                        const bestOffset = findSplitOffset(remainingText, desiredOffset, interval * 2);
+                        const postSplit = textNode.splitText(bestOffset);
                         const sentinel = doc.createElement("reader-sentinel")
                         sentinel.id = `reader-sentinel-${idx}`
                         idx++
@@ -1670,15 +1789,16 @@ export class Paginator extends HTMLElement {
         });
     }
     async #getVisibleRangeFrom(doc, start, end, mapRect) {
+                            return getVisibleRange(doc, start, end, mapRect)
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
-        
+
         if (this.#visibleSentinelIDs.size === 0) {
             const range = doc.createRange();
             range.selectNodeContents(doc.body);
             range.collapse(true);
             return range
         }
-            
+
         const isValid = node =>
             node &&
             (node.nodeType === Node.TEXT_NODE ||

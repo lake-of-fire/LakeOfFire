@@ -319,6 +319,7 @@ export class View extends HTMLElement {
         } catch(e) {
             console.error(e)
             console.error(`Could not go to ${target}`)
+            throw e
             //            return
         }
         //        this.#emit('is-loading', false)
