@@ -220,6 +220,7 @@ class View {
     #hasResizerObserverTriggered = false
     #lastResizerRect = null
     #cachedContentRangeRect = null
+    #styleCache = new WeakMap()
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
 
@@ -431,7 +432,7 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-        await this.setImageSize()
+        await this.setImageSizes()
         //        this.#debouncedExpand()
         await this.expand()
     }
@@ -477,14 +478,14 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
-        await this.setImageSize()
+        await this.setImageSizes()
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         await this.expand()
         //            //            this.#debouncedExpand()
         //        }
     }
-    async setImageSize() {
+    async setImageSizes() {
         await this.#awaitDirection();
         const {
             width,
@@ -495,12 +496,15 @@ class View {
         const vertical = this.#vertical
         const doc = this.document
         const availableHeight = height - topMargin - bottomMargin;
+        // Add style cache for computed styles
         for (const el of doc.body.querySelectorAll('img, svg, video')) {
             // Temporarily remove our inline max-height to get the CSS value
-            const previousInline = el.style.getPropertyValue('max-height');
-            el.style.removeProperty('max-height');
-            const computed = doc.defaultView.getComputedStyle(el);
-            const existingMaxHeight = computed.getPropertyValue('max-height');
+            const previousInline = el.style.getPropertyValue('max-height')
+            el.style.removeProperty('max-height')
+            // Use cached computed style if available, otherwise compute and cache it
+            const computed = this.#styleCache.get(el) || doc.defaultView.getComputedStyle(el)
+            if (!this.#styleCache.has(el)) this.#styleCache.set(el, computed)
+            const existingMaxHeight = computed.getPropertyValue('max-height')
             // Restore previous inline max-height if needed (not strictly necessary, setStylesImportant below will override)
             // (We do not restore it because setStylesImportant will always set it.)
             const maxHeightValue = (existingMaxHeight && existingMaxHeight !== 'none') ?
@@ -523,85 +527,90 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
-        //        const { documentElement } = this.document
-        const documentElement = this.document?.documentElement
-        if (this.#column) {
-            const side = this.#vertical ? 'height' : 'width'
-            const otherSide = this.#vertical ? 'width' : 'height'
-            const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
-            let contentSize
-            if (documentElement) {
-                const rootRect = documentElement.getBoundingClientRect()
-                // offset caused by column break at the start of the page
-                // which seem to be supported only by WebKit and only for horizontal writing
-                const contentStart = this.#vertical ? 0 :
-                    this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                contentSize = contentStart + contentRect[side]
-            } else {
-                contentSize = contentRect[side]
-            }
-            const pageCount = Math.ceil(contentSize / this.#size)
-            const expandedSize = pageCount * await this.#size
-            this.#element.style.padding = '0'
-            this.#iframe.style[side] = `${expandedSize}px`
-            this.#element.style[side] = `${expandedSize + this.#size * 2}px`
-            this.#iframe.style[otherSide] = '100%'
-            this.#element.style[otherSide] = '100%'
-            if (documentElement) {
-                documentElement.style[side] = `${this.#size}px`
-            }
-            if (this.#overlayer) {
-                this.#overlayer.element.style.margin = '0'
-                this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
-                this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
-                this.#overlayer.element.style[side] = `${expandedSize}px`
-                this.#overlayer.redraw()
-            }
-        } else {
-            const side = this.#vertical ? 'width' : 'height'
-            const otherSide = this.#vertical ? 'height' : 'width'
-            const contentSize = documentElement?.getBoundingClientRect()?.[side]
-            const expandedSize = contentSize
-            const {
-                topMargin,
-                bottomMargin
-            } = this.#layout
-            const paddingTop = `${marginTop}px`
-            const paddingBottom = `${marginBottom}px`
-            if (this.#vertical) {
-                this.#element.style.paddingLeft = paddingTop
-                this.#element.style.paddingRight = paddingBottom
-                this.#element.style.paddingTop = '0'
-                this.#element.style.paddingBottom = '0'
-            } else {
-                this.#element.style.paddingLeft = '0'
-                this.#element.style.paddingRight = '0'
-                this.#element.style.paddingTop = paddingTop
-                this.#element.style.paddingBottom = paddingBottom
-            }
-            this.#iframe.style[side] = `${expandedSize}px`
-            this.#element.style[side] = `${expandedSize}px`
-            this.#iframe.style[otherSide] = '100%'
-            this.#element.style[otherSide] = '100%'
-            if (this.#overlayer) {
-                if (this.#vertical) {
-                    this.#overlayer.element.style.marginLeft = paddingTop
-                    this.#overlayer.element.style.marginRight = paddingBottom
-                    this.#overlayer.element.style.marginTop = '0'
-                    this.#overlayer.element.style.marginBottom = '0'
+        return new Promise(resolve => {
+            requestAnimationFrame(async () => {
+                //        const { documentElement } = this.document
+                const documentElement = this.document?.documentElement
+                if (this.#column) {
+                    const side = this.#vertical ? 'height' : 'width'
+                    const otherSide = this.#vertical ? 'width' : 'height'
+                    const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
+                    let contentSize
+                    if (documentElement) {
+                        const rootRect = documentElement.getBoundingClientRect()
+                        // offset caused by column break at the start of the page
+                        // which seem to be supported only by WebKit and only for horizontal writing
+                        const contentStart = this.#vertical ? 0 :
+                            this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                        contentSize = contentStart + contentRect[side]
+                    } else {
+                        contentSize = contentRect[side]
+                    }
+                    const pageCount = Math.ceil(contentSize / this.#size)
+                    const expandedSize = pageCount * await this.#size
+                    this.#element.style.padding = '0'
+                    this.#iframe.style[side] = `${expandedSize}px`
+                    this.#element.style[side] = `${expandedSize + this.#size * 2}px`
+                    this.#iframe.style[otherSide] = '100%'
+                    this.#element.style[otherSide] = '100%'
+                    if (documentElement) {
+                        documentElement.style[side] = `${this.#size}px`
+                    }
+                    if (this.#overlayer) {
+                        this.#overlayer.element.style.margin = '0'
+                        this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
+                        this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
+                        this.#overlayer.element.style[side] = `${expandedSize}px`
+                        this.#overlayer.redraw()
+                    }
                 } else {
-                    this.#overlayer.element.style.marginLeft = '0'
-                    this.#overlayer.element.style.marginRight = '0'
-                    this.#overlayer.element.style.marginTop = paddingTop
-                    this.#overlayer.element.style.marginBottom = paddingBottom
+                    const side = this.#vertical ? 'width' : 'height'
+                    const otherSide = this.#vertical ? 'height' : 'width'
+                    const contentSize = documentElement?.getBoundingClientRect()?.[side]
+                    const expandedSize = contentSize
+                    const {
+                        topMargin,
+                        bottomMargin
+                    } = this.#layout
+                    const paddingTop = `${marginTop}px`
+                    const paddingBottom = `${marginBottom}px`
+                    if (this.#vertical) {
+                        this.#element.style.paddingLeft = paddingTop
+                        this.#element.style.paddingRight = paddingBottom
+                        this.#element.style.paddingTop = '0'
+                        this.#element.style.paddingBottom = '0'
+                    } else {
+                        this.#element.style.paddingLeft = '0'
+                        this.#element.style.paddingRight = '0'
+                        this.#element.style.paddingTop = paddingTop
+                        this.#element.style.paddingBottom = paddingBottom
+                    }
+                    this.#iframe.style[side] = `${expandedSize}px`
+                    this.#element.style[side] = `${expandedSize}px`
+                    this.#iframe.style[otherSide] = '100%'
+                    this.#element.style[otherSide] = '100%'
+                    if (this.#overlayer) {
+                        if (this.#vertical) {
+                            this.#overlayer.element.style.marginLeft = paddingTop
+                            this.#overlayer.element.style.marginRight = paddingBottom
+                            this.#overlayer.element.style.marginTop = '0'
+                            this.#overlayer.element.style.marginBottom = '0'
+                        } else {
+                            this.#overlayer.element.style.marginLeft = '0'
+                            this.#overlayer.element.style.marginRight = '0'
+                            this.#overlayer.element.style.marginTop = paddingTop
+                            this.#overlayer.element.style.marginBottom = paddingBottom
+                        }
+                        this.#overlayer.element.style.left = '0'
+                        this.#overlayer.element.style.top = '0'
+                        this.#overlayer.element.style[side] = `${expandedSize}px`
+                        this.#overlayer.redraw()
+                    }
                 }
-                this.#overlayer.element.style.left = '0'
-                this.#overlayer.element.style.top = '0'
-                this.#overlayer.element.style[side] = `${expandedSize}px`
-                this.#overlayer.redraw()
-            }
-        }
-        await this.onExpand()
+                await this.onExpand()
+                resolve()
+            })
+        })
     }
     set overlayer(overlayer) {
         this.#overlayer = overlayer
@@ -778,7 +787,7 @@ export class Paginator extends HTMLElement {
                 grid-row: 2;
                 overflow: hidden;
         
-                contain: layout style;
+                contain: strict;
                 will-change: transform;
                 transform: translateZ(0);
             }
@@ -848,6 +857,7 @@ export class Paginator extends HTMLElement {
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', debounce(async () => {
             if (this.#isLoading) return;
+            console.log("scroll callback getVisibleRange()...")
             if (this.scrolled && !this.#isCacheWarmer) {
                 const range = await this.#getVisibleRange();
                 const index = this.#index;
@@ -937,6 +947,7 @@ export class Paginator extends HTMLElement {
         this.#nonVisibleElements = new WeakSet();
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
+            console.log("element vis observer " + entries.length)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
@@ -1163,11 +1174,16 @@ export class Paginator extends HTMLElement {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
         if (this.#cachedSizes === null) {
-            const rect = this.#container.getBoundingClientRect()
-            this.#cachedSizes = {
-                width: rect.width,
-                height: rect.height,
-            }
+            return new Promise(resolve => {
+                requestAnimationFrame(() => {
+                    const rect = this.#container.getBoundingClientRect()
+                    this.#cachedSizes = {
+                        width: rect.width,
+                        height: rect.height,
+                    }
+                    resolve(this.#cachedSizes)
+                })
+            })
         }
         return this.#cachedSizes
     }
@@ -1178,7 +1194,12 @@ export class Paginator extends HTMLElement {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
         if (this.#cachedViewSize === null) {
-            this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
+            return new Promise(resolve => {
+                requestAnimationFrame(async () => {
+                    this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
+                    resolve(this.#cachedViewSize)
+                })
+            })
         }
         return this.#cachedViewSize
     }
@@ -1532,28 +1553,36 @@ export class Paginator extends HTMLElement {
     }
     async #scrollToAnchor(anchor, reason = 'anchor') {
         await this.#awaitDirection();
-        this.#anchor = anchor
-        const rects = uncollapse(anchor)?.getClientRects?.()
-        // if anchor is an element or a range
-        if (rects) {
-            // when the start of the range is immediately after a hyphen in the
-            // previous column, there is an extra zero width rect in that column
-            const rect = Array.from(rects)
-                .find(r => r.width > 0 && r.height > 0) || rects[0]
-            if (!rect) return
-            await this.#scrollToRect(rect, reason)
-            return
-        }
-        // if anchor is a fraction
-        if (this.scrolled) {
-            await this.#scrollTo(anchor * (await this.viewSize()), reason)
-            return
-        }
-        const pages = await this.pages()
-        if (!pages) return
-        const textPages = pages - 2
-        const newPage = Math.round(anchor * (textPages - 1))
-        await this.#scrollToPage(newPage + 1, reason)
+
+        return new Promise(resolve => {
+            requestAnimationFrame(async () => {
+                this.#anchor = anchor
+                const rects = uncollapse(anchor)?.getClientRects?.()
+                // if anchor is an element or a range
+                if (rects) {
+                    // when the start of the range is immediately after a hyphen in the
+                    // previous column, there is an extra zero width rect in that column
+                    const rect = Array.from(rects)
+                        .find(r => r.width > 0 && r.height > 0) || rects[0]
+                    if (!rect) return
+                    await this.#scrollToRect(rect, reason)
+                    resolve()
+                    return
+                }
+                // if anchor is a fraction
+                if (this.scrolled) {
+                    await this.#scrollTo(anchor * (await this.viewSize()), reason)
+                    resolve()
+                    return
+                }
+                const pages = await this.pages()
+                if (!pages) return
+                const textPages = pages - 2
+                const newPage = Math.round(anchor * (textPages - 1))
+                await this.#scrollToPage(newPage + 1, reason)
+                resolve()
+            })
+        })
     }
     async #getVisibleRange() {
         await this.#awaitDirection();
@@ -1563,87 +1592,92 @@ export class Paginator extends HTMLElement {
                     const start = await this.start()
                     const end = await this.end()
                     const rectMapper = await this.#getRectMapper()
-                    resolve(this.#getVisibleRangeFrom(this.#view.document,
+                    resolve(await this.#getVisibleRangeFrom(this.#view.document,
                         start + this.#topMargin, end - this.#bottomMargin, rectMapper))
                 } else {
                     const size = this.#rtl ? -(await this.size()) : await this.size()
                     const start = await this.start()
                     const end = await this.end()
                     const rectMapper = await this.#getRectMapper()
-                    resolve(this.#getVisibleRangeFrom(this.#view.document,
+                    resolve(await this.#getVisibleRangeFrom(this.#view.document,
                         start - size, end - size, rectMapper))
                 }
             })
         });
     }
-    #getVisibleRangeFrom(doc, start, end, mapRect) {
-        const acceptNode = node => {
-            if (node.nodeType === 1 && this.#nonVisibleElements.has(node)) {
-                return FILTER_REJECT;
-            }
-
-            const name = node.localName?.toLowerCase();
-            if (name === 'script' || name === 'style') return FILTER_REJECT;
-
-            if (node.nodeType === 1) {
-                const {
-                    left,
-                    right
-                } = mapRect(node.getBoundingClientRect());
-                if (right < start || left > end) return FILTER_REJECT;
-                if (left >= start && right <= end) return FILTER_ACCEPT;
-            } else {
-                if (!node.nodeValue?.trim()) return FILTER_SKIP;
+    async #getVisibleRangeFrom(doc, start, end, mapRect) {
+            console.log("getVisibleRangeFrom...")
+        return new Promise(resolve => {
+            requestAnimationFrame(() => {
+                const acceptNode = node => {
+                    if (node.nodeType === 1 && this.#nonVisibleElements.has(node)) {
+                        return FILTER_REJECT;
+                    }
+                    
+                    const name = node.localName?.toLowerCase();
+                    if (name === 'script' || name === 'style') return FILTER_REJECT;
+                    
+                    if (node.nodeType === 1) {
+                        const {
+                            left,
+                            right
+                        } = mapRect(node.getBoundingClientRect());
+                        if (right < start || left > end) return FILTER_REJECT;
+                        if (left >= start && right <= end) return FILTER_ACCEPT;
+                    } else {
+                        if (!node.nodeValue?.trim()) return FILTER_SKIP;
+                        const range = doc.createRange();
+                        range.selectNodeContents(node);
+                        const {
+                            left,
+                            right
+                        } = mapRect(range.getBoundingClientRect());
+                        if (right >= start && left <= end) return FILTER_ACCEPT;
+                    }
+                    
+                    return FILTER_SKIP;
+                };
+                
+                const walker = doc.createTreeWalker(doc.body, filter, {
+                    acceptNode
+                });
+                const nodes = [];
+                const rectCache = new WeakMap();
+                const safeRect = range => {
+                    if (rectCache.has(range)) return rectCache.get(range);
+                    const rect = mapRect(getBoundingClientRect(range));
+                    rectCache.set(range, rect);
+                    return rect;
+                };
+                
+                for (let node = walker.nextNode(); node; node = walker.nextNode())
+                    nodes.push(node);
+                
+                const from = nodes[0] ?? doc.body;
+                const to = nodes[nodes.length - 1] ?? from;
+                
+                const startOffset = from.nodeType === 1 ? 0 :
+                bisectNode(doc, from, (a, b) => {
+                    const p = safeRect(a);
+                    const q = safeRect(b);
+                    if (p.right < start && q.left > start) return 0;
+                    return q.left > start ? -1 : 1;
+                });
+                
+                const endOffset = to.nodeType === 1 ? 0 :
+                bisectNode(doc, to, (a, b) => {
+                    const p = safeRect(a);
+                    const q = safeRect(b);
+                    if (p.right < end && q.left > end) return 0;
+                    return q.left > end ? -1 : 1;
+                });
+                
                 const range = doc.createRange();
-                range.selectNodeContents(node);
-                const {
-                    left,
-                    right
-                } = mapRect(range.getBoundingClientRect());
-                if (right >= start && left <= end) return FILTER_ACCEPT;
-            }
-
-            return FILTER_SKIP;
-        };
-
-        const walker = doc.createTreeWalker(doc.body, filter, {
-            acceptNode
-        });
-        const nodes = [];
-        const rectCache = new WeakMap();
-        const safeRect = range => {
-            if (rectCache.has(range)) return rectCache.get(range);
-            const rect = mapRect(getBoundingClientRect(range));
-            rectCache.set(range, rect);
-            return rect;
-        };
-
-        for (let node = walker.nextNode(); node; node = walker.nextNode())
-            nodes.push(node);
-
-        const from = nodes[0] ?? doc.body;
-        const to = nodes[nodes.length - 1] ?? from;
-
-        const startOffset = from.nodeType === 1 ? 0 :
-            bisectNode(doc, from, (a, b) => {
-                const p = safeRect(a);
-                const q = safeRect(b);
-                if (p.right < start && q.left > start) return 0;
-                return q.left > start ? -1 : 1;
-            });
-
-        const endOffset = to.nodeType === 1 ? 0 :
-            bisectNode(doc, to, (a, b) => {
-                const p = safeRect(a);
-                const q = safeRect(b);
-                if (p.right < end && q.left > end) return 0;
-                return q.left > end ? -1 : 1;
-            });
-
-        const range = doc.createRange();
-        range.setStart(from, startOffset);
-        range.setEnd(to, endOffset);
-        return range;
+                range.setStart(from, startOffset);
+                range.setEnd(to, endOffset);
+                resolve(range);
+            })
+        })
     }
     async #afterScroll(reason) {
         await this.#awaitDirection();

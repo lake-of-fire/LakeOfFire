@@ -585,6 +585,13 @@
                     --sx: calc(0.5 * 16px + var(--ratio) * (100% - 16px));
                 }
                 
+                /* Performance optimization */
+                foliate-view {
+                    contain: strict;
+                    will-change: transform;
+                    transform: translateZ(0);
+                }
+                
                 /* View Transitions */
                 /*
                  @keyframes fade-in { from { opacity: 0; } }
