@@ -1574,7 +1574,10 @@ export class Paginator extends HTMLElement {
                     // previous column, there is an extra zero width rect in that column
                     const rect = Array.from(rects)
                         .find(r => r.width > 0 && r.height > 0) || rects[0]
-                    if (!rect) return
+                    if (!rect) {
+                        resolve()
+                        return
+                    }
                     await this.#scrollToRect(rect, reason)
                     resolve()
                     return
@@ -1586,7 +1589,10 @@ export class Paginator extends HTMLElement {
                     return
                 }
                 const pages = await this.pages()
-                if (!pages) return
+                if (!pages) {
+                    resolve()
+                    return
+                }
                 const textPages = pages - 2
                 const newPage = Math.round(anchor * (textPages - 1))
                 await this.#scrollToPage(newPage + 1, reason)

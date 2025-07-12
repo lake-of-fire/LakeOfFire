@@ -307,6 +307,12 @@ const getCSSForBookContent = ({
         background: inherit !important;
         color: inherit !important;
     }
+
+    body * {
+        /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
+        height: inherit !important;
+    }
+
 /*
 reader-sentinel {
   position: relative;
