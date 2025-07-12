@@ -1592,79 +1592,41 @@ export class Paginator extends HTMLElement {
      * - Short elements (<= interval characters) starting within the window are preferred.
      * - If none exist, a sentinel span is inserted at the target text offset.
      */
-                          async #applyVisibilitySentinels() {
+      async #applyVisibilitySentinels() {
             return new Promise(resolve => {
                 requestAnimationFrame(() => {
-                    const doc = this.#view?.document
-                    if (!doc) return resolve()
-                        
-                        const interval = 20
-                        const body = doc.body
-                        let charCount = 0
-                        let nextThreshold = interval
-                        let lastOffset = 0
-                        
-                        const sentinelActions = [] // [{ type: 'add' | 'insert', target }]
-                        const textNodes = []
-                        let currentTextNodeIndex = 0
-                        
-                        const walker = doc.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null)
-                        const elementQueue = [] // [{ offset, node }]
-                        
-                        let node
-                        while ((node = walker.nextNode())) {
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                const len = node.nodeValue?.length ?? 0
-                                charCount += len
-                                textNodes.push({ node, start: charCount - len, end: charCount })
-                                
-                                while (charCount >= nextThreshold) {
-                                    // Try to find last eligible element between lastOffset and nextThreshold
-                                    const candidates = elementQueue.filter(
-                                                                           e =>
-                                                                           e.offset > lastOffset &&
-                                                                           e.offset <= nextThreshold &&
-                                                                           (e.node.textContent?.length ?? Infinity) <= interval
-                                                                           )
-                                    if (candidates.length) {
-                                        sentinelActions.push({ type: 'add', target: candidates[candidates.length - 1].node })
-                                    } else {
-                                        // Find nearest text node
-                                        const tn = textNodes.find(t => t.start <= nextThreshold && t.end >= nextThreshold)
-                                        if (tn) {
-                                            const index = nextThreshold - tn.start
-                                            sentinelActions.push({ type: 'insert', target: { node: tn.node, index } })
-                                        }
-                                    }
-                                    
-                                    lastOffset = nextThreshold
-                                    nextThreshold += interval
-                                }
-                            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                                elementQueue.push({ offset: charCount, node })
-                            }
+                    const doc = this.#view?.document;
+                    if (!doc) return resolve();
+                    const body = doc.body;
+                    const interval = 20;
+                    let charCount = 0;
+                    let nextThreshold = interval;
+                    // Walk only text nodes, splitting in-place for sentinel insertion
+                    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
+                    let textNode;
+                    while ((textNode = walker.nextNode())) {
+                        let remainingText = textNode.nodeValue || "";
+                        let offsetInNode = 0;
+                        while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
+                            const splitOffset = nextThreshold - charCount - offsetInNode;
+                            const postSplit = textNode.splitText(splitOffset);
+                            const sentinel = doc.createElement("span");
+                            sentinel.classList.add("manabi-sentinel");
+                            postSplit.parentNode.insertBefore(sentinel, postSplit);
+                            // Advance counters past the inserted sentinel
+                            textNode = postSplit;
+                            offsetInNode = 0;
+                            charCount = nextThreshold;
+                            nextThreshold += interval;
+                            remainingText = textNode.nodeValue || "";
                         }
-                    
-                    // Apply all sentinel mutations
-                    for (const action of sentinelActions) {
-                        if (action.type === 'add') {
-                            action.target.classList.add('manabi-sentinel')
-                        } else if (action.type === 'insert') {
-                            const { node, index } = action.target
-                            const range = doc.createRange()
-                            range.setStart(node, index)
-                            range.collapse(true)
-                            const span = doc.createElement('span')
-                            span.classList.add('manabi-sentinel')
-                            range.insertNode(span)
-                        }
+                        charCount += remainingText.length - offsetInNode;
                     }
-                    
-                    resolve()
-                })
-            })
+                    resolve();
+                });
+            });
         }
-    asynct #getVisibleRange() {
+    async #getVisibleRange() {
         await this.#awaitDirection();
         return new Promise((resolve) => {
             requestAnimationFrame(async () => {

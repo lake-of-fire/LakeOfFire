@@ -260,7 +260,7 @@ const getView = async (file, isCacheWarmer) => {
     return view
 }
 
-const getCSS = ({
+const getCSSForBookContent = ({
     spacing,
     justify,
     hyphenate
@@ -306,6 +306,10 @@ const getCSS = ({
     h1, h2, h3, h4, h5, h6 {
         background: inherit !important;
         color: inherit !important;
+    }
+
+    .manabi-sentinel {
+        display: none !important;
     }
 `
 
@@ -380,7 +384,7 @@ class Reader {
         } = this.view
         this.bookDir = book.dir || 'ltr';
         this.isRTL = this.bookDir === 'rtl';
-        this.view.renderer.setStyles?.(getCSS(this.style))
+        this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
