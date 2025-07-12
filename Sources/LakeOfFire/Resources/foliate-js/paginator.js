@@ -62,7 +62,8 @@ const uncollapse = range => {
 const makeRange = (doc, node, start, end = start) => {
     const range = doc.createRange()
     range.setStart(node, start)
-    range.setEnd(node, end)
+    //    range.setEnd(node, end)
+    range.setEnd(node, start)
     return range
 }
 
@@ -831,7 +832,7 @@ export class Paginator extends HTMLElement {
             /* For page-turning */
             .view-fade {
                 opacity: 0.45;
-                transition: opacity 0.85s ease-out;
+                /*transition: opacity 0.85s ease-out;*/
             }
             .view-faded {
                 opacity: 0.45;
@@ -966,7 +967,8 @@ export class Paginator extends HTMLElement {
             //rootMargin: '100%'
         });
 
-        const selector = '#reader-content > *, manabi-tracking-section, manabi-container';
+        const selector = '#reader-content > *, manabi-tracking-section, manabi-container, manabi-sentinel';
+
         this.#elementMutationObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
@@ -984,8 +986,7 @@ export class Paginator extends HTMLElement {
             }
         });
 
-        this.#view.document.body.querySelectorAll('#reader-content > *, manabi-tracking-section, manabi-container')
-            .forEach(el => this.#elementVisibilityObserver.observe(el));
+        this.#view.document.body.querySelectorAll(selector).forEach(el => this.#elementVisibilityObserver.observe(el));
         this.#elementMutationObserver.observe(this.#view.document.body, {
             childList: true,
             subtree: true
@@ -1123,6 +1124,7 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
+        await this.#applyVisibilitySentinels()
         this.#trackElementVisibilities()
 
         return {
@@ -1497,8 +1499,8 @@ export class Paginator extends HTMLElement {
         } else {
             this.#container.classList.add('view-fade')
             // Allow the browser to paint the fade
-            await new Promise(r => setTimeout(r, 65));
-            this.#container.classList.add('view-faded')
+            /*await new Promise(r => setTimeout(r, 65));
+             this.#container.classList.add('view-faded')*/
             await scroll()
             this.#container.classList.remove('view-faded')
             this.#container.classList.remove('view-fade')
@@ -1584,7 +1586,85 @@ export class Paginator extends HTMLElement {
             })
         })
     }
-    async #getVisibleRange() {
+    /**
+     * Adds `.manabi-sentinel` class to either an existing short element or an inserted span
+     * every `interval` characters in the body.
+     * - Short elements (<= interval characters) starting within the window are preferred.
+     * - If none exist, a sentinel span is inserted at the target text offset.
+     */
+                          async #applyVisibilitySentinels() {
+            return new Promise(resolve => {
+                requestAnimationFrame(() => {
+                    const doc = this.#view?.document
+                    if (!doc) return resolve()
+                        
+                        const interval = 20
+                        const body = doc.body
+                        let charCount = 0
+                        let nextThreshold = interval
+                        let lastOffset = 0
+                        
+                        const sentinelActions = [] // [{ type: 'add' | 'insert', target }]
+                        const textNodes = []
+                        let currentTextNodeIndex = 0
+                        
+                        const walker = doc.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null)
+                        const elementQueue = [] // [{ offset, node }]
+                        
+                        let node
+                        while ((node = walker.nextNode())) {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                const len = node.nodeValue?.length ?? 0
+                                charCount += len
+                                textNodes.push({ node, start: charCount - len, end: charCount })
+                                
+                                while (charCount >= nextThreshold) {
+                                    // Try to find last eligible element between lastOffset and nextThreshold
+                                    const candidates = elementQueue.filter(
+                                                                           e =>
+                                                                           e.offset > lastOffset &&
+                                                                           e.offset <= nextThreshold &&
+                                                                           (e.node.textContent?.length ?? Infinity) <= interval
+                                                                           )
+                                    if (candidates.length) {
+                                        sentinelActions.push({ type: 'add', target: candidates[candidates.length - 1].node })
+                                    } else {
+                                        // Find nearest text node
+                                        const tn = textNodes.find(t => t.start <= nextThreshold && t.end >= nextThreshold)
+                                        if (tn) {
+                                            const index = nextThreshold - tn.start
+                                            sentinelActions.push({ type: 'insert', target: { node: tn.node, index } })
+                                        }
+                                    }
+                                    
+                                    lastOffset = nextThreshold
+                                    nextThreshold += interval
+                                }
+                            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                elementQueue.push({ offset: charCount, node })
+                            }
+                        }
+                    
+                    // Apply all sentinel mutations
+                    for (const action of sentinelActions) {
+                        if (action.type === 'add') {
+                            action.target.classList.add('manabi-sentinel')
+                        } else if (action.type === 'insert') {
+                            const { node, index } = action.target
+                            const range = doc.createRange()
+                            range.setStart(node, index)
+                            range.collapse(true)
+                            const span = doc.createElement('span')
+                            span.classList.add('manabi-sentinel')
+                            range.insertNode(span)
+                        }
+                    }
+                    
+                    resolve()
+                })
+            })
+        }
+    asynct #getVisibleRange() {
         await this.#awaitDirection();
         return new Promise((resolve) => {
             requestAnimationFrame(async () => {
@@ -1606,78 +1686,26 @@ export class Paginator extends HTMLElement {
         });
     }
     async #getVisibleRangeFrom(doc, start, end, mapRect) {
-            console.log("getVisibleRangeFrom...")
-        return new Promise(resolve => {
-            requestAnimationFrame(() => {
-                const acceptNode = node => {
-                    if (node.nodeType === 1 && this.#nonVisibleElements.has(node)) {
-                        return FILTER_REJECT;
-                    }
-                    
-                    const name = node.localName?.toLowerCase();
-                    if (name === 'script' || name === 'style') return FILTER_REJECT;
-                    
-                    if (node.nodeType === 1) {
-                        const {
-                            left,
-                            right
-                        } = mapRect(node.getBoundingClientRect());
-                        if (right < start || left > end) return FILTER_REJECT;
-                        if (left >= start && right <= end) return FILTER_ACCEPT;
-                    } else {
-                        if (!node.nodeValue?.trim()) return FILTER_SKIP;
-                        const range = doc.createRange();
-                        range.selectNodeContents(node);
-                        const {
-                            left,
-                            right
-                        } = mapRect(range.getBoundingClientRect());
-                        if (right >= start && left <= end) return FILTER_ACCEPT;
-                    }
-                    
-                    return FILTER_SKIP;
-                };
-                
-                const walker = doc.createTreeWalker(doc.body, filter, {
-                    acceptNode
-                });
-                const nodes = [];
-                const rectCache = new WeakMap();
-                const safeRect = range => {
-                    if (rectCache.has(range)) return rectCache.get(range);
-                    const rect = mapRect(getBoundingClientRect(range));
-                    rectCache.set(range, rect);
-                    return rect;
-                };
-                
-                for (let node = walker.nextNode(); node; node = walker.nextNode())
-                    nodes.push(node);
-                
-                const from = nodes[0] ?? doc.body;
-                const to = nodes[nodes.length - 1] ?? from;
-                
-                const startOffset = from.nodeType === 1 ? 0 :
-                bisectNode(doc, from, (a, b) => {
-                    const p = safeRect(a);
-                    const q = safeRect(b);
-                    if (p.right < start && q.left > start) return 0;
-                    return q.left > start ? -1 : 1;
-                });
-                
-                const endOffset = to.nodeType === 1 ? 0 :
-                bisectNode(doc, to, (a, b) => {
-                    const p = safeRect(a);
-                    const q = safeRect(b);
-                    if (p.right < end && q.left > end) return 0;
-                    return q.left > end ? -1 : 1;
-                });
-                
-                const range = doc.createRange();
-                range.setStart(from, startOffset);
-                range.setEnd(to, endOffset);
-                resolve(range);
-            })
-        })
+        console.log("getVisibleRangeFrom...")
+        const sentinels = doc.getElementsByClassName('manabi-sentinel')
+        let first = null
+        let last = null
+        for (let i = 0; i < sentinels.length; i++) {
+            const el = sentinels[i]
+            if (this.#visibleElements.has(el)) {
+                if (!first) first = el
+                last = el
+            }
+        }
+        const range = doc.createRange()
+        if (first && last) {
+            range.setStartBefore(first)
+            range.setEndAfter(last)
+        } else {
+            range.selectNodeContents(doc.body)
+            range.collapse(true)
+        }
+        return range
     }
     async #afterScroll(reason) {
         await this.#awaitDirection();
