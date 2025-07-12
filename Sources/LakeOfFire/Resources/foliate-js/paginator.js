@@ -5,58 +5,58 @@ const getVisibleRange = (doc, start, end, mapRect) => {
         const name = node.localName?.toLowerCase()
         // ignore all scripts, styles, and their children
         if (name === 'script' || name === 'style') return FILTER_REJECT
-            if (node.nodeType === 1) {
-                const { left, right } = mapRect(node.getBoundingClientRect())
-                // no need to check child nodes if it's completely out of view
-                if (right < start || left > end) return FILTER_REJECT
-                    // elements must be completely in view to be considered visible
-                    // because you can't specify offsets for elements
-                    if (left >= start && right <= end) return FILTER_ACCEPT
-                        // TODO: it should probably allow elements that do not contain text
-                        // because they can exceed the whole viewport in both directions
-                        // especially in scrolled mode
-                        } else {
-                            // ignore empty text nodes
-                            if (!node.nodeValue?.trim()) return FILTER_SKIP
-                                // create range to get rect
-                                const range = doc.createRange()
-                                range.selectNodeContents(node)
-                                const { left, right } = mapRect(range.getBoundingClientRect())
-                            // it's visible if any part of it is in view
-                            if (right >= start && left <= end) return FILTER_ACCEPT
-                                }
+        if (node.nodeType === 1) {
+            const { left, right } = mapRect(node.getBoundingClientRect())
+            // no need to check child nodes if it's completely out of view
+            if (right < start || left > end) return FILTER_REJECT
+            // elements must be completely in view to be considered visible
+            // because you can't specify offsets for elements
+            if (left >= start && right <= end) return FILTER_ACCEPT
+            // TODO: it should probably allow elements that do not contain text
+            // because they can exceed the whole viewport in both directions
+            // especially in scrolled mode
+        } else {
+            // ignore empty text nodes
+            if (!node.nodeValue?.trim()) return FILTER_SKIP
+            // create range to get rect
+            const range = doc.createRange()
+            range.selectNodeContents(node)
+            const { left, right } = mapRect(range.getBoundingClientRect())
+            // it's visible if any part of it is in view
+            if (right >= start && left <= end) return FILTER_ACCEPT
+        }
         return FILTER_SKIP
     }
     const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
     const nodes = []
     for (let node = walker.nextNode(); node; node = walker.nextNode())
         nodes.push(node)
-        
-        // we're only interested in the first and last visible nodes
-        const from = nodes[0] ?? doc.body
-        const to = nodes[nodes.length - 1] ?? from
-        
-        // find the offset at which visibility changes
-        const startOffset = from.nodeType === 1 ? 0
+
+    // we're only interested in the first and last visible nodes
+    const from = nodes[0] ?? doc.body
+    const to = nodes[nodes.length - 1] ?? from
+
+    // find the offset at which visibility changes
+    const startOffset = from.nodeType === 1 ? 0
         : bisectNode(doc, from, (a, b) => {
             const p = mapRect(getBoundingClientRect(a))
             const q = mapRect(getBoundingClientRect(b))
             if (p.right < start && q.left > start) return 0
-                return q.left > start ? -1 : 1
-                })
-        const endOffset = to.nodeType === 1 ? 0
+            return q.left > start ? -1 : 1
+        })
+    const endOffset = to.nodeType === 1 ? 0
         : bisectNode(doc, to, (a, b) => {
             const p = mapRect(getBoundingClientRect(a))
             const q = mapRect(getBoundingClientRect(b))
             if (p.right < end && q.left > end) return 0
-                return q.left > end ? -1 : 1
-                })
-        
-        const range = doc.createRange()
-        range.setStart(from, startOffset)
-        range.setEnd(to, endOffset)
-        return range
-        }
+            return q.left > end ? -1 : 1
+        })
+
+    const range = doc.createRange()
+    range.setStart(from, startOffset)
+    range.setEnd(to, endOffset)
+    return range
+}
 
 
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
@@ -312,6 +312,7 @@ class View {
             newSize.left === old.left;
 
         if (unchanged) {
+            console.log("RESIZE OBS #view skipped...")
             return
         }
 
@@ -319,6 +320,7 @@ class View {
             width: newSize.width,
             height: newSize.height,
         }
+        console.log("RESIZE OBS #view UPDATED... " + newSize.width + "x" + newSize.height)
         // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
         this.#cachedContentRangeRect = null
@@ -454,7 +456,11 @@ class View {
         })
     }
     async render(layout) {
-        if (!layout) return
+        console.log("View render(layout)...")
+        if (!layout) {
+            console.log("View render(layout)...skip, no layout!")
+            return
+        }
         this.#column = layout.flow !== 'scrolled'
         this.#layout = layout
         if (this.#column) await this.columnize(layout)
@@ -510,7 +516,9 @@ class View {
         gap,
         columnWidth
     }) {
+        console.log("columnize...")
         await this.#awaitDirection();
+        console.log("columnize...proceed")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
 
@@ -597,6 +605,7 @@ class View {
     async expand() {
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
+                console.log("expand()...")
                 //        const { documentElement } = this.document
                 const documentElement = this.document?.documentElement
                 if (this.#column) {
@@ -740,12 +749,12 @@ export class Paginator extends HTMLElement {
         }
 
         if (unchanged) {
-            console.log("RESIZED skip...")
+            console.log("RESIZE OBS paginator skipped...")
             return
         }
-        console.log("RESIZED OBSERVED...")
-        
 
+        console.log("RESIZE OBS pagiantor UPDATED... " + newSize.width + "x" + newSize.height)
+        
         requestAnimationFrame(() => {
             this.#debouncedRender();
         })
@@ -781,10 +790,14 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #cachedSizes = null
+
     #visibleElements = new WeakSet()
     #visibleSentinelIDs = new Set()
     #nonVisibleElements = new WeakSet()
     #elementVisibilityObserver = null
+    #elementVisibilityObserverLoading = null
+    #elementVisibilityObserverLoadingResolve = null
+
     #elementMutationObserver = null
     constructor() {
         super()
@@ -1005,6 +1018,8 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #onExpand() {
+        console.log("onExpand...")
+        this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
         this.#view.cachedViewSize = null
         await this.#scrollToAnchor(this.#anchor)
     }
@@ -1037,6 +1052,10 @@ export class Paginator extends HTMLElement {
                     this.#visibleElements.delete(el);
                 }
             }
+
+            this.#elementVisibilityObserverLoadingResolve?.()
+            this.#elementVisibilityObserverLoading = null
+            this.#elementVisibilityObserverLoadingResolve = null
         }, {
             root: null,
             threshold: [0],
@@ -1108,6 +1127,7 @@ export class Paginator extends HTMLElement {
         rtl,
         background
     }) {
+        console.log("# before render...")
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
@@ -1118,10 +1138,12 @@ export class Paginator extends HTMLElement {
         // this is needed because the iframe does not fill the whole element
         this.#background.style.background = background
 
+        console.log("# before render... await sizes")
         const {
             width,
             height
         } = await this.sizes()
+        console.log("# before render... awaited sizes")
         const size = vertical ? height : width
 
         const style = getComputedStyle(this.#top)
@@ -1200,9 +1222,12 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
+//        console.log("# before render... await apply sentinels")
 //        await this.#applyVisibilitySentinels()
-        this.#trackElementVisibilities()
+//        console.log("# before render... await apply sentinels...done")
+//        this.#trackElementVisibilities()
 
+        console.log("#beforeRender... returning")
         return {
             height,
             width,
@@ -1213,18 +1238,22 @@ export class Paginator extends HTMLElement {
         }
     }
     async render() {
-        if (!this.#view) return
+        console.log("render()...")
+        if (!this.#view) {
+            console.log("render()...skip!")
+            return
+        }
 
         // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
-        this.#resizeObserver.observe(this.#container);
+//        this.#resizeObserver.observe(this.#container);
 
         try {
             await this.#view.render(await this.#beforeRender({
                 vertical: this.#vertical,
                 rtl: this.#rtl,
             }))
-            await this.#scrollToAnchor(this.#anchor)
+            //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
         } finally {
             this.#hasResizeObserverTriggered = false
         }
@@ -1274,7 +1303,7 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#view.cachedViewSize === null) {
+        if (true || this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     const newSize = this.#view.element.getBoundingClientRect()
@@ -1713,10 +1742,10 @@ export class Paginator extends HTMLElement {
                     const len = text.length;
                     // Do not split at start or end of text node
                     if (desiredOffset <= 0 || desiredOffset >= len) return desiredOffset;
-                    
+
                     let bestOffset = desiredOffset;
                     let bestScore = -Infinity;
-                    
+
                     // Scan outward from desiredOffset (prioritize close, prefer "good" break)
                     for (let dist = 0; dist <= maxDistance; dist++) {
                         for (const offset of [desiredOffset - dist, desiredOffset + dist]) {
@@ -1741,13 +1770,13 @@ export class Paginator extends HTMLElement {
                             if (offset === 0 || offset === len) score -= 5;
                             // Penalty for distance
                             score -= Math.abs(offset - desiredOffset) * 0.5;
-                            
+
                             if (score > bestScore) {
                                 bestScore = score;
                                 bestOffset = offset;
                             }
                             if (bestScore >= 3) break; // Early out for "good enough" score
-                }
+                        }
                     }
                     return bestOffset;
                 }
@@ -1804,8 +1833,12 @@ export class Paginator extends HTMLElement {
         });
     }
     async #getVisibleRangeFrom(doc, start, end, mapRect) {
-                            return getVisibleRange(doc, start, end, mapRect)
+        //                            return getVisibleRange(doc, start, end, mapRect)
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
+
+        if (this.#elementVisibilityObserverLoading) {
+            await this.#elementVisibilityObserverLoading
+        }
 
         if (this.#visibleSentinelIDs.size === 0) {
             const range = doc.createRange();
@@ -1997,6 +2030,9 @@ export class Paginator extends HTMLElement {
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
                 }
+
+                await this.#applyVisibilitySentinels()
+                this.#trackElementVisibilities()
 
                 this.dispatchEvent(new CustomEvent('load', {
                     detail
