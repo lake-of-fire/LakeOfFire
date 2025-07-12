@@ -307,10 +307,27 @@ const getCSSForBookContent = ({
         background: inherit !important;
         color: inherit !important;
     }
-
-    .manabi-sentinel {
-        display: none !important;
+reader-sentinel {
+  position: relative;
+  display: inline-block;
+  width: 4px !important;
+  height: 4px !important;
+  opacity: 1 !important;
+  pointer-events: none !important;
+  contain: strict;
+  background: red !important;
+}
+/*
+    reader-sentinel {
+         position: relative !important;
+         display: inline-block !important;
+         width: 1px !important;
+         height: 1px !important;
+         contain: strict !important;
+         pointer-events: none !important;
+         opacity: 0 !important;
     }
+*/
 `
 
 const $ = document.querySelector.bind(document)
@@ -842,6 +859,8 @@ class Reader {
         reason
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
+        console.log("update cfi:")
+        console.log(cfi)
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
@@ -1074,12 +1093,21 @@ window.loadEBook = ({
         }
 
 window.loadLastPosition = async ({
-    cfi
+    cfi,
+    fractionalCompletion,
 }) => {
     //console.log("load last pos")
     //console.log(cfi)
+    console.log("load cfi:")
+    console.log(cfi)
+    console.log(fractionalCompletion)
     if (cfi.length > 0) {
-        await globalThis.reader.view.goTo(cfi).catch(e => console.error(e))
+        await globalThis.reader.view.goTo(cfi).catch(e => {
+            console.error(e)
+            if (fractionalCompletion) {
+                globalThis.reader.view.goToFraction(fractionalCompletion)
+            }
+        })
     } else {
         await globalThis.reader.view.renderer.next()
     }

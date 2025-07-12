@@ -7,7 +7,7 @@ const debounce = (fn, delay) => {
     let timeout;
     let isLeadingInvoked = false;
 
-    return function(...args) {
+    return function (...args) {
         const context = this;
 
         if (!timeout) {
@@ -139,9 +139,9 @@ const getDirection = async (sourceDoc) => {
     cloneDoc.body.replaceWith(bodyClone);
     // Copy all attributes from the source <html> (e.g. xmlns, xml:lang, class, lang)
     for (const {
-            name,
-            value
-        }
+        name,
+        value
+    }
         of sourceDoc.documentElement.attributes) {
         cloneDoc.documentElement.setAttribute(name, value);
     }
@@ -640,6 +640,8 @@ export class Paginator extends HTMLElement {
     #lastResizerRect = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
+        console.log("RESIZE OBSERVER")
+        console.log(entries)
 
         const entry = entries[0];
         const rect = entry.contentRect;
@@ -714,6 +716,7 @@ export class Paginator extends HTMLElement {
     #cachedSizes = null
     #cachedViewSize = null
     #visibleElements = new WeakSet()
+    #visibleSentinelIDs = new Set()
     #nonVisibleElements = new WeakSet()
     #elementVisibilityObserver = null
     #elementMutationObserver = null
@@ -853,6 +856,7 @@ export class Paginator extends HTMLElement {
         this.#footer = this.#root.getElementById('footer')
 
         this.#resizeObserver.observe(this.#container)
+        
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
 
         // Continuously fire relocate during scroll
@@ -936,6 +940,7 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #onExpand() {
+        this.#cachedViewSize = null
         await this.#scrollToAnchor(this.#anchor)
     }
     async #awaitDirection() {
@@ -944,18 +949,25 @@ export class Paginator extends HTMLElement {
     #trackElementVisibilities() {
         this.#disconnectElementVisibilityObserver();
 
-        this.#visibleElements = new WeakSet();
-        this.#nonVisibleElements = new WeakSet();
+        this.#visibleSentinelIDs = new Set()
+        this.#visibleElements = new WeakSet()
+        this.#nonVisibleElements = new WeakSet()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
             console.log("element vis observer " + entries.length)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
+                    if (el.tagName === 'reader-sentinel') {
+                        this.#visibleSentinelIDs.add(el.id)
+                    }
                     this.#visibleElements.add(el);
                     el.classList.remove('manabi-off-screen');
                     this.#nonVisibleElements.delete(el);
                 } else {
+                    if (el.tagName === 'reader-sentinel') {
+                        this.#visibleSentinelIDs.delete(el.id)
+                    }
                     this.#nonVisibleElements.add(el);
                     el.classList.add('manabi-off-screen');
                     this.#visibleElements.delete(el);
@@ -967,7 +979,7 @@ export class Paginator extends HTMLElement {
             //rootMargin: '100%'
         });
 
-        const selector = '#reader-content > *, manabi-tracking-section, manabi-container, manabi-sentinel';
+        const selector = '#reader-content > *, manabi-tracking-section, manabi-container, reader-sentinel';
 
         this.#elementMutationObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
@@ -1183,10 +1195,14 @@ export class Paginator extends HTMLElement {
                         width: rect.width,
                         height: rect.height,
                     }
+//                    console.log("sizes() returning real: ")
+//                    console.log(this.#cachedSizes)
                     resolve(this.#cachedSizes)
                 })
             })
         }
+//        console.log("sizes() returning cached: ")
+//        console.log(this.#cachedSizes)
         return this.#cachedSizes
     }
     async size() {
@@ -1199,10 +1215,16 @@ export class Paginator extends HTMLElement {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
+                                        console.log("viewsize() returning real: ")
+                                        console.log(this.#cachedViewSize)
                     resolve(this.#cachedViewSize)
                 })
             })
         }
+        console.log("viewsize() returning cached: ")
+        console.log(this.#cachedViewSize)
+        console.log("vs real:")
+        console.log(this.#view.element.getBoundingClientRect()[await this.sideProp()])
         return this.#cachedViewSize
     }
     async start() {
@@ -1215,10 +1237,18 @@ export class Paginator extends HTMLElement {
     }
     async page() {
         await this.#awaitDirection();
+        console.log("page:")
+        console.log(await this.start())
+        console.log(await this.end())
+        console.log(Math.floor(((await this.start() + await this.end()) / 2) / (await this.size())))
         return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
     }
     async pages() {
         await this.#awaitDirection();
+            console.log("pages:")
+            console.log(await this.viewSize())
+            console.log(await this.size())
+            console.log((await this.viewSize()) / (await this.size()))
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1322,9 +1352,9 @@ export class Paginator extends HTMLElement {
             state.triggered = true;
 
             if (dx < 0) {
-                (this.bookDir === 'rtl') ? await this.prev(): await this.next();
+                (this.bookDir === 'rtl') ? await this.prev() : await this.next();
             } else {
-                (this.bookDir === 'rtl') ? await this.next(): await this.prev();
+                (this.bookDir === 'rtl') ? await this.next() : await this.prev();
             }
             this.#updateSwipeChevron(dx, minSwipe)
         }
@@ -1380,14 +1410,14 @@ export class Paginator extends HTMLElement {
                 right: pxSize - left
             }) :
             this.#vertical ?
-            ({
-                top,
-                bottom
-            }) => ({
-                left: top,
-                right: bottom
-            }) :
-            f => f
+                ({
+                    top,
+                    bottom
+                }) => ({
+                    left: top,
+                    right: bottom
+                }) :
+                f => f
     }
     #wheelCooldown = false;
     #lastWheelDeltaX = 0;
@@ -1587,45 +1617,53 @@ export class Paginator extends HTMLElement {
         })
     }
     /**
-     * Adds `.manabi-sentinel` class to either an existing short element or an inserted span
+     * Adds `reader-sentinel` to either an existing short element or an inserted span
      * every `interval` characters in the body.
      * - Short elements (<= interval characters) starting within the window are preferred.
      * - If none exist, a sentinel span is inserted at the target text offset.
      */
-      async #applyVisibilitySentinels() {
-            return new Promise(resolve => {
-                requestAnimationFrame(() => {
-                    const doc = this.#view?.document;
-                    if (!doc) return resolve();
-                    const body = doc.body;
-                    const interval = 20;
-                    let charCount = 0;
-                    let nextThreshold = interval;
-                    // Walk only text nodes, splitting in-place for sentinel insertion
-                    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
-                    let textNode;
-                    while ((textNode = walker.nextNode())) {
-                        let remainingText = textNode.nodeValue || "";
-                        let offsetInNode = 0;
-                        while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
-                            const splitOffset = nextThreshold - charCount - offsetInNode;
-                            const postSplit = textNode.splitText(splitOffset);
-                            const sentinel = doc.createElement("span");
-                            sentinel.classList.add("manabi-sentinel");
-                            postSplit.parentNode.insertBefore(sentinel, postSplit);
-                            // Advance counters past the inserted sentinel
-                            textNode = postSplit;
-                            offsetInNode = 0;
-                            charCount = nextThreshold;
-                            nextThreshold += interval;
-                            remainingText = textNode.nodeValue || "";
-                        }
-                        charCount += remainingText.length - offsetInNode;
+    async #applyVisibilitySentinels() {
+        return new Promise(resolve => {
+            requestAnimationFrame(() => {
+                const doc = this.#view?.document;
+                if (!doc) return resolve();
+                const body = doc.body;
+
+                if (body.querySelector('reader-sentinel')) {
+                    // Already applied
+                    return
+                }
+
+                const interval = 5;
+                var idx = 0;
+                let charCount = 0;
+                let nextThreshold = interval;
+                // Walk only text nodes, splitting in-place for sentinel insertion
+                const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
+                let textNode;
+                while ((textNode = walker.nextNode())) {
+                    let remainingText = textNode.nodeValue || "";
+                    let offsetInNode = 0;
+                    while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
+                        const splitOffset = nextThreshold - charCount - offsetInNode;
+                        const postSplit = textNode.splitText(splitOffset);
+                        const sentinel = doc.createElement("reader-sentinel")
+                        sentinel.id = `reader-sentinel-${idx}`
+                        idx++
+                        postSplit.parentNode.insertBefore(sentinel, postSplit);
+                        // Advance counters past the inserted sentinel
+                        textNode = postSplit;
+                        offsetInNode = 0;
+                        charCount = nextThreshold;
+                        nextThreshold += interval;
+                        remainingText = textNode.nodeValue || "";
                     }
-                    resolve();
-                });
+                    charCount += remainingText.length - offsetInNode;
+                }
+                resolve();
             });
-        }
+        });
+    }
     async #getVisibleRange() {
         await this.#awaitDirection();
         return new Promise((resolve) => {
@@ -1648,26 +1686,56 @@ export class Paginator extends HTMLElement {
         });
     }
     async #getVisibleRangeFrom(doc, start, end, mapRect) {
-        console.log("getVisibleRangeFrom...")
-        const sentinels = doc.getElementsByClassName('manabi-sentinel')
-        let first = null
-        let last = null
-        for (let i = 0; i < sentinels.length; i++) {
-            const el = sentinels[i]
-            if (this.#visibleElements.has(el)) {
-                if (!first) first = el
-                last = el
-            }
+        // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
+        
+        if (this.#visibleSentinelIDs.size === 0) {
+            const range = doc.createRange();
+            range.selectNodeContents(doc.body);
+            range.collapse(true);
+            return range
         }
-        const range = doc.createRange()
-        if (first && last) {
-            range.setStartBefore(first)
-            range.setEndAfter(last)
+            
+        const isValid = node =>
+            node &&
+            (node.nodeType === Node.TEXT_NODE ||
+                (node.nodeType === Node.ELEMENT_NODE &&
+                    node.tagName !== 'reader-sentinel'));
+
+        const visibleSentinels = doc.querySelectorAll(
+            Array.from(this.#visibleSentinelIDs)
+                .map(id => `#${CSS.escape(id)}`)
+                .join(',')
+        );
+        const firstSentinel = visibleSentinels[0];
+        const lastSentinel = visibleSentinels[visibleSentinels.length - 1];
+
+        const findNext = el => {
+            let node = el?.nextSibling;
+            while (node && !isValid(node)) node = node.nextSibling;
+            return node;
+        };
+
+        const findPrev = el => {
+            let node = el?.previousSibling;
+            while (node && !isValid(node)) node = node.previousSibling;
+            return node;
+        };
+
+        const startNode = firstSentinel ? findNext(firstSentinel) : null;
+        const endNode = lastSentinel ? findPrev(lastSentinel) : null;
+
+        const range = doc.createRange();
+        if (startNode && endNode) {
+            range.setStartBefore(startNode);
+            range.setEndAfter(endNode);
         } else {
-            range.selectNodeContents(doc.body)
-            range.collapse(true)
+            range.selectNodeContents(doc.body);
+            range.collapse(true);
         }
-        return range
+        console.log("Vis range from...")
+        console.log(this.#visibleElements)
+        console.log(range)
+        return range;
     }
     async #afterScroll(reason) {
         await this.#awaitDirection();
@@ -1860,7 +1928,7 @@ export class Paginator extends HTMLElement {
                         this.sections[i].linear !== 'no' &&
                         !this.#prefetchCache.has(i)
                     ) {
-                        const p = this.sections[i].load().catch(() => {});
+                        const p = this.sections[i].load().catch(() => { });
                         this.#prefetchCache.set(i, p);
                     }
                 });
@@ -1908,9 +1976,13 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     async atStart() {
-        return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
+            console.log("at start:")
+        console.log(this.#adjacentIndex(-1) == null && (await this.page()) <= 1)
+            return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
     }
     async atEnd() {
+            console.log("at end:")
+            console.log(this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2)
         return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
     }
     #adjacentIndex(dir) {
