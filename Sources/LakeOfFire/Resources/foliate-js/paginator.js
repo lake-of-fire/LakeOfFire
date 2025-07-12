@@ -283,6 +283,7 @@ class View {
     #lastResizerRect = null
     #cachedContentRangeRect = null
     #styleCache = new WeakMap()
+    cachedViewSize = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
 
@@ -314,6 +315,11 @@ class View {
             return
         }
 
+        this.cachedViewSize = {
+            width: newSize.width,
+            height: newSize.height,
+        }
+        // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
         this.#cachedContentRangeRect = null
 
@@ -726,7 +732,6 @@ export class Paginator extends HTMLElement {
                 width: newSize.width,
                 height: newSize.height,
             }
-            this.#cachedViewSize = null
         }
 
         if (!this.#hasResizeObserverTriggered) {
@@ -735,8 +740,11 @@ export class Paginator extends HTMLElement {
         }
 
         if (unchanged) {
+            console.log("RESIZED skip...")
             return
         }
+        console.log("RESIZED OBSERVED...")
+        
 
         requestAnimationFrame(() => {
             this.#debouncedRender();
@@ -773,7 +781,6 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #cachedSizes = null
-    #cachedViewSize = null
     #visibleElements = new WeakSet()
     #visibleSentinelIDs = new Set()
     #nonVisibleElements = new WeakSet()
@@ -998,7 +1005,7 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #onExpand() {
-        this.#cachedViewSize = null
+        this.#view.cachedViewSize = null
         await this.#scrollToAnchor(this.#anchor)
     }
     async #awaitDirection() {
@@ -1193,7 +1200,7 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
-        await this.#applyVisibilitySentinels()
+//        await this.#applyVisibilitySentinels()
         this.#trackElementVisibilities()
 
         return {
@@ -1244,10 +1251,13 @@ export class Paginator extends HTMLElement {
     async sizes() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedSizes === null) {
+        if (true || this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(() => {
                     const rect = this.#container.getBoundingClientRect()
+                    if ((this.#cachedSizes?.width && this.#cachedSizes.width != rect.width) || (this.#cachedSizes?.height && this.#cachedSizes.height != rect.height)) {
+                        console.log("Sizes(): old: " + this.#cachedSizes?.width + "x" + this.#cachedSizes?.height + "; New: " + rect.width + "x" + rect.height)
+                    }
                     this.#cachedSizes = {
                         width: rect.width,
                         height: rect.height,
@@ -1264,15 +1274,19 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedViewSize === null) {
+        if (this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
-                    this.#cachedViewSize = this.#view.element.getBoundingClientRect()[await this.sideProp()]
-                    resolve(this.#cachedViewSize)
+                    const newSize = this.#view.element.getBoundingClientRect()
+                    this.#view.cachedViewSize = {
+                        width: newSize.width,
+                        height: newSize.height,
+                    }
+                    resolve(this.#view.cachedViewSize[await this.sideProp()])
                 })
             })
         }
-        return this.#cachedViewSize
+        return this.#view.cachedViewSize[await this.sideProp()]
     }
     async start() {
         await this.#awaitDirection();
@@ -1627,6 +1641,7 @@ export class Paginator extends HTMLElement {
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
+                console.log("SCROLL to ANCHOR")
                 this.#anchor = anchor
                 const rects = uncollapse(anchor)?.getClientRects?.()
                 // if anchor is an element or a range
@@ -1937,7 +1952,6 @@ export class Paginator extends HTMLElement {
             const beforeRender = this.#beforeRender.bind(this)
 
             this.#cachedSizes = null
-            this.#cachedViewSize = null
 
             await view.load(src, afterLoad, beforeRender)
             // Reset chevrons when loading new section
