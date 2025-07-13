@@ -1,64 +1,3 @@
-
-const getVisibleRange = (doc, start, end, mapRect) => {
-    // first get all visible nodes
-    const acceptNode = node => {
-        const name = node.localName?.toLowerCase()
-        // ignore all scripts, styles, and their children
-        if (name === 'script' || name === 'style') return FILTER_REJECT
-            if (node.nodeType === 1) {
-                const { left, right } = mapRect(node.getBoundingClientRect())
-                // no need to check child nodes if it's completely out of view
-                if (right < start || left > end) return FILTER_REJECT
-                    // elements must be completely in view to be considered visible
-                    // because you can't specify offsets for elements
-                    if (left >= start && right <= end) return FILTER_ACCEPT
-                        // TODO: it should probably allow elements that do not contain text
-                        // because they can exceed the whole viewport in both directions
-                        // especially in scrolled mode
-                        } else {
-                            // ignore empty text nodes
-                            if (!node.nodeValue?.trim()) return FILTER_SKIP
-                                // create range to get rect
-                                const range = doc.createRange()
-                                range.selectNodeContents(node)
-                                const { left, right } = mapRect(range.getBoundingClientRect())
-                            // it's visible if any part of it is in view
-                            if (right >= start && left <= end) return FILTER_ACCEPT
-                                }
-        return FILTER_SKIP
-    }
-    const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
-    const nodes = []
-    for (let node = walker.nextNode(); node; node = walker.nextNode())
-        nodes.push(node)
-        
-        // we're only interested in the first and last visible nodes
-        const from = nodes[0] ?? doc.body
-        const to = nodes[nodes.length - 1] ?? from
-        
-        // find the offset at which visibility changes
-        const startOffset = from.nodeType === 1 ? 0
-        : bisectNode(doc, from, (a, b) => {
-            const p = mapRect(getBoundingClientRect(a))
-            const q = mapRect(getBoundingClientRect(b))
-            if (p.right < start && q.left > start) return 0
-                return q.left > start ? -1 : 1
-                })
-        const endOffset = to.nodeType === 1 ? 0
-        : bisectNode(doc, to, (a, b) => {
-            const p = mapRect(getBoundingClientRect(a))
-            const q = mapRect(getBoundingClientRect(b))
-            if (p.right < end && q.left > end) return 0
-                return q.left > end ? -1 : 1
-                })
-        
-        const range = doc.createRange()
-        range.setStart(from, startOffset)
-        range.setEnd(to, endOffset)
-        return range
-        }
-
-
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -1639,45 +1578,159 @@ export class Paginator extends HTMLElement {
                 requestAnimationFrame(async () => {
                     console.log("SCROLL to ANCHOR")
                     this.#anchor = anchor
-                    const rects = uncollapse(anchor)?.getClientRects?.()
-                    // if anchor is an element or a range
-                    if (rects) {
-                        // Sanity: pick first non-zero rect
+                    // Determine anchor target (could be Range or Element)
+                    const anchorNode = uncollapse(anchor);
+                    // Diagnostic: log rect from getClientRects on the raw anchor (Range or Element)
+                    const rects = anchorNode?.getClientRects?.();
+                    let diagRect = null;
+                    if (rects && rects.length > 0) {
+                        diagRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
+                        console.log("DIAGNOSTIC getClientRects rect:", diagRect);
+                        
+                        
                         const rect = Array.from(rects)
-                        .find(r => r.width > 0 && r.height > 0) || rects[0];
-                        // Compute fast offsets using rect math
-                        const scrollProperty = await this.scrollProp();
-                        const scrollValue = this.#container[scrollProperty];
-                        const containerRect = this.#container.getBoundingClientRect();
-                        // Debug context values
-                        const size = await this.size();
-                        const viewSize = await this.viewSize();
-                        const start = await this.start();
-                        const end = await this.end();
-                        const page = await this.page();
-                        const pages = await this.pages();
-                        console.log("debug scroll context:", {
-                            scrollProperty,
-                            scrollValue,
-                            containerRect,
-                            size,
-                            viewSize,
-                            start,
-                            end,
-                            page,
-                            pages,
-                            scrolled: this.scrolled,
-                            vertical: this.#vertical,
-                            rtl: this.#rtl,
-                        });
-                        const fastOffsetX = rect.left - containerRect.left + (scrollProperty === 'scrollLeft' ? scrollValue : 0);
-                        const fastOffsetY = rect.top - containerRect.top + (scrollProperty === 'scrollTop' ? scrollValue : 0);
-                        console.log("computed fast offsets via rect math:", { left: fastOffsetX, top: fastOffsetY });
-                        console.log("old rect:", rect, "fast offsets:", { left: fastOffsetX, top: fastOffsetY });
-                        const fastRect = { left: fastOffsetX, top: fastOffsetY, width: rect.width, height: rect.height };
-                        await this.#scrollToRect(fastRect, reason);
-                        resolve();
-                        return;
+                        .find(r => r.width > 0 && r.height > 0) || rects[0]
+                        if (!rect) return
+                            await this.#scrollToRect(rect, reason)
+                            resolve()
+                            return
+                        
+                    }
+                    // Debug context values
+                    const size = await this.size();
+                    const viewSize = await this.viewSize();
+                    const start = await this.start();
+                    const end = await this.end();
+                    const page = await this.page();
+                    const pages = await this.pages();
+                    const scrollProperty = await this.scrollProp();
+                    const scrollValue = this.#container[scrollProperty];
+                    const containerRect = this.#container.getBoundingClientRect();
+                    console.log("debug scroll context:", {
+                        scrollProperty,
+                        scrollValue,
+                        containerRect,
+                        size,
+                        viewSize,
+                        start,
+                        end,
+                        page,
+                        pages,
+                        scrolled: this.scrolled,
+                        vertical: this.#vertical,
+                        rtl: this.#rtl,
+                    });
+                    
+                    // Fast path: compute offset using offsetLeft/offsetTop, traversing offsetParent chain (and iframe chain if needed)
+                    // Normalize node: if it's a Range, use its startContainer
+                    let elNode = anchorNode;
+                    if (elNode && elNode.startContainer !== undefined) {
+                        elNode = elNode.startContainer;
+                    }
+                    let syntheticRect = null;
+                    if (elNode && (elNode.nodeType === Node.ELEMENT_NODE || elNode.nodeType === Node.TEXT_NODE)) {
+                        let el = elNode.nodeType === Node.TEXT_NODE ? elNode.parentElement : elNode;
+                        // === BEGIN DIAGNOSTIC LOGGING ===
+                        if (el) {
+                            console.log("el.offsetTop/Left:", el.offsetTop, el.offsetLeft);
+                            console.log("el.getBoundingClientRect():", el.getBoundingClientRect());
+                            // Parent container in iframe:
+                            const parentSec = el.parentElement;
+                            if (parentSec) console.log("parentSection.getBoundingClientRect():", parentSec.getBoundingClientRect());
+                            // Iframe element in host:
+                            const frameEl = el.ownerDocument.defaultView.frameElement;
+                            if (frameEl) console.log("iframe.getBoundingClientRect():", frameEl.getBoundingClientRect());
+                            // Document scroll (in case body/html is scrolled):
+                            console.log("doc scrollTop:", el.ownerDocument.documentElement.scrollTop,
+                                        el.ownerDocument.body.scrollTop,
+                                        "pageYOffset:", el.ownerDocument.defaultView.pageYOffset);
+                            // Computed styles that could shift things:
+                            const cs = getComputedStyle(el);
+                            console.log("el styles:", {
+                                marginTop: cs.marginTop, paddingTop: cs.paddingTop,
+                                borderTop: cs.borderTopWidth,
+                            });
+                        }
+                        // === END DIAGNOSTIC LOGGING ===
+                        if (el && el.nodeType === Node.ELEMENT_NODE) {
+                            let left = el.offsetLeft, top = el.offsetTop;
+                            let width = el.offsetWidth, height = el.offsetHeight;
+                            let debugSteps = [];
+                            let current = el;
+                            let doc = el.ownerDocument;
+                            // Traverse offsetParent chain
+                            while (current && current !== this.#container) {
+                                let parent = current.offsetParent;
+                                debugSteps.push({
+                                    el: current,
+                                    offsetLeft: current.offsetLeft,
+                                    offsetTop: current.offsetTop,
+                                    offsetParent: parent,
+                                    width: current.offsetWidth,
+                                    height: current.offsetHeight,
+                                    nodeName: current.nodeName
+                                });
+                                if (!parent) {
+                                    // If inside an iframe, continue with frameElement
+                                    if (doc && doc.defaultView && doc.defaultView.frameElement) {
+                                        current = doc.defaultView.frameElement;
+                                        doc = current.ownerDocument;
+                                        // Add offset from iframe element
+                                        left += current.offsetLeft;
+                                        top += current.offsetTop;
+                                        // width/height do not accumulate (just for rect)
+                                        continue;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                current = parent;
+                                if (current !== this.#container && current) {
+                                    left += current.offsetLeft;
+                                    top += current.offsetTop;
+                                }
+                            }
+                            // Use layout size and column gap to infer correct scroll offset from offsetLeft + offsetTop
+                            const columnSize = await this.size();
+                            const containerStyle = getComputedStyle(this.#container);
+                            const columnGap = parseFloat(containerStyle.columnGap) || 0;
+                            const combined = columnSize + columnGap;
+                            const pageIndex = Math.floor(left / combined);
+                            const inlineOffset = el.offsetTop;
+                            const inferredTop = pageIndex * columnSize + pageIndex * columnGap + inlineOffset;
+                            syntheticRect = {
+                                left,
+                                right: left + width,
+                                // Overwrite top/bottom with inferred values
+                                top: inferredTop,
+                                bottom: inferredTop + height,
+                                width,
+                                height
+                            };
+                            console.log("FASTPATH offset traversal debug:", debugSteps);
+                            console.log("FASTPATH synthetic rect:", syntheticRect);
+                            if (diagRect) {
+                                console.log("Compare synthetic vs getClientRects:", {
+                                    syntheticRect,
+                                    diagRect
+                                });
+                            }
+                            // Use rectMapper and log mapped/offset
+                            const rectMapper = await this.#getRectMapper();
+                            const mapped = rectMapper(syntheticRect);
+                            console.log("mapped via rectMapper (fastpath):", mapped);
+                            const offset = mapped.left - this.#topMargin;
+                            console.log("computed fastOffset (fastpath):", offset);
+                            // Scroll directly using scrollTo (never using getClientRects for offset)
+                            // === BEGIN FINAL CONTAINER DIAGNOSTIC LOGGING ===
+                            console.log("containerRect (final):", this.#container.getBoundingClientRect());
+                            console.log("topMargin (final):", this.#topMargin,
+                                        "scrollValue (final):", this.#container[await this.scrollProp()]);
+                            // === END FINAL CONTAINER DIAGNOSTIC LOGGING ===
+                            await this.#scrollTo(offset, reason);
+                            resolve();
+                            return;
+                        }
                     }
                     // if anchor is a fraction
                     if (this.scrolled) {
@@ -1685,12 +1738,12 @@ export class Paginator extends HTMLElement {
                         resolve()
                         return
                     }
-                    const pages = await this.pages()
-                    if (!pages) {
+                    const _pages = await this.pages()
+                    if (!_pages) {
                         resolve()
                         return
                     }
-                    const textPages = pages - 2
+                    const textPages = _pages - 2
                     const newPage = Math.round(anchor * (textPages - 1))
                     await this.#scrollToPage(newPage + 1, reason)
                     resolve()
