@@ -374,6 +374,9 @@ class Reader {
     openSideBar() {
         $('#dimming-overlay').classList.add('show')
         $('#side-bar').classList.add('show')
+        if (this.#tocView?.setCurrentHref && this.view?.renderer?.tocItem?.href) {
+            this.#tocView.setCurrentHref(this.view.renderer.tocItem.href)
+        }
     }
     closeSideBar() {
         $('#dimming-overlay').classList.remove('show')
@@ -894,15 +897,15 @@ class Reader {
         slider.value = fraction
         slider.style.setProperty('--value', slider.value); // keep slider progress updated
         slider.title = `${percent} · ${loc}`
-        if (tocItem?.href) this.#tocView?.setCurrentHref?.(tocItem.href)
-            
-            if (this.hasLoadedLastPosition) {
-                this.#postUpdateReadingProgressMessage({
-                    fraction,
-                    cfi,
-                    reason
-                })
-            }
+        // (removed: setting tocView currentHref here)
+        
+        if (this.hasLoadedLastPosition) {
+            this.#postUpdateReadingProgressMessage({
+                fraction,
+                cfi,
+                reason
+            })
+        }
         
         await this.updateNavButtons();
         
@@ -1013,12 +1016,12 @@ class CacheWarmer {
     
     async #onLoad({
         detail: {
-            doc
+            location
         }
     }) {
         window.webkit.messageHandlers.ebookCacheWarmerLoadedSection.postMessage({
             topWindowURL: window.top.location.href,
-            frameURL: event.detail.doc.location.href,
+            frameURL: location,
         })
         
         if (!(await this.view.renderer.atEnd())) {

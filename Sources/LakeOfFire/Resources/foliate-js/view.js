@@ -189,15 +189,16 @@ export class View extends HTMLElement {
             this.history.replaceState(cfi)
             this.#emit('relocate', this.lastLocation)
             }
-    #onLoad({ doc, index }) {
-        // set language and dir if not already set
-        doc.documentElement.lang ||= this.language.canonical ?? ''
-        if (!this.language.isCJK)
-            doc.documentElement.dir ||= this.language.direction ?? ''
-            
-            this.#handleLinks(doc, index)
-            
-            this.#emit('load', { doc, index })
+    #onLoad({ doc, location, index }) {
+        if (!this.#isCacheWarmer) {
+            // set language and dir if not already set
+            doc.documentElement.lang ||= this.language.canonical ?? ''
+            if (!this.language.isCJK)
+                doc.documentElement.dir ||= this.language.direction ?? ''
+                
+                this.#handleLinks(doc, index)
+                }
+            this.#emit('load', { doc, location, index })
             }
     #handleLinks(doc, index) {
         const { book } = this

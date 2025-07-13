@@ -169,6 +169,7 @@
                     z-index: 3;
                     bottom: 0;
                     -webkit-backdrop-filter: blur(30px);
+                    contain: strict;
                 }
                 #progress-button {
                     all: unset; /* Remove default styling */
@@ -215,6 +216,7 @@
                     color: CanvasText;
                     box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
                     transition: visibility 0s linear 300ms, transform 300ms ease;
+                    contain: strict;
                 }
                 #side-bar.show {
                     visibility: visible;
@@ -244,6 +246,7 @@
                     height: 100dvh;
                     opacity: 0;
                     transition: visibility 0s linear 300ms, opacity 300ms ease;
+                    contain: strict;
                 }
                 #loading-indicator {
                     background: rgba(255, 255, 255, 1);

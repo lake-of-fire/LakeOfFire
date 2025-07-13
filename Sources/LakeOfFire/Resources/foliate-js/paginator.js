@@ -398,8 +398,7 @@ class View {
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
         return new Promise(async (resolve) => {
             if (this.#isCacheWarmer) {
-                const doc = this.document
-                await afterLoad?.(doc)
+                console.log("Don't create View for cache warmers")
                 resolve()
             } else {
                 this.#iframe.addEventListener('load', async () => {
@@ -935,7 +934,7 @@ export class Paginator extends HTMLElement {
         `
 
         this.#top = this.#root.getElementById('top')
-        this.#background = this.#root.getElementById('background')
+//        this.#background = this.#root.getElementById('background')
         this.#container = this.#root.getElementById('container')
         this.#header = this.#root.getElementById('header')
         this.#footer = this.#root.getElementById('footer')
@@ -981,6 +980,14 @@ export class Paginator extends HTMLElement {
                 }
             }
         }, 450))
+    }
+
+    // NOTE: In this foliate-js fork, currently paginator can only open a book once
+    open(book, isCacheWarmer) {
+        this.#isCacheWarmer = isCacheWarmer
+        this.bookDir = book.dir
+        this.sections = book.sections
+        
         if (!this.#isCacheWarmer) {
             const opts = {
                 passive: false
@@ -999,12 +1006,6 @@ export class Paginator extends HTMLElement {
             })
             this.addEventListener('wheel', this.#onWheel.bind(this), opts);
         }
-    }
-
-    open(book, isCacheWarmer) {
-        this.#isCacheWarmer = isCacheWarmer
-        this.bookDir = book.dir
-        this.sections = book.sections
     }
     setSideNavWidth(widthPx) {
         this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
@@ -1160,7 +1161,10 @@ export class Paginator extends HTMLElement {
         this.#bottomMargin = bottomMargin
 
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
-        
+        if (this.#vertical) {
+            this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
+        }
+
         const g = parseFloat(style.getPropertyValue('--_gap')) / 100
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -1953,36 +1957,46 @@ export class Paginator extends HTMLElement {
         } = await promise
         this.#index = index
         if (src) {
-            this.#skipTouchEndOpacity = true
-            const view = this.#createView()
-
             const afterLoad = async (doc) => {
-                if (doc.head) {
-                    const $styleBefore = doc.createElement('style')
-                    doc.head.prepend($styleBefore)
-                    const $style = doc.createElement('style')
-                    doc.head.append($style)
-                    this.#styleMap.set(doc, [$styleBefore, $style])
+                if (this.#isCacheWarmer) {
+                    await onLoad?.({
+                        location: src,
+                    })
+                } else {
+                    if (doc.head) {
+                        const $styleBefore = doc.createElement('style')
+                        doc.head.prepend($styleBefore)
+                        const $style = doc.createElement('style')
+                        doc.head.append($style)
+                        this.#styleMap.set(doc, [$styleBefore, $style])
+                    }
+                    await onLoad?.({
+                        doc,
+                        location: doc.location.href,
+                        index,
+                    })
                 }
-                await onLoad?.({
-                    doc,
-                    index
-                })
             }
-            const beforeRender = this.#beforeRender.bind(this)
 
-            this.#cachedSizes = null
-
-            await view.load(src, afterLoad, beforeRender)
-            // Reset chevrons when loading new section
-            document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
-            //            this.dispatchEvent(new CustomEvent('create-overlayer', {
-            //                detail: {
-            //                    doc: view.document, index,
-            //                    attach: overlayer => view.overlayer = overlayer,
-            //                },
-            //            }))
-            this.#view = view
+            if (this.#isCacheWarmer) {
+                await fetch(src).then(r => r.text())
+                await afterLoad()
+            } else {
+                this.#skipTouchEndOpacity = true
+                const view = this.#createView()
+                const beforeRender = this.#beforeRender.bind(this)
+                this.#cachedSizes = null
+                await view.load(src, afterLoad, beforeRender)
+                this.#view = view
+                // Reset chevrons when loading new section
+                document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
+                //            this.dispatchEvent(new CustomEvent('create-overlayer', {
+                //                detail: {
+                //                    doc: view.document, index,
+                //                    attach: overlayer => view.overlayer = overlayer,
+                //                },
+                //            }))
+            }
         }
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
@@ -2015,12 +2029,13 @@ export class Paginator extends HTMLElement {
             this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
             const onLoad = async (detail) => {
                 this.sections[oldIndex]?.unload?.()
+                
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
+                    
+                    await this.#applyVisibilitySentinels()
+                    this.#trackElementVisibilities()
                 }
-
-                await this.#applyVisibilitySentinels()
-                this.#trackElementVisibilities()
 
                 this.dispatchEvent(new CustomEvent('load', {
                     detail
