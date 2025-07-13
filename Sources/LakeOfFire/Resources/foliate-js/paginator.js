@@ -360,7 +360,7 @@ class View {
         this.#isCacheWarmer = isCacheWarmer
         this.#debouncedExpand = debounce(this.expand.bind(this), 999)
         this.onExpand = onExpand
-//        this.#iframe.setAttribute('part', 'filter')
+        //        this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
         Object.assign(this.#element.style, {
             boxSizing: 'content-box',
@@ -407,7 +407,7 @@ class View {
                     await afterLoad?.(doc)
 
                     // it needs to be visible for Firefox to get computed style
-//                    this.#iframe.style.display = 'block'
+                    //                    this.#iframe.style.display = 'block'
 
                     const direction = await getDirection(doc);
                     this.#vertical = direction.vertical;
@@ -415,8 +415,8 @@ class View {
                     this.#rtl = direction.rtl;
                     this.#directionReadyResolve?.();
 
-//                    const background = getBackground(doc)
-//                    this.#iframe.style.display = 'none'
+                    //                    const background = getBackground(doc)
+                    //                    this.#iframe.style.display = 'none'
 
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
@@ -424,9 +424,9 @@ class View {
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
-//                        background
+                        //                        background
                     })
-//                    this.#iframe.style.display = 'block'
+                    //                    this.#iframe.style.display = 'block'
 
                     await this.render(layout)
 
@@ -496,7 +496,7 @@ class View {
             'min-width': 'none',
             // fix glyph clipping in WebKit
             '-webkit-line-box-contain': 'block glyphs replaced',
-            
+
             // columnize parity
             '--paginator-margin': '30px',
         })
@@ -505,7 +505,6 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-//        await this.setImageSizes()
         //        this.#debouncedExpand()
         await this.expand()
     }
@@ -552,77 +551,25 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
-//        await this.setImageSizes()
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         await this.expand()
         //            //            this.#debouncedExpand()
         //        }
     }
-    /*
-    async setImageSizes() {
-        await this.#awaitDirection();
-        const {
-            width,
-            height,
-            topMargin,
-            bottomMargin
-        } = this.#layout
-        const vertical = this.#vertical
-        const doc = this.document
-        const availableHeight = height - topMargin - bottomMargin;
-        // Add style cache for computed styles
-        for (const el of doc.body.querySelectorAll('img, svg, video')) {
-            // Temporarily remove our inline max-height to get the CSS value
-            const previousInline = el.style.getPropertyValue('max-height')
-            el.style.removeProperty('max-height')
-            // Use cached computed style if available, otherwise compute and cache it
-            const computed = this.#styleCache.get(el) || doc.defaultView.getComputedStyle(el)
-            if (!this.#styleCache.has(el)) this.#styleCache.set(el, computed)
-            const existingMaxHeight = computed.getPropertyValue('max-height')
-            // Restore previous inline max-height if needed (not strictly necessary, setStylesImportant below will override)
-            // (We do not restore it because setStylesImportant will always set it.)
-            const maxHeightValue = (existingMaxHeight && existingMaxHeight !== 'none') ?
-                `min(${existingMaxHeight}, ${availableHeight}px)` :
-                `${availableHeight}px`;
-            const maxWidth = computed.getPropertyValue('max-width');
-            setStylesImportant(el, {
-                'max-height': maxHeightValue,
-                'height': 'auto',
-                'max-width': vertical ?
-                    `${width - topMargin - bottomMargin}px` : (maxWidth !== 'none' && maxWidth !== '0px' ? maxWidth : '100%'),
-                'object-fit': 'contain',
-                'page-break-inside': 'avoid',
-                'break-inside': 'avoid',
-                'box-sizing': 'border-box',
-            });
-        }
-    }
-     */
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                console.log("expand()...")
-                //        const { documentElement } = this.document
                 const documentElement = this.document?.documentElement
                 if (this.#column) {
                     const side = this.#vertical ? 'height' : 'width'
                     const otherSide = this.#vertical ? 'width' : 'height'
-                    const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
-                    let contentSize
-                    if (documentElement) {
-                        const rootRect = documentElement.getBoundingClientRect()
-                        // offset caused by column break at the start of the page
-                        // which seem to be supported only by WebKit and only for horizontal writing
-                        const contentStart = this.#vertical ? 0 :
-                            this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                        contentSize = contentStart + contentRect[side]
-                    } else {
-                        contentSize = contentRect[side]
-                    }
+                    // Cleaned up: use new logic for contentSize and pageCount
+                    const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
+                    const contentSize = documentElement?.[scrollProp] ?? (this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect())[side]
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * await this.#size
                     this.#element.style.padding = '0'
@@ -761,7 +708,7 @@ export class Paginator extends HTMLElement {
     })
     #top
     #transitioning = false;
-//    #background
+    //    #background
     #container
     #header
     #footer
@@ -790,7 +737,7 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
-    
+
     #cachedSizes = null
     #cachedStart = null
 
@@ -936,7 +883,7 @@ export class Paginator extends HTMLElement {
         `
 
         this.#top = this.#root.getElementById('top')
-//        this.#background = this.#root.getElementById('background')
+        //        this.#background = this.#root.getElementById('background')
         this.#container = this.#root.getElementById('container')
         this.#header = this.#root.getElementById('header')
         this.#footer = this.#root.getElementById('footer')
@@ -989,7 +936,7 @@ export class Paginator extends HTMLElement {
         this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
         this.sections = book.sections
-        
+
         if (!this.#isCacheWarmer) {
             const opts = {
                 passive: false
@@ -1129,7 +1076,7 @@ export class Paginator extends HTMLElement {
         vertical,
         verticalRTL,
         rtl,
-//        background
+        //        background
     }) {
         console.log("# before render...")
         this.#vertical = vertical
@@ -1140,7 +1087,7 @@ export class Paginator extends HTMLElement {
 
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
-//        this.#background.style.background = background
+        //        this.#background.style.background = background
 
         const {
             width,
@@ -1355,7 +1302,7 @@ export class Paginator extends HTMLElement {
                 const min = rtl ? offset - b : offset - a
                 const max = rtl ? offset + a : offset + b
                 element[scrollProp] = Math.max(min, Math.min(max,
-                                                             element[scrollProp] + delta))
+                    element[scrollProp] + delta))
                 resolve()
             })
         })
@@ -1582,32 +1529,32 @@ export class Paginator extends HTMLElement {
     }
     async #scrollTo(offset, reason, smooth) {
         await this.#awaitDirection();
-            const scroll = async () => {
-                const element = this.#container
-                const scrollProp = await this.scrollProp()
-                const size = await this.size()
-                const atStart = await this.atStart()
-                const atEnd = await this.atEnd()
-                if (element[scrollProp] === offset) {
-                    this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                    await this.#afterScroll(reason)
-                    return
-                }
-                // FIXME: vertical-rl only, not -lr
-                if (this.scrolled && this.#vertical) offset = -offset
-                    if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
-                                                                                                       element[scrollProp], offset, 300, easeOutQuad,
-                                                                                                       x => element[scrollProp] = x,
-                                                                                                       ).then(async () => {
-                                                                                                           this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                                                                                                           await this.#afterScroll(reason)
-                                                                                                       })
-                        else {
-                            element[scrollProp] = offset
-                            this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                            await this.#afterScroll(reason)
-                        }
+        const scroll = async () => {
+            const element = this.#container
+            const scrollProp = await this.scrollProp()
+            const size = await this.size()
+            const atStart = await this.atStart()
+            const atEnd = await this.atEnd()
+            if (element[scrollProp] === offset) {
+                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                await this.#afterScroll(reason)
+                return
             }
+            // FIXME: vertical-rl only, not -lr
+            if (this.scrolled && this.#vertical) offset = -offset
+            if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
+                element[scrollProp], offset, 300, easeOutQuad,
+                x => element[scrollProp] = x,
+            ).then(async () => {
+                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                await this.#afterScroll(reason)
+            })
+            else {
+                element[scrollProp] = offset
+                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                await this.#afterScroll(reason)
+            }
+        }
 
         //            // Prevent new transitions while one is running
         //            if (this.#transitioning) {
@@ -1621,22 +1568,22 @@ export class Paginator extends HTMLElement {
         //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
         //                typeof document.startViewTransition !== 'function'
         //                ) {
-            return new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
-                        await scroll()
-                    } else {
-                        this.#container.classList.add('view-fade')
-                        // Allow the browser to paint the fade
-                        /*await new Promise(r => setTimeout(r, 65));
-                         this.#container.classList.add('view-faded')*/
-                        await scroll()
-                        this.#container.classList.remove('view-faded')
-                        this.#container.classList.remove('view-fade')
-                    }
-                    resolve()
-                })
+        return new Promise(resolve => {
+            requestAnimationFrame(async () => {
+                if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
+                    await scroll()
+                } else {
+                    this.#container.classList.add('view-fade')
+                    // Allow the browser to paint the fade
+                    /*await new Promise(r => setTimeout(r, 65));
+                     this.#container.classList.add('view-faded')*/
+                    await scroll()
+                    this.#container.classList.remove('view-faded')
+                    this.#container.classList.remove('view-fade')
+                }
+                resolve()
             })
+        })
         //                } else {
         //                    let goingForward = offset > this.start;
         //                    let slideFrom, slideTo;
@@ -1836,7 +1783,7 @@ export class Paginator extends HTMLElement {
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
 
         const doc = this.#view.document
-            
+
         if (this.#elementVisibilityObserverLoading) {
             await this.#elementVisibilityObserverLoading
         }
@@ -1996,11 +1943,11 @@ export class Paginator extends HTMLElement {
                 this.#skipTouchEndOpacity = true
                 const view = this.#createView()
                 const beforeRender = this.#beforeRender.bind(this)
-                
+
                 this.#cachedSizes = null
                 this.#cachedStart = null
                 this.#scrolledToAnchorOnLoad = false
-                
+
                 await view.load(src, afterLoad, beforeRender)
                 this.#view = view
                 // Reset chevrons when loading new section
@@ -2045,10 +1992,10 @@ export class Paginator extends HTMLElement {
             this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
             const onLoad = async (detail) => {
                 this.sections[oldIndex]?.unload?.()
-                
+
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
-                    
+
                     await this.#applyVisibilitySentinels()
                     this.#trackElementVisibilities()
                 }
@@ -2215,9 +2162,9 @@ export class Paginator extends HTMLElement {
             $style.textContent = style
         } else $style.textContent = styles
 
-//        // NOTE: needs `requestAnimationFrame` in Chromium
-//        requestAnimationFrame(() =>
-//            this.#background.style.background = getBackground(this.#view.document))
+        //        // NOTE: needs `requestAnimationFrame` in Chromium
+        //        requestAnimationFrame(() =>
+        //            this.#background.style.background = getBackground(this.#view.document))
 
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
