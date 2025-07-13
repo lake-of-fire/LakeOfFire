@@ -5,58 +5,58 @@ const getVisibleRange = (doc, start, end, mapRect) => {
         const name = node.localName?.toLowerCase()
         // ignore all scripts, styles, and their children
         if (name === 'script' || name === 'style') return FILTER_REJECT
-        if (node.nodeType === 1) {
-            const { left, right } = mapRect(node.getBoundingClientRect())
-            // no need to check child nodes if it's completely out of view
-            if (right < start || left > end) return FILTER_REJECT
-            // elements must be completely in view to be considered visible
-            // because you can't specify offsets for elements
-            if (left >= start && right <= end) return FILTER_ACCEPT
-            // TODO: it should probably allow elements that do not contain text
-            // because they can exceed the whole viewport in both directions
-            // especially in scrolled mode
-        } else {
-            // ignore empty text nodes
-            if (!node.nodeValue?.trim()) return FILTER_SKIP
-            // create range to get rect
-            const range = doc.createRange()
-            range.selectNodeContents(node)
-            const { left, right } = mapRect(range.getBoundingClientRect())
-            // it's visible if any part of it is in view
-            if (right >= start && left <= end) return FILTER_ACCEPT
-        }
+            if (node.nodeType === 1) {
+                const { left, right } = mapRect(node.getBoundingClientRect())
+                // no need to check child nodes if it's completely out of view
+                if (right < start || left > end) return FILTER_REJECT
+                    // elements must be completely in view to be considered visible
+                    // because you can't specify offsets for elements
+                    if (left >= start && right <= end) return FILTER_ACCEPT
+                        // TODO: it should probably allow elements that do not contain text
+                        // because they can exceed the whole viewport in both directions
+                        // especially in scrolled mode
+                        } else {
+                            // ignore empty text nodes
+                            if (!node.nodeValue?.trim()) return FILTER_SKIP
+                                // create range to get rect
+                                const range = doc.createRange()
+                                range.selectNodeContents(node)
+                                const { left, right } = mapRect(range.getBoundingClientRect())
+                            // it's visible if any part of it is in view
+                            if (right >= start && left <= end) return FILTER_ACCEPT
+                                }
         return FILTER_SKIP
     }
     const walker = doc.createTreeWalker(doc.body, filter, { acceptNode })
     const nodes = []
     for (let node = walker.nextNode(); node; node = walker.nextNode())
         nodes.push(node)
-
-    // we're only interested in the first and last visible nodes
-    const from = nodes[0] ?? doc.body
-    const to = nodes[nodes.length - 1] ?? from
-
-    // find the offset at which visibility changes
-    const startOffset = from.nodeType === 1 ? 0
+        
+        // we're only interested in the first and last visible nodes
+        const from = nodes[0] ?? doc.body
+        const to = nodes[nodes.length - 1] ?? from
+        
+        // find the offset at which visibility changes
+        const startOffset = from.nodeType === 1 ? 0
         : bisectNode(doc, from, (a, b) => {
             const p = mapRect(getBoundingClientRect(a))
             const q = mapRect(getBoundingClientRect(b))
             if (p.right < start && q.left > start) return 0
-            return q.left > start ? -1 : 1
-        })
-    const endOffset = to.nodeType === 1 ? 0
+                return q.left > start ? -1 : 1
+                })
+        const endOffset = to.nodeType === 1 ? 0
         : bisectNode(doc, to, (a, b) => {
             const p = mapRect(getBoundingClientRect(a))
             const q = mapRect(getBoundingClientRect(b))
             if (p.right < end && q.left > end) return 0
-            return q.left > end ? -1 : 1
-        })
-
-    const range = doc.createRange()
-    range.setStart(from, startOffset)
-    range.setEnd(to, endOffset)
-    return range
-}
+                return q.left > end ? -1 : 1
+                })
+        
+        const range = doc.createRange()
+        range.setStart(from, startOffset)
+        range.setEnd(to, endOffset)
+        return range
+        }
 
 
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
@@ -67,14 +67,14 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 const debounce = (fn, delay) => {
     let timeout;
     let isLeadingInvoked = false;
-
+    
     return function (...args) {
         const context = this;
-
+        
         if (!timeout) {
             fn.apply(context, args);
             isLeadingInvoked = true;
-
+            
             timeout = setTimeout(() => {
                 timeout = null;
                 if (!isLeadingInvoked) {
@@ -96,8 +96,8 @@ const animate = (a, b, duration, ease, render) => new Promise(resolve => {
         const fraction = Math.min(1, (now - start) / duration)
         render(lerp(a, b, ease(fraction)))
         if (fraction < 1) requestAnimationFrame(step)
-        else resolve()
-    }
+            else resolve()
+                }
     requestAnimationFrame(step)
 })
 
@@ -105,20 +105,20 @@ const animate = (a, b, duration, ease, render) => new Promise(resolve => {
 // try make get a non-collapsed range or element
 const uncollapse = range => {
     if (!range?.collapsed) return range
-    const {
-        endOffset,
-        endContainer
-    } = range
+        const {
+            endOffset,
+            endContainer
+        } = range
     if (endContainer.nodeType === 1) {
         const node = endContainer.childNodes[endOffset]
         if (node?.nodeType === 1) return node
-        return endContainer
-    }
+            return endContainer
+            }
     if (endOffset + 1 < endContainer.length) range.setEnd(endContainer, endOffset + 1)
-    else if (endOffset > 1) range.setStart(endContainer, endOffset - 1)
-    else return endContainer.parentNode
-    return range
-}
+        else if (endOffset > 1) range.setStart(endContainer, endOffset - 1)
+            else return endContainer.parentNode
+                return range
+                }
 
 const makeRange = (doc, node, start, end = start) => {
     const range = doc.createRange()
@@ -137,7 +137,7 @@ const bisectNode = (doc, node, cb, start = 0, end = node.nodeValue.length) => {
     const mid = Math.floor(start + (end - start) / 2)
     const result = cb(makeRange(doc, node, start, mid), makeRange(doc, node, mid, end))
     return result < 0 ? bisectNode(doc, node, cb, start, mid) :
-        result > 0 ? bisectNode(doc, node, cb, mid, end) : mid
+    result > 0 ? bisectNode(doc, node, cb, mid, end) : mid
 }
 
 const {
@@ -157,9 +157,9 @@ const filter = SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION
 // which makes the visible range include an extra space at column boundaries
 const getBoundingClientRect = target => {
     let top = Infinity,
-        right = -Infinity,
-        left = Infinity,
-        bottom = -Infinity
+    right = -Infinity,
+    left = Infinity,
+    bottom = -Infinity
     for (const rect of target.getClientRects()) {
         left = Math.min(left, rect.left)
         top = Math.min(top, rect.top)
@@ -173,7 +173,7 @@ const getBoundingClientRect = target => {
 const getDirection = async (sourceDoc) => {
     // 1. Clone a minimal document
     const cloneDoc = document.implementation.createHTMLDocument();
-
+    
     // 2. Deep-clone the <head>, stripping unwanted styles/scripts
     const clonedHead = sourceDoc.head.cloneNode(true);
     ['manabi-font-data', 'manabi-custom-fonts'].forEach(id => {
@@ -194,7 +194,7 @@ const getDirection = async (sourceDoc) => {
     }
     clonedHead.querySelectorAll('script').forEach(el => el.remove());
     cloneDoc.head.replaceWith(clonedHead);
-
+    
     // 3. Shallow-clone the <body> (to preserve dir, but empty)
     const bodyClone = sourceDoc.body.cloneNode(false);
     cloneDoc.body.replaceWith(bodyClone);
@@ -203,22 +203,22 @@ const getDirection = async (sourceDoc) => {
         name,
         value
     }
-        of sourceDoc.documentElement.attributes) {
+         of sourceDoc.documentElement.attributes) {
         cloneDoc.documentElement.setAttribute(name, value);
     }
     // Override or add the 'dir' attribute explicitly
     cloneDoc.documentElement.setAttribute(
-        'dir',
-        sourceDoc.documentElement.getAttribute('dir') || ''
-    );
-
+                                          'dir',
+                                          sourceDoc.documentElement.getAttribute('dir') || ''
+                                          );
+    
     // 4. Serialize the cloneDoc to HTML and create a Blob URL
     const html = '<!doctype html>' + cloneDoc.documentElement.outerHTML;
     const blob = new Blob([html], {
         type: 'text/html'
     });
     const blobUrl = URL.createObjectURL(blob);
-
+    
     // 5. Create a hidden iframe, append, and wait for load
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;contain:strict;';
@@ -227,7 +227,7 @@ const getDirection = async (sourceDoc) => {
         iframe.onload = resolve;
         iframe.src = blobUrl;
     });
-
+    
     // 6. Compute writing-mode and direction
     const doc = iframe.contentDocument;
     const cs = iframe.contentWindow.getComputedStyle(doc.body);
@@ -236,14 +236,14 @@ const getDirection = async (sourceDoc) => {
     const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
     const verticalRTL = writingMode === 'vertical-rl';
     const rtl =
-        doc.body.dir === 'rtl' ||
-        direction === 'rtl' ||
-        doc.documentElement.dir === 'rtl';
-
+    doc.body.dir === 'rtl' ||
+    direction === 'rtl' ||
+    doc.documentElement.dir === 'rtl';
+    
     // 7. Cleanup
     URL.revokeObjectURL(blobUrl);
     iframe.remove();
-
+    
     return {
         vertical,
         verticalRTL,
@@ -274,7 +274,7 @@ const setStylesImportant = (el, styles) => {
         style
     } = el
     for (const [k, v] of Object.entries(styles)) style.setProperty(k, v, 'important')
-}
+        }
 
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -286,35 +286,35 @@ class View {
     cachedViewSize = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
-
+        
         const entry = entries[0];
         const rect = entry.contentRect;
-
+        
         const newSize = {
             width: Math.round(rect.width),
             height: Math.round(rect.height),
             top: Math.round(rect.top),
             left: Math.round(rect.left),
         };
-
+        
         if (!this.#hasResizerObserverTriggered) {
             this.#hasResizerObserverTriggered = true;
             this.#lastResizerRect = newSize;
             return;
         }
-
+        
         const old = this.#lastResizerRect;
         const unchanged =
-            old &&
-            newSize.width === old.width &&
-            newSize.height === old.height &&
-            newSize.top === old.top &&
-            newSize.left === old.left;
-
+        old &&
+        newSize.width === old.width &&
+        newSize.height === old.height &&
+        newSize.top === old.top &&
+        newSize.left === old.left;
+        
         if (unchanged) {
             return
         }
-
+        
         this.cachedViewSize = {
             width: newSize.width,
             height: newSize.height,
@@ -323,7 +323,7 @@ class View {
         // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
         this.#cachedContentRangeRect = null
-
+        
         requestAnimationFrame(() => {
             this.#debouncedExpand();
         })
@@ -393,8 +393,8 @@ class View {
     }
     async load(src, afterLoad, beforeRender) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
-        // Reset direction flags and promise before loading a new section
-        this.#vertical = this.#verticalRTL = this.#rtl = null;
+            // Reset direction flags and promise before loading a new section
+            this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
         return new Promise(async (resolve) => {
             if (this.#isCacheWarmer) {
@@ -403,49 +403,49 @@ class View {
             } else {
                 this.#iframe.addEventListener('load', async () => {
                     const doc = this.document
-
+                    
                     await afterLoad?.(doc)
-
+                    
                     // it needs to be visible for Firefox to get computed style
                     //                    this.#iframe.style.display = 'block'
                     this.#iframe.style.display = 'none'
-
+                    
                     const direction = await getDirection(doc);
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
                     this.#directionReadyResolve?.();
-
+                    
                     //                    const background = getBackground(doc)
                     //                    this.#iframe.style.display = 'none'
-
+                    
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
-
+                    
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
                         //                        background
                     })
                     this.#iframe.style.display = 'block'
-
+                    
                     await this.render(layout)
-
+                    
                     this.#resizeObserver.observe(doc.body)
-
+                    
                     //                    this.#resizeObserver.observe(doc.body)
                     //                    this.#mutationObserver.observe(doc.body, {
                     //                        childList: true,
                     //                        subtree: true,
                     //                        attributes: false
                     //                    })
-
+                    
                     // the resize observer above doesn't work in Firefox
                     // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
                     // until the bug is fixed we can at least account for font load
                     //                    doc.fonts.ready.then(async () => { await this.expand() })
                     //                doc.fonts.ready.then(() => this.#debouncedExpand())
-
+                    
                     resolve()
                 }, {
                     once: true
@@ -462,8 +462,8 @@ class View {
         this.#column = layout.flow !== 'scrolled'
         this.#layout = layout
         if (this.#column) await this.columnize(layout)
-        else await this.scrolled(layout)
-    }
+            else await this.scrolled(layout)
+                }
     async scrolled({
         gap,
         columnWidth
@@ -479,7 +479,7 @@ class View {
             'column-width': 'auto',
             'height': 'auto',
             'width': 'auto',
-
+            
             //            // columnize parity
             // columnGap: '0',
             'column-gap': `${gap}px`,
@@ -497,7 +497,7 @@ class View {
             'min-width': 'none',
             // fix glyph clipping in WebKit
             '-webkit-line-box-contain': 'block glyphs replaced',
-
+            
             // columnize parity
             '--paginator-margin': '30px',
         })
@@ -519,7 +519,7 @@ class View {
         await this.#awaitDirection();
         const vertical = this.#vertical
         this.#size = vertical ? height : width
-
+        
         const doc = this.document
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
@@ -645,8 +645,8 @@ class View {
     }
     destroy() {
         if (this.document) this.#resizeObserver.unobserve(this.document.body)
-        //        if (this.document) this.#mutationObserver.disconnect()
-    }
+            //        if (this.document) this.#mutationObserver.disconnect()
+            }
 }
 
 // NOTE: everything here assumes the so-called "negative scroll type" for RTL
@@ -663,25 +663,25 @@ export class Paginator extends HTMLElement {
     #lastResizerRect = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
-
+        
         const entry = entries[0];
         const rect = entry.contentRect;
-
+        
         const newSize = {
             width: Math.round(rect.width),
             height: Math.round(rect.height),
             top: Math.round(rect.top),
             left: Math.round(rect.left),
         };
-
+        
         const old = this.#lastResizerRect
         const unchanged =
-            old &&
-            newSize.width === old.width &&
-            newSize.height === old.height &&
-            newSize.top === old.top &&
-            newSize.left === old.left
-
+        old &&
+        newSize.width === old.width &&
+        newSize.height === old.height &&
+        newSize.top === old.top &&
+        newSize.left === old.left
+        
         if (!unchanged) {
             this.#lastResizerRect = newSize
             this.#cachedSizes = {
@@ -690,18 +690,18 @@ export class Paginator extends HTMLElement {
             }
             this.#cachedStart = null
         }
-
+        
         if (!this.#hasResizeObserverTriggered) {
             this.#hasResizeObserverTriggered = true
             return
         }
-
+        
         if (unchanged) {
             return
         }
-
+        
         console.log("RESIZE OBS pagiantor UPDATED... " + newSize.width + "x" + newSize.height)
-
+        
         requestAnimationFrame(() => {
             this.#debouncedRender();
         })
@@ -737,15 +737,15 @@ export class Paginator extends HTMLElement {
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
-
+    
     #cachedSizes = null
     #cachedStart = null
-
+    
     #visibleSentinelIDs = new Set()
     #elementVisibilityObserver = null
     #elementVisibilityObserverLoading = null
     #elementVisibilityObserverLoadingResolve = null
-
+    
     #elementMutationObserver = null
     constructor() {
         super()
@@ -881,17 +881,17 @@ export class Paginator extends HTMLElement {
             <div id="footer"></div>
         </div>
         `
-
+        
         this.#top = this.#root.getElementById('top')
         //        this.#background = this.#root.getElementById('background')
         this.#container = this.#root.getElementById('container')
         this.#header = this.#root.getElementById('header')
         this.#footer = this.#root.getElementById('footer')
-
+        
         this.#resizeObserver.observe(this.#container)
-
+        
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
-
+        
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', debounce(async () => {
             if (this.#isLoading) return;
@@ -919,7 +919,7 @@ export class Paginator extends HTMLElement {
                 }));
             }
         }, 450));
-
+        
         this.#container.addEventListener('scroll', debounce(async () => {
             if (this.scrolled) {
                 if (this.#justAnchored) {
@@ -930,13 +930,13 @@ export class Paginator extends HTMLElement {
             }
         }, 450))
     }
-
+    
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
     open(book, isCacheWarmer) {
         this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
         this.sections = book.sections
-
+        
         if (!this.#isCacheWarmer) {
             const opts = {
                 passive: false
@@ -986,9 +986,9 @@ export class Paginator extends HTMLElement {
     }
     #trackElementVisibilities() {
         this.#disconnectElementVisibilityObserver();
-
+        
         this.#visibleSentinelIDs = new Set()
-
+        
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
             console.log("Interesection obs..." + entries.length)
             for (const entry of entries) {
@@ -1005,7 +1005,7 @@ export class Paginator extends HTMLElement {
                     el.classList.add('manabi-off-screen');
                 }
             }
-
+            
             this.#elementVisibilityObserverLoadingResolve?.()
             this.#elementVisibilityObserverLoading = null
             this.#elementVisibilityObserverLoadingResolve = null
@@ -1014,9 +1014,9 @@ export class Paginator extends HTMLElement {
             threshold: [0],
             //rootMargin: '100%'
         });
-
+        
         const selector = '#reader-content > *, manabi-tracking-section, manabi-container, reader-sentinel';
-
+        
         this.#elementMutationObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
@@ -1031,7 +1031,7 @@ export class Paginator extends HTMLElement {
                 }
             }
         });
-
+        
         this.#view.document.body.querySelectorAll(selector).forEach(el => this.#elementVisibilityObserver.observe(el));
         this.#elementMutationObserver.observe(this.#view.document.body, {
             childList: true,
@@ -1053,12 +1053,12 @@ export class Paginator extends HTMLElement {
         if (!container) return false;
         const mediaTags = ['img', 'image', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
         let mediaElement = null;
-
+        
         for (const node of container.childNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
                 const tag = node.tagName?.toLowerCase();
                 const isMedia = mediaTags.includes(tag);
-
+                
                 if (isMedia) {
                     if (mediaElement) return false; // more than one media element
                     mediaElement = node;
@@ -1069,7 +1069,7 @@ export class Paginator extends HTMLElement {
                 return false;
             }
         }
-
+        
         return !!mediaElement;
     }
     async #beforeRender({
@@ -1084,17 +1084,17 @@ export class Paginator extends HTMLElement {
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
-
+        
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
         //        this.#background.style.background = background
-
+        
         const {
             width,
             height
         } = await this.sizes()
         const size = vertical ? height : width
-
+        
         const style = getComputedStyle(this.#top)
         const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
         const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
@@ -1102,12 +1102,12 @@ export class Paginator extends HTMLElement {
         const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
-
+        
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
         if (this.#vertical) {
             this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
         }
-
+        
         const g = parseFloat(style.getPropertyValue('--_gap')) / 100
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -1127,19 +1127,19 @@ export class Paginator extends HTMLElement {
         // But we want to keep the outer padding, and make the inner gap bigger.
         // So we apply the inverse, f⁻¹ = -x / (x - 1) to the column gap.
         const gap = -g / (g - 1) * size
-
+        
         const flow = this.getAttribute('flow')
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
             const columnWidth = maxInlineSize
-
+            
             this.heads = null
             this.feet = null
             this.#header.replaceChildren()
             this.#footer.replaceChildren()
-
+            
             return {
                 flow,
                 topMargin,
@@ -1148,7 +1148,7 @@ export class Paginator extends HTMLElement {
                 columnWidth
             }
         }
-
+        
         let divisor, columnWidth
         if (this.#isSingleMediaElementWithoutText()) {
             columnWidth = maxInlineSize
@@ -1156,12 +1156,12 @@ export class Paginator extends HTMLElement {
             divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
             columnWidth = (size / divisor) - gap
         }
-
+        
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
-
+        
         const marginalDivisor = vertical ?
-            Math.min(2, Math.ceil(width / maxInlineSize)) :
-            divisor
+        Math.min(2, Math.ceil(width / maxInlineSize)) :
+        divisor
         const marginalStyle = {
             gridTemplateColumns: `repeat(${marginalDivisor}, 1fr)`,
             gap: `${gap}px`,
@@ -1175,12 +1175,12 @@ export class Paginator extends HTMLElement {
         this.feet = feet.map(el => el.children[0])
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
-
+        
         //        console.log("# before render... await apply sentinels")
         //        await this.#applyVisibilitySentinels()
         //        console.log("# before render... await apply sentinels...done")
         //        this.#trackElementVisibilities()
-
+        
         return {
             height,
             width,
@@ -1195,11 +1195,11 @@ export class Paginator extends HTMLElement {
             return
         }
         console.log("render()...")
-
+        
         // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
         //        this.#resizeObserver.observe(this.#container);
-
+        
         try {
             await this.#view.render(await this.#beforeRender({
                 vertical: this.#vertical,
@@ -1219,7 +1219,7 @@ export class Paginator extends HTMLElement {
             scrolled
         } = this
         return this.#vertical ? (scrolled ? 'scrollLeft' : 'scrollTop') :
-            scrolled ? 'scrollTop' : 'scrollLeft'
+        scrolled ? 'scrollTop' : 'scrollLeft'
     }
     async sideProp() {
         await this.#awaitDirection();
@@ -1227,23 +1227,23 @@ export class Paginator extends HTMLElement {
             scrolled
         } = this
         return this.#vertical ? (scrolled ? 'width' : 'height') :
-            scrolled ? 'height' : 'width'
+        scrolled ? 'height' : 'width'
     }
     async sizes() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedSizes === null) {
-            return new Promise(resolve => {
-                requestAnimationFrame(() => {
-                    const rect = this.#container.getBoundingClientRect()
-                    this.#cachedSizes = {
-                        width: rect.width,
-                        height: rect.height,
-                    }
-                    resolve(this.#cachedSizes)
+            if (this.#cachedSizes === null) {
+                return new Promise(resolve => {
+                    requestAnimationFrame(() => {
+                        const rect = this.#container.getBoundingClientRect()
+                        this.#cachedSizes = {
+                            width: rect.width,
+                            height: rect.height,
+                        }
+                        resolve(this.#cachedSizes)
+                    })
                 })
-            })
-        }
+            }
         return this.#cachedSizes
     }
     async size() {
@@ -1252,18 +1252,18 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (this.#view.cachedViewSize === null) {
-            return new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    const newSize = this.#view.element.getBoundingClientRect()
-                    this.#view.cachedViewSize = {
-                        width: newSize.width,
-                        height: newSize.height,
-                    }
-                    resolve(this.#view.cachedViewSize[await this.sideProp()])
+            if (this.#view.cachedViewSize === null) {
+                return new Promise(resolve => {
+                    requestAnimationFrame(async () => {
+                        const newSize = this.#view.element.getBoundingClientRect()
+                        this.#view.cachedViewSize = {
+                            width: newSize.width,
+                            height: newSize.height,
+                        }
+                        resolve(this.#view.cachedViewSize[await this.sideProp()])
+                    })
                 })
-            })
-        }
+            }
         return this.#view.cachedViewSize[await this.sideProp()]
     }
     async start() {
@@ -1285,148 +1285,148 @@ export class Paginator extends HTMLElement {
     async page() {
         await this.#awaitDirection();
         return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
-    }
-    async pages() {
-        await this.#awaitDirection();
-        return Math.round((await this.viewSize()) / (await this.size()))
-    }
-    async scrollBy(dx, dy) {
-        await this.#awaitDirection()
-        await new Promise(resolve => {
-            requestAnimationFrame(async () => {
-                const delta = this.#vertical ? dy : dx
-                const element = this.#container
-                const scrollProp = await this.scrollProp()
-                const [offset, a, b] = this.#scrollBounds
-                const rtl = this.#rtl
-                const min = rtl ? offset - b : offset - a
-                const max = rtl ? offset + a : offset + b
-                element[scrollProp] = Math.max(min, Math.min(max,
-                    element[scrollProp] + delta))
-                resolve()
-            })
-        })
-    }
-    async snap(vx, vy) {
-        await this.#awaitDirection();
-        const velocity = this.#vertical ? vy : vx
-        const [offset, a, b] = this.#scrollBounds
-        const start = await this.start()
-        const end = await this.end()
-        const pages = await this.pages()
-        const size = await this.size()
-        const min = Math.abs(offset) - a
-        const max = Math.abs(offset) + b
-        const d = velocity * (this.#rtl ? -size : size)
-        const page = Math.floor(
-            Math.max(min, Math.min(max, (start + end) / 2 +
-                (isNaN(d) ? 0 : d))) / size)
-
-        await this.#scrollToPage(page, 'snap').then(async () => {
-            const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
-            if (dir) return await this.#goTo({
-                index: this.#adjacentIndex(dir),
-                anchor: dir < 0 ? () => 1 : () => 0,
-            })
-        })
-    }
-    #onTouchStart(e) {
-        const touch = e.changedTouches[0];
-        // Determine if touch began in host container or inside the iframe’s document
-        const target = touch.target;
-        const inHost = this.#container.contains(target);
-        const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
-        if (!inHost && !inIframe) {
-            this.#touchState = null;
-            return;
+                          }
+                          async pages() {
+            await this.#awaitDirection();
+            return Math.round((await this.viewSize()) / (await this.size()))
         }
-        this.#touchState = {
-            startX: touch?.screenX,
-            startY: touch?.screenY,
-            x: touch?.screenX,
-            y: touch?.screenY,
-            t: e.timeStamp,
-            vx: 0,
-            vy: 0,
-            pinched: false,
-            triggered: false,
-        };
-        // Only block in paginated mode (not 'scrolled')
-        if (!this.scrolled) {
-            const sel = this.#view?.document?.getSelection?.();
-            if (sel && !sel.isCollapsed && sel.rangeCount) {
-                const range = sel.getRangeAt(0);
-                const rect = range.getBoundingClientRect();
-                const x = touch.clientX,
+                          async scrollBy(dx, dy) {
+            await this.#awaitDirection()
+            await new Promise(resolve => {
+                requestAnimationFrame(async () => {
+                    const delta = this.#vertical ? dy : dx
+                    const element = this.#container
+                    const scrollProp = await this.scrollProp()
+                    const [offset, a, b] = this.#scrollBounds
+                    const rtl = this.#rtl
+                    const min = rtl ? offset - b : offset - a
+                    const max = rtl ? offset + a : offset + b
+                    element[scrollProp] = Math.max(min, Math.min(max,
+                                                                 element[scrollProp] + delta))
+                    resolve()
+                })
+            })
+        }
+                          async snap(vx, vy) {
+            await this.#awaitDirection();
+            const velocity = this.#vertical ? vy : vx
+            const [offset, a, b] = this.#scrollBounds
+            const start = await this.start()
+            const end = await this.end()
+            const pages = await this.pages()
+            const size = await this.size()
+            const min = Math.abs(offset) - a
+            const max = Math.abs(offset) + b
+            const d = velocity * (this.#rtl ? -size : size)
+            const page = Math.floor(
+                                    Math.max(min, Math.min(max, (start + end) / 2 +
+                                                           (isNaN(d) ? 0 : d))) / size)
+            
+            await this.#scrollToPage(page, 'snap').then(async () => {
+                const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
+                if (dir) return await this.#goTo({
+                    index: this.#adjacentIndex(dir),
+                    anchor: dir < 0 ? () => 1 : () => 0,
+                })
+                    })
+        }
+                          #onTouchStart(e) {
+            const touch = e.changedTouches[0];
+            // Determine if touch began in host container or inside the iframe’s document
+            const target = touch.target;
+            const inHost = this.#container.contains(target);
+            const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
+            if (!inHost && !inIframe) {
+                this.#touchState = null;
+                return;
+            }
+            this.#touchState = {
+                startX: touch?.screenX,
+                startY: touch?.screenY,
+                x: touch?.screenX,
+                y: touch?.screenY,
+                t: e.timeStamp,
+                vx: 0,
+                vy: 0,
+                pinched: false,
+                triggered: false,
+            };
+            // Only block in paginated mode (not 'scrolled')
+            if (!this.scrolled) {
+                const sel = this.#view?.document?.getSelection?.();
+                if (sel && !sel.isCollapsed && sel.rangeCount) {
+                    const range = sel.getRangeAt(0);
+                    const rect = range.getBoundingClientRect();
+                    const x = touch.clientX,
                     y = touch.clientY;
-                const hitTolerance = 30;
-                const nearStart = (
-                    Math.abs(x - rect.left) <= hitTolerance &&
-                    y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
-                );
-                const nearEnd = (
-                    Math.abs(x - rect.right) <= hitTolerance &&
-                    y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
-                );
-                if (nearStart || nearEnd) {
-                    this.#isAdjustingSelectionHandle = true;
-                    return;
+                    const hitTolerance = 30;
+                    const nearStart = (
+                                       Math.abs(x - rect.left) <= hitTolerance &&
+                                       y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
+                                       );
+                    const nearEnd = (
+                                     Math.abs(x - rect.right) <= hitTolerance &&
+                                     y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
+                                     );
+                    if (nearStart || nearEnd) {
+                        this.#isAdjustingSelectionHandle = true;
+                        return;
+                    }
                 }
             }
+            this.#isAdjustingSelectionHandle = false;
         }
-        this.#isAdjustingSelectionHandle = false;
-    }
-    async #onTouchMove(e) {
-        // If touchStart was ignored or missing, do nothing
-        if (!this.#touchState) return;
-        if (this.#isAdjustingSelectionHandle) return;
-        e.preventDefault();
-        const touch = e.changedTouches[0];
-        const state = this.#touchState;
-        if (state.triggered) return;
-        state.x = touch.screenX;
-        state.y = touch.screenY;
-        const dx = state.x - state.startX;
-        const dy = state.y - state.startY;
-        const minSwipe = 36; // px threshold
-
-        this.#updateSwipeChevron(dx, minSwipe);
-
-        if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
-            state.triggered = true;
-
-            if (dx < 0) {
-                (this.bookDir === 'rtl') ? await this.prev() : await this.next();
-            } else {
-                (this.bookDir === 'rtl') ? await this.next() : await this.prev();
+                          async #onTouchMove(e) {
+            // If touchStart was ignored or missing, do nothing
+            if (!this.#touchState) return;
+            if (this.#isAdjustingSelectionHandle) return;
+            e.preventDefault();
+            const touch = e.changedTouches[0];
+            const state = this.#touchState;
+            if (state.triggered) return;
+            state.x = touch.screenX;
+            state.y = touch.screenY;
+            const dx = state.x - state.startX;
+            const dy = state.y - state.startY;
+            const minSwipe = 36; // px threshold
+            
+            this.#updateSwipeChevron(dx, minSwipe);
+            
+            if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
+                state.triggered = true;
+                
+                if (dx < 0) {
+                    (this.bookDir === 'rtl') ? await this.prev() : await this.next();
+                } else {
+                    (this.bookDir === 'rtl') ? await this.next() : await this.prev();
+                }
+                this.#updateSwipeChevron(dx, minSwipe)
             }
-            this.#updateSwipeChevron(dx, minSwipe)
         }
-    }
-    #onTouchEnd(e) {
-        this.#touchState = null;
-        // If we just loaded a new section, skip the opacity reset
-        if (this.#skipTouchEndOpacity) {
-            this.#skipTouchEndOpacity = false
-            return
-        }
-        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-            bubbles: true,
-            composed: true,
-            detail: {
-                leftOpacity: '',
-                rightOpacity: ''
+                          #onTouchEnd(e) {
+            this.#touchState = null;
+            // If we just loaded a new section, skip the opacity reset
+            if (this.#skipTouchEndOpacity) {
+                this.#skipTouchEndOpacity = false
+                return
             }
-        }))
-    }
-    // allows one to process rects as if they were LTR and horizontal
-    async #getRectMapper() {
-        await this.#awaitDirection();
-        if (this.scrolled) {
-            const size = await this.viewSize()
-            const topMargin = this.#topMargin
-            const bottomMargin = this.#bottomMargin
-            return this.#vertical ?
+            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                bubbles: true,
+                composed: true,
+                detail: {
+                    leftOpacity: '',
+                    rightOpacity: ''
+                }
+            }))
+        }
+                          // allows one to process rects as if they were LTR and horizontal
+                          async #getRectMapper() {
+            await this.#awaitDirection();
+            if (this.scrolled) {
+                const size = await this.viewSize()
+                const topMargin = this.#topMargin
+                const bottomMargin = this.#bottomMargin
+                return this.#vertical ?
                 ({
                     left,
                     right
@@ -1442,9 +1442,9 @@ export class Paginator extends HTMLElement {
                     left: top + topMargin,
                     right: bottom + bottomMargin
                 })
-        }
-        const pxSize = (await this.pages()) * (await this.size())
-        return this.#rtl ?
+            }
+            const pxSize = (await this.pages()) * (await this.size())
+            return this.#rtl ?
             ({
                 left,
                 right
@@ -1454,764 +1454,789 @@ export class Paginator extends HTMLElement {
                 right: pxSize - left
             }) :
             this.#vertical ?
-                ({
-                    top,
-                    bottom
-                }) => ({
-                    left: top,
-                    right: bottom
-                }) :
-                f => f
-    }
-    #wheelCooldown = false;
-    #lastWheelDeltaX = 0;
-    async #onWheel(e) {
-        if (this.scrolled) return;
-        e.preventDefault();
-        if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
-
-        const TRIGGER_THRESHOLD = 12;
-        const RESET_THRESHOLD = 3;
-        const REVEAL_CHEVRON_THRESHOLD = 5;
-
-        // Early exit for "momentum falling" (hide chevrons if armed, deltaX dropping, and below threshold)
-        if (
-            this.#wheelArmed &&
-            Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
-            Math.abs(e.deltaX) < TRIGGER_THRESHOLD
-        ) {
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: '',
-                    rightOpacity: ''
+            ({
+                top,
+                bottom
+            }) => ({
+                left: top,
+                right: bottom
+            }) :
+            f => f
+        }
+                          #wheelCooldown = false;
+                          #lastWheelDeltaX = 0;
+                          async #onWheel(e) {
+            if (this.scrolled) return;
+            e.preventDefault();
+            if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
+            
+            const TRIGGER_THRESHOLD = 12;
+            const RESET_THRESHOLD = 3;
+            const REVEAL_CHEVRON_THRESHOLD = 5;
+            
+            // Early exit for "momentum falling" (hide chevrons if armed, deltaX dropping, and below threshold)
+            if (
+                this.#wheelArmed &&
+                Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
+                Math.abs(e.deltaX) < TRIGGER_THRESHOLD
+                ) {
+                    this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                        bubbles: true,
+                        composed: true,
+                        detail: {
+                            leftOpacity: '',
+                            rightOpacity: ''
+                        }
+                    }));
+                    this.#lastWheelDeltaX = e.deltaX;
+                    return;
                 }
-            }));
-            this.#lastWheelDeltaX = e.deltaX;
-            return;
-        }
-
-        if (this.#wheelArmed) {
-            if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
-                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD);
-            } else {
-                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD);
-            }
-        }
-
-        if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
-            this.#wheelArmed = false;
-            this.#wheelCooldown = true;
-            if (e.deltaX > 0) {
-                await this.prev();
-            } else {
-                await this.next();
-            }
-            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD)
-            setTimeout(() => {
-                this.#wheelCooldown = false;
-            }, 100);
-        } else if (!this.#wheelArmed && !this.#wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
-            this.#wheelArmed = true;
-        }
-        this.#lastWheelDeltaX = e.deltaX;
-    }
-    async #scrollToRect(rect, reason) {
-        if (this.scrolled) {
-            const rectMapper = await this.#getRectMapper();
-            const offset = rectMapper(rect).left - this.#topMargin
-            return await this.#scrollTo(offset, reason)
-        }
-        const rectMapper = await this.#getRectMapper();
-        const offset = rectMapper(rect).left
-        return await this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
-    }
-    async #scrollTo(offset, reason, smooth) {
-        await this.#awaitDirection();
-        const scroll = async () => {
-            const element = this.#container
-            const scrollProp = await this.scrollProp()
-            const size = await this.size()
-            const atStart = await this.atStart()
-            const atEnd = await this.atEnd()
-            if (element[scrollProp] === offset) {
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
-                return
-            }
-            // FIXME: vertical-rl only, not -lr
-            if (this.scrolled && this.#vertical) offset = -offset
-            if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
-                element[scrollProp], offset, 300, easeOutQuad,
-                x => element[scrollProp] = x,
-            ).then(async () => {
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
-            })
-            else {
-                element[scrollProp] = offset
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
-            }
-        }
-
-        //            // Prevent new transitions while one is running
-        //            if (this.#transitioning) {
-        //                await scroll();
-        //                return;
-        //            }
-
-        //            if (
-        //                !this.#view ||
-        //                document.visibilityState !== 'visible' ||
-        //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
-        //                typeof document.startViewTransition !== 'function'
-        //                ) {
-        return new Promise(resolve => {
-            requestAnimationFrame(async () => {
-                if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
-                    await scroll()
+            
+            if (this.#wheelArmed) {
+                if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
+                    this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD);
                 } else {
-                    this.#container.classList.add('view-fade')
-                    // Allow the browser to paint the fade
-                    /*await new Promise(r => setTimeout(r, 65));
-                     this.#container.classList.add('view-faded')*/
-                    await scroll()
-                    this.#container.classList.remove('view-faded')
-                    this.#container.classList.remove('view-fade')
+                    this.#updateSwipeChevron(0, TRIGGER_THRESHOLD);
                 }
-                resolve()
+            }
+            
+            if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
+                this.#wheelArmed = false;
+                this.#wheelCooldown = true;
+                if (e.deltaX > 0) {
+                    await this.prev();
+                } else {
+                    await this.next();
+                }
+                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD)
+                setTimeout(() => {
+                    this.#wheelCooldown = false;
+                }, 100);
+            } else if (!this.#wheelArmed && !this.#wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
+                this.#wheelArmed = true;
+            }
+            this.#lastWheelDeltaX = e.deltaX;
+        }
+                          async #scrollToRect(rect, reason) {
+            if (this.scrolled) {
+                const rectMapper = await this.#getRectMapper();
+                const offset = rectMapper(rect).left - this.#topMargin
+                return await this.#scrollTo(offset, reason)
+            }
+            const rectMapper = await this.#getRectMapper();
+            const offset = rectMapper(rect).left
+            return await this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
+        }
+                          async #scrollTo(offset, reason, smooth) {
+            await this.#awaitDirection();
+            const scroll = async () => {
+                const element = this.#container
+                const scrollProp = await this.scrollProp()
+                const size = await this.size()
+                const atStart = await this.atStart()
+                const atEnd = await this.atEnd()
+                if (element[scrollProp] === offset) {
+                    this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                    await this.#afterScroll(reason)
+                    return
+                }
+                // FIXME: vertical-rl only, not -lr
+                if (this.scrolled && this.#vertical) offset = -offset
+                    if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
+                                                                                                       element[scrollProp], offset, 300, easeOutQuad,
+                                                                                                       x => element[scrollProp] = x,
+                                                                                                       ).then(async () => {
+                                                                                                           this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                                                                                                           await this.#afterScroll(reason)
+                                                                                                       })
+                        else {
+                            element[scrollProp] = offset
+                            this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                            await this.#afterScroll(reason)
+                        }
+            }
+            
+            //            // Prevent new transitions while one is running
+            //            if (this.#transitioning) {
+            //                await scroll();
+            //                return;
+            //            }
+            
+            //            if (
+            //                !this.#view ||
+            //                document.visibilityState !== 'visible' ||
+            //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
+            //                typeof document.startViewTransition !== 'function'
+            //                ) {
+            return new Promise(resolve => {
+                requestAnimationFrame(async () => {
+                    if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
+                        await scroll()
+                    } else {
+                        this.#container.classList.add('view-fade')
+                        // Allow the browser to paint the fade
+                        /*await new Promise(r => setTimeout(r, 65));
+                         this.#container.classList.add('view-faded')*/
+                        await scroll()
+                        this.#container.classList.remove('view-faded')
+                        this.#container.classList.remove('view-fade')
+                    }
+                    resolve()
+                })
             })
-        })
-        //                } else {
-        //                    let goingForward = offset > this.start;
-        //                    let slideFrom, slideTo;
-        //
-        //                    if (!this.#rtl) {
-        //                        if (goingForward) {
-        //                            slideFrom = 'slide-from-right';
-        //                            slideTo = 'slide-to-left';
-        //                        } else {
-        //                            slideFrom = 'slide-from-left';
-        //                            slideTo = 'slide-to-right';
-        //                        }
-        //                    } else {
-        //                        if (goingForward) {
-        //                            slideFrom = 'slide-from-left';
-        //                            slideTo = 'slide-to-right';
-        //                        } else {
-        //                            slideFrom = 'slide-from-right';
-        //                            slideTo = 'slide-to-left';
-        //                        }
-        //                    }
-        //
-        //                    this.dispatchEvent(new CustomEvent('setViewTransition', {
-        //                        bubbles: true,
-        //                        composed: true,
-        //                        detail: {
-        //                            viewTransitionName: 'scroll-to',
-        //                            slideFrom,
-        //                            slideTo
-        //                        }
-        //                    }));
-        //
-        //                    this.#transitioning = true;
-        //                    try {
-        //                        await document.startViewTransition(scroll);
-        //                    } finally {
-        //                        this.#transitioning = false;
-        //                    }
-        //                }
-    }
-    async #scrollToPage(page, reason, smooth) {
-        const size = await this.size()
-        const offset = size * (this.#rtl ? -page : page)
-        return await this.#scrollTo(offset, reason, smooth)
-    }
-    async scrollToAnchor(anchor, select) {
-        return await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
-    }
-    async #scrollToAnchor(anchor, reason = 'anchor') {
-        await this.#awaitDirection();
-
-        return new Promise(resolve => {
-            requestAnimationFrame(async () => {
-                console.log("SCROLL to ANCHOR")
-                this.#anchor = anchor
-                const rects = uncollapse(anchor)?.getClientRects?.()
-                // if anchor is an element or a range
-                if (rects) {
-                    // when the start of the range is immediately after a hyphen in the
-                    // previous column, there is an extra zero width rect in that column
-                    const rect = Array.from(rects)
-                        .find(r => r.width > 0 && r.height > 0) || rects[0]
-                    if (!rect) {
+            //                } else {
+            //                    let goingForward = offset > this.start;
+            //                    let slideFrom, slideTo;
+            //
+            //                    if (!this.#rtl) {
+            //                        if (goingForward) {
+            //                            slideFrom = 'slide-from-right';
+            //                            slideTo = 'slide-to-left';
+            //                        } else {
+            //                            slideFrom = 'slide-from-left';
+            //                            slideTo = 'slide-to-right';
+            //                        }
+            //                    } else {
+            //                        if (goingForward) {
+            //                            slideFrom = 'slide-from-left';
+            //                            slideTo = 'slide-to-right';
+            //                        } else {
+            //                            slideFrom = 'slide-from-right';
+            //                            slideTo = 'slide-to-left';
+            //                        }
+            //                    }
+            //
+            //                    this.dispatchEvent(new CustomEvent('setViewTransition', {
+            //                        bubbles: true,
+            //                        composed: true,
+            //                        detail: {
+            //                            viewTransitionName: 'scroll-to',
+            //                            slideFrom,
+            //                            slideTo
+            //                        }
+            //                    }));
+            //
+            //                    this.#transitioning = true;
+            //                    try {
+            //                        await document.startViewTransition(scroll);
+            //                    } finally {
+            //                        this.#transitioning = false;
+            //                    }
+            //                }
+        }
+                          async #scrollToPage(page, reason, smooth) {
+            const size = await this.size()
+            const offset = size * (this.#rtl ? -page : page)
+            return await this.#scrollTo(offset, reason, smooth)
+        }
+                          async scrollToAnchor(anchor, select) {
+            return await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        }
+                          async #scrollToAnchor(anchor, reason = 'anchor') {
+            await this.#awaitDirection();
+            
+            return new Promise(resolve => {
+                requestAnimationFrame(async () => {
+                    console.log("SCROLL to ANCHOR")
+                    this.#anchor = anchor
+                    const rects = uncollapse(anchor)?.getClientRects?.()
+                    // if anchor is an element or a range
+                    if (rects) {
+                        // Sanity: pick first non-zero rect
+                        const rect = Array.from(rects)
+                        .find(r => r.width > 0 && r.height > 0) || rects[0];
+                        // Compute fast offsets using rect math
+                        const scrollProperty = await this.scrollProp();
+                        const scrollValue = this.#container[scrollProperty];
+                        const containerRect = this.#container.getBoundingClientRect();
+                        // Debug context values
+                        const size = await this.size();
+                        const viewSize = await this.viewSize();
+                        const start = await this.start();
+                        const end = await this.end();
+                        const page = await this.page();
+                        const pages = await this.pages();
+                        console.log("debug scroll context:", {
+                            scrollProperty,
+                            scrollValue,
+                            containerRect,
+                            size,
+                            viewSize,
+                            start,
+                            end,
+                            page,
+                            pages,
+                            scrolled: this.scrolled,
+                            vertical: this.#vertical,
+                            rtl: this.#rtl,
+                        });
+                        const fastOffsetX = rect.left - containerRect.left + (scrollProperty === 'scrollLeft' ? scrollValue : 0);
+                        const fastOffsetY = rect.top - containerRect.top + (scrollProperty === 'scrollTop' ? scrollValue : 0);
+                        console.log("computed fast offsets via rect math:", { left: fastOffsetX, top: fastOffsetY });
+                        console.log("old rect:", rect, "fast offsets:", { left: fastOffsetX, top: fastOffsetY });
+                        const fastRect = { left: fastOffsetX, top: fastOffsetY, width: rect.width, height: rect.height };
+                        await this.#scrollToRect(fastRect, reason);
+                        resolve();
+                        return;
+                    }
+                    // if anchor is a fraction
+                    if (this.scrolled) {
+                        await this.#scrollTo(anchor * (await this.viewSize()), reason)
                         resolve()
                         return
                     }
-                    await this.#scrollToRect(rect, reason)
+                    const pages = await this.pages()
+                    if (!pages) {
+                        resolve()
+                        return
+                    }
+                    const textPages = pages - 2
+                    const newPage = Math.round(anchor * (textPages - 1))
+                    await this.#scrollToPage(newPage + 1, reason)
                     resolve()
-                    return
-                }
-                // if anchor is a fraction
-                if (this.scrolled) {
-                    await this.#scrollTo(anchor * (await this.viewSize()), reason)
-                    resolve()
-                    return
-                }
-                const pages = await this.pages()
-                if (!pages) {
-                    resolve()
-                    return
-                }
-                const textPages = pages - 2
-                const newPage = Math.round(anchor * (textPages - 1))
-                await this.#scrollToPage(newPage + 1, reason)
-                resolve()
+                })
             })
-        })
-    }
-    /**
-     * Adds `reader-sentinel` to either an existing short element or an inserted span
-     * every `interval` characters in the body.
-     * - Short elements (<= interval characters) starting within the window are preferred.
-     * - If none exist, a sentinel span is inserted at the target text offset.
-     */
-    async #applyVisibilitySentinels() {
-        return new Promise(resolve => {
-            requestAnimationFrame(() => {
-                const doc = this.#view?.document;
-                if (!doc) return resolve();
-                const body = doc.body;
-
-                if (body.querySelector('reader-sentinel')) {
-                    // Already applied
-                    return
-                }
-
-                const interval = 16;
-
-                function findSplitOffset(text, desiredOffset, maxDistance) {
-                    function category(ch) {
-                        if (!ch || typeof ch !== 'string') return 'other';
-                        const cp = ch.codePointAt(0);
-                        if (/\s/.test(ch)) return 'ws';
-                        if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch)) return 'punct';
-                        if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
-                            (cp >= 0x3400 && cp <= 0x4DBF) ||
-                            (cp >= 0x20000 && cp <= 0x2A6DF) ||
-                            (cp >= 0x2A700 && cp <= 0x2B73F)) return 'cjk';
-                        if (cp >= 0x3040 && cp <= 0x309F) return 'hiragana';
-                        if (cp >= 0x30A0 && cp <= 0x30FF) return 'katakana';
-                        return 'other';
+        }
+                          /**
+                           * Adds `reader-sentinel` to either an existing short element or an inserted span
+                           * every `interval` characters in the body.
+                           * - Short elements (<= interval characters) starting within the window are preferred.
+                           * - If none exist, a sentinel span is inserted at the target text offset.
+                           */
+                          async #applyVisibilitySentinels() {
+            return new Promise(resolve => {
+                requestAnimationFrame(() => {
+                    const doc = this.#view?.document;
+                    if (!doc) return resolve();
+                    const body = doc.body;
+                    
+                    if (body.querySelector('reader-sentinel')) {
+                        // Already applied
+                        return
                     }
-                    const len = text.length;
-                    // Do not split at start or end of text node
-                    if (desiredOffset <= 0 || desiredOffset >= len) return desiredOffset;
-
-                    let bestOffset = desiredOffset;
-                    let bestScore = -Infinity;
-
-                    // Scan outward from desiredOffset (prioritize close, prefer "good" break)
-                    for (let dist = 0; dist <= maxDistance; dist++) {
-                        for (const offset of [desiredOffset - dist, desiredOffset + dist]) {
-                            if (offset <= 0 || offset >= len) continue;
-                            const ch = text[offset];
-                            const prev = text[offset - 1];
-                            // Prefer:
-                            // - At whitespace or punctuation,
-                            // - At element boundary (not directly detectable here),
-                            // - At transition: kanji <-> kana, hiragana <-> katakana, kana <-> other, etc.
-                            let score = 0;
-                            if (/\s/.test(ch) || /\s/.test(prev)) score += 3;
-                            if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch) ||
-                                /[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(prev)) score += 3;
-                            if (category(prev) !== category(ch)) score += 2;
-                            // Prefer to avoid splitting in the middle of CJK words (kanji->kanji)
-                            if (category(prev) === 'cjk' && category(ch) === 'cjk') score -= 2;
-                            // Avoid splitting mid-latin word
-                            if (category(prev) === 'other' && category(ch) === 'other' &&
-                                /[a-zA-Z0-9]/.test(prev) && /[a-zA-Z0-9]/.test(ch)) score -= 4;
-                            // Strongly avoid start/end of node
-                            if (offset === 0 || offset === len) score -= 5;
-                            // Penalty for distance
-                            score -= Math.abs(offset - desiredOffset) * 0.5;
-
-                            if (score > bestScore) {
-                                bestScore = score;
-                                bestOffset = offset;
-                            }
-                            if (bestScore >= 3) break; // Early out for "good enough" score
+                    
+                    const interval = 16;
+                    
+                    function findSplitOffset(text, desiredOffset, maxDistance) {
+                        function category(ch) {
+                            if (!ch || typeof ch !== 'string') return 'other';
+                            const cp = ch.codePointAt(0);
+                            if (/\s/.test(ch)) return 'ws';
+                            if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch)) return 'punct';
+                            if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
+                                (cp >= 0x3400 && cp <= 0x4DBF) ||
+                                (cp >= 0x20000 && cp <= 0x2A6DF) ||
+                                (cp >= 0x2A700 && cp <= 0x2B73F)) return 'cjk';
+                            if (cp >= 0x3040 && cp <= 0x309F) return 'hiragana';
+                            if (cp >= 0x30A0 && cp <= 0x30FF) return 'katakana';
+                            return 'other';
                         }
+                        const len = text.length;
+                        // Do not split at start or end of text node
+                        if (desiredOffset <= 0 || desiredOffset >= len) return desiredOffset;
+                        
+                        let bestOffset = desiredOffset;
+                        let bestScore = -Infinity;
+                        
+                        // Scan outward from desiredOffset (prioritize close, prefer "good" break)
+                        for (let dist = 0; dist <= maxDistance; dist++) {
+                            for (const offset of [desiredOffset - dist, desiredOffset + dist]) {
+                                if (offset <= 0 || offset >= len) continue;
+                                const ch = text[offset];
+                                const prev = text[offset - 1];
+                                // Prefer:
+                                // - At whitespace or punctuation,
+                                // - At element boundary (not directly detectable here),
+                                // - At transition: kanji <-> kana, hiragana <-> katakana, kana <-> other, etc.
+                                let score = 0;
+                                if (/\s/.test(ch) || /\s/.test(prev)) score += 3;
+                                if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch) ||
+                                    /[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(prev)) score += 3;
+                                if (category(prev) !== category(ch)) score += 2;
+                                // Prefer to avoid splitting in the middle of CJK words (kanji->kanji)
+                                if (category(prev) === 'cjk' && category(ch) === 'cjk') score -= 2;
+                                // Avoid splitting mid-latin word
+                                if (category(prev) === 'other' && category(ch) === 'other' &&
+                                    /[a-zA-Z0-9]/.test(prev) && /[a-zA-Z0-9]/.test(ch)) score -= 4;
+                                // Strongly avoid start/end of node
+                                if (offset === 0 || offset === len) score -= 5;
+                                // Penalty for distance
+                                score -= Math.abs(offset - desiredOffset) * 0.5;
+                                
+                                if (score > bestScore) {
+                                    bestScore = score;
+                                    bestOffset = offset;
+                                }
+                                if (bestScore >= 3) break; // Early out for "good enough" score
+                            }
+                        }
+                        return bestOffset;
                     }
-                    return bestOffset;
-                }
-
-                var idx = 0;
-                let charCount = 0;
-                let nextThreshold = interval;
-                // Walk only text nodes, splitting in-place for sentinel insertion
-                const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
-                let textNode;
-                while ((textNode = walker.nextNode())) {
-                    let remainingText = textNode.nodeValue || "";
-                    let offsetInNode = 0;
-                    while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
-                        const desiredOffset = nextThreshold - charCount - offsetInNode;
-                        const bestOffset = findSplitOffset(remainingText, desiredOffset, interval * 2);
-                        const postSplit = textNode.splitText(bestOffset);
-                        const sentinel = doc.createElement("reader-sentinel")
-                        sentinel.id = `reader-sentinel-${idx}`
-                        idx++
-                        postSplit.parentNode.insertBefore(sentinel, postSplit);
-                        // Advance counters past the inserted sentinel
-                        textNode = postSplit;
-                        offsetInNode = 0;
-                        charCount = nextThreshold;
-                        nextThreshold += interval;
-                        remainingText = textNode.nodeValue || "";
+                    
+                    var idx = 0;
+                    let charCount = 0;
+                    let nextThreshold = interval;
+                    // Walk only text nodes, splitting in-place for sentinel insertion
+                    const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
+                    let textNode;
+                    while ((textNode = walker.nextNode())) {
+                        let remainingText = textNode.nodeValue || "";
+                        let offsetInNode = 0;
+                        while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
+                            const desiredOffset = nextThreshold - charCount - offsetInNode;
+                            const bestOffset = findSplitOffset(remainingText, desiredOffset, interval * 2);
+                            const postSplit = textNode.splitText(bestOffset);
+                            const sentinel = doc.createElement("reader-sentinel")
+                            sentinel.id = `reader-sentinel-${idx}`
+                            idx++
+                            postSplit.parentNode.insertBefore(sentinel, postSplit);
+                            // Advance counters past the inserted sentinel
+                            textNode = postSplit;
+                            offsetInNode = 0;
+                            charCount = nextThreshold;
+                            nextThreshold += interval;
+                            remainingText = textNode.nodeValue || "";
+                        }
+                        charCount += remainingText.length - offsetInNode;
                     }
-                    charCount += remainingText.length - offsetInNode;
-                }
-                resolve();
+                    resolve();
+                });
             });
-        });
-    }
-    async #getVisibleRange() {
-        await this.#awaitDirection();
-        // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
-
-        const doc = this.#view.document
-
-        if (this.#elementVisibilityObserverLoading) {
-            await this.#elementVisibilityObserverLoading
         }
-
-        if (this.#visibleSentinelIDs.size === 0) {
-            const range = doc.createRange();
-            range.selectNodeContents(doc.body);
-            range.collapse(true);
-            return range
-        }
-
-        const isValid = node =>
+                          async #getVisibleRange() {
+            await this.#awaitDirection();
+            // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
+            
+            const doc = this.#view.document
+            
+            if (this.#elementVisibilityObserverLoading) {
+                await this.#elementVisibilityObserverLoading
+            }
+            
+            if (this.#visibleSentinelIDs.size === 0) {
+                const range = doc.createRange();
+                range.selectNodeContents(doc.body);
+                range.collapse(true);
+                return range
+            }
+            
+            const isValid = node =>
             node &&
             (node.nodeType === Node.TEXT_NODE ||
-                (node.nodeType === Node.ELEMENT_NODE &&
-                    node.tagName !== 'reader-sentinel'));
-
-        const visibleSentinels = doc.querySelectorAll(
-            Array.from(this.#visibleSentinelIDs)
-                .map(id => `#${CSS.escape(id)}`)
-                .join(',')
-        );
-        const firstSentinel = visibleSentinels[0];
-        const lastSentinel = visibleSentinels[visibleSentinels.length - 1];
-
-        const findNext = el => {
-            let node = el?.nextSibling;
-            while (node && !isValid(node)) node = node.nextSibling;
-            return node;
-        };
-
-        const findPrev = el => {
-            let node = el?.previousSibling;
-            while (node && !isValid(node)) node = node.previousSibling;
-            return node;
-        };
-
-        const startNode = firstSentinel ? findNext(firstSentinel) : null;
-        const endNode = lastSentinel ? findPrev(lastSentinel) : null;
-
-        const range = doc.createRange();
-        if (startNode && endNode) {
-            range.setStartBefore(startNode);
-            range.setEndAfter(endNode);
-        } else {
-            range.selectNodeContents(doc.body);
-            range.collapse(true);
+             (node.nodeType === Node.ELEMENT_NODE &&
+              node.tagName !== 'reader-sentinel'));
+            
+            const visibleSentinels = doc.querySelectorAll(
+                                                          Array.from(this.#visibleSentinelIDs)
+                                                          .map(id => `#${CSS.escape(id)}`)
+                                                          .join(',')
+                                                          );
+            const firstSentinel = visibleSentinels[0];
+            const lastSentinel = visibleSentinels[visibleSentinels.length - 1];
+            
+            const findNext = el => {
+                let node = el?.nextSibling;
+                while (node && !isValid(node)) node = node.nextSibling;
+                return node;
+            };
+            
+            const findPrev = el => {
+                let node = el?.previousSibling;
+                while (node && !isValid(node)) node = node.previousSibling;
+                return node;
+            };
+            
+            const startNode = firstSentinel ? findNext(firstSentinel) : null;
+            const endNode = lastSentinel ? findPrev(lastSentinel) : null;
+            
+            const range = doc.createRange();
+            if (startNode && endNode) {
+                range.setStartBefore(startNode);
+                range.setEndAfter(endNode);
+            } else {
+                range.selectNodeContents(doc.body);
+                range.collapse(true);
+            }
+            return range;
         }
-        return range;
-    }
-    async #afterScroll(reason) {
-        await this.#awaitDirection();
-        if (this.#isCacheWarmer) {
-            return;
+                          async #afterScroll(reason) {
+            await this.#awaitDirection();
+            if (this.#isCacheWarmer) {
+                return;
+            }
+            
+            const range = await this.#getVisibleRange()
+            // don't set new anchor if relocation was to scroll to anchor
+            if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
+                this.#anchor = range
+                else this.#justAnchored = true
+                    
+                    const index = this.#index
+                    const detail = {
+                        reason,
+                        range,
+                        index
+                    }
+            if (this.scrolled) detail.fraction = (await this.start()) / (await this.viewSize())
+                else if ((await this.pages()) > 0) {
+                    const page = await this.page()
+                    const pages = await this.pages()
+                    this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
+                    detail.fraction = (page - 1) / (pages - 2)
+                    detail.size = 1 / (pages - 2)
+                }
+            
+            this.dispatchEvent(new CustomEvent('relocate', {
+                detail
+            }))
+            
+            // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
+            if (await this.isAtSectionStart()) {
+                this.#skipTouchEndOpacity = true
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail: {
+                        leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
+                        rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
+                    }
+                }));
+            }
         }
-
-        const range = await this.#getVisibleRange()
-        // don't set new anchor if relocation was to scroll to anchor
-        if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
-            this.#anchor = range
-        else this.#justAnchored = true
-
-        const index = this.#index
-        const detail = {
-            reason,
-            range,
-            index
-        }
-        if (this.scrolled) detail.fraction = (await this.start()) / (await this.viewSize())
-        else if ((await this.pages()) > 0) {
-            const page = await this.page()
-            const pages = await this.pages()
-            this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
-            detail.fraction = (page - 1) / (pages - 2)
-            detail.size = 1 / (pages - 2)
-        }
-
-        this.dispatchEvent(new CustomEvent('relocate', {
-            detail
-        }))
-
-        // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
-        if (await this.isAtSectionStart()) {
-            this.#skipTouchEndOpacity = true
+                          #updateSwipeChevron(dx, minSwipe) {
+            let leftOpacity = 0,
+            rightOpacity = 0;
+            if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
+            else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
                 detail: {
-                    leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
-                    rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
+                    leftOpacity,
+                    rightOpacity
                 }
             }));
-        }
-    }
-    #updateSwipeChevron(dx, minSwipe) {
-        let leftOpacity = 0,
-            rightOpacity = 0;
-        if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
-        else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
-        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-            bubbles: true,
-            composed: true,
-            detail: {
-                leftOpacity,
-                rightOpacity
-            }
-        }));
-        if (Math.abs(dx) > minSwipe) {
-            // Enqueue the reset after meeting threshold
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: '',
-                    rightOpacity: ''
-                }
-            }))
-        }
-    }
-    async #display(promise) {
-        this.#isLoading = true;
-        this.#top.classList.add('reader-loading');
-        const {
-            index,
-            src,
-            anchor,
-            onLoad,
-            select
-        } = await promise
-        this.#index = index
-        if (src) {
-            const afterLoad = async (doc) => {
-                if (this.#isCacheWarmer) {
-                    await onLoad?.({
-                        location: src,
-                    })
-                } else {
-                    if (doc.head) {
-                        const $styleBefore = doc.createElement('style')
-                        doc.head.prepend($styleBefore)
-                        const $style = doc.createElement('style')
-                        doc.head.append($style)
-                        this.#styleMap.set(doc, [$styleBefore, $style])
+            if (Math.abs(dx) > minSwipe) {
+                // Enqueue the reset after meeting threshold
+                this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+                    bubbles: true,
+                    composed: true,
+                    detail: {
+                        leftOpacity: '',
+                        rightOpacity: ''
                     }
-                    await onLoad?.({
-                        doc,
-                        location: doc.location.href,
-                        index,
-                    })
-                }
-            }
-
-            if (this.#isCacheWarmer) {
-                await fetch(src).then(r => r.text())
-                await afterLoad()
-            } else {
-                this.#skipTouchEndOpacity = true
-                const view = this.#createView()
-                const beforeRender = this.#beforeRender.bind(this)
-
-                this.#cachedSizes = null
-                this.#cachedStart = null
-                this.#scrolledToAnchorOnLoad = false
-
-                await view.load(src, afterLoad, beforeRender)
-                this.#view = view
-                // Reset chevrons when loading new section
-                document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
-                //            this.dispatchEvent(new CustomEvent('create-overlayer', {
-                //                detail: {
-                //                    doc: view.document, index,
-                //                    attach: overlayer => view.overlayer = overlayer,
-                //                },
-                //            }))
+                }))
             }
         }
-        await this.scrollToAnchor((typeof anchor === 'function' ?
-            anchor(this.#view.document) : anchor) ?? 0, select)
-        this.#scrolledToAnchorOnLoad = true
-        this.#top.classList.remove('reader-loading');
-        this.#isLoading = false;
-        this.dispatchEvent(new CustomEvent('didDisplay', {}))
-    }
-    #canGoToIndex(index) {
-        return index >= 0 && index <= this.sections.length - 1
-    }
-    async #goTo({
-        index,
-        anchor,
-        select
-    }) {
-        const willLoadNewIndex = index !== this.#index;
-        this.dispatchEvent(new CustomEvent('goTo', {
-            willLoadNewIndex: willLoadNewIndex
-        }))
-        if (!willLoadNewIndex) {
-            await this.#display({
+                          async #display(promise) {
+            this.#isLoading = true;
+            this.#top.classList.add('reader-loading');
+            const {
                 index,
+                src,
                 anchor,
+                onLoad,
                 select
-            })
-        } else {
-            const oldIndex = this.#index
-            // Reset direction flags and promise before loading a new section
-            this.#vertical = this.#verticalRTL = this.#rtl = null;
-            this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
-            const onLoad = async (detail) => {
-                this.sections[oldIndex]?.unload?.()
-
-                if (!this.#isCacheWarmer) {
-                    this.setStyles(this.#styles)
-
-                    await this.#applyVisibilitySentinels()
-                    this.#trackElementVisibilities()
-                }
-
-                this.dispatchEvent(new CustomEvent('load', {
-                    detail
-                }))
-            }
-
-            let loadPromise;
-            if (this.#prefetchCache.has(index)) {
-                loadPromise = this.#prefetchCache.get(index);
-            } else {
-                loadPromise = this.sections[index].load();
-                this.#prefetchCache.set(index, loadPromise);
-            }
-            await this.#display(Promise.resolve(loadPromise)
-                .then(src => ({
-                    index,
-                    src,
-                    anchor,
-                    onLoad,
-                    select
-                }))
-                .catch(error => {
-                    console.error(error);
-                    console.warn(new Error(`Failed to load section ${index}`));
-                    return {};
-                }));
-
-            clearTimeout(this.#prefetchTimer);
-            this.#prefetchTimer = setTimeout(() => {
-                if (this.#index !== index) return; // bail if user has moved on
-
-                const wanted = [index - 1, index + 1];
-                // Keep any already cached of these two
-                const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
-                this.#prefetchCache = new Map(
-                    [...this.#prefetchCache].filter(([i]) => keep.has(i))
-                );
-
-                // Now prefetch any neighbor not already cached
-                wanted.forEach(i => {
-                    if (
-                        i >= 0 &&
-                        i < this.sections.length &&
-                        this.sections[i].linear !== 'no' &&
-                        !this.#prefetchCache.has(i)
-                    ) {
-                        const p = this.sections[i].load().catch(() => { });
-                        this.#prefetchCache.set(i, p);
+            } = await promise
+            this.#index = index
+            if (src) {
+                const afterLoad = async (doc) => {
+                    if (this.#isCacheWarmer) {
+                        await onLoad?.({
+                            location: src,
+                        })
+                    } else {
+                        if (doc.head) {
+                            const $styleBefore = doc.createElement('style')
+                            doc.head.prepend($styleBefore)
+                            const $style = doc.createElement('style')
+                            doc.head.append($style)
+                            this.#styleMap.set(doc, [$styleBefore, $style])
+                        }
+                        await onLoad?.({
+                            doc,
+                            location: doc.location.href,
+                            index,
+                        })
                     }
-                });
-            }, 500);
-        }
-    }
-    async goTo(target) {
-        if (this.#locked) return
-        const resolved = await target
-        if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
-    }
-    async #scrollPrev(distance) {
-        if (!this.#view) return true
-        if (this.scrolled) {
-            const style = getComputedStyle(this.#container);
-            const lineAdvance = this.#vertical ?
-                parseFloat(style.fontSize) || 20 :
-                parseFloat(style.lineHeight) || 20;
-            const scrollDistance = distance ?? (this.size - lineAdvance);
-            if ((await this.start()) > 0) {
-                return await this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+                }
+                
+                if (this.#isCacheWarmer) {
+                    await fetch(src).then(r => r.text())
+                    await afterLoad()
+                } else {
+                    this.#skipTouchEndOpacity = true
+                    const view = this.#createView()
+                    const beforeRender = this.#beforeRender.bind(this)
+                    
+                    this.#cachedSizes = null
+                    this.#cachedStart = null
+                    this.#scrolledToAnchorOnLoad = false
+                    
+                    await view.load(src, afterLoad, beforeRender)
+                    this.#view = view
+                    // Reset chevrons when loading new section
+                    document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
+                    //            this.dispatchEvent(new CustomEvent('create-overlayer', {
+                    //                detail: {
+                    //                    doc: view.document, index,
+                    //                    attach: overlayer => view.overlayer = overlayer,
+                    //                },
+                    //            }))
+                }
             }
+            await this.scrollToAnchor((typeof anchor === 'function' ?
+                                       anchor(this.#view.document) : anchor) ?? 0, select)
+            this.#scrolledToAnchorOnLoad = true
+            this.#top.classList.remove('reader-loading');
+            this.#isLoading = false;
+            this.dispatchEvent(new CustomEvent('didDisplay', {}))
+        }
+                          #canGoToIndex(index) {
+            return index >= 0 && index <= this.sections.length - 1
+        }
+                          async #goTo({
+            index,
+            anchor,
+            select
+        }) {
+            const willLoadNewIndex = index !== this.#index;
+            this.dispatchEvent(new CustomEvent('goTo', {
+                willLoadNewIndex: willLoadNewIndex
+            }))
+            if (!willLoadNewIndex) {
+                await this.#display({
+                    index,
+                    anchor,
+                    select
+                })
+            } else {
+                const oldIndex = this.#index
+                // Reset direction flags and promise before loading a new section
+                this.#vertical = this.#verticalRTL = this.#rtl = null;
+                this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+                const onLoad = async (detail) => {
+                    this.sections[oldIndex]?.unload?.()
+                    
+                    if (!this.#isCacheWarmer) {
+                        this.setStyles(this.#styles)
+                        
+                        await this.#applyVisibilitySentinels()
+                        this.#trackElementVisibilities()
+                    }
+                    
+                    this.dispatchEvent(new CustomEvent('load', {
+                        detail
+                    }))
+                }
+                
+                let loadPromise;
+                if (this.#prefetchCache.has(index)) {
+                    loadPromise = this.#prefetchCache.get(index);
+                } else {
+                    loadPromise = this.sections[index].load();
+                    this.#prefetchCache.set(index, loadPromise);
+                }
+                await this.#display(Promise.resolve(loadPromise)
+                                    .then(src => ({
+                                        index,
+                                        src,
+                                        anchor,
+                                        onLoad,
+                                        select
+                                    }))
+                                    .catch(error => {
+                                        console.error(error);
+                                        console.warn(new Error(`Failed to load section ${index}`));
+                                        return {};
+                                    }));
+                
+                clearTimeout(this.#prefetchTimer);
+                this.#prefetchTimer = setTimeout(() => {
+                    if (this.#index !== index) return; // bail if user has moved on
+                    
+                    const wanted = [index - 1, index + 1];
+                    // Keep any already cached of these two
+                    const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
+                    this.#prefetchCache = new Map(
+                                                  [...this.#prefetchCache].filter(([i]) => keep.has(i))
+                                                  );
+                    
+                    // Now prefetch any neighbor not already cached
+                    wanted.forEach(i => {
+                        if (
+                            i >= 0 &&
+                            i < this.sections.length &&
+                            this.sections[i].linear !== 'no' &&
+                            !this.#prefetchCache.has(i)
+                            ) {
+                                const p = this.sections[i].load().catch(() => { });
+                                this.#prefetchCache.set(i, p);
+                            }
+                    });
+                }, 500);
+            }
+        }
+                          async goTo(target) {
+            if (this.#locked) return
+                const resolved = await target
+                if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
+                    }
+                          async #scrollPrev(distance) {
+            if (!this.#view) return true
+                if (this.scrolled) {
+                    const style = getComputedStyle(this.#container);
+                    const lineAdvance = this.#vertical ?
+                    parseFloat(style.fontSize) || 20 :
+                    parseFloat(style.lineHeight) || 20;
+                    const scrollDistance = distance ?? (this.size - lineAdvance);
+                    if ((await this.start()) > 0) {
+                        return await this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+                    }
+                    return true;
+                }
+            if (await this.atStart()) return
+                const page = await this.page() - 1
+                return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
+                }
+                          async #scrollNext(distance) {
+            if (!this.#view) return true
+                if (this.scrolled) {
+                    const style = getComputedStyle(this.#container);
+                    const lineAdvance = this.#vertical ?
+                    parseFloat(style.fontSize) || 20 :
+                    parseFloat(style.lineHeight) || 20;
+                    const scrollDistance = distance ?? (this.size - lineAdvance);
+                    if ((await this.viewSize()) - (await this.end()) > 2) {
+                        return await this.#scrollTo(Math.min(await this.viewSize(), (await this.start()) + scrollDistance), null, true);
+                    }
+                    return true;
+                }
+            if (await this.atEnd()) return
+                const page = await this.page() + 1
+                const pages = await this.pages()
+                return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
+                }
+                          async atStart() {
+            return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
+        }
+                          async atEnd() {
+            return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
+        }
+                          #adjacentIndex(dir) {
+            for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
+                if (this.sections[index]?.linear !== 'no') return index
+                    }
+                          async #turnPage(dir, distance) {
+            if (this.#locked) return
+                
+                this.#locked = true
+                const prev = dir === -1
+                const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+                if (shouldGo) await this.#goTo({
+                    index: this.#adjacentIndex(dir),
+                    anchor: prev ? () => 1 : () => 0,
+                })
+                    if (shouldGo || !this.hasAttribute('animated')) await wait(100)
+                        this.#locked = false
+                        }
+                          async prev(distance) {
+            return await this.#turnPage(-1, distance)
+        }
+                          async next(distance) {
+            return await this.#turnPage(1, distance)
+        }
+                          async prevSection() {
+            return await this.goTo({
+                index: this.#adjacentIndex(-1)
+            })
+        }
+                          async nextSection() {
+            return await this.goTo({
+                index: this.#adjacentIndex(1)
+            })
+        }
+                          async firstSection() {
+            const index = this.sections.findIndex(section => section.linear !== 'no')
+            return await this.goTo({
+                index
+            })
+        }
+                          async lastSection() {
+            const index = this.sections.findLastIndex(section => section.linear !== 'no')
+            return await this.goTo({
+                index
+            })
+        }
+                          getContents() {
+            if (this.#view) return [{
+                index: this.#index,
+                overlayer: this.#view.overlayer,
+                doc: this.#view.document,
+            }]
+                return []
+                }
+                          setStyles(styles) {
+            this.#styles = styles
+            const $$styles = this.#styleMap.get(this.#view?.document)
+            if (!$$styles) return
+                const [$beforeStyle, $style] = $$styles
+                if (Array.isArray(styles)) {
+                    const [beforeStyle, style] = styles
+                    $beforeStyle.textContent = beforeStyle
+                    $style.textContent = style
+                } else $style.textContent = styles
+                    
+                    //        // NOTE: needs `requestAnimationFrame` in Chromium
+                    //        requestAnimationFrame(() =>
+                    //            this.#background.style.background = getBackground(this.#view.document))
+                    
+                    // needed because the resize observer doesn't work in Firefox
+                    //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+                    }
+                          destroy() {
+            this.#disconnectElementVisibilityObserver()
+            this.#resizeObserver.unobserve(this)
+            this.#view.destroy()
+            this.#view = null
+            this.sections[this.#index]?.unload?.()
+        }
+                          // Public navigation edge detection methods
+                          async canTurnPrev() {
+            if (!this.#view) return false;
+            if (this.scrolled) {
+                return this.start > 0;
+            }
+            // If at the start page and no previous section, cannot turn
+            if ((await this.page()) <= 1 && this.#adjacentIndex(-1) == null) return false;
             return true;
         }
-        if (await this.atStart()) return
-        const page = await this.page() - 1
-        return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
-    }
-    async #scrollNext(distance) {
-        if (!this.#view) return true
-        if (this.scrolled) {
-            const style = getComputedStyle(this.#container);
-            const lineAdvance = this.#vertical ?
-                parseFloat(style.fontSize) || 20 :
-                parseFloat(style.lineHeight) || 20;
-            const scrollDistance = distance ?? (this.size - lineAdvance);
-            if ((await this.viewSize()) - (await this.end()) > 2) {
-                return await this.#scrollTo(Math.min(await this.viewSize(), (await this.start()) + scrollDistance), null, true);
+                          async canTurnNext() {
+            if (!this.#view) return false;
+            if (this.scrolled) {
+                return this.viewSize - this.end > 2;
             }
+            // If at the end page and no next section, cannot turn
+            if ((await this.page()) >= (await this.pages()) - 2 && this.#adjacentIndex(1) == null) return false;
             return true;
         }
-        if (await this.atEnd()) return
-        const page = await this.page() + 1
-        const pages = await this.pages()
-        return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
-    }
-    async atStart() {
-        return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
-    }
-    async atEnd() {
-        return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
-    }
-    #adjacentIndex(dir) {
-        for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
-            if (this.sections[index]?.linear !== 'no') return index
-    }
-    async #turnPage(dir, distance) {
-        if (this.#locked) return
-
-        this.#locked = true
-        const prev = dir === -1
-        const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
-        if (shouldGo) await this.#goTo({
-            index: this.#adjacentIndex(dir),
-            anchor: prev ? () => 1 : () => 0,
-        })
-        if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-        this.#locked = false
-    }
-    async prev(distance) {
-        return await this.#turnPage(-1, distance)
-    }
-    async next(distance) {
-        return await this.#turnPage(1, distance)
-    }
-    async prevSection() {
-        return await this.goTo({
-            index: this.#adjacentIndex(-1)
-        })
-    }
-    async nextSection() {
-        return await this.goTo({
-            index: this.#adjacentIndex(1)
-        })
-    }
-    async firstSection() {
-        const index = this.sections.findIndex(section => section.linear !== 'no')
-        return await this.goTo({
-            index
-        })
-    }
-    async lastSection() {
-        const index = this.sections.findLastIndex(section => section.linear !== 'no')
-        return await this.goTo({
-            index
-        })
-    }
-    getContents() {
-        if (this.#view) return [{
-            index: this.#index,
-            overlayer: this.#view.overlayer,
-            doc: this.#view.document,
-        }]
-        return []
-    }
-    setStyles(styles) {
-        this.#styles = styles
-        const $$styles = this.#styleMap.get(this.#view?.document)
-        if (!$$styles) return
-        const [$beforeStyle, $style] = $$styles
-        if (Array.isArray(styles)) {
-            const [beforeStyle, style] = styles
-            $beforeStyle.textContent = beforeStyle
-            $style.textContent = style
-        } else $style.textContent = styles
-
-        //        // NOTE: needs `requestAnimationFrame` in Chromium
-        //        requestAnimationFrame(() =>
-        //            this.#background.style.background = getBackground(this.#view.document))
-
-        // needed because the resize observer doesn't work in Firefox
-        //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
-    }
-    destroy() {
-        this.#disconnectElementVisibilityObserver()
-        this.#resizeObserver.unobserve(this)
-        this.#view.destroy()
-        this.#view = null
-        this.sections[this.#index]?.unload?.()
-    }
-    // Public navigation edge detection methods
-    async canTurnPrev() {
-        if (!this.#view) return false;
-        if (this.scrolled) {
-            return this.start > 0;
+                          
+                          // Public helpers for adjacent sections
+                          getHasPrevSection() {
+            return this.#adjacentIndex(-1) != null;
         }
-        // If at the start page and no previous section, cannot turn
-        if ((await this.page()) <= 1 && this.#adjacentIndex(-1) == null) return false;
-        return true;
-    }
-    async canTurnNext() {
-        if (!this.#view) return false;
-        if (this.scrolled) {
-            return this.viewSize - this.end > 2;
+                          getHasNextSection() {
+            return this.#adjacentIndex(1) != null;
         }
-        // If at the end page and no next section, cannot turn
-        if ((await this.page()) >= (await this.pages()) - 2 && this.#adjacentIndex(1) == null) return false;
-        return true;
-    }
-
-    // Public helpers for adjacent sections
-    getHasPrevSection() {
-        return this.#adjacentIndex(-1) != null;
-    }
-    getHasNextSection() {
-        return this.#adjacentIndex(1) != null;
-    }
-
-    // Public: At first page of current section
-    async isAtSectionStart() {
-        return (await this.page()) <= 1;
-    }
-    // Public: At last page of current section
-    async isAtSectionEnd() {
-        return (await this.page()) >= (await this.pages()) - 2;
-    }
-}
-
-customElements.define('foliate-paginator', Paginator)
+                          
+                          // Public: At first page of current section
+                          async isAtSectionStart() {
+            return (await this.page()) <= 1;
+        }
+                          // Public: At last page of current section
+                          async isAtSectionEnd() {
+            return (await this.page()) >= (await this.pages()) - 2;
+        }
+                          }
+                          
+                          customElements.define('foliate-paginator', Paginator)
