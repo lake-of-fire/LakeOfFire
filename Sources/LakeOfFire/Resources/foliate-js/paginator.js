@@ -1,5 +1,16 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
+const CSS_DEFAULTS = {
+    gapPct: 4,
+    topMarginPx: 12,
+    bottomMarginPx: 32,
+    sideMarginPx: 32,
+    maxInlineSizePx: 720,
+    maxBlockSizePx: 1440,
+    maxColumnCount: 2,
+    maxColumnCountPortrait: 1,
+};
+
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
@@ -67,26 +78,6 @@ const {
     FILTER_REJECT,
     FILTER_SKIP
 } = NodeFilter
-
-const filter = SHOW_ELEMENT | SHOW_TEXT | SHOW_CDATA_SECTION
-
-// needed cause there seems to be a bug in `getBoundingClientRect()` in Firefox
-// where it fails to include rects that have zero width and non-zero height
-// (CSSOM spec says "rectangles [...] of which the height or width is not zero")
-// which makes the visible range include an extra space at column boundaries
-const getBoundingClientRect = target => {
-    let top = Infinity,
-    right = -Infinity,
-    left = Infinity,
-    bottom = -Infinity
-    for (const rect of target.getClientRects()) {
-        left = Math.min(left, rect.left)
-        top = Math.min(top, rect.top)
-        right = Math.max(right, rect.right)
-        bottom = Math.max(bottom, rect.bottom)
-    }
-    return new DOMRect(left, top, right - left, bottom - top)
-}
 
 // Determine vertical/RTL by cloning only head and empty body in hidden iframe
 const getDirection = async (sourceDoc) => {
@@ -975,20 +966,29 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         const size = vertical ? height : width
         
-        const style = getComputedStyle(this.#top)
-        const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
-        const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-        const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
-        const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+        const {
+            maxInlineSizePx,
+            maxColumnCount,
+            maxColumnCountPortrait,
+            topMarginPx,
+            bottomMarginPx,
+            gapPct
+        } = CSS_DEFAULTS;
+        const maxInlineSize = maxInlineSizePx;
+        const maxColumnCountSpread = vertical
+        ? maxColumnCountPortrait
+        : maxColumnCount;
+        const topMargin = topMarginPx;
+        const bottomMargin = bottomMarginPx;
+        
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
-        
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
         if (this.#vertical) {
             this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
         }
         
-        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
+        const g = gapPct / 100;
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
         // `a` be the gap percentage. The actual percentage for the column gap
@@ -1033,7 +1033,7 @@ export class Paginator extends HTMLElement {
         if (this.#isSingleMediaElementWithoutText()) {
             columnWidth = maxInlineSize
         } else {
-            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
             columnWidth = (size / divisor) - gap
         }
         
