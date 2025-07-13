@@ -1,7 +1,5 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
-const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
     let timeout;
@@ -58,26 +56,6 @@ const uncollapse = range => {
             else return endContainer.parentNode
                 return range
                 }
-
-const makeRange = (doc, node, start, end = start) => {
-    const range = doc.createRange()
-    range.setStart(node, start)
-    //    range.setEnd(node, end)
-    range.setEnd(node, start)
-    return range
-}
-
-// use binary search to find an offset value in a text node
-const bisectNode = (doc, node, cb, start = 0, end = node.nodeValue.length) => {
-    if (end - start === 1) {
-        const result = cb(makeRange(doc, node, start), makeRange(doc, node, end))
-        return result < 0 ? start : end
-    }
-    const mid = Math.floor(start + (end - start) / 2)
-    const result = cb(makeRange(doc, node, start, mid), makeRange(doc, node, mid, end))
-    return result < 0 ? bisectNode(doc, node, cb, start, mid) :
-    result > 0 ? bisectNode(doc, node, cb, mid, end) : mid
-}
 
 const {
     SHOW_ELEMENT,
@@ -190,14 +168,6 @@ const getDirection = async (sourceDoc) => {
     };
 };
 
-//const getBackground = doc => {
-//    const bodyStyle = doc.defaultView.getComputedStyle(doc.body)
-//    return bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
-//        bodyStyle.backgroundImage === 'none' ?
-//        doc.defaultView.getComputedStyle(doc.documentElement).background :
-//        bodyStyle.background
-//}
-
 const makeMarginals = (length, part) => Array.from({
     length
 }, () => {
@@ -267,16 +237,6 @@ class View {
             this.#debouncedExpand();
         })
     })
-    //    #mutationObserver = new MutationObserver(async () => {
-    //        //        return ;
-    //        if (!this.#isCacheWarmer) {
-    //            if (this.#column) {
-    //                // TODO: Needed still?
-    //                this.needsRenderForMutation = true
-    //            }
-    //        }
-    //    })
-    //    needsRenderForMutation = false
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
     #contentRange = document.createRange()
@@ -345,8 +305,6 @@ class View {
                     
                     await afterLoad?.(doc)
                     
-                    // it needs to be visible for Firefox to get computed style
-                    //                    this.#iframe.style.display = 'block'
                     this.#iframe.style.display = 'none'
                     
                     const direction = await getDirection(doc);
@@ -355,35 +313,18 @@ class View {
                     this.#rtl = direction.rtl;
                     this.#directionReadyResolve?.();
                     
-                    //                    const background = getBackground(doc)
-                    //                    this.#iframe.style.display = 'none'
-                    
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
                     
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
-                        //                        background
                     })
                     this.#iframe.style.display = 'block'
                     
                     await this.render(layout)
                     
                     this.#resizeObserver.observe(doc.body)
-                    
-                    //                    this.#resizeObserver.observe(doc.body)
-                    //                    this.#mutationObserver.observe(doc.body, {
-                    //                        childList: true,
-                    //                        subtree: true,
-                    //                        attributes: false
-                    //                    })
-                    
-                    // the resize observer above doesn't work in Firefox
-                    // (see https://bugzilla.mozilla.org/show_bug.cgi?id=1832939)
-                    // until the bug is fixed we can at least account for font load
-                    //                    doc.fonts.ready.then(async () => { await this.expand() })
-                    //                doc.fonts.ready.then(() => this.#debouncedExpand())
                     
                     resolve()
                 }, {
@@ -1206,7 +1147,7 @@ export class Paginator extends HTMLElement {
         return this.#view.cachedViewSize[await this.sideProp()]
     }
     async start() {
-        if (this.#cachedStart === null) {
+        if (true || this.#cachedStart === null) {
             await new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     await this.#awaitDirection();
