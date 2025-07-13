@@ -408,6 +408,7 @@ class View {
 
                     // it needs to be visible for Firefox to get computed style
                     //                    this.#iframe.style.display = 'block'
+                    this.#iframe.style.display = 'none'
 
                     const direction = await getDirection(doc);
                     this.#vertical = direction.vertical;
@@ -426,7 +427,7 @@ class View {
                         rtl: this.#rtl,
                         //                        background
                     })
-                    //                    this.#iframe.style.display = 'block'
+                    this.#iframe.style.display = 'block'
 
                     await this.render(layout)
 
@@ -567,19 +568,9 @@ class View {
                 if (this.#column) {
                     const side = this.#vertical ? 'height' : 'width'
                     const otherSide = this.#vertical ? 'width' : 'height'
-                    // BEGIN RESTORED DETAILED DEBUG LOGGING
-                    const contentRect = this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect()
                     const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
-                    const scrollSize = documentElement?.[scrollProp] ?? contentRect[side]
-                    const contentStart = this.#vertical
-                        ? 0
-                        : this.#rtl
-                            ? documentElement.getBoundingClientRect().right - contentRect.right
-                            : contentRect.left - documentElement.getBoundingClientRect().left
-                    const origSize = contentStart + contentRect[side]
-                    console.log('[expand] origSize:', origSize, 'scrollSize:', scrollSize)
-                    const pageCount = Math.ceil(scrollSize / this.#size)
-                    // END RESTORED DETAILED DEBUG LOGGING
+                    const contentSize = documentElement?.[scrollProp] ?? (this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect())[side]
+                    const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * await this.#size
                     this.#element.style.padding = '0'
                     this.#iframe.style[side] = `${expandedSize}px`
