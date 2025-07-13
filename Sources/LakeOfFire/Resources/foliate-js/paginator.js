@@ -647,8 +647,6 @@ export class Paginator extends HTMLElement {
             #top {
                 contain: strict;
         
-                /*--_gap: 7%;
-                --_margin: 48px;*/
                 --_gap: 4%;
                 --_top-margin: 12px;
                 --_bottom-margin: 32px;
@@ -1524,16 +1522,6 @@ export class Paginator extends HTMLElement {
                     this.#anchor = anchor
                     // Determine anchor target (could be Range or Element)
                     const anchorNode = uncollapse(anchor);
-                    // Diagnostic: log rect from getClientRects on the raw anchor (Range or Element)
-                    const rects = anchorNode?.getClientRects?.();
-                    if (rects && rects.length > 0) {
-                        const rect = Array.from(rects)
-                        .find(r => r.width > 0 && r.height > 0) || rects[0]
-                        if (!rect) return
-                            await this.#scrollToRect(rect, reason)
-                            resolve()
-                            return
-                            }
                     // Fast path: compute offset using offsetLeft/offsetTop, traversing offsetParent chain (and iframe chain if needed)
                     // Normalize node: if it's a Range, use its startContainer
                     let elNode = anchorNode;
