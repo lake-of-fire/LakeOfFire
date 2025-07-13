@@ -754,7 +754,7 @@ export class Paginator extends HTMLElement {
         }
 
         console.log("RESIZE OBS pagiantor UPDATED... " + newSize.width + "x" + newSize.height)
-        
+
         requestAnimationFrame(() => {
             this.#debouncedRender();
         })
@@ -1222,10 +1222,10 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
-//        console.log("# before render... await apply sentinels")
-//        await this.#applyVisibilitySentinels()
-//        console.log("# before render... await apply sentinels...done")
-//        this.#trackElementVisibilities()
+        //        console.log("# before render... await apply sentinels")
+        //        await this.#applyVisibilitySentinels()
+        //        console.log("# before render... await apply sentinels...done")
+        //        this.#trackElementVisibilities()
 
         console.log("#beforeRender... returning")
         return {
@@ -1246,7 +1246,7 @@ export class Paginator extends HTMLElement {
 
         // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
-//        this.#resizeObserver.observe(this.#container);
+        //        this.#resizeObserver.observe(this.#container);
 
         try {
             await this.#view.render(await this.#beforeRender({
@@ -1957,6 +1957,7 @@ export class Paginator extends HTMLElement {
     }
     async #display(promise) {
         this.#isLoading = true;
+        this.#top.classList.add('reader-loading');
         const {
             index,
             src,
@@ -1999,6 +2000,7 @@ export class Paginator extends HTMLElement {
         }
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        this.#top.classList.remove('reader-loading');
         this.#isLoading = false;
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
     }
