@@ -1147,16 +1147,16 @@ export class Paginator extends HTMLElement {
         return this.#view.cachedViewSize[await this.sideProp()]
     }
     async start() {
-        if (true || this.#cachedStart === null) {
-            await new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    await this.#awaitDirection();
-                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
-                    resolve()
-                })
+        //        if (this.#cachedStart === null) {
+        return new Promise(resolve => {
+            requestAnimationFrame(async () => {
+                //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
+                const start = Math.abs(this.#container[await this.scrollProp()])
+                resolve(start)
             })
-        }
-        return this.#cachedStart
+        })
+        //        }
+        //        return this.#cachedStart
     }
     async end() {
         await this.#awaitDirection();
@@ -1183,6 +1183,7 @@ export class Paginator extends HTMLElement {
                     const max = rtl ? offset + a : offset + b
                     element[scrollProp] = Math.max(min, Math.min(max,
                                                                  element[scrollProp] + delta))
+                    this.#cachedStart = null;
                     resolve()
                 })
             })
@@ -1410,6 +1411,7 @@ export class Paginator extends HTMLElement {
                           async #scrollTo(offset, reason, smooth) {
             await this.#awaitDirection();
             const scroll = async () => {
+                this.#cachedStart = null;
                 const element = this.#container
                 const scrollProp = await this.scrollProp()
                 const size = await this.size()
@@ -1517,51 +1519,19 @@ export class Paginator extends HTMLElement {
             
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
-                    console.log("SCROLL to ANCHOR")
                     this.#anchor = anchor
                     // Determine anchor target (could be Range or Element)
                     const anchorNode = uncollapse(anchor);
                     // Diagnostic: log rect from getClientRects on the raw anchor (Range or Element)
                     const rects = anchorNode?.getClientRects?.();
-                    let diagRect = null;
                     if (rects && rects.length > 0) {
-                        diagRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
-                        console.log("DIAGNOSTIC getClientRects rect:", diagRect);
-                        
-                        
                         const rect = Array.from(rects)
                         .find(r => r.width > 0 && r.height > 0) || rects[0]
                         if (!rect) return
                             await this.#scrollToRect(rect, reason)
                             resolve()
                             return
-                        
-                    }
-                    // Debug context values
-                    const size = await this.size();
-                    const viewSize = await this.viewSize();
-                    const start = await this.start();
-                    const end = await this.end();
-                    const page = await this.page();
-                    const pages = await this.pages();
-                    const scrollProperty = await this.scrollProp();
-                    const scrollValue = this.#container[scrollProperty];
-                    const containerRect = this.#container.getBoundingClientRect();
-                    console.log("debug scroll context:", {
-                        scrollProperty,
-                        scrollValue,
-                        containerRect,
-                        size,
-                        viewSize,
-                        start,
-                        end,
-                        page,
-                        pages,
-                        scrolled: this.scrolled,
-                        vertical: this.#vertical,
-                        rtl: this.#rtl,
-                    });
-                    
+                            }
                     // Fast path: compute offset using offsetLeft/offsetTop, traversing offsetParent chain (and iframe chain if needed)
                     // Normalize node: if it's a Range, use its startContainer
                     let elNode = anchorNode;
@@ -1571,46 +1541,14 @@ export class Paginator extends HTMLElement {
                     let syntheticRect = null;
                     if (elNode && (elNode.nodeType === Node.ELEMENT_NODE || elNode.nodeType === Node.TEXT_NODE)) {
                         let el = elNode.nodeType === Node.TEXT_NODE ? elNode.parentElement : elNode;
-                        // === BEGIN DIAGNOSTIC LOGGING ===
-                        if (el) {
-                            console.log("el.offsetTop/Left:", el.offsetTop, el.offsetLeft);
-                            console.log("el.getBoundingClientRect():", el.getBoundingClientRect());
-                            // Parent container in iframe:
-                            const parentSec = el.parentElement;
-                            if (parentSec) console.log("parentSection.getBoundingClientRect():", parentSec.getBoundingClientRect());
-                            // Iframe element in host:
-                            const frameEl = el.ownerDocument.defaultView.frameElement;
-                            if (frameEl) console.log("iframe.getBoundingClientRect():", frameEl.getBoundingClientRect());
-                            // Document scroll (in case body/html is scrolled):
-                            console.log("doc scrollTop:", el.ownerDocument.documentElement.scrollTop,
-                                        el.ownerDocument.body.scrollTop,
-                                        "pageYOffset:", el.ownerDocument.defaultView.pageYOffset);
-                            // Computed styles that could shift things:
-                            const cs = getComputedStyle(el);
-                            console.log("el styles:", {
-                                marginTop: cs.marginTop, paddingTop: cs.paddingTop,
-                                borderTop: cs.borderTopWidth,
-                            });
-                        }
-                        // === END DIAGNOSTIC LOGGING ===
                         if (el && el.nodeType === Node.ELEMENT_NODE) {
                             let left = el.offsetLeft, top = el.offsetTop;
                             let width = el.offsetWidth, height = el.offsetHeight;
-                            let debugSteps = [];
                             let current = el;
                             let doc = el.ownerDocument;
                             // Traverse offsetParent chain
                             while (current && current !== this.#container) {
                                 let parent = current.offsetParent;
-                                debugSteps.push({
-                                    el: current,
-                                    offsetLeft: current.offsetLeft,
-                                    offsetTop: current.offsetTop,
-                                    offsetParent: parent,
-                                    width: current.offsetWidth,
-                                    height: current.offsetHeight,
-                                    nodeName: current.nodeName
-                                });
                                 if (!parent) {
                                     // If inside an iframe, continue with frameElement
                                     if (doc && doc.defaultView && doc.defaultView.frameElement) {
@@ -1648,26 +1586,9 @@ export class Paginator extends HTMLElement {
                                 width,
                                 height
                             };
-                            console.log("FASTPATH offset traversal debug:", debugSteps);
-                            console.log("FASTPATH synthetic rect:", syntheticRect);
-                            if (diagRect) {
-                                console.log("Compare synthetic vs getClientRects:", {
-                                    syntheticRect,
-                                    diagRect
-                                });
-                            }
-                            // Use rectMapper and log mapped/offset
                             const rectMapper = await this.#getRectMapper();
                             const mapped = rectMapper(syntheticRect);
-                            console.log("mapped via rectMapper (fastpath):", mapped);
                             const offset = mapped.left - this.#topMargin;
-                            console.log("computed fastOffset (fastpath):", offset);
-                            // Scroll directly using scrollTo (never using getClientRects for offset)
-                            // === BEGIN FINAL CONTAINER DIAGNOSTIC LOGGING ===
-                            console.log("containerRect (final):", this.#container.getBoundingClientRect());
-                            console.log("topMargin (final):", this.#topMargin,
-                                        "scrollValue (final):", this.#container[await this.scrollProp()]);
-                            // === END FINAL CONTAINER DIAGNOSTIC LOGGING ===
                             await this.#scrollTo(offset, reason);
                             resolve();
                             return;
@@ -1854,6 +1775,7 @@ export class Paginator extends HTMLElement {
             return range;
         }
                           async #afterScroll(reason) {
+            this.#cachedStart = null;
             await this.#awaitDirection();
             if (this.#isCacheWarmer) {
                 return;
