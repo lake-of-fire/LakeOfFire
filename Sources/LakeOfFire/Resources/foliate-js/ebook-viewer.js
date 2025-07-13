@@ -1100,6 +1100,8 @@ window.loadLastPosition = async ({
     cfi,
     fractionalCompletion,
 }) => {
+    console.log("LOAD LAST POSITION")
+    console.log(cfi)
     if (cfi.length > 0) {
         await globalThis.reader.view.goTo(cfi).catch(e => {
             console.error(e)

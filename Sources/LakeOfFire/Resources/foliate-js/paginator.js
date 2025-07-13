@@ -312,7 +312,6 @@ class View {
             newSize.left === old.left;
 
         if (unchanged) {
-            console.log("RESIZE OBS #view skipped...")
             return
         }
 
@@ -458,7 +457,6 @@ class View {
     async render(layout) {
         console.log("View render(layout)...")
         if (!layout) {
-            console.log("View render(layout)...skip, no layout!")
             return
         }
         this.#column = layout.flow !== 'scrolled'
@@ -518,7 +516,6 @@ class View {
     }) {
         console.log("columnize...")
         await this.#awaitDirection();
-        console.log("columnize...proceed")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
 
@@ -749,7 +746,6 @@ export class Paginator extends HTMLElement {
         }
 
         if (unchanged) {
-            console.log("RESIZE OBS paginator skipped...")
             return
         }
 
@@ -1145,12 +1141,10 @@ export class Paginator extends HTMLElement {
         // this is needed because the iframe does not fill the whole element
         this.#background.style.background = background
 
-        console.log("# before render... await sizes")
         const {
             width,
             height
         } = await this.sizes()
-        console.log("# before render... awaited sizes")
         const size = vertical ? height : width
 
         const style = getComputedStyle(this.#top)
@@ -1234,7 +1228,6 @@ export class Paginator extends HTMLElement {
         //        console.log("# before render... await apply sentinels...done")
         //        this.#trackElementVisibilities()
 
-        console.log("#beforeRender... returning")
         return {
             height,
             width,
@@ -1245,11 +1238,10 @@ export class Paginator extends HTMLElement {
         }
     }
     async render() {
-        console.log("render()...")
         if (!this.#view) {
-            console.log("render()...skip!")
             return
         }
+        console.log("render()...")
 
         // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
@@ -1986,10 +1978,8 @@ export class Paginator extends HTMLElement {
             //            }))
             this.#view = view
         }
-            console.log("before scroll anchor")
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
-            console.log("after scroll anchor")
         this.#top.classList.remove('reader-loading');
         this.#isLoading = false;
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
