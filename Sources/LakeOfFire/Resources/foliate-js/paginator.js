@@ -251,13 +251,13 @@ const getDirection = async (sourceDoc) => {
     };
 };
 
-const getBackground = doc => {
-    const bodyStyle = doc.defaultView.getComputedStyle(doc.body)
-    return bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
-        bodyStyle.backgroundImage === 'none' ?
-        doc.defaultView.getComputedStyle(doc.documentElement).background :
-        bodyStyle.background
-}
+//const getBackground = doc => {
+//    const bodyStyle = doc.defaultView.getComputedStyle(doc.body)
+//    return bodyStyle.backgroundColor === 'rgba(0, 0, 0, 0)' &&
+//        bodyStyle.backgroundImage === 'none' ?
+//        doc.defaultView.getComputedStyle(doc.documentElement).background :
+//        bodyStyle.background
+//}
 
 const makeMarginals = (length, part) => Array.from({
     length
@@ -360,7 +360,7 @@ class View {
         this.#isCacheWarmer = isCacheWarmer
         this.#debouncedExpand = debounce(this.expand.bind(this), 999)
         this.onExpand = onExpand
-        this.#iframe.setAttribute('part', 'filter')
+//        this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
         Object.assign(this.#element.style, {
             boxSizing: 'content-box',
@@ -416,7 +416,7 @@ class View {
                     this.#rtl = direction.rtl;
                     this.#directionReadyResolve?.();
 
-                    const background = getBackground(doc)
+//                    const background = getBackground(doc)
                     this.#iframe.style.display = 'none'
 
                     this.#contentRange.selectNodeContents(doc.body)
@@ -427,7 +427,7 @@ class View {
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
-                        background
+//                        background
                     })
                     this.#iframe.style.display = 'block'
 
@@ -497,14 +497,16 @@ class View {
             'min-width': 'none',
             // fix glyph clipping in WebKit
             '-webkit-line-box-contain': 'block glyphs replaced',
+            
+            // columnize parity
+            '--paginator-margin': '30px',
         })
         // columnize parity
-        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
         setStylesImportant(doc.body, {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-        await this.setImageSizes()
+//        await this.setImageSizes()
         //        this.#debouncedExpand()
         await this.expand()
     }
@@ -551,13 +553,14 @@ class View {
             'max-width': 'none',
             'margin': '0',
         })
-        await this.setImageSizes()
+//        await this.setImageSizes()
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         await this.expand()
         //            //            this.#debouncedExpand()
         //        }
     }
+    /*
     async setImageSizes() {
         await this.#awaitDirection();
         const {
@@ -596,6 +599,7 @@ class View {
             });
         }
     }
+     */
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
@@ -757,7 +761,7 @@ export class Paginator extends HTMLElement {
     })
     #top
     #transitioning = false;
-    #background
+//    #background
     #container
     #header
     #footer
@@ -863,10 +867,10 @@ export class Paginator extends HTMLElement {
                 opacity: 0;
                 pointer-events: none;
             }
-            #background {
+            /*#background {
                 grid-column: 1 / -1;
                 grid-row: 1 / -1;
-            }
+            }*/
             #container {
                 grid-column: 2 / 5;
                 grid-row: 2;
@@ -923,7 +927,7 @@ export class Paginator extends HTMLElement {
             }
         </style>
         <div id="top">
-            <div id="background" part="filter"></div>
+            <!-- <div id="background" part="filter"></div> -->
             <div id="header"></div>
             <div id="container"></div>
             <div id="footer"></div>
@@ -1103,7 +1107,7 @@ export class Paginator extends HTMLElement {
     #isSingleMediaElementWithoutText() {
         const container = this.#view.document.getElementById('reader-content');
         if (!container) return false;
-        const mediaTags = ['img', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
+        const mediaTags = ['img', 'image', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
         let mediaElement = null;
 
         for (const node of container.childNodes) {
@@ -1128,7 +1132,7 @@ export class Paginator extends HTMLElement {
         vertical,
         verticalRTL,
         rtl,
-        background
+//        background
     }) {
         console.log("# before render...")
         this.#vertical = vertical
@@ -1139,7 +1143,7 @@ export class Paginator extends HTMLElement {
 
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
-        this.#background.style.background = background
+//        this.#background.style.background = background
 
         const {
             width,
@@ -1155,6 +1159,8 @@ export class Paginator extends HTMLElement {
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
 
+        this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
+        
         const g = parseFloat(style.getPropertyValue('--_gap')) / 100
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -2178,9 +2184,9 @@ export class Paginator extends HTMLElement {
             $style.textContent = style
         } else $style.textContent = styles
 
-        // NOTE: needs `requestAnimationFrame` in Chromium
-        requestAnimationFrame(() =>
-            this.#background.style.background = getBackground(this.#view.document))
+//        // NOTE: needs `requestAnimationFrame` in Chromium
+//        requestAnimationFrame(() =>
+//            this.#background.style.background = getBackground(this.#view.document))
 
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })

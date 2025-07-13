@@ -1070,7 +1070,7 @@ window.loadNextCacheWarmerSection = async () => {
 
 window.loadEBook = ({
     url,
-    layoutMode
+    layoutMode,
 }) => {
     let reader = new Reader()
     globalThis.reader = reader
