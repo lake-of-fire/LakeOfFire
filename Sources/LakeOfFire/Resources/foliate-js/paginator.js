@@ -1,5 +1,7 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
 const debounce = (fn, delay) => {
     let timeout;
@@ -248,7 +250,7 @@ class View {
     #directionReady = new Promise(r => (this.#directionReadyResolve = r));
     #column = true
     #size
-    #layout = {}
+    layout = {}
     #isCacheWarmer
     constructor({
         container,
@@ -340,7 +342,7 @@ class View {
             return
         }
         this.#column = layout.flow !== 'scrolled'
-        this.#layout = layout
+        this.layout = layout
         if (this.#column) await this.columnize(layout)
             else await this.scrolled(layout)
                 }
@@ -475,7 +477,7 @@ class View {
                     const {
                         topMargin,
                         bottomMargin
-                    } = this.#layout
+                    } = this.layout
                     const paddingTop = `${marginTop}px`
                     const paddingBottom = `${marginBottom}px`
                     if (this.#vertical) {
@@ -1571,8 +1573,7 @@ export class Paginator extends HTMLElement {
                             }
                             // Use layout size and column gap to infer correct scroll offset from offsetLeft + offsetTop
                             const columnSize = await this.size();
-                            const containerStyle = getComputedStyle(this.#container);
-                            const columnGap = parseFloat(containerStyle.columnGap) || 0;
+                            const columnGap = this.#view.layout?.gap || 0;
                             const combined = columnSize + columnGap;
                             const pageIndex = Math.floor(left / combined);
                             const inlineOffset = el.offsetTop;
