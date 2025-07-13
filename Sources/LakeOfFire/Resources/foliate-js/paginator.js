@@ -221,7 +221,7 @@ const getDirection = async (sourceDoc) => {
 
     // 5. Create a hidden iframe, append, and wait for load
     const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;';
+    iframe.style.cssText = 'position:fixed;visibility:hidden;width:0;height:0;border:0;contain:strict;';
     document.documentElement.appendChild(iframe);
     await new Promise(resolve => {
         iframe.onload = resolve;
@@ -407,7 +407,7 @@ class View {
                     await afterLoad?.(doc)
 
                     // it needs to be visible for Firefox to get computed style
-                    this.#iframe.style.display = 'block'
+//                    this.#iframe.style.display = 'block'
 
                     const direction = await getDirection(doc);
                     this.#vertical = direction.vertical;
@@ -416,21 +416,21 @@ class View {
                     this.#directionReadyResolve?.();
 
 //                    const background = getBackground(doc)
-                    this.#iframe.style.display = 'none'
+//                    this.#iframe.style.display = 'none'
 
                     this.#contentRange.selectNodeContents(doc.body)
                     this.#cachedContentRangeRect = null
-
-                    this.#resizeObserver.observe(doc.body)
 
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
 //                        background
                     })
-                    this.#iframe.style.display = 'block'
+//                    this.#iframe.style.display = 'block'
 
                     await this.render(layout)
+
+                    this.#resizeObserver.observe(doc.body)
 
                     //                    this.#resizeObserver.observe(doc.body)
                     //                    this.#mutationObserver.observe(doc.body, {
@@ -741,6 +741,7 @@ export class Paginator extends HTMLElement {
                 width: newSize.width,
                 height: newSize.height,
             }
+            this.#cachedStart = null
         }
 
         if (!this.#hasResizeObserverTriggered) {
@@ -788,11 +789,12 @@ export class Paginator extends HTMLElement {
     #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
+    #scrolledToAnchorOnLoad = false
+    
     #cachedSizes = null
+    #cachedStart = null
 
-    #visibleElements = new WeakSet()
     #visibleSentinelIDs = new Set()
-    #nonVisibleElements = new WeakSet()
     #elementVisibilityObserver = null
     #elementVisibilityObserverLoading = null
     #elementVisibilityObserverLoadingResolve = null
@@ -1028,7 +1030,9 @@ export class Paginator extends HTMLElement {
         console.log("onExpand...")
         this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
         this.#view.cachedViewSize = null
-        await this.#scrollToAnchor(this.#anchor)
+        if (this.#scrolledToAnchorOnLoad) {
+            await this.#scrollToAnchor(this.#anchor)
+        }
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
@@ -1037,8 +1041,6 @@ export class Paginator extends HTMLElement {
         this.#disconnectElementVisibilityObserver();
 
         this.#visibleSentinelIDs = new Set()
-        this.#visibleElements = new WeakSet()
-        this.#nonVisibleElements = new WeakSet()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
             console.log("Interesection obs..." + entries.length)
@@ -1048,16 +1050,12 @@ export class Paginator extends HTMLElement {
                     if (el.tagName === 'reader-sentinel') {
                         this.#visibleSentinelIDs.add(el.id)
                     }
-                    this.#visibleElements.add(el);
                     el.classList.remove('manabi-off-screen');
-                    this.#nonVisibleElements.delete(el);
                 } else {
                     if (el.tagName === 'reader-sentinel') {
                         this.#visibleSentinelIDs.delete(el.id)
                     }
-                    this.#nonVisibleElements.add(el);
                     el.classList.add('manabi-off-screen');
-                    this.#visibleElements.delete(el);
                 }
             }
 
@@ -1082,8 +1080,6 @@ export class Paginator extends HTMLElement {
                 for (const node of mutation.removedNodes) {
                     if (node instanceof Element && node.matches(selector)) {
                         this.#elementVisibilityObserver.unobserve(node);
-                        this.#visibleElements.delete(node);
-                        this.#nonVisibleElements.delete(node);
                     }
                 }
             }
@@ -1289,13 +1285,10 @@ export class Paginator extends HTMLElement {
     async sizes() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedSizes === null) {
+        if (this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(() => {
                     const rect = this.#container.getBoundingClientRect()
-                    if ((this.#cachedSizes?.width && this.#cachedSizes.width != rect.width) || (this.#cachedSizes?.height && this.#cachedSizes.height != rect.height)) {
-                        console.log("Sizes(): old: " + this.#cachedSizes?.width + "x" + this.#cachedSizes?.height + "; New: " + rect.width + "x" + rect.height)
-                    }
                     this.#cachedSizes = {
                         width: rect.width,
                         height: rect.height,
@@ -1312,7 +1305,7 @@ export class Paginator extends HTMLElement {
     async viewSize() {
         await this.#awaitDirection();
         if (this.#isCacheWarmer) return 0
-        if (true || this.#view.cachedViewSize === null) {
+        if (this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     const newSize = this.#view.element.getBoundingClientRect()
@@ -1327,8 +1320,16 @@ export class Paginator extends HTMLElement {
         return this.#view.cachedViewSize[await this.sideProp()]
     }
     async start() {
-        await this.#awaitDirection();
-        return Math.abs(this.#container[await this.scrollProp()])
+        if (this.#cachedStart === null) {
+            await new Promise(resolve => {
+                requestAnimationFrame(async () => {
+                    await this.#awaitDirection();
+                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
+                    resolve()
+                })
+            })
+        }
+        return this.#cachedStart
     }
     async end() {
         await this.#awaitDirection();
@@ -1343,16 +1344,21 @@ export class Paginator extends HTMLElement {
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
-        await this.#awaitDirection();
-        const delta = this.#vertical ? dy : dx
-        const element = this.#container
-        const scrollProp = await this.scrollProp()
-        const [offset, a, b] = this.#scrollBounds
-        const rtl = this.#rtl
-        const min = rtl ? offset - b : offset - a
-        const max = rtl ? offset + a : offset + b
-        element[scrollProp] = Math.max(min, Math.min(max,
-            element[scrollProp] + delta))
+        await this.#awaitDirection()
+        await new Promise(resolve => {
+            requestAnimationFrame(async () => {
+                const delta = this.#vertical ? dy : dx
+                const element = this.#container
+                const scrollProp = await this.scrollProp()
+                const [offset, a, b] = this.#scrollBounds
+                const rtl = this.#rtl
+                const min = rtl ? offset - b : offset - a
+                const max = rtl ? offset + a : offset + b
+                element[scrollProp] = Math.max(min, Math.min(max,
+                                                             element[scrollProp] + delta))
+                resolve()
+            })
+        })
     }
     async snap(vx, vy) {
         await this.#awaitDirection();
@@ -1576,32 +1582,32 @@ export class Paginator extends HTMLElement {
     }
     async #scrollTo(offset, reason, smooth) {
         await this.#awaitDirection();
-        const scroll = async () => {
-            const element = this.#container
-            const scrollProp = await this.scrollProp()
-            const size = await this.size()
-            const atStart = await this.atStart()
-            const atEnd = await this.atEnd()
-            if (element[scrollProp] === offset) {
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
-                return
+            const scroll = async () => {
+                const element = this.#container
+                const scrollProp = await this.scrollProp()
+                const size = await this.size()
+                const atStart = await this.atStart()
+                const atEnd = await this.atEnd()
+                if (element[scrollProp] === offset) {
+                    this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                    await this.#afterScroll(reason)
+                    return
+                }
+                // FIXME: vertical-rl only, not -lr
+                if (this.scrolled && this.#vertical) offset = -offset
+                    if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
+                                                                                                       element[scrollProp], offset, 300, easeOutQuad,
+                                                                                                       x => element[scrollProp] = x,
+                                                                                                       ).then(async () => {
+                                                                                                           this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                                                                                                           await this.#afterScroll(reason)
+                                                                                                       })
+                        else {
+                            element[scrollProp] = offset
+                            this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                            await this.#afterScroll(reason)
+                        }
             }
-            // FIXME: vertical-rl only, not -lr
-            if (this.scrolled && this.#vertical) offset = -offset
-            if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
-                element[scrollProp], offset, 300, easeOutQuad,
-                x => element[scrollProp] = x,
-            ).then(async () => {
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
-            })
-            else {
-                element[scrollProp] = offset
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
-            }
-        }
 
         //            // Prevent new transitions while one is running
         //            if (this.#transitioning) {
@@ -1615,17 +1621,22 @@ export class Paginator extends HTMLElement {
         //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
         //                typeof document.startViewTransition !== 'function'
         //                ) {
-        if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
-            await scroll()
-        } else {
-            this.#container.classList.add('view-fade')
-            // Allow the browser to paint the fade
-            /*await new Promise(r => setTimeout(r, 65));
-             this.#container.classList.add('view-faded')*/
-            await scroll()
-            this.#container.classList.remove('view-faded')
-            this.#container.classList.remove('view-fade')
-        }
+            return new Promise(resolve => {
+                requestAnimationFrame(async () => {
+                    if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
+                        await scroll()
+                    } else {
+                        this.#container.classList.add('view-fade')
+                        // Allow the browser to paint the fade
+                        /*await new Promise(r => setTimeout(r, 65));
+                         this.#container.classList.add('view-faded')*/
+                        await scroll()
+                        this.#container.classList.remove('view-faded')
+                        this.#container.classList.remove('view-fade')
+                    }
+                    resolve()
+                })
+            })
         //                } else {
         //                    let goingForward = offset > this.start;
         //                    let slideFrom, slideTo;
@@ -1732,7 +1743,7 @@ export class Paginator extends HTMLElement {
                     return
                 }
 
-                const interval = 8;
+                const interval = 16;
 
                 function findSplitOffset(text, desiredOffset, maxDistance) {
                     function category(ch) {
@@ -1985,7 +1996,11 @@ export class Paginator extends HTMLElement {
                 this.#skipTouchEndOpacity = true
                 const view = this.#createView()
                 const beforeRender = this.#beforeRender.bind(this)
+                
                 this.#cachedSizes = null
+                this.#cachedStart = null
+                this.#scrolledToAnchorOnLoad = false
+                
                 await view.load(src, afterLoad, beforeRender)
                 this.#view = view
                 // Reset chevrons when loading new section
@@ -2000,6 +2015,7 @@ export class Paginator extends HTMLElement {
         }
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        this.#scrolledToAnchorOnLoad = true
         this.#top.classList.remove('reader-loading');
         this.#isLoading = false;
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
