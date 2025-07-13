@@ -815,6 +815,8 @@ export class Paginator extends HTMLElement {
                 height: 100%;
             }
             #top {
+                contain: strict;
+        
                 /*--_gap: 7%;
                 --_margin: 48px;*/
                 --_gap: 4%;
@@ -860,6 +862,10 @@ export class Paginator extends HTMLElement {
                         --_max-column-count-spread: var(--_max-column-count);
                     }
                 }
+            }
+            #top.reader-loading {
+                opacity: 0;
+                pointer-events: none;
             }
             #background {
                 grid-column: 1 / -1;
@@ -1034,6 +1040,7 @@ export class Paginator extends HTMLElement {
         this.#nonVisibleElements = new WeakSet()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
+            console.log("Interesection obs..." + entries.length)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
@@ -1813,29 +1820,10 @@ export class Paginator extends HTMLElement {
     }
     async #getVisibleRange() {
         await this.#awaitDirection();
-        return new Promise((resolve) => {
-            requestAnimationFrame(async () => {
-                if (this.scrolled) {
-                    const start = await this.start()
-                    const end = await this.end()
-                    const rectMapper = await this.#getRectMapper()
-                    resolve(await this.#getVisibleRangeFrom(this.#view.document,
-                        start + this.#topMargin, end - this.#bottomMargin, rectMapper))
-                } else {
-                    const size = this.#rtl ? -(await this.size()) : await this.size()
-                    const start = await this.start()
-                    const end = await this.end()
-                    const rectMapper = await this.#getRectMapper()
-                    resolve(await this.#getVisibleRangeFrom(this.#view.document,
-                        start - size, end - size, rectMapper))
-                }
-            })
-        });
-    }
-    async #getVisibleRangeFrom(doc, start, end, mapRect) {
-        //                            return getVisibleRange(doc, start, end, mapRect)
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
 
+        const doc = this.#view.document
+            
         if (this.#elementVisibilityObserverLoading) {
             await this.#elementVisibilityObserverLoading
         }
@@ -1998,8 +1986,10 @@ export class Paginator extends HTMLElement {
             //            }))
             this.#view = view
         }
+            console.log("before scroll anchor")
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+            console.log("after scroll anchor")
         this.#top.classList.remove('reader-loading');
         this.#isLoading = false;
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
