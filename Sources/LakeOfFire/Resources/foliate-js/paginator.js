@@ -1037,20 +1037,27 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         const size = vertical ? height : width
         
-        const {
-            maxInlineSizePx,
-            maxColumnCount,
-            maxColumnCountPortrait,
-            topMarginPx,
-            bottomMarginPx,
-            gapPct
-        } = CSS_DEFAULTS;
-        const maxInlineSize = maxInlineSizePx;
-        const maxColumnCountSpread = vertical
-        ? maxColumnCountPortrait
-        : maxColumnCount;
-        const topMargin = topMarginPx;
-        const bottomMargin = bottomMarginPx;
+        // retro way:
+                const style = getComputedStyle(this.#top)
+                const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+                const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
+                const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
+                const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+        
+//        const {
+//            maxInlineSizePx,
+//            maxColumnCount,
+//            maxColumnCountPortrait,
+//            topMarginPx,
+//            bottomMarginPx,
+//            gapPct
+//        } = CSS_DEFAULTS;
+//        const maxInlineSize = maxInlineSizePx;
+//        const maxColumnCountSpread = vertical
+//        ? maxColumnCountPortrait
+//        : maxColumnCount;
+//        const topMargin = topMarginPx;
+//        const bottomMargin = bottomMarginPx;
         
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
@@ -1059,7 +1066,10 @@ export class Paginator extends HTMLElement {
             this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
         }
         
-        const g = gapPct / 100;
+        // retro way:
+        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
+//        const g = gapPct / 100;
+        
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
         // `a` be the gap percentage. The actual percentage for the column gap
@@ -1104,7 +1114,9 @@ export class Paginator extends HTMLElement {
         if (this.#isSingleMediaElementWithoutText()) {
             columnWidth = maxInlineSize
         } else {
-            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+            // retro way:
+            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+//            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
             columnWidth = (size / divisor) - gap
         }
         
