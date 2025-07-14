@@ -191,7 +191,6 @@ class View {
     #debouncedExpand
     #hasResizerObserverTriggered = false
     #lastResizerRect = null
-    #cachedContentRangeRect = null
     #styleCache = new WeakMap()
     cachedViewSize = null
     #resizeObserver = new ResizeObserver(entries => {
@@ -231,7 +230,6 @@ class View {
         }
         // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
-        this.#cachedContentRangeRect = null
         
         requestAnimationFrame(() => {
             this.#debouncedExpand();
@@ -316,7 +314,6 @@ class View {
                     this.#directionReadyResolve?.();
                     
                     this.#contentRange.selectNodeContents(doc.body)
-                    this.#cachedContentRangeRect = null
                     
                     //                    console.log("load()... beforerender call")
                     const layout = await beforeRender?.({
@@ -469,8 +466,7 @@ class View {
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
                 
                 if (this.#column) {
-                    const contentSize = documentElement?.[scrollProp] ?? (this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect())[side]
-                    //                    const contentSize = documentElement?.[scrollProp] ?? 0
+                    const contentSize = documentElement?.[scrollProp] ?? this.#contentRange.getBoundingClientRect()[side]
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * this.#size
                     this.#element.style.padding = '0'
@@ -1269,10 +1265,7 @@ export class Paginator extends HTMLElement {
             if (true || this.#cachedSizes === null) {
                 return new Promise(resolve => {
                     requestAnimationFrame(() => {
-                        //                    const rect = this.#container.getBoundingClientRect()
                         this.#cachedSizes = {
-                            //                        width: rect.width,
-                            //                        height: rect.height,
                             width: this.#container.clientWidth,
                             height: this.#container.clientHeight,
                         }
@@ -1295,10 +1288,7 @@ export class Paginator extends HTMLElement {
                 return new Promise(resolve => {
                     requestAnimationFrame(async () => {
                         const v = this.#view.element
-                        //                    const newSize = this.#view.element.getBoundingClientRect()
                         this.#view.cachedViewSize = {
-                            //                        width: newSize.width,
-                            //                        height: newSize.height,
                             width: v.clientWidth,
                             height: v.clientHeight,
                         }
@@ -1688,33 +1678,7 @@ export class Paginator extends HTMLElement {
                           async scrollToAnchor(anchor, select) {
             await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
         }
-                          //                          async #scrollToAnchor(anchor, reason = 'anchor') {
-                          //            console.log('#scrollToAnchor...', anchor)
-                          //            this.#anchor = anchor
-                          //            const rects = uncollapse(anchor)?.getClientRects?.()
-                          //            // if anchor is an element or a range
-                          //            if (rects) {
-                          //                // when the start of the range is immediately after a hyphen in the
-                          //                // previous column, there is an extra zero width rect in that column
-                          //                const rect = Array.from(rects)
-                          //                .find(r => r.width > 0 && r.height > 0) || rects[0]
-                          //                console.log('#scrollToAnchor...', rect)
-                          //                if (!rect) return
-                          //                    await this.#scrollToRect(rect, reason)
-                          //                    return
-                          //                    }
-                          //            // if anchor is a fraction
-                          //            if (this.scrolled) {
-                          //                await this.#scrollTo(anchor * (await this.viewSize()), reason)
-                          //                return
-                          //            }
-                          //            const { pages } = this
-                          //            if (!pages) return
-                          //                const textPages = await this.pages() - 2
-                          //                const newPage = Math.round(anchor * (textPages - 1))
-                          //                await this.#scrollToPage(newPage + 1, reason)
-                          //                }
-                          async #scrollToAnchor(anchor, reason = 'anchor') {
+        async #scrollToAnchor(anchor, reason = 'anchor') {
             await this.#awaitDirection();
             
             return new Promise(resolve => {
@@ -1722,17 +1686,17 @@ export class Paginator extends HTMLElement {
                     this.#anchor = anchor;
                     // Determine anchor target (could be Range or Element)
                     const anchorNode = uncollapse(anchor);
-                    // Diagnostic: log rect from getClientRects on the raw anchor (Range or Element)
-                    const rects = anchorNode?.getClientRects?.();
-                    if (rects && rects.length > 0) {
-                        const rect = Array.from(rects)
-                        .find(r => r.width > 0 && r.height > 0) || rects[0];
-                        if (rect) {
-                            await this.#scrollToRect(rect, reason);
-                            resolve();
-                            return;
-                        }
-                    }
+//                    // Diagnostic: log rect from getClientRects on the raw anchor (Range or Element)
+//                    const rects = anchorNode?.getClientRects?.();
+//                    if (rects && rects.length > 0) {
+//                        const rect = Array.from(rects)
+//                        .find(r => r.width > 0 && r.height > 0) || rects[0];
+//                        if (rect) {
+//                            await this.#scrollToRect(rect, reason);
+//                            resolve();
+//                            return;
+//                        }
+//                    }
                     // Fast path: compute offset using offsetLeft/offsetTop chains
                     let elNode = anchorNode;
                     if (elNode && elNode.startContainer !== undefined) {
