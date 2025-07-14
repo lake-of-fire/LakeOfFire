@@ -905,8 +905,13 @@ export class Paginator extends HTMLElement {
         console.log("onExpand...")
         console.log("!!!!!!!!! SET LOADING inter Observer...")
         this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
-        console.log("onExpand... 0")
-        this.#view.cachedViewSize = null
+//        console.log("onExpand... 0")
+//        this.#view.cachedViewSize = null
+        
+        this.#view.cachedViewSize = null;
+        this.#trackElementVisibilities();
+
+                console.log("onExpand... 0")
         if (this.#scrolledToAnchorOnLoad) {
             console.log("onExpand... 1")
             await this.#scrollToAnchor(this.#anchor)
