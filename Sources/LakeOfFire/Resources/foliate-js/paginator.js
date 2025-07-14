@@ -185,7 +185,7 @@ async function getBodylessComputedStyle(sourceDoc) {
 
     // wait a frame for CSS to apply before measuring
     await new Promise(r => requestAnimationFrame(r));
-    
+
     // 6. Get computed style and doc
     const bodylessDoc = iframe.contentDocument;
     const bodylessStyle = iframe.contentWindow.getComputedStyle(bodylessDoc.body);
@@ -274,7 +274,6 @@ class View {
             width: newSize.width,
             height: newSize.height,
         }
-        console.log("RESIZE OBS #view UPDATED... " + newSize.width + "x" + newSize.height)
         // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
         this.#cachedContentRangeRect = null
@@ -356,7 +355,6 @@ class View {
 
                     const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
                     const direction = await getDirection({ bodylessStyle, bodylessDoc });
-                    console.log("DIRECTION:", direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
@@ -384,7 +382,6 @@ class View {
         })
     }
     async render(layout) {
-        console.log("View render(layout)...")
         if (!layout) {
             return
         }
@@ -444,7 +441,6 @@ class View {
         gap,
         columnWidth
     }) {
-        console.log("columnize...")
         await this.#awaitDirection();
         const vertical = this.#vertical
         this.#size = vertical ? height : width
@@ -491,7 +487,6 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
-        console.log("expand() start")
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
                 const documentElement = this.document?.documentElement
@@ -500,7 +495,6 @@ class View {
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
 
                 if (this.#column) {
-                    console.log("expand(): using column layout")
                     const contentSize = documentElement?.[scrollProp] ?? (this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect())[side]
                     //                    const contentSize = documentElement?.[scrollProp] ?? 0
                     const pageCount = Math.ceil(contentSize / this.#size)
@@ -563,9 +557,7 @@ class View {
                         this.#overlayer.redraw()
                     }
                 }
-                console.log("expand(): before calling onExpand")
                 await this.onExpand()
-                console.log("expand(): called onExpand")
                 resolve()
             })
         })
@@ -634,8 +626,6 @@ export class Paginator extends HTMLElement {
             return
         }
 
-        console.log("RESIZE OBS pagiantor UPDATED... " + newSize.width + "x" + newSize.height)
-
         requestAnimationFrame(() => {
             this.#debouncedRender();
         })
@@ -684,6 +674,16 @@ export class Paginator extends HTMLElement {
     constructor() {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
+        const {
+            gapPct,
+            topMarginPx,
+            bottomMarginPx,
+            sideMarginPx,
+            maxInlineSizePx,
+            maxBlockSizePx,
+            maxColumnCount,
+            maxColumnCountPortrait
+        } = CSS_DEFAULTS;
         this.#root.innerHTML = `<style>
             :host {
                 display: block;
@@ -699,14 +699,14 @@ export class Paginator extends HTMLElement {
             #top {
                 contain: strict;
         
-                --_gap: 4%;
-                --_top-margin: 12px;
-                --_bottom-margin: 32px;
-                --_side-margin: var(--side-nav-width, 32px);
-                --_max-inline-size: 720px;
-                --_max-block-size: 1440px;
-                --_max-column-count: 2;
-                --_max-column-count-portrait: 1;
+                --_gap: ${gapPct}%;
+                --_top-margin: ${topMarginPx}px;
+                --_bottom-margin: ${bottomMarginPx}px;
+                --_side-margin: var(--side-nav-width, ${sideMarginPx}px);
+                --_max-inline-size: ${maxInlineSizePx}px;
+                --_max-block-size: ${maxBlockSizePx}px;
+                --_max-column-count: ${maxColumnCount};
+                --_max-column-count-portrait: ${maxColumnCountPortrait};
                 --_max-column-count-spread: var(--_max-column-count);
                 --_half-gap: calc(var(--_gap) / 2);
                 --_max-width: calc(var(--_max-inline-size) * var(--_max-column-count-spread));
@@ -906,34 +906,25 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #onExpand() {
-        console.log("onExpand...")
-        console.log("!!!!!!!!! SET LOADING inter Observer...")
         this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
-        //        console.log("onExpand... 0")
         //        this.#view.cachedViewSize = null
 
         this.#view.cachedViewSize = null;
         this.#trackElementVisibilities();
 
-        console.log("onExpand... 0")
         if (this.#scrolledToAnchorOnLoad) {
-            console.log("onExpand... 1")
             await this.#scrollToAnchor(this.#anchor)
-            console.log("onExpand... 2")
         }
-        console.log("onExpand... fin")
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
     #trackElementVisibilities() {
-        console.log("trackElementVisibilities...")
         this.#disconnectElementVisibilityObserver();
 
         this.#visibleSentinelIDs = new Set()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
-            console.log("Interesection obs..." + entries.length)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
@@ -949,7 +940,6 @@ export class Paginator extends HTMLElement {
                 }
             }
 
-            console.log("!!!!!!!!! RESOLVE inter Observer...")
             this.#elementVisibilityObserverLoadingResolve?.()
             this.#elementVisibilityObserverLoading = null
             this.#elementVisibilityObserverLoadingResolve = null
@@ -1022,14 +1012,12 @@ export class Paginator extends HTMLElement {
         rtl,
         //        background
     }) {
-        console.log("# before render...")
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
         this.#rtl = rtl
         this.#top.classList.toggle('vertical', vertical)
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
 
-        console.log("#beforeRender(): vertical =", vertical, "rtl =", rtl)
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
         //        this.#background.style.background = background
@@ -1041,26 +1029,30 @@ export class Paginator extends HTMLElement {
         const size = vertical ? height : width
 
         // retro way:
-        const style = getComputedStyle(this.#top)
-        const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
-        const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-        const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
-        const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+        //        const style = getComputedStyle(this.#top)
+        //        const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+        //        const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
+        //        const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
+        //        const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+        //        console.log("max in", maxInlineSize, CSS_DEFAULTS.maxInlineSizePx)
+        //        console.log("max col cnt", maxColumnCount, CSS_DEFAULTS.maxColumnCount, CSS_DEFAULTS.maxColumnCountPortrait, vertical)
+        //        console.log("top marg", topMargin, CSS_DEFAULTS.topMarginPx)
+        //        console.log("bot marg", bottomMargin, CSS_DEFAULTS.bottomMarginPx)
 
-        //        const {
-        //            maxInlineSizePx,
-        //            maxColumnCount,
-        //            maxColumnCountPortrait,
-        //            topMarginPx,
-        //            bottomMarginPx,
-        //            gapPct
-        //        } = CSS_DEFAULTS;
-        //        const maxInlineSize = maxInlineSizePx;
-        //        const maxColumnCountSpread = vertical
-        //        ? maxColumnCountPortrait
-        //        : maxColumnCount;
-        //        const topMargin = topMarginPx;
-        //        const bottomMargin = bottomMarginPx;
+        const {
+            maxInlineSizePx,
+            maxColumnCount,
+            maxColumnCountPortrait,
+            topMarginPx,
+            bottomMarginPx,
+            gapPct
+        } = CSS_DEFAULTS;
+        const maxInlineSize = maxInlineSizePx;
+        const maxColumnCountSpread = vertical
+            ? maxColumnCountPortrait
+            : maxColumnCount;
+        const topMargin = topMarginPx;
+        const bottomMargin = bottomMarginPx;
 
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
@@ -1070,8 +1062,9 @@ export class Paginator extends HTMLElement {
         }
 
         // retro way:
-        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
-        //        const g = gapPct / 100;
+        //        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
+        const g = gapPct / 100;
+        //        console.log("gap", CSS_DEFAULTS.gapPct / 100, g)
 
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -1142,12 +1135,6 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
-        //        console.log("# before render... await apply sentinels")
-        //        await this.#applyVisibilitySentinels()
-        //        console.log("# before render... await apply sentinels...done")
-        //        this.#trackElementVisibilities()
-
-        console.log("#beforeRender(): calculated layout", height, width, topMargin, bottomMargin, gap, columnWidth)
         return {
             height,
             width,
@@ -1161,7 +1148,6 @@ export class Paginator extends HTMLElement {
         if (!this.#view) {
             return
         }
-        console.log("render()...")
 
         // avoid unwanted triggers
         this.#hasResizeObserverTriggered = false
@@ -1519,30 +1505,19 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
     }
     async #scrollTo(offset, reason, smooth) {
-        console.log("#scrollTo(..)...")
         await this.#awaitDirection();
-        console.log("#scrollTo(..)...0")
         const scroll = async () => {
-            console.log("#scrollTo(..). in scroll ..0")
             this.#cachedStart = null;
             const element = this.#container
-            console.log("#scrollTo(..). in scroll ..1")
             const scrollProp = await this.scrollProp()
-            console.log("#scrollTo(..). in scroll ..2")
             const size = await this.size()
-            console.log("#scrollTo(..). in scroll ..3")
             const atStart = await this.atStart()
-            console.log("#scrollTo(..). in scroll ..4")
             const atEnd = await this.atEnd()
-            console.log("#scrollTo(..). in scroll ..5")
             if (element[scrollProp] === offset) {
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                console.log("#scrollTo(..). in scroll ..6")
                 await this.#afterScroll(reason)
-                console.log("#scrollTo(..). in scroll ..7")
                 return
             }
-            console.log("#scrollTo(..). in scroll ..8")
             // FIXME: vertical-rl only, not -lr
             if (this.scrolled && this.#vertical) offset = -offset
             if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
@@ -1553,12 +1528,9 @@ export class Paginator extends HTMLElement {
                 await this.#afterScroll(reason)
             })
             else {
-                console.log("#scrollTo(..). in scroll ..9")
                 element[scrollProp] = offset
                 this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                console.log("#scrollTo(..). in scroll ..10")
                 await this.#afterScroll(reason)
-                console.log("#scrollTo(..). in scroll ..11")
             }
         }
 
@@ -1575,25 +1547,18 @@ export class Paginator extends HTMLElement {
         //                typeof document.startViewTransition !== 'function'
         //                ) {
         return new Promise(resolve => {
-            console.log("#scrollTo(..)...1")
             requestAnimationFrame(async () => {
-                console.log("#scrollTo(..)...2")
                 if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
-                    console.log("#scrollTo(..)...3")
                     await scroll()
-                    console.log("#scrollTo(..)...4")
                 } else {
-                    console.log("#scrollTo(..)...5")
                     this.#container.classList.add('view-fade')
                     // Allow the browser to paint the fade
                     /*await new Promise(r => setTimeout(r, 65));
                      this.#container.classList.add('view-faded')*/
                     await scroll()
-                    console.log("#scrollTo(..)...6")
                     this.#container.classList.remove('view-faded')
                     this.#container.classList.remove('view-fade')
                 }
-                console.log("#scrollTo(..)...7")
                 resolve()
             })
         })
@@ -1643,74 +1608,71 @@ export class Paginator extends HTMLElement {
         return await this.#scrollTo(offset, reason, smooth)
     }
     async scrollToAnchor(anchor, select) {
-        console.log("scrollToAnchor(..)...")
         await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
-        console.log("scrollToAnchor(..)... fin")
     }
 
-    // retro way:
+    /*
+     // retro way:
+     async #scrollToAnchor(anchor, reason = 'anchor') {
+     this.#anchor = anchor
+     const rects = uncollapse(anchor)?.getClientRects?.()
+     // if anchor is an element or a range
+     if (rects) {
+     // when the start of the range is immediately after a hyphen in the
+     // previous column, there is an extra zero width rect in that column
+     const rect = Array.from(rects)
+     .find(r => r.width > 0 && r.height > 0) || rects[0]
+     if (!rect) return
+     // Compare against offset-based computation
+     const _n2 = uncollapse(anchor);
+     let _elNode2 = (_n2 && _n2.startContainer !== undefined) ? _n2.startContainer : _n2;
+     if (_elNode2 &&
+     (_elNode2.nodeType === Node.ELEMENT_NODE || _elNode2.nodeType === Node.TEXT_NODE)) {
+     const _el2 = _elNode2.nodeType === Node.TEXT_NODE ? _elNode2.parentElement : _elNode2;
+     const _offsetRect = computeOffsetRect(_el2, this.#container);
+     const _column = await this.size();
+     const _gap = this.#view.layout?.gap || 0;
+     const _combined = _column + _gap;
+     const _inlineOffset = _el2.offsetTop;
+     const _pageIndex = Math.floor(_offsetRect.left / _combined);
+     const _inferredTop = _pageIndex * _column + _pageIndex * _gap + _inlineOffset;
+     const _mapped = (await this.#getRectMapper())({
+     ..._offsetRect,
+     top: _inferredTop,
+     bottom: _inferredTop + _offsetRect.height,
+     });
+     console.log("Retro vs OffsetAnchor:", {
+     clientRect: rect,
+     offsetRect: _offsetRect,
+     column: _column,
+     gap: _gap,
+     combined: _combined,
+     pageIndex: _pageIndex,
+     inferredTop: _inferredTop,
+     mappedLeft: _mapped.left
+     });
+     }
+     await this.#scrollToRect(rect, reason)
+     return
+     }
+     // if anchor is a fraction
+     if (this.scrolled) {
+     await this.#scrollTo(anchor * this.viewSize, reason)
+     return
+     }
+     const { pages } = this
+     if (!pages) return
+     const textPages = pages - 2
+     const newPage = Math.round(anchor * (textPages - 1))
+     await this.#scrollToPage(newPage + 1, reason)
+     }
+     */
+
     async #scrollToAnchor(anchor, reason = 'anchor') {
-        this.#anchor = anchor
-        const rects = uncollapse(anchor)?.getClientRects?.()
-        // if anchor is an element or a range
-        if (rects) {
-            // when the start of the range is immediately after a hyphen in the
-            // previous column, there is an extra zero width rect in that column
-            const rect = Array.from(rects)
-                .find(r => r.width > 0 && r.height > 0) || rects[0]
-            if (!rect) return
-            // Compare against offset-based computation
-            const _n2 = uncollapse(anchor);
-            let _elNode2 = (_n2 && _n2.startContainer !== undefined) ? _n2.startContainer : _n2;
-            if (_elNode2 &&
-                (_elNode2.nodeType === Node.ELEMENT_NODE || _elNode2.nodeType === Node.TEXT_NODE)) {
-                const _el2 = _elNode2.nodeType === Node.TEXT_NODE ? _elNode2.parentElement : _elNode2;
-                const _offsetRect = computeOffsetRect(_el2, this.#container);
-                const _column = await this.size();
-                const _gap = this.#view.layout?.gap || 0;
-                const _combined = _column + _gap;
-                const _inlineOffset = _el2.offsetTop;
-                const _pageIndex = Math.floor(_offsetRect.left / _combined);
-                const _inferredTop = _pageIndex * _column + _pageIndex * _gap + _inlineOffset;
-                const _mapped = (await this.#getRectMapper())({
-                    ..._offsetRect,
-                    top: _inferredTop,
-                    bottom: _inferredTop + _offsetRect.height,
-                });
-                console.log("Retro vs OffsetAnchor:", {
-                    clientRect: rect,
-                    offsetRect: _offsetRect,
-                    column: _column,
-                    gap: _gap,
-                    combined: _combined,
-                    pageIndex: _pageIndex,
-                    inferredTop: _inferredTop,
-                    mappedLeft: _mapped.left
-                });
-            }
-            await this.#scrollToRect(rect, reason)
-            return
-        }
-        // if anchor is a fraction
-        if (this.scrolled) {
-            await this.#scrollTo(anchor * this.viewSize, reason)
-            return
-        }
-        const { pages } = this
-        if (!pages) return
-        const textPages = pages - 2
-        const newPage = Math.round(anchor * (textPages - 1))
-        await this.#scrollToPage(newPage + 1, reason)
-    }
-
-    async #NEWscrollToAnchor(anchor, reason = 'anchor') {
-        console.log("#scrollToAnchor...")
         await this.#awaitDirection()
-        console.log("#scrollToAnchor...0")
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                console.log("#scrollToAnchor...1")
                 this.#anchor = anchor
 
                 const n = uncollapse(anchor)
@@ -1724,11 +1686,8 @@ export class Paginator extends HTMLElement {
                     const inlineOffset = el.offsetTop
                     const rect = computeOffsetRect(el, this.#container)
 
-                    console.log("#scrollToAnchor...2")
                     if (rect) {
-                        console.log("#scrollToAnchor...3")
                         const column = await this.size()
-                        console.log("#scrollToAnchor...4")
                         const gap = this.#view.layout?.gap || 0
                         const combined = column + gap
                         const pageIndex = Math.floor(rect.left / combined)
@@ -1738,28 +1697,23 @@ export class Paginator extends HTMLElement {
                         rect.bottom = inferredTop + rect.height
 
                         const mapped = (await this.#getRectMapper())(rect)
-                        console.log("#scrollToAnchor...5")
                         await this.#scrollTo(mapped.left - this.#topMargin, reason)
                         resolve()
                         return
                     }
                 }
 
-                console.log("#scrollToAnchor...6")
                 /* numeric / fraction fall-back */
                 if (this.scrolled) {
                     await this.#scrollTo(anchor * (await this.viewSize()), reason)
                     return resolve()
                 }
                 const pages = await this.pages()
-                console.log("#scrollToAnchor...7")
                 if (!pages) return resolve()
 
                 const textPages = pages - 2
                 const target = Math.round(anchor * (textPages - 1))
-                console.log("#scrollToAnchor...8")
                 await this.#scrollToPage(target + 1, reason)
-                console.log("#scrollToAnchor...9")
                 resolve()
             })
         })
@@ -1871,23 +1825,19 @@ export class Paginator extends HTMLElement {
         });
     }
     async #getVisibleRange() {
-        console.log("# getVisibleRange 0")
         await this.#awaitDirection();
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
 
         const doc = this.#view.document
 
         if (this.#elementVisibilityObserverLoading) {
-            console.log("# getVisibleRange 1")
             await this.#elementVisibilityObserverLoading
-            console.log("# getVisibleRange 2")
         }
 
         if (this.#visibleSentinelIDs.size === 0) {
             const range = doc.createRange();
             range.selectNodeContents(doc.body);
             range.collapse(true);
-            console.log("# getVisibleRange 3")
             return range
         }
 
@@ -1928,21 +1878,16 @@ export class Paginator extends HTMLElement {
             range.selectNodeContents(doc.body);
             range.collapse(true);
         }
-        console.log("# getVisibleRange 4")
         return range;
     }
     async #afterScroll(reason) {
-        console.log("# after scroll 0")
         this.#cachedStart = null;
         await this.#awaitDirection();
-        console.log("# after scroll 1")
         if (this.#isCacheWarmer) {
             return;
         }
-        console.log("# after scroll 2")
 
         const range = await this.#getVisibleRange()
-        console.log("# after scroll 3")
         // don't set new anchor if relocation was to scroll to anchor
         if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
             this.#anchor = range
@@ -1954,7 +1899,6 @@ export class Paginator extends HTMLElement {
             range,
             index
         }
-        console.log("# after scroll 4")
         if (this.scrolled) detail.fraction = (await this.start()) / (await this.viewSize())
         else if ((await this.pages()) > 0) {
             const page = await this.page()
@@ -1964,12 +1908,10 @@ export class Paginator extends HTMLElement {
             detail.size = 1 / (pages - 2)
         }
 
-        console.log("# after scroll 5")
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
 
-        console.log("# after scroll 6")
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (await this.isAtSectionStart()) {
             this.#skipTouchEndOpacity = true
@@ -2066,10 +2008,8 @@ export class Paginator extends HTMLElement {
             }
         }
 
-        console.log('display() await scrollTOAnchor..')
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
-        console.log('scrolledToAnchorOnLoad = true')
         this.#scrolledToAnchorOnLoad = true
         this.#top.classList.remove('reader-loading');
         this.#isLoading = false;
@@ -2101,7 +2041,6 @@ export class Paginator extends HTMLElement {
             const onLoad = async (detail) => {
                 this.sections[oldIndex]?.unload?.()
 
-                console.log("onLoad()...")
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
 
