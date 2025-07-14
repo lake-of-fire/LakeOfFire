@@ -1,8 +1,9 @@
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const CSS_DEFAULTS = {
-    gapPct: 4,
-    topMarginPx: 12,
+    gapPct: 5,
+    minGapPx: 36,
+    topMarginPx: 8,
     bottomMarginPx: 32,
     sideMarginPx: 32,
     maxInlineSizePx: 720,
@@ -490,8 +491,10 @@ class View {
                         topMargin,
                         bottomMargin
                     } = this.layout
-                    const paddingTop = `${marginTop}px`
-                    const paddingBottom = `${marginBottom}px`
+//                    const paddingTop = `${marginTop}px`
+//                    const paddingBottom = `${marginBottom}px`
+                    const paddingTop = `${topMargin}px`
+                    const paddingBottom = `${bottomMargin}px`
                     if (this.#vertical) {
                         this.#element.style.paddingLeft = paddingTop
                         this.#element.style.paddingRight = paddingBottom
@@ -1077,13 +1080,14 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         const size = vertical ? height : width
 
-
+        // New:
         const {
             maxInlineSizePx,
             maxColumnCount,
             maxColumnCountPortrait,
             topMarginPx,
             bottomMarginPx,
+            minGapPx,
             gapPct
         } = CSS_DEFAULTS;
         const maxInlineSize = maxInlineSizePx;
@@ -1104,22 +1108,16 @@ export class Paginator extends HTMLElement {
         const bottomMargin = bottomMarginPx;
 
         // retro way:
-        //        const style = getComputedStyle(this.#top)
-        //        const oldmaxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
-        //        const oldmaxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-        //        const oldtopMargin = parseFloat(style.getPropertyValue('--_top-margin'))
-        //        const oldbottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
-        //        console.log("max in", oldmaxInlineSize, maxInlineSize)
-        //        console.log("max col cnt", oldmaxColumnCount, maxColumnCountSpread)
-        //        console.log("top marg", oldtopMargin, topMargin)
-        //        console.log("bot marg", oldbottomMargin, bottomMargin)
-
-        //        this.#topMargin = topMargin
-        //        this.#bottomMargin = bottomMargin
-        //        this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
-        //        if (this.#vertical) {
-        //            this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
-        //        }
+//                const style = getComputedStyle(this.#top)
+//                const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+//                const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
+//                const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
+//                const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+//                console.log("max in", maxInlineSize, maxInlineSize)
+//                console.log("max col cnt", maxColumnCount, maxColumnCountSpread)
+//                console.log("top marg", topMargin, topMargin)
+//                console.log("bot marg", bottomMargin, bottomMargin)
+        
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
@@ -1128,8 +1126,7 @@ export class Paginator extends HTMLElement {
         }
 
         // retro way:
-        //                const g = parseFloat(style.getPropertyValue('--_gap')) / 100
-        //                const oldg = parseFloat(style.getPropertyValue('--_gap')) / 100
+//                        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
         const g = gapPct / 100;
         //                console.log("gap", oldg, g)
 
@@ -1150,7 +1147,8 @@ export class Paginator extends HTMLElement {
         //     f(x) = x / (1 + x).
         // But we want to keep the outer padding, and make the inner gap bigger.
         // So we apply the inverse, f⁻¹ = -x / (x - 1) to the column gap.
-        const gap = -g / (g - 1) * size
+        const rawGap = -g / (g - 1) * size
+        const gap = Math.max(rawGap, minGapPx)
 
         const flow = this.getAttribute('flow')
         if (flow === 'scrolled') {
@@ -1176,13 +1174,12 @@ export class Paginator extends HTMLElement {
 
         let divisor, columnWidth
         if (this.#isSingleMediaElementWithoutText()) {
-            //            columnWidth = maxInlineSize
             columnWidth = maxInlineSize
         } else {
             // retro way:
-            //            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+                        divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
             //                        divisor = Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize))
-            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+//            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
             //            console.log("Divisor", Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize)), divisor)
             columnWidth = (size / divisor) - gap
         }
@@ -1191,7 +1188,6 @@ export class Paginator extends HTMLElement {
 
         const marginalDivisor = vertical ?
             Math.min(2, Math.ceil(width / maxInlineSize)) :
-            //            Math.min(2, Math.ceil(width / oldmaxInlineSize)) :
             divisor
         const marginalStyle = {
             gridTemplateColumns: `repeat(${marginalDivisor}, 1fr)`,
@@ -1262,7 +1258,15 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) return 0
         if (true || this.#cachedSizes === null) {
             return new Promise(resolve => {
-                requestAnimationFrame(() => {
+                requestAnimationFrame(async () => {
+                    const r = this.#container.getBoundingClientRect()
+                    this.#cachedSizes = {
+                        width: r.width,
+                        height: r.height,
+                    }
+                    resolve(this.#cachedSizes)
+                    return ;
+                    
                     this.#cachedSizes = {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
@@ -1274,6 +1278,8 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
+        return this.#container.getBoundingClientRect()[await this.sideProp()]
+        
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
@@ -1285,6 +1291,13 @@ export class Paginator extends HTMLElement {
         if (true || this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
+                    const r = this.#view.element.getBoundingClientRect()
+                    this.#view.cachedViewSize = {
+                        width: r.width,
+                        height: r.height,
+                    }
+                    resolve(this.#view.cachedViewSize[await this.sideProp()])
+                    return ;
                     const v = this.#view.element
                     this.#view.cachedViewSize = {
                         width: v.clientWidth,
@@ -1676,7 +1689,33 @@ export class Paginator extends HTMLElement {
     async scrollToAnchor(anchor, select) {
         await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
-    async #scrollToAnchor(anchor, reason = 'anchor') {
+                          async #scrollToAnchor(anchor, reason = 'anchor') {
+            console.log('#scrollToAnchor...', anchor)
+            this.#anchor = anchor
+            const rects = uncollapse(anchor)?.getClientRects?.()
+            // if anchor is an element or a range
+            if (rects) {
+                // when the start of the range is immediately after a hyphen in the
+                // previous column, there is an extra zero width rect in that column
+                const rect = Array.from(rects)
+                .find(r => r.width > 0 && r.height > 0) || rects[0]
+                console.log('#scrollToAnchor...', rect)
+                if (!rect) return
+                    await this.#scrollToRect(rect, reason)
+                    return
+                    }
+            // if anchor is a fraction
+            if (this.scrolled) {
+                await this.#scrollTo(anchor * (await this.viewSize()), reason)
+                return
+            }
+            const { pages } = this
+            if (!pages) return
+                const textPages = await this.pages() - 2
+                const newPage = Math.round(anchor * (textPages - 1))
+                await this.#scrollToPage(newPage + 1, reason)
+                }
+    async #NscrollToAnchor(anchor, reason = 'anchor') {
         await this.#awaitDirection();
 
         return new Promise(resolve => {
