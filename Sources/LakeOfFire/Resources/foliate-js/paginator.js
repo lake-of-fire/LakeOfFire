@@ -405,7 +405,8 @@ class View {
         width,
         height,
         gap,
-        columnWidth
+        columnWidth,
+        divisor,
     }) {
         //        console.log("columnize...")
         await this.#awaitDirection();
@@ -1168,7 +1169,7 @@ export class Paginator extends HTMLElement {
                 topMargin,
                 bottomMargin,
                 gap,
-                columnWidth
+                columnWidth,
             }
         }
 
@@ -1209,7 +1210,8 @@ export class Paginator extends HTMLElement {
             topMargin,
             bottomMargin,
             gap,
-            columnWidth
+            columnWidth,
+            divisor,
         }
     }
     async render() {
@@ -1724,6 +1726,16 @@ export class Paginator extends HTMLElement {
                 console.log('scrollToAnchor: anchor=', anchor);
                 // Determine anchor target (could be Range or Element)
                 const anchorNode = uncollapse(anchor);
+                // OG slow path: use getClientRects for sanity check
+                const rects = anchorNode?.getClientRects?.();
+                console.log('OG clientRects:', rects);
+                if (rects && rects.length > 0) {
+                    const ogRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
+                    console.log('OG rect chosen:', ogRect);
+                    //                        await this.#scrollToRect(ogRect, reason);
+                    //                        resolve();
+                    //                        return;
+                }
                 console.log('anchorNode=', anchorNode);
                 // Fast path: compute offset using offsetLeft/offsetTop chains
                 let elNode = anchorNode;
@@ -1759,24 +1771,16 @@ export class Paginator extends HTMLElement {
                             }
                         }
                         console.log('after traversal offsets:', { left, top });
-                        // Infer inline-page scroll offset from left/top
-                        const columnSize = await this.size();
-                        const containerStyle = getComputedStyle(this.#container);
-                        const columnGap = parseFloat(containerStyle.columnGap) || 0;
-                        const combined = columnSize + columnGap;
-                        const pageIndex = Math.floor(left / combined);
-                        const inlineOffset = el.offsetTop;
-                        const inferredTop = pageIndex * columnSize + pageIndex * columnGap + inlineOffset;
-                        console.log('pageIndex, inlineOffset, inferredTop=', pageIndex, inlineOffset, inferredTop);
-                        // baseline rect for comparison
-                        const nativeRect = el.getBoundingClientRect();
-                        console.log('nativeRect=', nativeRect);
-                        console.log('syntheticRect building...');
+                        // Re‑create a synthetic rect from the accumulated offsets and
+                        // feed it to the normal scroll‑to‑rect path.  This avoids the
+                        // heavyweight `getClientRects()` call but still lets the
+                        // existing mapper logic figure out the correct offset for both
+                        // page‑ and scroll‑modes.
                         const syntheticRect = {
                             left,
                             right: left + width,
-                            top: inferredTop,
-                            bottom: inferredTop + height,
+                            top,
+                            bottom: top + height,
                             width,
                             height
                         };
@@ -1784,9 +1788,9 @@ export class Paginator extends HTMLElement {
                         const rectMapper = await this.#getRectMapper();
                         const mapped = rectMapper(syntheticRect);
                         console.log('mappedRect=', mapped);
-                        const offset = mapped.left - this.#topMargin;
-                        console.log('computed offset=', offset);
-                        await this.#scrollTo(offset, reason);
+                        // Use the same helper that the slow path relies on so we keep
+                        // consistent behaviour between modes.
+                        await this.#scrollToRect(syntheticRect, reason);
                         resolve();
                         return;
                     }
