@@ -971,7 +971,10 @@ export class Paginator extends HTMLElement {
             }
         });
         
-        this.#view.document.body.getElementsByTagName(selector).forEach(el => this.#sentinelVisibilityObserver.observe(el));
+        const elements = this.#view.document.body.getElementsByTagName('reader-sentinel')
+        for (let i = 0; i < elements.length; i++) {
+            this.#sentinelVisibilityObserver.observe(elements[i])
+        }
         this.#sentinelMutationObserver.observe(this.#view.document.body, {
             childList: true,
             subtree: true
