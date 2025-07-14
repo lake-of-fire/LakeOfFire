@@ -319,6 +319,7 @@ class View {
             overflow: 'hidden',
             border: '0',
 //            display: 'none',
+            display: 'block',
             width: '100%',
             height: '100%',
         })
@@ -497,7 +498,7 @@ class View {
                 
                 if (this.#column) {
                     console.log("expand(): using column layout")
-                                        const contentSize = documentElement?.[scrollProp] ?? (this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect())[side]
+                    const contentSize = documentElement?.[scrollProp] ?? (this.#cachedContentRangeRect ?? this.#contentRange.getBoundingClientRect())[side]
 //                    const contentSize = documentElement?.[scrollProp] ?? 0
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * await this.#size
@@ -1800,7 +1801,7 @@ export class Paginator extends HTMLElement {
         }
                           async #getVisibleRange() {
             console.log("# getVisibleRange 0")
-//            await this.#awaitDirection();
+            await this.#awaitDirection();
             // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
             
             const doc = this.#view.document
