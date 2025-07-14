@@ -3,7 +3,7 @@
 const CSS_DEFAULTS = {
     gapPct: 5,
     minGapPx: 36,
-    topMarginPx: 8,
+    topMarginPx: 4,
     bottomMarginPx: 32,
     sideMarginPx: 32,
     maxInlineSizePx: 720,
@@ -491,8 +491,8 @@ class View {
                         topMargin,
                         bottomMargin
                     } = this.layout
-//                    const paddingTop = `${marginTop}px`
-//                    const paddingBottom = `${marginBottom}px`
+                    //                    const paddingTop = `${marginTop}px`
+                    //                    const paddingBottom = `${marginBottom}px`
                     const paddingTop = `${topMargin}px`
                     const paddingBottom = `${bottomMargin}px`
                     if (this.#vertical) {
@@ -1108,16 +1108,16 @@ export class Paginator extends HTMLElement {
         const bottomMargin = bottomMarginPx;
 
         // retro way:
-//                const style = getComputedStyle(this.#top)
-//                const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
-//                const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-//                const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
-//                const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
-//                console.log("max in", maxInlineSize, maxInlineSize)
-//                console.log("max col cnt", maxColumnCount, maxColumnCountSpread)
-//                console.log("top marg", topMargin, topMargin)
-//                console.log("bot marg", bottomMargin, bottomMargin)
-        
+        //                const style = getComputedStyle(this.#top)
+        //                const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+        //                const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
+        //                const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
+        //                const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+        //                console.log("max in", maxInlineSize, maxInlineSize)
+        //                console.log("max col cnt", maxColumnCount, maxColumnCountSpread)
+        //                console.log("top marg", topMargin, topMargin)
+        //                console.log("bot marg", bottomMargin, bottomMargin)
+
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
@@ -1126,7 +1126,7 @@ export class Paginator extends HTMLElement {
         }
 
         // retro way:
-//                        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
+        //                        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
         const g = gapPct / 100;
         //                console.log("gap", oldg, g)
 
@@ -1177,9 +1177,9 @@ export class Paginator extends HTMLElement {
             columnWidth = maxInlineSize
         } else {
             // retro way:
-                        divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
             //                        divisor = Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize))
-//            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+            //            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
             //            console.log("Divisor", Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize)), divisor)
             columnWidth = (size / divisor) - gap
         }
@@ -1259,14 +1259,14 @@ export class Paginator extends HTMLElement {
         if (true || this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
-                    const r = this.#container.getBoundingClientRect()
-                    this.#cachedSizes = {
-                        width: r.width,
-                        height: r.height,
-                    }
-                    resolve(this.#cachedSizes)
-                    return ;
-                    
+                    //                    const r = this.#container.getBoundingClientRect()
+                    //                    this.#cachedSizes = {
+                    //                        width: r.width,
+                    //                        height: r.height,
+                    //                    }
+                    //                    resolve(this.#cachedSizes)
+                    //                    return ;
+
                     this.#cachedSizes = {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
@@ -1278,8 +1278,8 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
-        return this.#container.getBoundingClientRect()[await this.sideProp()]
-        
+        //        return this.#container.getBoundingClientRect()[await this.sideProp()]
+        //
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
@@ -1291,13 +1291,13 @@ export class Paginator extends HTMLElement {
         if (true || this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
-                    const r = this.#view.element.getBoundingClientRect()
-                    this.#view.cachedViewSize = {
-                        width: r.width,
-                        height: r.height,
-                    }
-                    resolve(this.#view.cachedViewSize[await this.sideProp()])
-                    return ;
+                    //                    const r = this.#view.element.getBoundingClientRect()
+                    //                    this.#view.cachedViewSize = {
+                    //                        width: r.width,
+                    //                        height: r.height,
+                    //                    }
+                    //                    resolve(this.#view.cachedViewSize[await this.sideProp()])
+                    //                    return ;
                     const v = this.#view.element
                     this.#view.cachedViewSize = {
                         width: v.clientWidth,
@@ -1689,40 +1689,42 @@ export class Paginator extends HTMLElement {
     async scrollToAnchor(anchor, select) {
         await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
-                          async #scrollToAnchor(anchor, reason = 'anchor') {
-            console.log('#scrollToAnchor...', anchor)
-            this.#anchor = anchor
-            const rects = uncollapse(anchor)?.getClientRects?.()
-            // if anchor is an element or a range
-            if (rects) {
-                // when the start of the range is immediately after a hyphen in the
-                // previous column, there is an extra zero width rect in that column
-                const rect = Array.from(rects)
-                .find(r => r.width > 0 && r.height > 0) || rects[0]
-                console.log('#scrollToAnchor...', rect)
-                if (!rect) return
-                    await this.#scrollToRect(rect, reason)
-                    return
-                    }
-            // if anchor is a fraction
-            if (this.scrolled) {
-                await this.#scrollTo(anchor * (await this.viewSize()), reason)
-                return
-            }
-            const { pages } = this
-            if (!pages) return
-                const textPages = await this.pages() - 2
-                const newPage = Math.round(anchor * (textPages - 1))
-                await this.#scrollToPage(newPage + 1, reason)
-                }
-    async #NscrollToAnchor(anchor, reason = 'anchor') {
+    //                          async #scrollToAnchor(anchor, reason = 'anchor') {
+    //            console.log('#scrollToAnchor...', anchor)
+    //            this.#anchor = anchor
+    //            const rects = uncollapse(anchor)?.getClientRects?.()
+    //            // if anchor is an element or a range
+    //            if (rects) {
+    //                // when the start of the range is immediately after a hyphen in the
+    //                // previous column, there is an extra zero width rect in that column
+    //                const rect = Array.from(rects)
+    //                .find(r => r.width > 0 && r.height > 0) || rects[0]
+    //                console.log('#scrollToAnchor...', rect)
+    //                if (!rect) return
+    //                    await this.#scrollToRect(rect, reason)
+    //                    return
+    //                    }
+    //            // if anchor is a fraction
+    //            if (this.scrolled) {
+    //                await this.#scrollTo(anchor * (await this.viewSize()), reason)
+    //                return
+    //            }
+    //            const { pages } = this
+    //            if (!pages) return
+    //                const textPages = await this.pages() - 2
+    //                const newPage = Math.round(anchor * (textPages - 1))
+    //                await this.#scrollToPage(newPage + 1, reason)
+    //                }
+    async #scrollToAnchor(anchor, reason = 'anchor') {
         await this.#awaitDirection();
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
                 this.#anchor = anchor;
+                console.log('scrollToAnchor: anchor=', anchor);
                 // Determine anchor target (could be Range or Element)
                 const anchorNode = uncollapse(anchor);
+                console.log('anchorNode=', anchorNode);
                 // Fast path: compute offset using offsetLeft/offsetTop chains
                 let elNode = anchorNode;
                 if (elNode && elNode.startContainer !== undefined) {
@@ -1733,6 +1735,7 @@ export class Paginator extends HTMLElement {
                     if (el && el.nodeType === Node.ELEMENT_NODE) {
                         let left = el.offsetLeft, top = el.offsetTop;
                         const width = el.offsetWidth, height = el.offsetHeight;
+                        console.log('initial offsets:', { left, top, width, height });
                         let current = el;
                         let doc = el.ownerDocument;
                         // Traverse offsetParent chain (and iframe chain)
@@ -1755,6 +1758,7 @@ export class Paginator extends HTMLElement {
                                 top += current.offsetTop;
                             }
                         }
+                        console.log('after traversal offsets:', { left, top });
                         // Infer inline-page scroll offset from left/top
                         const columnSize = await this.size();
                         const containerStyle = getComputedStyle(this.#container);
@@ -1763,6 +1767,11 @@ export class Paginator extends HTMLElement {
                         const pageIndex = Math.floor(left / combined);
                         const inlineOffset = el.offsetTop;
                         const inferredTop = pageIndex * columnSize + pageIndex * columnGap + inlineOffset;
+                        console.log('pageIndex, inlineOffset, inferredTop=', pageIndex, inlineOffset, inferredTop);
+                        // baseline rect for comparison
+                        const nativeRect = el.getBoundingClientRect();
+                        console.log('nativeRect=', nativeRect);
+                        console.log('syntheticRect building...');
                         const syntheticRect = {
                             left,
                             right: left + width,
@@ -1771,9 +1780,12 @@ export class Paginator extends HTMLElement {
                             width,
                             height
                         };
+                        console.log('syntheticRect=', syntheticRect);
                         const rectMapper = await this.#getRectMapper();
                         const mapped = rectMapper(syntheticRect);
+                        console.log('mappedRect=', mapped);
                         const offset = mapped.left - this.#topMargin;
+                        console.log('computed offset=', offset);
                         await this.#scrollTo(offset, reason);
                         resolve();
                         return;
