@@ -182,7 +182,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         processHTML: processHTML
                     )
                     
-                    Task.detached(priority: .utility) {
+                    Task.detached(priority: .utility) { @EbookURLSchemeActor in
                         //                        print("# ebook proc text endpoint", replacedTextLocation)
                         //                        if !isCacheWarmer {
                         //                            print("# ebook proc", replacedTextLocation, text)
@@ -249,7 +249,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             } else if urlSchemeTask.request.value(forHTTPHeaderField: "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST")?.lowercased() != "true",
                       let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js"), let mimeType = mimeType(ofFileAtUrl: url) {
                 // File viewer bundle file.
-                Task {
+                Task { @EbookURLSchemeActor in
                     do {
                         let (response, data) = try await EBookLoadingActor().loadViewerFile(
                             at: viewerHtmlPath,
@@ -277,7 +277,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 let fileURL = URL(string: "ebook://ebook/load\(path)"),
                 // Security check.
                 urlSchemeTask.request.mainDocumentURL == fileURL {
-                Task {
+                Task { @EbookURLSchemeActor in
                     do {
                         let loadingActor = EBookLoadingActor()
                         let (response, data) = try await loadingActor.loadEbookFile(
