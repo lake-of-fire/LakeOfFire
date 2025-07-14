@@ -1111,8 +1111,8 @@ export class Paginator extends HTMLElement {
             columnWidth = maxInlineSize
         } else {
             // retro way:
-            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
-            //            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+//            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
             columnWidth = (size / divisor) - gap
         }
 
@@ -1610,63 +1610,6 @@ export class Paginator extends HTMLElement {
     async scrollToAnchor(anchor, select) {
         await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
-
-    /*
-     // retro way:
-     async #scrollToAnchor(anchor, reason = 'anchor') {
-     this.#anchor = anchor
-     const rects = uncollapse(anchor)?.getClientRects?.()
-     // if anchor is an element or a range
-     if (rects) {
-     // when the start of the range is immediately after a hyphen in the
-     // previous column, there is an extra zero width rect in that column
-     const rect = Array.from(rects)
-     .find(r => r.width > 0 && r.height > 0) || rects[0]
-     if (!rect) return
-     // Compare against offset-based computation
-     const _n2 = uncollapse(anchor);
-     let _elNode2 = (_n2 && _n2.startContainer !== undefined) ? _n2.startContainer : _n2;
-     if (_elNode2 &&
-     (_elNode2.nodeType === Node.ELEMENT_NODE || _elNode2.nodeType === Node.TEXT_NODE)) {
-     const _el2 = _elNode2.nodeType === Node.TEXT_NODE ? _elNode2.parentElement : _elNode2;
-     const _offsetRect = computeOffsetRect(_el2, this.#container);
-     const _column = await this.size();
-     const _gap = this.#view.layout?.gap || 0;
-     const _combined = _column + _gap;
-     const _inlineOffset = _el2.offsetTop;
-     const _pageIndex = Math.floor(_offsetRect.left / _combined);
-     const _inferredTop = _pageIndex * _column + _pageIndex * _gap + _inlineOffset;
-     const _mapped = (await this.#getRectMapper())({
-     ..._offsetRect,
-     top: _inferredTop,
-     bottom: _inferredTop + _offsetRect.height,
-     });
-     console.log("Retro vs OffsetAnchor:", {
-     clientRect: rect,
-     offsetRect: _offsetRect,
-     column: _column,
-     gap: _gap,
-     combined: _combined,
-     pageIndex: _pageIndex,
-     inferredTop: _inferredTop,
-     mappedLeft: _mapped.left
-     });
-     }
-     await this.#scrollToRect(rect, reason)
-     return
-     }
-     // if anchor is a fraction
-     if (this.scrolled) {
-     await this.#scrollTo(anchor * this.viewSize, reason)
-     return
-     }
-     const { pages } = this
-     if (!pages) return
-     const textPages = pages - 2
-     const newPage = Math.round(anchor * (textPages - 1))
-     await this.#scrollToPage(newPage + 1, reason)
-     }
-     */
 
     async #scrollToAnchor(anchor, reason = 'anchor') {
         await this.#awaitDirection()
