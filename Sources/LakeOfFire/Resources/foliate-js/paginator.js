@@ -669,11 +669,16 @@ export class Paginator extends HTMLElement {
     #cachedStart = null
 
     #visibleSentinelIDs = new Set()
+    #sentinelVisibilityObserver = null
+    #sentinelVisibilityObserverLoading = null
+    #sentinelVisibilityObserverLoadingResolve = null
+    #sentinelMutationObserver = null
+
     #elementVisibilityObserver = null
     #elementVisibilityObserverLoading = null
     #elementVisibilityObserverLoadingResolve = null
-
     #elementMutationObserver = null
+    
     constructor() {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -908,15 +913,10 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    async #refreshElementVisibilityObserver() {
-//        console.log("elementVisibilityObserverLoading LOADING...")
-        this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
-        await this.#trackElementVisibilities();
-    }
     async #onExpand() {
 //        console.log("#onExpand...")
         this.#view.cachedViewSize = null;
-        await this.#refreshElementVisibilityObserver()
+        await this.#refreshSentinelVisibilityObserver()
 
         if (this.#scrolledToAnchorOnLoad) {
             await this.#scrollToAnchor(this.#anchor)
@@ -925,6 +925,58 @@ export class Paginator extends HTMLElement {
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
+    async #refreshSentinelVisibilityObserver() {
+        this.#sentinelVisibilityObserverLoading = new Promise(r => (this.#sentinelVisibilityObserverLoadingResolve = r))
+        await this.#trackSentinelVisibilities();
+    }
+    async #trackSentinelVisibilities() {
+        this.#disconnectSentinelVisibilityObserver();
+        await new Promise(r => requestAnimationFrame(r));
+        
+        this.#visibleSentinelIDs = new Set()
+        
+        this.#sentinelVisibilityObserver = new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                const el = entry.target;
+                if (entry.isIntersecting) {
+                    this.#visibleSentinelIDs.add(el.id)
+                } else {
+                    this.#visibleSentinelIDs.delete(el.id)
+                }
+            }
+            
+            this.#sentinelVisibilityObserverLoading = null
+            const resolve = this.#sentinelVisibilityObserverLoadingResolve
+            this.#sentinelVisibilityObserverLoadingResolve = null
+            resolve?.()
+        }, {
+            root: null,
+            threshold: [0],
+        });
+        
+        const selector = 'reader-sentinel';
+        
+        this.#sentinelMutationObserver = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node instanceof Element && node.tagName === selector) {
+                        this.#sentinelVisibilityObserver.observe(node);
+                    }
+                }
+                for (const node of mutation.removedNodes) {
+                    if (node instanceof Element && node.tagName === selector) {
+                        this.#sentinelVisibilityObserver.unobserve(node);
+                    }
+                }
+            }
+        });
+        
+        this.#view.document.body.getElementsByTagName(selector).forEach(el => this.#sentinelVisibilityObserver.observe(el));
+        this.#sentinelMutationObserver.observe(this.#view.document.body, {
+            childList: true,
+            subtree: true
+        });
+    }
     async #trackElementVisibilities() {
         this.#disconnectElementVisibilityObserver();
         await new Promise(r => requestAnimationFrame(r));
@@ -932,7 +984,6 @@ export class Paginator extends HTMLElement {
         this.#visibleSentinelIDs = new Set()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
-//            console.log("Intersection observed", entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting}).length, entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting}).length > 0 ? entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting})[0] : null)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
@@ -948,19 +999,16 @@ export class Paginator extends HTMLElement {
                 }
             }
 
-//            console.log("intersection observed, finning... sentinels", this.#visibleSentinelIDs.size)
             this.#elementVisibilityObserverLoading = null
             const resolve = this.#elementVisibilityObserverLoadingResolve
             this.#elementVisibilityObserverLoadingResolve = null
             resolve?.()
-//            console.log("intersection observed, fin'd... sentinels", this.#visibleSentinelIDs.size)
         }, {
             root: null,
             threshold: [0],
-            //rootMargin: '100%'
         });
 
-        const selector = '#reader-content > *, manabi-tracking-section, manabi-container, reader-sentinel';
+        const selector = '#reader-content > *, manabi-tracking-section, manabi-container';
 
         this.#elementMutationObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
@@ -982,6 +1030,16 @@ export class Paginator extends HTMLElement {
             childList: true,
             subtree: true
         });
+    }
+    #disconnectSentinelVisibilityObserver() {
+        if (this.#sentinelVisibilityObserver) {
+            this.#sentinelVisibilityObserver.disconnect();
+            this.#sentinelVisibilityObserver = null;
+        }
+        if (this.#sentinelMutationObserver) {
+            this.#sentinelMutationObserver.disconnect();
+            this.#sentinelMutationObserver = null;
+        }
     }
     #disconnectElementVisibilityObserver() {
         if (this.#elementVisibilityObserver) {
@@ -1844,7 +1902,9 @@ export class Paginator extends HTMLElement {
 //            console.log("getVisibleRange...")
         await this.#awaitDirection();
 //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
-        await this.#refreshElementVisibilityObserver()
+        await this.#refreshSentinelVisibilityObserver()
+//            await new Promise(r => requestAnimationFrame(r));
+
 //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
 
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
@@ -2245,6 +2305,7 @@ export class Paginator extends HTMLElement {
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
     destroy() {
+        this.#disconnectSentinelVisibilityObserver()
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
         this.#view.destroy()
