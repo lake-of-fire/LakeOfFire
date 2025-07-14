@@ -464,9 +464,9 @@ class View {
                 const side = this.#vertical ? 'height' : 'width'
                 const otherSide = this.#vertical ? 'width' : 'height'
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
+                const contentSize = documentElement?.[scrollProp] ?? 0;
 
                 if (this.#column) {
-                    const contentSize = documentElement?.[scrollProp] ?? this.#contentRange.getBoundingClientRect()[side]
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * this.#size
                     this.#element.style.padding = '0'
@@ -485,8 +485,6 @@ class View {
                         this.#overlayer.redraw()
                     }
                 } else {
-                    const contentSize = documentElement?.getBoundingClientRect()?.[side]
-                    //                    const contentSize = documentElement?.[scrollProp] ?? 0
                     const expandedSize = contentSize
                     const {
                         topMargin,
@@ -1686,17 +1684,6 @@ export class Paginator extends HTMLElement {
                 this.#anchor = anchor;
                 // Determine anchor target (could be Range or Element)
                 const anchorNode = uncollapse(anchor);
-                //                    // Diagnostic: log rect from getClientRects on the raw anchor (Range or Element)
-                //                    const rects = anchorNode?.getClientRects?.();
-                //                    if (rects && rects.length > 0) {
-                //                        const rect = Array.from(rects)
-                //                        .find(r => r.width > 0 && r.height > 0) || rects[0];
-                //                        if (rect) {
-                //                            await this.#scrollToRect(rect, reason);
-                //                            resolve();
-                //                            return;
-                //                        }
-                //                    }
                 // Fast path: compute offset using offsetLeft/offsetTop chains
                 let elNode = anchorNode;
                 if (elNode && elNode.startContainer !== undefined) {
