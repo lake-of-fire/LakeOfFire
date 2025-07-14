@@ -906,10 +906,8 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #onExpand() {
-        this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
-        //        this.#view.cachedViewSize = null
-
         this.#view.cachedViewSize = null;
+        this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
         this.#trackElementVisibilities();
 
         if (this.#scrolledToAnchorOnLoad) {
@@ -1226,7 +1224,7 @@ export class Paginator extends HTMLElement {
 
 
         if (this.#isCacheWarmer) return 0
-        if (this.#cachedSizes === null) {
+        if (true || this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(() => {
                     const rect = this.#container.getBoundingClientRect()
@@ -1251,7 +1249,7 @@ export class Paginator extends HTMLElement {
 
 
         if (this.#isCacheWarmer) return 0
-        if (this.#view.cachedViewSize === null) {
+        if (true || this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     const v = this.#view.element
