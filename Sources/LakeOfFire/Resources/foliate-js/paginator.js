@@ -79,8 +79,12 @@ const {
     FILTER_SKIP
 } = NodeFilter
 
-// Determine vertical/RTL by cloning only head and empty body in hidden iframe
-const getDirection = async (sourceDoc) => {
+/**
+ * Creates a hidden iframe with a cloned document (head and empty body) to compute computed style.
+ * @param {Document} sourceDoc - The source document to clone.
+ * @returns {Promise<{cs: CSSStyleDeclaration, doc: Document}>} - Computed style and iframe document.
+ */
+async function getBodylessComputedStyle(sourceDoc) {
     // 1. Clone a minimal document
     const cloneDoc = document.implementation.createHTMLDocument();
     
@@ -109,11 +113,7 @@ const getDirection = async (sourceDoc) => {
     const bodyClone = sourceDoc.body.cloneNode(false);
     cloneDoc.body.replaceWith(bodyClone);
     // Copy all attributes from the source <html> (e.g. xmlns, xml:lang, class, lang)
-    for (const {
-        name,
-        value
-    }
-         of sourceDoc.documentElement.attributes) {
+    for (const { name, value } of sourceDoc.documentElement.attributes) {
         cloneDoc.documentElement.setAttribute(name, value);
     }
     // Override or add the 'dir' attribute explicitly
@@ -138,28 +138,45 @@ const getDirection = async (sourceDoc) => {
         iframe.src = blobUrl;
     });
     
-    // 6. Compute writing-mode and direction
-    const doc = iframe.contentDocument;
-    const cs = iframe.contentWindow.getComputedStyle(doc.body);
-    const writingMode = cs.writingMode;
-    const direction = cs.direction;
-    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
-    const verticalRTL = writingMode === 'vertical-rl';
-    const rtl =
-    doc.body.dir === 'rtl' ||
-    direction === 'rtl' ||
-    doc.documentElement.dir === 'rtl';
+    // 6. Get computed style and doc
+    const bodylessDoc = iframe.contentDocument;
+    const bodylessStyle = iframe.contentWindow.getComputedStyle(doc.body);
     
     // 7. Cleanup
     URL.revokeObjectURL(blobUrl);
     iframe.remove();
     
-    return {
-        vertical,
-        verticalRTL,
-        rtl
-    };
-};
+    return { bodylessStyle, bodylessDoc };
+}
+
+/**
+ * Determines writing mode and directionality (vertical, verticalRTL, rtl) by using a computed style from a cloned iframe.
+ * @param {Document} sourceDoc - The source document to analyze.
+ * @returns {Promise<{vertical: boolean, verticalRTL: boolean, rtl: boolean}>}
+ */
+async function getDirection({ bodylessStyle, bodylessDoc }) {
+    const writingMode = bodylessStyle.writingMode;
+    const direction = bodylessStyle.direction;
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+    bodylessDoc.body.dir === 'rtl' ||
+    direction === 'rtl' ||
+    bodylessDoc.documentElement.dir === 'rtl';
+    return { vertical, verticalRTL, rtl };
+}
+
+async function getDirection({ bodylessStyle, bodylessDoc }) {
+    const writingMode = bodylessStyle.writingMode;
+    const direction = bodylessStyle.direction;
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
+    const rtl =
+    bodylessDoc.body.dir === 'rtl' ||
+    direction === 'rtl' ||
+    bodylessDoc.documentElement.dir === 'rtl';
+    return { vertical, verticalRTL, rtl };
+}
 
 const makeMarginals = (length, part) => Array.from({
     length
@@ -300,7 +317,9 @@ class View {
                     
                     this.#iframe.style.display = 'none'
                     
-                    const direction = await getDirection(doc);
+                    const { bodylessStyle, bodylessDoc } = getBodylessComputedStyle(doc)
+                    
+                    const direction = await getDirection({ bodylessStyle, bodylessDoc });
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
