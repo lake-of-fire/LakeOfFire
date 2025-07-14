@@ -382,7 +382,7 @@ class View {
         })
     }
     async render(layout) {
-        console.log("render(layout)...")
+//        console.log("render(layout)...")
         if (!layout) {
             return
         }
@@ -442,7 +442,7 @@ class View {
         gap,
         columnWidth
     }) {
-        console.log("columnize...")
+//        console.log("columnize...")
         await this.#awaitDirection();
         const vertical = this.#vertical
         this.#size = vertical ? height : width
@@ -489,7 +489,7 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
-        console.log("expand...")
+//        console.log("expand...")
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
                 const documentElement = this.document?.documentElement
@@ -909,13 +909,12 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     async #refreshElementVisibilityObserver() {
-        console.log("elementVisibilityObserverLoading LOADING...")
+//        console.log("elementVisibilityObserverLoading LOADING...")
         this.#elementVisibilityObserverLoading = new Promise(r => (this.#elementVisibilityObserverLoadingResolve = r))
         await this.#trackElementVisibilities();
-        console.log("refreshElementVisibilityObserver fin..")
     }
     async #onExpand() {
-        console.log("#onExpand...")
+//        console.log("#onExpand...")
         this.#view.cachedViewSize = null;
         await this.#refreshElementVisibilityObserver()
 
@@ -933,7 +932,7 @@ export class Paginator extends HTMLElement {
         this.#visibleSentinelIDs = new Set()
 
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
-            console.log("Intersection observed", entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting}).length, entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting}).length > 0 ? entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting})[0] : null)
+//            console.log("Intersection observed", entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting}).length, entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting}).length > 0 ? entries.filter(e => {return e.target.tagName === 'reader-sentinel' && e.isIntersecting})[0] : null)
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
@@ -949,12 +948,12 @@ export class Paginator extends HTMLElement {
                 }
             }
 
-            console.log("intersection observed, finning... sentinels", this.#visibleSentinelIDs.size)
+//            console.log("intersection observed, finning... sentinels", this.#visibleSentinelIDs.size)
             this.#elementVisibilityObserverLoading = null
             const resolve = this.#elementVisibilityObserverLoadingResolve
             this.#elementVisibilityObserverLoadingResolve = null
             resolve?.()
-            console.log("intersection observed, fin'd... sentinels", this.#visibleSentinelIDs.size)
+//            console.log("intersection observed, fin'd... sentinels", this.#visibleSentinelIDs.size)
         }, {
             root: null,
             threshold: [0],
@@ -1752,8 +1751,8 @@ export class Paginator extends HTMLElement {
                     return
                 }
 
-//                const interval = 16;
-                const interval = 2;
+                const interval = 16;
+//                const interval = 2;
 
                 function findSplitOffset(text, desiredOffset, maxDistance) {
                     function category(ch) {
@@ -1842,32 +1841,22 @@ export class Paginator extends HTMLElement {
         });
     }
     async #getVisibleRange() {
-            console.log("getVisibleRange...")
+//            console.log("getVisibleRange...")
         await this.#awaitDirection();
-            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
+//            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
         await this.#refreshElementVisibilityObserver()
-            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
+//            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
 
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
 
         const doc = this.#view.document
 
         if (this.#elementVisibilityObserverLoading) {
-            console.log("getVisibleRange... await elementVisibilityObserverLoading..")
+//            console.log("getVisibleRange... await elementVisibilityObserverLoading..")
             await this.#elementVisibilityObserverLoading
-            console.log("getVisibleRange... awaited reload")
+//            console.log("getVisibleRange... awaited reload")
         }
-        console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
-            
-            
-            
-            
-            
-            
-                        await new Promise(r => requestAnimationFrame(r));
-            console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
-            await new Promise(r => requestAnimationFrame(r));
-            console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
+//        console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
 
         if (this.#visibleSentinelIDs.size === 0) {
             const range = doc.createRange();
@@ -1919,7 +1908,7 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) {
             return;
         }
-            console.log("#afterScroll...")
+//            console.log("#afterScroll...")
 
         this.#cachedStart = null;
 
@@ -1935,32 +1924,24 @@ export class Paginator extends HTMLElement {
             range,
             index
         }
-                        console.log('#afterScroll...1')
 
             if (this.scrolled) {
                 detail.fraction = (await this.start()) / (await this.viewSize())
-            console.log('#afterScroll...2')
             } else if ((await this.pages()) > 0) {
-            console.log('#afterScroll...3')
             const page = await this.page()
-            console.log('#afterScroll...4')
             const pages = await this.pages()
-            console.log('#afterScroll...5')
             this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
             detail.fraction = (page - 1) / (pages - 2)
             detail.size = 1 / (pages - 2)
         }
 
-            console.log('#afterScroll...6')
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
 
-            console.log('#afterScroll...7')
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (await this.isAtSectionStart()) {
             this.#skipTouchEndOpacity = true
-            console.log('#afterScroll...8')
             this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
                 bubbles: true,
                 composed: true,
@@ -1969,9 +1950,7 @@ export class Paginator extends HTMLElement {
                     rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
                 }
             }));
-            console.log('#afterScroll...9')
         }
-            console.log('#afterScroll...fin')
     }
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
