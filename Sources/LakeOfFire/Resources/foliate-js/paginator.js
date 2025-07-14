@@ -183,6 +183,9 @@ async function getBodylessComputedStyle(sourceDoc) {
         iframe.src = blobUrl;
     });
 
+    // wait a frame for CSS to apply before measuring
+    await new Promise(r => requestAnimationFrame(r));
+    
     // 6. Get computed style and doc
     const bodylessDoc = iframe.contentDocument;
     const bodylessStyle = iframe.contentWindow.getComputedStyle(bodylessDoc.body);
@@ -352,8 +355,8 @@ class View {
                     //                    this.#iframe.style.display = 'none'
 
                     const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
-
                     const direction = await getDirection({ bodylessStyle, bodylessDoc });
+                    console.log("DIRECTION:", direction)
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
