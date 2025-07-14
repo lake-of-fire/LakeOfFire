@@ -1028,43 +1028,61 @@ export class Paginator extends HTMLElement {
         } = await this.sizes()
         const size = vertical ? height : width
 
+        
+//        const {
+//            maxInlineSizePx,
+//            maxColumnCount,
+//            maxColumnCountPortrait,
+//            topMarginPx,
+//            bottomMarginPx,
+//            gapPct
+//        } = CSS_DEFAULTS;
+//        const maxInlineSize = maxInlineSizePx;
+//        const orientationPortrait = height > width;
+//        let maxColumnCountSpread;
+//        if (orientationPortrait) {
+//            // In portrait container: non-vertical uses portrait count, vertical uses standard
+//            maxColumnCountSpread = vertical
+//                ? maxColumnCount
+//                : maxColumnCountPortrait;
+//        } else {
+//            // In landscape container: non-vertical uses standard, vertical uses portrait count
+//            maxColumnCountSpread = vertical
+//                ? maxColumnCountPortrait
+//                : maxColumnCount;
+//        }
+//        const topMargin = topMarginPx;
+//        const bottomMargin = bottomMarginPx;
+
         // retro way:
-        //        const style = getComputedStyle(this.#top)
-        //        const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
-        //        const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
-        //        const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
-        //        const bottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
-        //        console.log("max in", maxInlineSize, CSS_DEFAULTS.maxInlineSizePx)
-        //        console.log("max col cnt", maxColumnCount, CSS_DEFAULTS.maxColumnCount, CSS_DEFAULTS.maxColumnCountPortrait, vertical)
-        //        console.log("top marg", topMargin, CSS_DEFAULTS.topMarginPx)
-        //        console.log("bot marg", bottomMargin, CSS_DEFAULTS.bottomMarginPx)
-
-        const {
-            maxInlineSizePx,
-            maxColumnCount,
-            maxColumnCountPortrait,
-            topMarginPx,
-            bottomMarginPx,
-            gapPct
-        } = CSS_DEFAULTS;
-        const maxInlineSize = maxInlineSizePx;
-        const maxColumnCountSpread = vertical
-            ? maxColumnCountPortrait
-            : maxColumnCount;
-        const topMargin = topMarginPx;
-        const bottomMargin = bottomMarginPx;
-
-        this.#topMargin = topMargin
-        this.#bottomMargin = bottomMargin
-        this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
+        const style = getComputedStyle(this.#top)
+        const oldmaxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
+        const oldmaxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
+        const oldtopMargin = parseFloat(style.getPropertyValue('--_top-margin'))
+        const oldbottomMargin = parseFloat(style.getPropertyValue('--_bottom-margin'))
+//        console.log("max in", oldmaxInlineSize, maxInlineSize)
+//        console.log("max col cnt", oldmaxColumnCount, maxColumnCountSpread)
+//        console.log("top marg", oldtopMargin, topMargin)
+//        console.log("bot marg", oldbottomMargin, bottomMargin)
+        
+//        this.#topMargin = topMargin
+//        this.#bottomMargin = bottomMargin
+//        this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
+//        if (this.#vertical) {
+//            this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
+//        }
+        this.#topMargin = oldtopMargin
+        this.#bottomMargin = oldbottomMargin
+        this.#view.document.documentElement.style.setProperty('--_max-inline-size', oldmaxInlineSize)
         if (this.#vertical) {
             this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
         }
 
         // retro way:
-        //        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
-        const g = gapPct / 100;
-        //        console.log("gap", CSS_DEFAULTS.gapPct / 100, g)
+                const g = parseFloat(style.getPropertyValue('--_gap')) / 100
+//                const oldg = parseFloat(style.getPropertyValue('--_gap')) / 100
+//        const g = gapPct / 100;
+//                console.log("gap", oldg, g)
 
         // The gap will be a percentage of the #container, not the whole view.
         // This means the outer padding will be bigger than the column gap. Let
@@ -1090,13 +1108,21 @@ export class Paginator extends HTMLElement {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
-            const columnWidth = maxInlineSize
+//            const columnWidth = maxInlineSize
+            const columnWidth = oldmaxInlineSize
 
             this.heads = null
             this.feet = null
             this.#header.replaceChildren()
             this.#footer.replaceChildren()
 
+            return {
+                flow,
+                oldtopMargin,
+                oldbottomMargin,
+                gap,
+                columnWidth
+            }
             return {
                 flow,
                 topMargin,
@@ -1108,18 +1134,22 @@ export class Paginator extends HTMLElement {
 
         let divisor, columnWidth
         if (this.#isSingleMediaElementWithoutText()) {
-            columnWidth = maxInlineSize
+//            columnWidth = maxInlineSize
+            columnWidth = oldmaxInlineSize
         } else {
             // retro way:
-//            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
-            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+            //            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
+                        divisor = Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize))
+//            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
+//            console.log("Divisor", Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize)), divisor)
             columnWidth = (size / divisor) - gap
         }
 
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 
         const marginalDivisor = vertical ?
-            Math.min(2, Math.ceil(width / maxInlineSize)) :
+//            Math.min(2, Math.ceil(width / maxInlineSize)) :
+            Math.min(2, Math.ceil(width / oldmaxInlineSize)) :
             divisor
         const marginalStyle = {
             gridTemplateColumns: `repeat(${marginalDivisor}, 1fr)`,
@@ -1135,6 +1165,14 @@ export class Paginator extends HTMLElement {
         this.#header.replaceChildren(...heads)
         this.#footer.replaceChildren(...feet)
 
+        return {
+            height,
+            width,
+            oldtopMargin,
+            oldbottomMargin,
+            gap,
+            columnWidth
+        }
         return {
             height,
             width,
