@@ -412,7 +412,7 @@ class View {
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
-        console.log("columnize #size = ", this.#size)
+//        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
         setStylesImportant(doc.documentElement, {
@@ -896,12 +896,14 @@ export class Paginator extends HTMLElement {
     async #onBeforeExpand() {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
+        this.#cachedStart = null;
         this.#setLoading(true)
     }
     async #onExpand() {
         //        console.log("#onExpand...")
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
+        this.#cachedStart = null;
 
         // Sometimes we get stale or wrong values for sizes() otherwise :/
         //        await new Promise(r => requestAnimationFrame(r));
@@ -1335,19 +1337,21 @@ export class Paginator extends HTMLElement {
         return this.#view.cachedViewSize[await this.sideProp()]
     }
     async start() {
-        //        if (this.#cachedStart === null) {
-        return new Promise(resolve => {
-            requestAnimationFrame(async () => {
+                if (this.#cachedStart === null) {
+//        return new Promise(resolve => {
+//            requestAnimationFrame(async () => {
                 //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
                 const start = Math.abs(this.#container[await this.scrollProp()])
-                resolve(start)
-            })
-        })
-        //        }
-        //        return this.#cachedStart
+                    this.#cachedStart = start
+//        return start
+//                resolve(start)
+//            })
+//        })
+                }
+                return this.#cachedStart
     }
     async end() {
-        await this.#awaitDirection();
+//        await this.#awaitDirection();
         return (await this.start()) + (await this.size())
     }
     async page() {
@@ -1360,7 +1364,7 @@ export class Paginator extends HTMLElement {
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
-        await this.#awaitDirection()
+//        await this.#awaitDirection()
         await new Promise(resolve => {
             requestAnimationFrame(async () => {
                 const delta = this.#vertical ? dy : dx
@@ -1372,13 +1376,13 @@ export class Paginator extends HTMLElement {
                 const max = rtl ? offset + a : offset + b
                 element[scrollProp] = Math.max(min, Math.min(max,
                     element[scrollProp] + delta))
-                this.#cachedStart = null;
+                this.#cachedStart = null; // TODO: Needed here?
                 resolve()
             })
         })
     }
     async snap(vx, vy) {
-        await this.#awaitDirection();
+//        await this.#awaitDirection();
         const velocity = this.#vertical ? vy : vx
         const [offset, a, b] = this.#scrollBounds
         const start = await this.start()
