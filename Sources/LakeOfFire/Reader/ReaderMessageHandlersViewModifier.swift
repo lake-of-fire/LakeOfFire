@@ -226,7 +226,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "window.loadEBook({ url, layoutMode })",
                             arguments: [
                                 "url": loaderURL.absoluteString,
-                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
+//                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
+                                
+                                "layoutMode": "paginated",
                             ]
                         )
                     }

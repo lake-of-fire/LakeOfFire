@@ -1326,10 +1326,10 @@ export class Paginator extends HTMLElement {
                         width: v.clientWidth,
                         height: v.clientHeight,
                     }
-                    //                    console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
-                    //                    console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
-                    //                    console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
-                    //                    console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
+//                                        console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
+//                                        console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
+//                                        console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
+//                                        console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
                     resolve(this.#view.cachedViewSize[await this.sideProp()])
                 })
             })
