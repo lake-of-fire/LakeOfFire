@@ -458,68 +458,75 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     /**
-     * Measure the logical extent of `#contentRange` without incurring the
-     * expensive `getBoundingClientRect()` cost.  This mirrors the fast‑path
-     * offset‑parent walk already proven in `#scrollToAnchor`.
+     * Measure the logical extent of `#contentRange` by mirroring
+     * the fast-path offset chaining in `#scrollToAnchor`.
      *
      * @returns {number} size in CSS pixels along the pagination axis
      */
     #measureContentSize() {
-        if (!this.#contentRange) return 0
-            
-            // Work from the physical element that *ends* the range.
-            let node = this.#contentRange.endContainer
-            if (node?.nodeType === Node.TEXT_NODE) node = node.parentElement
-                if (!node || node.nodeType !== Node.ELEMENT_NODE) return 0
-                    
-                    // Accumulate absolute offsets *both* horizontally and vertically so
-                    // we can cope with horizontal‑text and vertical‑text column layouts.
-                    let left = node.offsetLeft
-                    let top  = node.offsetTop
-                    const w  = node.offsetWidth
-                    const h  = node.offsetHeight
-                    
-                    let cur  = node
-                    let doc  = node.ownerDocument
-                    
-                    // Walk the offsetParent chain, hopping across any iframe boundary
-                    while (cur && cur !== this.#element) {
-                        const parent = cur.offsetParent
-                        if (!parent) {
-                            const frame = doc?.defaultView?.frameElement
-                            if (frame) {
-                                left += frame.offsetLeft
-                                top  += frame.offsetTop
-                                cur   = frame
-                                doc   = frame.ownerDocument
-                                continue
-                            }
-                            break
-                        }
-                        cur = parent
-                        if (cur !== this.#element) {
-                            left += cur.offsetLeft
-                            top  += cur.offsetTop
-                        }
-                    }
+        if (!this.#contentRange) return 0;
         
-        // In horizontal text we page along the *x* axis, so the content length
-        // is measured horizontally.  In vertical text we page along the *y*
-        // axis, but due to the 90‑degree rotation the *vertical* extent of the
-        // document is expressed by the horizontal offset chain.  Therefore:
+        // Determine the anchor-equivalent element from the range
+        const range = this.#contentRange;
+        let anchorNode = uncollapse(range);
+        if (anchorNode && anchorNode.startContainer !== undefined) {
+            anchorNode = anchorNode.startContainer;
+        }
+        let el = (anchorNode?.nodeType === Node.TEXT_NODE)
+        ? anchorNode.parentElement
+        : anchorNode;
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) return 0;
+        
+        // Initial offsets and dimensions
+        let left = el.offsetLeft;
+        let top = el.offsetTop;
+        const width = el.offsetWidth;
+        const height = el.offsetHeight;
+        
+        // Traverse offsetParent (and iframe) chain up to the paginator container
+        let current = el;
+        let doc = el.ownerDocument;
+        while (current) {
+            const parent = current.offsetParent;
+            if (!parent) {
+                const frame = doc?.defaultView?.frameElement;
+                if (frame) {
+                    left += frame.offsetLeft;
+                    top += frame.offsetTop;
+                    current = frame;
+                    doc = frame.ownerDocument;
+                    continue;
+                }
+                break;
+            }
+            current = parent;
+            left += current.offsetLeft;
+            top += current.offsetTop;
+        }
+        
+        // Build synthetic rect and log for diagnostics
+        const syntheticRect = {
+            left,
+            right: left + width,
+            top,
+            bottom: top + height,
+            width,
+            height
+        };
+        console.log('[measureContentSize] syntheticRect:', syntheticRect);
+        
+        // Derive size along paging axis (vertical writing → horizontal extent, horizontal writing → vertical extent)
         const contentSize = this.#vertical
-        ? left + w   // vertical writing: use horizontal accumulation
-        : top  + h   // horizontal writing: use vertical accumulation
+        ? syntheticRect.right
+        : syntheticRect.bottom;
+        console.log('[measureContentSize] contentSize:', contentSize);
         
-        // DIAGNOSTICS TO KEEP JUST TO COMPARE WITH OLD CORRECT BUT SLOW LOGIC:
-        const OcontentRect = this.#contentRange.getBoundingClientRect()
-        const OrootRect = this.document?.documentElement.getBoundingClientRect()
-        const Oside = this.#vertical ? 'height' : 'width'
-        const OcontentSize =  OcontentRect[Oside]
-        console.log("expand old n new", OcontentRect, OrootRect, OcontentSize, "new contentSize:", contentSize, "this.#size:", this.#size, "content range", this.#contentRange)
+        // Compare against slow path for verification
+        const OcontentRect = range.getBoundingClientRect();
+        const Oside = this.#vertical ? 'width' : 'height';
+        console.log('expand old n new', OcontentRect, OcontentRect[Oside], 'new contentSize:', contentSize, 'this.#size:', this.#size);
         
-        return contentSize
-
+        return contentSize;
     }
     async expand() {
         await this.onBeforeExpand()
@@ -537,7 +544,10 @@ class View {
                     // Use a more accurate, geometry‑free range measurement
                     const measured = this.#measureContentSize()
                     if (measured > 0) contentSize = measured
-                        const pageCount = Math.ceil(contentSize / this.#size)
+                        // Derive column count from total width: W = n*(cw+gap) - gap
+                        //  => n = floor( (W + gap) / (cw + gap) )
+                        const gapPx = this.layout?.gap ?? 36
+                        const pageCount = Math.max(1, Math.floor((contentSize + gapPx) / (this.#size + gapPx)))
                         const expandedSize = pageCount * this.#size
                         
                         //                                            const OcontentRect = this.#contentRange.getBoundingClientRect()
