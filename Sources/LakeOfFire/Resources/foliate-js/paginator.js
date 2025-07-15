@@ -232,9 +232,10 @@ class View {
         // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
 
-        requestAnimationFrame(() => {
-            this.#debouncedExpand();
-        })
+//        requestAnimationFrame(() => {
+//            this.#debouncedExpand();
+//        this.#expand();
+//        })
     })
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
@@ -562,7 +563,6 @@ export class Paginator extends HTMLElement {
         mode: 'closed'
     })
     #debouncedRender = debounce(this.render.bind(this), 333)
-    #hasResizeObserverTriggered = false
     #lastResizerRect = null
     #resizeObserver = new ResizeObserver(entries => {
         if (this.#isCacheWarmer) return;
@@ -576,6 +576,7 @@ export class Paginator extends HTMLElement {
             top: Math.round(rect.top),
             left: Math.round(rect.left),
         };
+//        console.log("RESIZE OBS...", newSize)
 
         const old = this.#lastResizerRect
         const unchanged =
@@ -587,18 +588,13 @@ export class Paginator extends HTMLElement {
 
         if (!unchanged) {
             this.#lastResizerRect = newSize
-            this.#cachedSizes = null
-//            this.#cachedSizes = {
-//                width: newSize.width,
-//                height: newSize.height,
-//            }
+//            this.#cachedSizes = null
+            this.#cachedSizes = {
+                width: newSize.width,
+                height: newSize.height,
+            }
 //            console.log("sizes() from resize updated to ", this.#cachedSizes)
             this.#cachedStart = null
-        }
-
-        if (!this.#hasResizeObserverTriggered) {
-            this.#hasResizeObserverTriggered = true
-            return
         }
 
         if (unchanged) {
@@ -1246,18 +1242,14 @@ export class Paginator extends HTMLElement {
         }
 
         // avoid unwanted triggers
-        this.#hasResizeObserverTriggered = false
+//        this.#hasResizeObserverTriggered = false
         //        this.#resizeObserver.observe(this.#container);
 
-        try {
-            await this.#view.render(await this.#beforeRender({
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-            }))
+        await this.#view.render(await this.#beforeRender({
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+        }))
             //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
-        } finally {
-            this.#hasResizeObserverTriggered = false
-        }
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
