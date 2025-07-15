@@ -225,16 +225,12 @@ class View {
             return
         }
 
-        this.cachedViewSize = {
-            width: newSize.width,
-            height: newSize.height,
-        }
-        // TODO: remove lastResizerRect nowt hatw e have cachedViewSize
         this.#lastResizerRect = newSize
+        this.cachedViewSize = null
 
 //        requestAnimationFrame(() => {
 //            this.#debouncedExpand();
-//        this.#expand();
+//        this.expand();
 //        })
     })
     #element = document.createElement('div')
@@ -416,6 +412,7 @@ class View {
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
+        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
         setStylesImportant(doc.documentElement, {
@@ -471,10 +468,22 @@ class View {
                 const otherSide = this.#vertical ? 'width' : 'height'
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
                 const contentSize = documentElement?.[scrollProp] ?? 0;
-
+                
                 if (this.#column) {
                     const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * this.#size
+
+//                    const OcontentRect = this.#contentRange.getBoundingClientRect()
+//                    const OrootRect = documentElement.getBoundingClientRect()
+//                    // offset caused by column break at the start of the page
+//                    // which seem to be supported only by WebKit and only for horizontal writing
+//                    const OcontentStart = this.#vertical ? 0
+//                    : this.#rtl ? OrootRect.right - OcontentRect.right : OcontentRect.left - OrootRect.left
+//                    const OcontentSize = OcontentStart + OcontentRect[side]
+//                    const OpageCount = Math.ceil(OcontentSize / this.#size)
+//                    const OexpandedSize = OpageCount * this.#size
+//                    console.log("expand old n new", OcontentRect, OrootRect, OcontentSize, OpageCount, OexpandedSize, "new:", contentSize, pageCount, expandedSize, "this.#size:", this.#size, "content range", this.#contentRange)
+
                     this.#element.style.padding = '0'
                     this.#iframe.style[side] = `${expandedSize}px`
                     this.#element.style[side] = `${expandedSize + this.#size * 2}px`
@@ -586,24 +595,19 @@ export class Paginator extends HTMLElement {
             newSize.top === old.top &&
             newSize.left === old.left
 
-        if (!unchanged) {
-            this.#lastResizerRect = newSize
-//            this.#cachedSizes = null
-            this.#cachedSizes = {
-                width: newSize.width,
-                height: newSize.height,
-            }
-//            console.log("sizes() from resize updated to ", this.#cachedSizes)
-            this.#cachedStart = null
-        }
-
         if (unchanged) {
             return
         }
+        
+            this.#lastResizerRect = newSize
+            this.#cachedSizes = null
+//            console.log("sizes() from resize updated to ", this.#cachedSizes)
+            this.#cachedStart = null
 
-        requestAnimationFrame(() => {
-            this.#debouncedRender();
-        })
+        this.render()
+//        requestAnimationFrame(() => {
+//            this.#debouncedRender();
+//        })
     })
     #top
     #transitioning = false;
@@ -1273,9 +1277,8 @@ export class Paginator extends HTMLElement {
     async sizes() {
 //        await this.#awaitDirection();
 
-
         if (this.#isCacheWarmer) return 0
-        if (/*true || */this.#cachedSizes === null) {
+        if (true || this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#container.getBoundingClientRect()
@@ -1307,6 +1310,11 @@ export class Paginator extends HTMLElement {
     async size() {
         //        return this.#container.getBoundingClientRect()[await this.sideProp()]
         //
+        
+//        console.log("size() the rect we chose:", await this.sizes())
+//        console.log("size() the rect magnitude we chose:", (await this.sizes())[await this.sideProp()])
+//        console.log('size() prev slow but correct implementation rect:', this.#container.getBoundingClientRect())
+//        console.log('size() prev slow but correct implementation chosen magnitude:', this.#container.getBoundingClientRect()[await this.sideProp()])
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
@@ -1315,7 +1323,7 @@ export class Paginator extends HTMLElement {
 
 
         if (this.#isCacheWarmer) return 0
-        if (/*true ||*/ this.#view.cachedViewSize === null) {
+        if (true || this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#view.element.getBoundingClientRect()
@@ -1330,6 +1338,10 @@ export class Paginator extends HTMLElement {
                         width: v.clientWidth,
                         height: v.clientHeight,
                     }
+//                    console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
+//                    console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
+//                    console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
+//                    console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
                     resolve(this.#view.cachedViewSize[await this.sideProp()])
                 })
             })
@@ -1350,26 +1362,15 @@ export class Paginator extends HTMLElement {
     }
     async end() {
         await this.#awaitDirection();
-
-
-
-
         return (await this.start()) + (await this.size())
     }
     async page() {
-        await this.#awaitDirection();
-
-
-
-
+//        await this.#awaitDirection();
         return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
     }
     async pages() {
-        await this.#awaitDirection();
-
-
-
-
+//        await this.#awaitDirection();
+            console.log("pages() view size & size:", (await this.viewSize()), (await this.size()))
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
@@ -1743,12 +1744,12 @@ export class Paginator extends HTMLElement {
     //                await this.#scrollToPage(newPage + 1, reason)
     //                }
     async #scrollToAnchor(anchor, reason = 'anchor') {
-            console.log("#scrollToAnchor...", this.#cachedSizes)
+            console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
         await this.#awaitDirection();
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                console.log("#scrollToAnchor... frame...", this.#cachedSizes)
+                console.log("#scrollToAnchor...frames...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
                 this.#anchor = anchor;
 //                console.log('scrollToAnchor: anchor=', anchor);
                 // Determine anchor target (could be Range or Element)
