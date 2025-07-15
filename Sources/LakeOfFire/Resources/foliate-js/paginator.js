@@ -457,77 +457,6 @@ class View {
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
-    /**
-     * Measure the logical extent of `#contentRange` by mirroring
-     * the fast-path offset chaining in `#scrollToAnchor`.
-     *
-     * @returns {number} size in CSS pixels along the pagination axis
-     */
-    #measureContentSize() {
-        if (!this.#contentRange) return 0;
-
-        // Determine the anchor-equivalent element from the range
-        const range = this.#contentRange;
-        let anchorNode = uncollapse(range);
-        if (anchorNode && anchorNode.startContainer !== undefined) {
-            anchorNode = anchorNode.startContainer;
-        }
-        let el = (anchorNode?.nodeType === Node.TEXT_NODE)
-            ? anchorNode.parentElement
-            : anchorNode;
-        if (!el || el.nodeType !== Node.ELEMENT_NODE) return 0;
-
-        // Initial offsets and dimensions
-        let left = el.offsetLeft;
-        let top = el.offsetTop;
-        const width = el.offsetWidth;
-        const height = el.offsetHeight;
-
-        // Traverse offsetParent (and iframe) chain up to the paginator container
-        let current = el;
-        let doc = el.ownerDocument;
-        while (current) {
-            const parent = current.offsetParent;
-            if (!parent) {
-                const frame = doc?.defaultView?.frameElement;
-                if (frame) {
-                    left += frame.offsetLeft;
-                    top += frame.offsetTop;
-                    current = frame;
-                    doc = frame.ownerDocument;
-                    continue;
-                }
-                break;
-            }
-            current = parent;
-            left += current.offsetLeft;
-            top += current.offsetTop;
-        }
-
-        // Build synthetic rect and log for diagnostics
-        const syntheticRect = {
-            left,
-            right: left + width,
-            top,
-            bottom: top + height,
-            width,
-            height
-        };
-                console.log('[measureContentSize] syntheticRect:', syntheticRect);
-
-        // Derive size along paging axis (vertical writing → horizontal extent, horizontal writing → vertical extent)
-        const contentSize = this.#vertical
-            ? syntheticRect.right
-            : syntheticRect.bottom;
-                console.log('[measureContentSize] contentSize:', contentSize);
-
-        // Compare against slow path for verification
-                const OcontentRect = range.getBoundingClientRect();
-                const Oside = this.#vertical ? 'width' : 'height';
-                console.log('expand old n new', OcontentRect, OcontentRect[Oside], 'new contentSize:', contentSize, 'this.#size:', this.#size);
-
-        return contentSize;
-    }
     async expand() {
         await this.onBeforeExpand()
         //        console.log("expand...")
@@ -538,28 +467,18 @@ class View {
                 const side = this.#vertical ? 'height' : 'width'
                 const otherSide = this.#vertical ? 'width' : 'height'
                 const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
-                let contentSize = documentElement?.[scrollProp] ?? 0;
+//                let contentSize = documentElement?.[scrollProp] ?? 0;
 
                 if (this.#column) {
-                    // Use a more accurate, geometry‑free range measurement
-                    const measured = this.#measureContentSize()
-                    if (measured > 0) contentSize = measured
-                    // Derive column count from total width: W = n*(cw+gap) - gap
-                    //  => n = floor( (W + gap) / (cw + gap) )
-                    const gapPx = this.layout?.gap ?? 36
-                    const pageCount = Math.max(1, Math.floor((contentSize + gapPx) / (this.#size + gapPx)))
+                    const contentRect = this.#contentRange.getBoundingClientRect()
+                    const rootRect = documentElement.getBoundingClientRect()
+                    // offset caused by column break at the start of the page
+                    // which seem to be supported only by WebKit and only for horizontal writing
+                    const contentStart = this.#vertical ? 0
+                    : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                    const contentSize = contentStart + contentRect[side]
+                    const pageCount = Math.ceil(contentSize / this.#size)
                     const expandedSize = pageCount * this.#size
-
-                    //                                            const OcontentRect = this.#contentRange.getBoundingClientRect()
-                    //                                            const OrootRect = documentElement.getBoundingClientRect()
-                    //                                            // offset caused by column break at the start of the page
-                    //                                            // which seem to be supported only by WebKit and only for horizontal writing
-                    //                                            const OcontentStart = this.#vertical ? 0
-                    //                                            : this.#rtl ? OrootRect.right - OcontentRect.right : OcontentRect.left - OrootRect.left
-                    //                                            const OcontentSize = OcontentStart + OcontentRect[side]
-                    //                                            const OpageCount = Math.ceil(OcontentSize / this.#size)
-                    //                                            const OexpandedSize = OpageCount * this.#size
-                    //                                            console.log("expand old n new", OcontentRect, OrootRect, OcontentSize, OpageCount, OexpandedSize, "new:", contentSize, pageCount, expandedSize, "this.#size:", this.#size, "content range", this.#contentRange)
 
                     this.#element.style.padding = '0'
                     this.#iframe.style[side] = `${expandedSize}px`
@@ -577,6 +496,7 @@ class View {
                         this.#overlayer.redraw()
                     }
                 } else {
+                    const contentSize = documentElement.getBoundingClientRect()[side]
                     const expandedSize = contentSize
                     const {
                         topMargin,
@@ -1355,7 +1275,7 @@ export class Paginator extends HTMLElement {
         //        await this.#awaitDirection();
 
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedSizes === null) {
+        if (/*true || */this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#container.getBoundingClientRect()
@@ -1385,22 +1305,11 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
-        //        return this.#container.getBoundingClientRect()[await this.sideProp()]
-        //
-
-        //        console.log("size() the rect we chose:", await this.sizes())
-        //        console.log("size() the rect magnitude we chose:", (await this.sizes())[await this.sideProp()])
-        //        console.log('size() prev slow but correct implementation rect:', this.#container.getBoundingClientRect())
-        //        console.log('size() prev slow but correct implementation chosen magnitude:', this.#container.getBoundingClientRect()[await this.sideProp()])
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
-        //        await this.#awaitDirection();
-
-
-
         if (this.#isCacheWarmer) return 0
-        if (true || this.#view.cachedViewSize === null) {
+        if (/*true ||*/ this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#view.element.getBoundingClientRect()
@@ -1736,10 +1645,12 @@ export class Paginator extends HTMLElement {
                     await scroll()
                 } else {
                     this.#container.classList.add('view-fade')
+                    console.log('scroll...')
                     // Allow the browser to paint the fade
                     /*await new Promise(r => setTimeout(r, 65));
                      this.#container.classList.add('view-faded')*/
                     await scroll()
+                    console.log('scrolled!')
                     this.#container.classList.remove('view-faded')
                     this.#container.classList.remove('view-fade')
                 }
