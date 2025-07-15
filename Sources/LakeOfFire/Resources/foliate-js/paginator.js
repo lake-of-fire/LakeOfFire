@@ -397,8 +397,8 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-        //        this.#debouncedExpand()
-        await this.expand()
+                this.#debouncedExpand()
+//        await this.expand()
     }
     async columnize({
         width,
@@ -601,9 +601,9 @@ export class Paginator extends HTMLElement {
         //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
 
-        this.render()
+//        this.render()
         //        requestAnimationFrame(() => {
-        //            this.#debouncedRender();
+                    this.#debouncedRender();
         //        })
     })
     #top
