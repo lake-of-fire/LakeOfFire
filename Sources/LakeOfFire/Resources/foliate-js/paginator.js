@@ -251,12 +251,14 @@ class View {
     #isCacheWarmer
     constructor({
         container,
+        onBeforeExpand,
         onExpand,
         isCacheWarmer
     }) {
         this.container = container
         this.#isCacheWarmer = isCacheWarmer
         this.#debouncedExpand = debounce(this.expand.bind(this), 999)
+        this.onBeforeExpand = onBeforeExpand
         this.onExpand = onExpand
         //        this.#iframe.setAttribute('part', 'filter')
         this.#element.append(this.#iframe)
@@ -458,6 +460,7 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
+        await this.onBeforeExpand()
         //        console.log("expand...")
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
@@ -623,6 +626,7 @@ export class Paginator extends HTMLElement {
     #index = -1
     #anchor = 0 // anchor view to a fraction (0-1), Range, or Element
     #justAnchored = false
+    #isLoading = false
     #locked = false // while true, prevent any further navigation
     #styles
     #styleMap = new WeakMap()
@@ -632,7 +636,6 @@ export class Paginator extends HTMLElement {
     #isCacheWarmer = false
     #prefetchTimer = null
     #prefetchCache = new Map()
-    #isLoading = false
     #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
@@ -805,7 +808,7 @@ export class Paginator extends HTMLElement {
 
         // Continuously fire relocate during scroll
         this.#container.addEventListener('scroll', debounce(async () => {
-            if (this.#isLoading) return;
+            if (this.#view.isLoading) return;
             if (this.scrolled && !this.#isCacheWarmer) {
                 const range = await this.#getVisibleRange();
                 const index = this.#index;
@@ -877,6 +880,7 @@ export class Paginator extends HTMLElement {
         }
         this.#view = new View({
             container: this,
+            onBeforeExpand: this.#onBeforeExpand.bind(this),
             onExpand: this.#onExpand.bind(this),
             isCacheWarmer: this.#isCacheWarmer,
             //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
@@ -884,17 +888,35 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
+    #setLoading(isLoading) {
+        this.#isLoading = isLoading;
+        if (isLoading) {
+            this.#top.classList.add('reader-loading');
+        } else {
+            this.#top.classList.remove('reader-loading');
+        }
+    }
+    async #onBeforeExpand() {
+        this.#view.cachedViewSize = null;
+        this.#view.cachedSizes = null;
+        this.#setLoading(true)
+    }
     async #onExpand() {
         //        console.log("#onExpand...")
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
 
+        // Sometimes we get stale or wrong values for sizes() otherwise :/
+//        await new Promise(r => requestAnimationFrame(r));
+        
         await this.#refreshSentinelVisibilityObserver()
 
         //        console.log("#onExpand...awaited refresh sentinels")
         if (this.#scrolledToAnchorOnLoad) {
             await this.#scrollToAnchor(this.#anchor)
         }
+        
+        this.#setLoading(false)
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
@@ -1257,12 +1279,11 @@ export class Paginator extends HTMLElement {
             scrolled ? 'height' : 'width'
     }
     async sizes() {
-        await this.#awaitDirection();
-
+//        await this.#awaitDirection();
 
 
         if (this.#isCacheWarmer) return 0
-        if (/*true ||*/ this.#cachedSizes === null) {
+        if (/*true || */this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#container.getBoundingClientRect()
@@ -1297,12 +1318,12 @@ export class Paginator extends HTMLElement {
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
-        await this.#awaitDirection();
+//        await this.#awaitDirection();
 
 
 
         if (this.#isCacheWarmer) return 0
-        if (true || this.#view.cachedViewSize === null) {
+        if (/*true ||*/ this.#view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#view.element.getBoundingClientRect()
@@ -2071,8 +2092,7 @@ export class Paginator extends HTMLElement {
     }
     async #display(promise) {
         //            console.log("#display...")
-        this.#isLoading = true;
-        this.#top.classList.add('reader-loading');
+            this.#setLoading(true)
         const {
             index,
             src,
@@ -2127,6 +2147,7 @@ export class Paginator extends HTMLElement {
                 // Reset chevrons when loading new section
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
                 //            this.dispatchEvent(new CustomEvent('create-overlayer', {
+                //            this.dispatchEvent(new CustomEvent('create-overlayer', {
                 //                detail: {
                 //                    doc: view.document, index,
                 //                    attach: overlayer => view.overlayer = overlayer,
@@ -2140,8 +2161,7 @@ export class Paginator extends HTMLElement {
             anchor(this.#view.document) : anchor) ?? 0, select)
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         this.#scrolledToAnchorOnLoad = true
-        this.#top.classList.remove('reader-loading');
-        this.#isLoading = false;
+        this.#setLoading(false)
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
     }
