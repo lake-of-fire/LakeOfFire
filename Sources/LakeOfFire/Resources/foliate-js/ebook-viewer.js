@@ -1060,7 +1060,8 @@ class CacheWarmer {
 
 
 window.setEbookViewerLayout = (layoutMode) => {
-    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    // TODO: Add scrolled mode back...
+//    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
 }
 
 window.setEbookViewerWritingDirection = (layoutMode) => {
