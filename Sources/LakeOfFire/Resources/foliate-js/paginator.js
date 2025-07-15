@@ -584,10 +584,12 @@ export class Paginator extends HTMLElement {
 
         if (!unchanged) {
             this.#lastResizerRect = newSize
-            this.#cachedSizes = {
-                width: newSize.width,
-                height: newSize.height,
-            }
+            this.#cachedSizes = null
+//            this.#cachedSizes = {
+//                width: newSize.width,
+//                height: newSize.height,
+//            }
+//            console.log("sizes() from resize updated to ", this.#cachedSizes)
             this.#cachedStart = null
         }
 
@@ -885,6 +887,8 @@ export class Paginator extends HTMLElement {
     async #onExpand() {
         //        console.log("#onExpand...")
         this.#view.cachedViewSize = null;
+        this.#view.cachedSizes = null;
+
         await this.#refreshSentinelVisibilityObserver()
 
         //        console.log("#onExpand...awaited refresh sentinels")
@@ -1258,7 +1262,7 @@ export class Paginator extends HTMLElement {
 
 
         if (this.#isCacheWarmer) return 0
-        if (true || this.#cachedSizes === null) {
+        if (/*true ||*/ this.#cachedSizes === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
                     //                    const r = this.#container.getBoundingClientRect()
@@ -1276,6 +1280,14 @@ export class Paginator extends HTMLElement {
                     resolve(this.#cachedSizes)
                 })
             })
+//        } else {
+//                                const r = this.#container.getBoundingClientRect()
+//            console.log("sizes() cached/real", this.#cachedSizes, r)
+//            requestAnimationFrame(() => {
+//                                const r = this.#container.getBoundingClientRect()
+//            console.log("sizes() FRAME cached/real", this.#cachedSizes, r)
+//            })
+
         }
         return this.#cachedSizes
     }
@@ -1718,25 +1730,29 @@ export class Paginator extends HTMLElement {
     //                await this.#scrollToPage(newPage + 1, reason)
     //                }
     async #scrollToAnchor(anchor, reason = 'anchor') {
+            console.log("#scrollToAnchor...", this.#cachedSizes)
         await this.#awaitDirection();
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
+                console.log("#scrollToAnchor... frame...", this.#cachedSizes)
                 this.#anchor = anchor;
-                console.log('scrollToAnchor: anchor=', anchor);
+//                console.log('scrollToAnchor: anchor=', anchor);
                 // Determine anchor target (could be Range or Element)
                 const anchorNode = uncollapse(anchor);
+                
                 // OG slow path: use getClientRects for sanity check
-                const rects = anchorNode?.getClientRects?.();
-                console.log('OG clientRects:', rects);
-                if (rects && rects.length > 0) {
-                    const ogRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
-                    console.log('OG rect chosen:', ogRect);
-                    //                        await this.#scrollToRect(ogRect, reason);
-                    //                        resolve();
-                    //                        return;
-                }
-                console.log('anchorNode=', anchorNode);
+//                const rects = anchorNode?.getClientRects?.();
+////                console.log('OG clientRects:', rects);
+//                if (rects && rects.length > 0) {
+//                    const ogRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
+////                    console.log('OG rect chosen:', ogRect);
+//                    //                        await this.#scrollToRect(ogRect, reason);
+//                    //                        resolve();
+//                    //                        return;
+//                }
+//                console.log('anchorNode=', anchorNode);
+                
                 // Fast path: compute offset using offsetLeft/offsetTop chains
                 let elNode = anchorNode;
                 if (elNode && elNode.startContainer !== undefined) {
@@ -1747,7 +1763,7 @@ export class Paginator extends HTMLElement {
                     if (el && el.nodeType === Node.ELEMENT_NODE) {
                         let left = el.offsetLeft, top = el.offsetTop;
                         const width = el.offsetWidth, height = el.offsetHeight;
-                        console.log('initial offsets:', { left, top, width, height });
+//                        console.log('initial offsets:', { left, top, width, height });
                         let current = el;
                         let doc = el.ownerDocument;
                         // Traverse offsetParent chain (and iframe chain)
@@ -1770,7 +1786,7 @@ export class Paginator extends HTMLElement {
                                 top += current.offsetTop;
                             }
                         }
-                        console.log('after traversal offsets:', { left, top });
+//                        console.log('after traversal offsets:', { left, top });
                         // Re‑create a synthetic rect from the accumulated offsets and
                         // feed it to the normal scroll‑to‑rect path.  This avoids the
                         // heavyweight `getClientRects()` call but still lets the
@@ -1784,10 +1800,10 @@ export class Paginator extends HTMLElement {
                             width,
                             height
                         };
-                        console.log('syntheticRect=', syntheticRect);
+//                        console.log('syntheticRect=', syntheticRect);
                         const rectMapper = await this.#getRectMapper();
                         const mapped = rectMapper(syntheticRect);
-                        console.log('mappedRect=', mapped);
+//                        console.log('mappedRect=', mapped);
                         // Use the same helper that the slow path relies on so we keep
                         // consistent behaviour between modes.
                         await this.#scrollToRect(syntheticRect, reason);
