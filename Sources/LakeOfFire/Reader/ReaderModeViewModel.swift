@@ -282,10 +282,10 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
 
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
-        let isReaderModeVerified = newState.pageURL.isEBookURL || content.isReaderModeByDefault
+        let isReaderModeVerified = content.isReaderModeByDefault
         try Task.checkCancellation()
         
-        if isReaderMode != isReaderModeVerified {
+        if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
             withAnimation {
                 readerModeLoading(isReaderModeVerified)
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later

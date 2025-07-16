@@ -63,18 +63,20 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             expectedContentLength: imageData.count,
                             textEncodingName: nil
                         )
-                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                            urlSchemeTask.didReceive(response)
-                            urlSchemeTask.didReceive(imageData)
-                            urlSchemeTask.didFinish()
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            return
-                        }
+                        await { @MainActor in
+                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                urlSchemeTask.didReceive(response)
+                                urlSchemeTask.didReceive(imageData)
+                                urlSchemeTask.didFinish()
+                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                return
+                            } else {
+                                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                            }
+                        }()
                     }
-                }
-                
-                // File
-                if let contentFile = try? await ReaderFileManager.get(fileURL: url), var data = try? await readerFileManager.read(fileURL: url) {
+                } else if let contentFile = try? await ReaderFileManager.get(fileURL: url), var data = try? await readerFileManager.read(fileURL: url) {
+                    // File
                     var mimeType = contentFile.mimeType
                     var textEncodingName: String?
                     if contentFile.mimeType == "text/plain", let text = String(data: data, encoding: .utf8), let convertedData = ReaderContentLoader.textToHTML(text, forceRaw: true).data(using: .utf8) {
@@ -88,18 +90,26 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         mimeType: mimeType,
                         expectedContentLength: data.count,
                         textEncodingName: textEncodingName)
-                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                        urlSchemeTask.didReceive(response)
-                        urlSchemeTask.didReceive(data)
-                        urlSchemeTask.didFinish()
-                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        return
-                    }
+                    
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didReceive(response)
+                            urlSchemeTask.didReceive(data)
+                            urlSchemeTask.didFinish()
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        } else {
+                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                        }
+                    }()
+                } else {
+                    await { @MainActor in
+                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                    }()
                 }
-                
-                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
             } catch {
-                urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                await { @MainActor in
+                    urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                }()
             }
         }
     }

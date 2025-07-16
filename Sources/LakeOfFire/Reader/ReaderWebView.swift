@@ -55,6 +55,8 @@ fileprivate class ReaderWebViewHandler {
     }
     
     func handleNewURL(state: WebViewState) async throws {
+//        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
+        
         try Task.checkCancellation()
         try await readerContent.load(url: state.pageURL)
         try Task.checkCancellation()
@@ -73,6 +75,12 @@ fileprivate class ReaderWebViewHandler {
         guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
         try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
         try Task.checkCancellation()
+        
+        self.readerModeViewModel.onNavigationFinished(newState: state)
+        try Task.checkCancellation()
+        self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
+            // no external callback here
+        }
     }
     
     func onNavigationCommitted(state: WebViewState) {
