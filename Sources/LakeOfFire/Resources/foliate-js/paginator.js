@@ -1649,12 +1649,10 @@ export class Paginator extends HTMLElement {
                     await scroll()
                 } else {
                     this.#container.classList.add('view-fade')
-                    console.log('scroll...')
                     // Allow the browser to paint the fade
                     /*await new Promise(r => setTimeout(r, 65));
                      this.#container.classList.add('view-faded')*/
                     await scroll()
-                    console.log('scrolled!')
                     this.#container.classList.remove('view-faded')
                     this.#container.classList.remove('view-fade')
                 }
