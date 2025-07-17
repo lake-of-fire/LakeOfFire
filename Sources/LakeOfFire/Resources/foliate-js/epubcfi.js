@@ -278,7 +278,7 @@ export const fromRange = range => {
     const end = nodeToParts(endContainer, endOffset)
     return buildRange([start], [end])
 }
-
+    
 export const toRange = (doc, parts) => {
     const startParts = collapse(parts)
     const endParts = collapse(parts, true)

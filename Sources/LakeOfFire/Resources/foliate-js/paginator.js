@@ -1781,7 +1781,7 @@ export class Paginator extends HTMLElement {
                 }
 
                 const interval = 16;
-                //                const interval = 2;
+//                                const interval = 2;
 
                 function findSplitOffset(text, desiredOffset, maxDistance) {
                     function category(ch) {
@@ -1890,11 +1890,12 @@ export class Paginator extends HTMLElement {
             return range
         }
 
-        const isValid = node =>
-            node &&
+        const isValid = node => {
+            return (node &&
             (node.nodeType === Node.TEXT_NODE ||
-                (node.nodeType === Node.ELEMENT_NODE &&
-                    node.tagName !== 'reader-sentinel'));
+             (node.nodeType === Node.ELEMENT_NODE &&
+              node.tagName !== 'reader-sentinel')))
+        }
 
         const visibleSentinels = doc.querySelectorAll(
             visibleSentinelIDs
