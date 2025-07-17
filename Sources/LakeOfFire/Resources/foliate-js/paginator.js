@@ -641,12 +641,6 @@ export class Paginator extends HTMLElement {
     #cachedSizes = null
     #cachedStart = null
 
-    #visibleSentinelIDs = new Set()
-    #sentinelVisibilityObserver = null
-    #sentinelVisibilityObserverLoading = null
-    #sentinelVisibilityObserverLoadingResolve = null
-    #sentinelMutationObserver = null
-
     #elementVisibilityObserver = null
     #elementMutationObserver = null
 
@@ -905,12 +899,6 @@ export class Paginator extends HTMLElement {
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
 
-        // Sometimes we get stale or wrong values for sizes() otherwise :/
-        //        await new Promise(r => requestAnimationFrame(r));
-
-        await this.#refreshSentinelVisibilityObserver()
-
-        //        console.log("#onExpand...awaited refresh sentinels")
         if (this.#scrolledToAnchorOnLoad) {
             await this.#scrollToAnchor(this.#anchor)
         }
@@ -920,95 +908,46 @@ export class Paginator extends HTMLElement {
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
-    async #refreshSentinelVisibilityObserver() {
-        //        console.log('refreshSentinelVisibilityObserver...')
-        const previousResolve = this.#sentinelVisibilityObserverLoadingResolve
-        this.#sentinelVisibilityObserverLoading = new Promise(r => {
-            this.#sentinelVisibilityObserverLoadingResolve = () => {
-                previousResolve?.()
-                r()
-            }
-        })
-        //        console.log('refreshSentinelVisibilityObserver... made new Loading promise...')
-        await this.#trackSentinelVisibilities();
-        //        console.log('refreshSentinelVisibilityObserver... initiated tracking...')
-        if (this.#sentinelVisibilityObserverLoading) {
-            //            console.log("refreshSentinelVisibilityObserver... await elementVisibilityObserverLoading..")
-            await this.#sentinelVisibilityObserverLoading
-            //            console.log("refreshSentinelVisibilityObserver... awaited reload")
-        }
-    }
-    async #trackSentinelVisibilities() {
+    async #getSentinelVisibilities() {
         //        console.log("trackSentinelVisibilities...")
-        this.#disconnectSentinelVisibilityObserver();
         await new Promise(r => requestAnimationFrame(r));
 
-        this.#visibleSentinelIDs = new Set()
-
-        this.#sentinelVisibilityObserver = new IntersectionObserver(entries => {
-            for (const entry of entries) {
-                const el = entry.target;
-                if (entry.isIntersecting) {
-                    this.#visibleSentinelIDs.add(el.id)
-                } else {
-                    this.#visibleSentinelIDs.delete(el.id)
-                }
-            }
-
-            //            console.log("trackSentinelVisibilities... vis entries:", this.#visibleSentinelIDs.size)
-            this.#sentinelVisibilityObserverLoading = null
-            const resolve = this.#sentinelVisibilityObserverLoadingResolve
-            this.#sentinelVisibilityObserverLoadingResolve = null
-            resolve?.()
-        }, {
-            root: null,
-            threshold: [0],
-        });
-
-        const selector = 'reader-sentinel';
-
-        this.#sentinelMutationObserver = new MutationObserver(mutations => {
-            for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                    if (node instanceof Element && node.tagName === selector) {
-                        this.#sentinelVisibilityObserver.observe(node);
+        let sentinelVisibilityObserver
+        
+        return new Promise(resolve => {
+            sentinelVisibilityObserver = new IntersectionObserver(entries => {
+                const visibleSentinelIDs = []
+                
+                for (const entry of entries) {
+                    if (entry.isIntersecting) {
+                        visibleSentinelIDs.push(entry.target.id)
                     }
                 }
-                for (const node of mutation.removedNodes) {
-                    if (node instanceof Element && node.tagName === selector) {
-                        this.#sentinelVisibilityObserver.unobserve(node);
-                    }
-                }
+                
+                sentinelVisibilityObserver.disconnect()
+                
+                resolve?.(visibleSentinelIDs)
+            }, {
+                root: null,
+                threshold: [0],
+            });
+            
+            const elements = this.#view.document.body.getElementsByTagName('reader-sentinel')
+            for (let i = 0; i < elements.length; i++) {
+                sentinelVisibilityObserver.observe(elements[i])
             }
-        });
-
-        const elements = this.#view.document.body.getElementsByTagName('reader-sentinel')
-        for (let i = 0; i < elements.length; i++) {
-            this.#sentinelVisibilityObserver.observe(elements[i])
-        }
-        this.#sentinelMutationObserver.observe(this.#view.document.body, {
-            childList: true,
-            subtree: true
-        });
+        })
     }
     async #trackElementVisibilities() {
         this.#disconnectElementVisibilityObserver();
         await new Promise(r => requestAnimationFrame(r));
 
-        this.#visibleSentinelIDs = new Set()
-
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
-                    if (el.tagName === 'reader-sentinel') {
-                        this.#visibleSentinelIDs.add(el.id)
-                    }
                     el.classList.remove('manabi-off-screen');
                 } else {
-                    if (el.tagName === 'reader-sentinel') {
-                        this.#visibleSentinelIDs.delete(el.id)
-                    }
                     el.classList.add('manabi-off-screen');
                 }
             }
@@ -1039,16 +978,6 @@ export class Paginator extends HTMLElement {
             childList: true,
             subtree: true
         });
-    }
-    #disconnectSentinelVisibilityObserver() {
-        if (this.#sentinelVisibilityObserver) {
-            this.#sentinelVisibilityObserver.disconnect();
-            this.#sentinelVisibilityObserver = null;
-        }
-        if (this.#sentinelMutationObserver) {
-            this.#sentinelMutationObserver.disconnect();
-            this.#sentinelMutationObserver = null;
-        }
     }
     #disconnectElementVisibilityObserver() {
         if (this.#elementVisibilityObserver) {
@@ -1944,7 +1873,7 @@ export class Paginator extends HTMLElement {
         //            console.log("getVisibleRange...")
         await this.#awaitDirection();
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
-        await this.#refreshSentinelVisibilityObserver()
+        const visibleSentinelIDs = await this.#getSentinelVisibilities()
         //            await new Promise(r => requestAnimationFrame(r));
 
         //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
@@ -1954,7 +1883,7 @@ export class Paginator extends HTMLElement {
 
         const doc = this.#view.document
 
-        if (this.#visibleSentinelIDs.size === 0) {
+        if (visibleSentinelIDs.length === 0) {
             const range = doc.createRange();
             range.selectNodeContents(doc.body);
             range.collapse(true);
@@ -1968,7 +1897,7 @@ export class Paginator extends HTMLElement {
                     node.tagName !== 'reader-sentinel'));
 
         const visibleSentinels = doc.querySelectorAll(
-            Array.from(this.#visibleSentinelIDs)
+            visibleSentinelIDs
                 .map(id => `#${CSS.escape(id)}`)
                 .join(',')
         );
@@ -2351,7 +2280,6 @@ export class Paginator extends HTMLElement {
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
     }
     destroy() {
-        this.#disconnectSentinelVisibilityObserver()
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
         this.#view.destroy()
