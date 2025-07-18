@@ -921,7 +921,7 @@ export class Paginator extends HTMLElement {
                 const visibleSentinelIDs = []
 
                 for (const entry of entries) {
-                    if (entry.isIntersecting) {
+                    if (entry.intersectionRatio > 0.5) {
                         visibleSentinelIDs.push(entry.target.id)
                     }
                 }
@@ -947,7 +947,7 @@ export class Paginator extends HTMLElement {
         this.#elementVisibilityObserver = new IntersectionObserver(entries => {
             for (const entry of entries) {
                 const el = entry.target;
-                if (entry.isIntersecting) {
+                if (entry.intersectionRatio > 0) {
                     el.classList.remove('manabi-off-screen');
                 } else {
                     el.classList.add('manabi-off-screen');

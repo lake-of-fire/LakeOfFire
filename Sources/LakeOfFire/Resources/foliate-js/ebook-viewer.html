@@ -349,7 +349,7 @@
                     visibility: hidden !important;
                     pointer-events: none !important;
                 }
-
+                
                 /* From https://github.com/swordray/ispinner/blob/3e3b49eac80c9ba7494cb9485bb85f17e712292c/ispinner.css */
                 .ispinner {
                     position: relative;
@@ -515,6 +515,12 @@
                         opacity: 1;
                         stroke: CanvasText;
                         /*pointer-events: auto;*/
+                    }
+                }
+                @media (hover: hover) and (pointer: fine) {
+                    #nav-bar:hover ~ .side-nav .icon {
+                        opacity: 1;
+                        stroke: CanvasText;
                     }
                 }
                 .side-nav[disabled], .side-nav:disabled {
