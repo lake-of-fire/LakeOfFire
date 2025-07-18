@@ -131,19 +131,19 @@ export class View extends HTMLElement {
         if (!this.#isCacheWarmer) {
             this.renderer.addEventListener('create-overlayer', e =>
                                            e.detail.attach(this.#createOverlayer(e.detail)))
-//            this.renderer.addEventListener('setViewTransition', e => {
-//                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
-//                this.style.setProperty('display', 'block');
-//                this.style.setProperty('width', '100%');
-//                this.style.setProperty('height', '100%');
-//
-//                this.style.viewTransitionName = e.detail.viewTransitionName;
-//                this.style.setProperty('--slide-from', e.detail.slideFrom);
-//                this.style.setProperty('--slide-to', e.detail.slideTo);
-////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
-////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
-////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
-//            });
+            //            this.renderer.addEventListener('setViewTransition', e => {
+            //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
+            //                this.style.setProperty('display', 'block');
+            //                this.style.setProperty('width', '100%');
+            //                this.style.setProperty('height', '100%');
+            //
+            //                this.style.viewTransitionName = e.detail.viewTransitionName;
+            //                this.style.setProperty('--slide-from', e.detail.slideFrom);
+            //                this.style.setProperty('--slide-to', e.detail.slideTo);
+            ////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
+            ////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
+            ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
+            //            });
         }
         
         this.renderer.open(book, isCacheWarmer)
@@ -161,8 +161,8 @@ export class View extends HTMLElement {
     }
     async goToTextStart() {
         return await this.goTo(this.book.landmarks
-                         ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
-                         ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
+                               ?.find(m => m.type.includes('bodymatter') || m.type.includes('text'))
+                               ?.href ?? this.book.sections.findIndex(s => s.linear !== 'no'))
     }
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
@@ -198,8 +198,8 @@ export class View extends HTMLElement {
                 
                 this.#handleLinks(doc, index)
                 }
-            this.#emit('load', { doc, location, index })
-            }
+        this.#emit('load', { doc, location, index })
+    }
     #handleLinks(doc, index) {
         const { book } = this
         const section = book.sections[index]
@@ -286,33 +286,45 @@ export class View extends HTMLElement {
             return CFI.joinIndir(baseCFI, CFI.fromRange(range))
             }
     resolveCFI(cfi) {
+        console.log("DEBUG resolveCFI entry:", cfi);
         if (this.book.resolveCFI)
             return this.book.resolveCFI(cfi)
             else {
                 const parts = CFI.parse(cfi)
                 const index = CFI.fake.toIndex((parts.parent ?? parts).shift())
                 const anchor = doc => CFI.toRange(doc, parts)
+                console.log("DEBUG resolveCFI result:", { index, parts });
                 return { index, anchor }
             }
     }
     resolveNavigation(target) {
+        console.log("DEBUG resolveNavigation entry:", target);
         try {
-            if (typeof target === 'number') return { index: target }
+            if (typeof target === 'number') {
+                console.log("DEBUG resolveNavigation number:", target);
+                return { index: target }
+            }
             if (typeof target.fraction === 'number') {
                 const [index, anchor] = this.#sectionProgress.getSection(target.fraction)
+                console.log("DEBUG resolveNavigation fraction:", target);
                 return { index, anchor }
             }
-            if (CFI.isCFI.test(target)) return this.resolveCFI(target)
-                return this.book.resolveHref(target)
-                } catch (e) {
-                    console.error(e)
-                    console.error(`Could not resolve target ${target}`)
-                }
+            if (CFI.isCFI.test(target)) {
+                console.log("DEBUG resolveNavigation CFI:", target);
+                return this.resolveCFI(target)
+            }
+            console.log("DEBUG resolveNavigation href:", target);
+            return this.book.resolveHref(target)
+        } catch (e) {
+            console.error(e)
+            console.error(`Could not resolve target ${target}`)
+        }
     }
     async goTo(target) {
+        console.log("DEBUG goTo entry:", target);
         //        this.#emit('is-loading', true)
-        
         const resolved = this.resolveNavigation(target)
+        console.log("DEBUG goTo resolved:", resolved);
         try {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)

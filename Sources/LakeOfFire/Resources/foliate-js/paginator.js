@@ -1634,35 +1634,41 @@ export class Paginator extends HTMLElement {
         return await this.#scrollTo(offset, reason, smooth)
     }
     async scrollToAnchor(anchor, select) {
-        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+//        return new Promise(resolve => {
+//            requestAnimationFrame(async () => {
+                await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+//                resolve()
+//            })
+//        })
     }
-    //                          async #scrollToAnchor(anchor, reason = 'anchor') {
-    //            console.log('#scrollToAnchor...', anchor)
-    //            this.#anchor = anchor
-    //            const rects = uncollapse(anchor)?.getClientRects?.()
-    //            // if anchor is an element or a range
-    //            if (rects) {
-    //                // when the start of the range is immediately after a hyphen in the
-    //                // previous column, there is an extra zero width rect in that column
-    //                const rect = Array.from(rects)
-    //                .find(r => r.width > 0 && r.height > 0) || rects[0]
-    //                console.log('#scrollToAnchor...', rect)
-    //                if (!rect) return
-    //                    await this.#scrollToRect(rect, reason)
-    //                    return
-    //                    }
-    //            // if anchor is a fraction
-    //            if (this.scrolled) {
-    //                await this.#scrollTo(anchor * (await this.viewSize()), reason)
-    //                return
-    //            }
-    //            const { pages } = this
-    //            if (!pages) return
-    //                const textPages = await this.pages() - 2
-    //                const newPage = Math.round(anchor * (textPages - 1))
-    //                await this.#scrollToPage(newPage + 1, reason)
-    //                }
-    async #scrollToAnchor(anchor, reason = 'anchor') {
+                          // TODO: Fix newer way and stop using this one that calculates getClientRects
+                              async #scrollToAnchor(anchor, reason = 'anchor') {
+                console.log('#scrollToAnchor0...', anchor)
+                this.#anchor = anchor
+                const rects = uncollapse(anchor)?.getClientRects?.()
+                // if anchor is an element or a range
+                if (rects) {
+                    // when the start of the range is immediately after a hyphen in the
+                    // previous column, there is an extra zero width rect in that column
+                    const rect = Array.from(rects)
+                    .find(r => r.width > 0 && r.height > 0) || rects[0]
+                    console.log('#scrollToAnchor...', rect)
+                    if (!rect) return
+                        await this.#scrollToRect(rect, reason)
+                        return
+                        }
+                // if anchor is a fraction
+                if (this.scrolled) {
+                    await this.#scrollTo(anchor * (await this.viewSize()), reason)
+                    return
+                }
+                const { pages } = this
+                if (!pages) return
+                    const textPages = await this.pages() - 2
+                    const newPage = Math.round(anchor * (textPages - 1))
+                    await this.#scrollToPage(newPage + 1, reason)
+                    }
+    async #NscrollToAnchor(anchor, reason = 'anchor') {
 //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
         await this.#awaitDirection();
 

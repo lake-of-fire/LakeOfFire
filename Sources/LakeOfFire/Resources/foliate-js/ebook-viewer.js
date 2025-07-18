@@ -1094,7 +1094,7 @@ window.loadEBook = ({
             }
             await reader.open(new File([blob], new URL(url).pathname))
         })
-        .then(() => {
+        .then(async () => {
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
         //.catch(e => console.error(e))
