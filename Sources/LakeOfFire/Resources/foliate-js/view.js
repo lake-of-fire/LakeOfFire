@@ -286,34 +286,27 @@ export class View extends HTMLElement {
             return CFI.joinIndir(baseCFI, CFI.fromRange(range))
             }
     resolveCFI(cfi) {
-        console.log("DEBUG resolveCFI entry:", cfi);
         if (this.book.resolveCFI)
             return this.book.resolveCFI(cfi)
             else {
                 const parts = CFI.parse(cfi)
                 const index = CFI.fake.toIndex((parts.parent ?? parts).shift())
                 const anchor = doc => CFI.toRange(doc, parts)
-                console.log("DEBUG resolveCFI result:", { index, parts });
                 return { index, anchor }
             }
     }
     resolveNavigation(target) {
-        console.log("DEBUG resolveNavigation entry:", target);
         try {
             if (typeof target === 'number') {
-                console.log("DEBUG resolveNavigation number:", target);
                 return { index: target }
             }
             if (typeof target.fraction === 'number') {
                 const [index, anchor] = this.#sectionProgress.getSection(target.fraction)
-                console.log("DEBUG resolveNavigation fraction:", target);
                 return { index, anchor }
             }
             if (CFI.isCFI.test(target)) {
-                console.log("DEBUG resolveNavigation CFI:", target);
                 return this.resolveCFI(target)
             }
-            console.log("DEBUG resolveNavigation href:", target);
             return this.book.resolveHref(target)
         } catch (e) {
             console.error(e)
@@ -321,10 +314,8 @@ export class View extends HTMLElement {
         }
     }
     async goTo(target) {
-        console.log("DEBUG goTo entry:", target);
         //        this.#emit('is-loading', true)
         const resolved = this.resolveNavigation(target)
-        console.log("DEBUG goTo resolved:", resolved);
         try {
             await this.renderer.goTo(resolved)
             this.history.pushState(target)
