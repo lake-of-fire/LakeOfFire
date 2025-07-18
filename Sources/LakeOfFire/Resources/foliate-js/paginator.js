@@ -1641,7 +1641,7 @@ export class Paginator extends HTMLElement {
     }
     // TODO: Fix newer way and stop using this one that calculates getClientRects
     async #scrollToAnchor(anchor, reason = 'anchor') {
-        console.log('#scrollToAnchor0...', anchor)
+//        console.log('#scrollToAnchor0...', anchor)
         this.#anchor = anchor
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
@@ -1650,7 +1650,7 @@ export class Paginator extends HTMLElement {
             // previous column, there is an extra zero width rect in that column
             const rect = Array.from(rects)
                 .find(r => r.width > 0 && r.height > 0) || rects[0]
-            console.log('#scrollToAnchor...', rect)
+//            console.log('#scrollToAnchor...', rect)
             if (!rect) return
             await this.#scrollToRect(rect, reason)
             return
@@ -1775,7 +1775,6 @@ export class Paginator extends HTMLElement {
     async #applyVisibilitySentinels() {
         return new Promise(resolve => {
             requestAnimationFrame(() => {
-                console.log("######## Adding sentinels...")
                 const doc = this.#view?.document;
                 if (!doc) return resolve();
                 const body = doc.body;
@@ -1871,7 +1870,6 @@ export class Paginator extends HTMLElement {
                     charCount += remainingText.length - offsetInNode;
                 }
                 
-                console.log("######## Adding sentinels...DONE")
                 resolve();
             });
         });
