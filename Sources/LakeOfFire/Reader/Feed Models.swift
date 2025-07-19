@@ -277,7 +277,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         guard let configuration = realm?.configuration else { return nil }
         let compoundKey = compoundKey
         return try await { @FeedEntryActor () -> URL? in
-            let realm = try await Realm(configuration: configuration, actor: FeedEntryActor.shared)
+            let realm = try await Realm.open(configuration: configuration)
             guard let feedEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: compoundKey) else { return nil }
             if feedEntry.extractImageFromContent {
                 let legacyHTMLContent = htmlContent

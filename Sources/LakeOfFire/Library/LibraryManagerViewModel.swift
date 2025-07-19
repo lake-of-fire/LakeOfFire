@@ -181,7 +181,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             let newLibraryConfigurationID = try await LibraryConfiguration.getConsolidatedOrCreate().id
                             try await { @MainActor [weak self] in
                                 if newLibraryConfigurationID != currentConfigurationID {
-                                    let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                                    let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                                     guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
                                     self?.libraryConfiguration = libraryConfiguration
                                 } else {
@@ -253,7 +253,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
         let assignRef = ThreadSafeReference(to: category)
         try await { @MainActor in
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             if let category = realm.resolve(assignRef) {
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)

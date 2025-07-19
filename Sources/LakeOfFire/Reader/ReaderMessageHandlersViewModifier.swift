@@ -1,9 +1,11 @@
 import SwiftUI
+import OrderedCollections
 import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 
+@MainActor
 fileprivate class ReaderMessageHandlers: Identifiable {
     var forceReaderModeWhenAvailable: Bool
     
@@ -13,7 +15,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var readerContent: ReaderContent
     var navigator: WebViewNavigator
     
-    let webViewMessageHandlers = WebViewMessageHandlers()
+    var webViewMessageHandlers: WebViewMessageHandlers
     
     init(
         forceReaderModeWhenAvailable: Bool,
@@ -30,8 +32,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.readerContent = readerContent
         self.navigator = navigator
         
-        webViewMessageHandlers.add(handlers: [
-            "readerConsoleLog": { [weak self] message in
+        webViewMessageHandlers = WebViewMessageHandlers(OrderedDictionary([
+            ("readerConsoleLog", { [weak self] message in
                 guard let self else { return }
                 guard let result = ConsoleLogMessage(fromMessage: message) else {
                     return
@@ -47,8 +49,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
                     "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
                 )
-            },
-            "readerOnError": { [weak self] message in
+            }),
+            ("readerOnError", { [weak self] message in
                 guard let self else { return }
                 guard let result = ReaderOnErrorMessage(fromMessage: message) else {
                     return
@@ -58,8 +60,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard result.source.isEBookURL || result.source.scheme == "blob" || result.source.isFileURL || result.source.isReaderFileURL || result.source.isSnippetURL else { return }
                 
                 Logger.shared.logger.error("[JS] Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
-            },
-            "readabilityFramePing": { @MainActor [weak self] message in
+            }),
+            ("readabilityFramePing", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {
                     debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
@@ -69,8 +71,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
-            },
-            "readabilityModeUnavailable": { @MainActor [weak self] message in
+            }),
+            ("readabilityModeUnavailable", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = ReaderModeUnavailableMessage(fromMessage: message) else {
                     return
@@ -99,8 +101,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     content.isReaderModeAvailable = false
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
-            },
-            "readabilityParsed": { @MainActor [weak self] message in
+            }),
+            ("readabilityParsed", { @MainActor [weak self] message in
                 guard let self else { return }
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
@@ -150,22 +152,22 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         content.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
-            },
-            "showOriginal": { @MainActor [weak self] _ in
+            }),
+            ("showOriginal", { @MainActor [weak self] _ in
                 guard let self else { return }
                 do {
                     try await showOriginal()
                 } catch {
                     print(error)
                 }
-            },
+            }),
             //            "youtubeCaptions": { message in
             //                Task { @MainActor in
             //                    guard let result = YoutubeCaptionsMessage(fromMessage: message) else { return }
             //                    debugPrint(result)
             //                }
             //            },
-            "rssURLs": { @MainActor [weak self] message in
+            ("rssURLs", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
@@ -184,8 +186,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 } catch {
                     print(error)
                 }
-            },
-            "pageMetadataUpdated": { @MainActor [weak self] message in
+            }),
+            ("pageMetadataUpdated", { @MainActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
@@ -194,8 +196,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 } catch {
                     print(error)
                 }
-            },
-            "imageUpdated": { @RealmBackgroundActor [weak self] message in
+            }),
+            ("imageUpdated", { @RealmBackgroundActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
@@ -212,8 +214,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 } catch {
                     print(error)
                 }
-            },
-            "ebookViewerInitialized": { @MainActor [weak self] message in
+            }),
+            ("ebookViewerInitialized", { @MainActor [weak self] message in
                 guard let self else { return }
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme,
@@ -226,27 +228,26 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "window.loadEBook({ url, layoutMode })",
                             arguments: [
                                 "url": loaderURL.absoluteString,
-//                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
-                                
+                                //                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
                                 "layoutMode": "paginated",
                             ]
                         )
                     }
                 }
-            },
-            "videoStatus": { @RealmBackgroundActor [weak self] message in
+            }),
+            ("videoStatus", { @RealmBackgroundActor [weak self] message in
                 guard let self else { return }
                 do {
                     guard let result = VideoStatusMessage(fromMessage: message) else { return }
                     //                    debugPrint("!!", result)
                     if let pageURL = result.pageURL {
-                        let mediaStatus = try await MediaStatus.getOrCreate(url: pageURL)
+                        _ = try await MediaStatus.getOrCreate(url: pageURL)
                     }
                 } catch {
                     print(error)
                 }
-            }
-        ])
+            })
+        ]))
     }
     
     // MARK: Readability
@@ -300,7 +301,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
-                readerMessageHandlers?.webViewMessageHandlers.merge(handlers: webViewMessageHandlers)
+                if let existing = readerMessageHandlers?.webViewMessageHandlers {
+                    readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
+                }
             }
     }
 }

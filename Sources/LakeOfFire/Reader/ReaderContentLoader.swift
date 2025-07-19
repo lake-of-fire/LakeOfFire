@@ -47,7 +47,7 @@ public struct ReaderContentLoader {
         
         @MainActor
         public func resolveOnMainActor() async throws -> (any ReaderContentProtocol)? {
-            let realm = try await Realm(configuration: realmConfiguration, actor: MainActor.shared)
+            let realm = try await Realm.open(configuration: realmConfiguration)
             try await realm.asyncRefresh()
             return realm.object(ofType: contentType, forPrimaryKey: contentKey) as? any ReaderContentProtocol
         }

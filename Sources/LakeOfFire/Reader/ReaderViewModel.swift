@@ -77,7 +77,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
         let ref = ThreadSafeReference(to: libraryConfiguration)
         try await { @MainActor [weak self] in
-            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
             if self.webViewUserScripts != scripts {
@@ -126,11 +126,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     @MainActor
-    private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) {
+    private func refreshTitleInWebView(content: (any ReaderContentProtocol), newState: WebViewState? = nil) async throws {
         let state = newState ?? self.state
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
-                scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
+                try await scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
             }
         }
     }
@@ -156,9 +156,9 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }
-                refreshTitleInWebView(content: content)
+                try await refreshTitleInWebView(content: content)
             } else if state.pageURL.isEBookURL {
-                refreshTitleInWebView(content: content)
+                try await refreshTitleInWebView(content: content)
             }
         }
     }
@@ -175,7 +175,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
                 }
                 """, duplicateInMultiTargetFrames: true)
-            self.refreshTitleInWebView(content: content, newState: newState)
+            try await self.refreshTitleInWebView(content: content, newState: newState)
         }
     }
 }

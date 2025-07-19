@@ -27,7 +27,7 @@ public class FeedViewModel: ObservableObject {
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration, actor: MainActor.shared)
+                        let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
                         self?.entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted } .map { $0 }
                     }
                 })

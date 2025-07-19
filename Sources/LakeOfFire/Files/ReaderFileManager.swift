@@ -195,7 +195,7 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     public static func get(fileURL: URL) async throws -> ContentFile? {
-        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+        let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
         //        try validate(readerFileURL: fileURL)
         let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), fileURL.absoluteString as CVarArg)).first
         return existing
@@ -341,7 +341,7 @@ public class ReaderFileManager: ObservableObject {
                 debugPrint("Warning: No file metadata returned for import")
                 return nil
             }
-            let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
             guard let content = realm.resolve(contentRef) else { return nil }
             Task.detached { [weak self] in
                 try await self?.refreshAllFilesMetadata()
@@ -371,7 +371,7 @@ public class ReaderFileManager: ObservableObject {
                 try await { @MainActor [weak self] in
                     try Task.checkCancellation()
                     guard let self = self else { return }
-                    let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+                    let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
                     let files = try discoveredFiles.compactMap {
                         try Task.checkCancellation()
                         return realm.resolve($0)

@@ -27,7 +27,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
 //        .package(url: "https://github.com/techprimate/TPPDF.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/GRDB.swift.git", branch: "master"), // FTS5 fork
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-collections.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/opml", branch: "master"),

@@ -381,7 +381,7 @@ struct LibraryCategoryView: View {
                     let feedID = feed.id
                     try await { @MainActor in
                         scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                        let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                         if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
                             libraryCategoryViewModel.selectedFeed = feed
                         }

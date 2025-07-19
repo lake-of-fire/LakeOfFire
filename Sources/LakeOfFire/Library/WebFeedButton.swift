@@ -39,7 +39,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                         let ref = ThreadSafeReference(to: feed)
                         Task { @MainActor [weak self] in
                             guard let self else { return }
-                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                             if let feed = realm.resolve(ref) {
                                 self.feed = feed
                             }
@@ -77,7 +77,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                         
                         try await { @MainActor [weak self] in
                             guard let self else { return }
-                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                             let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
                             self.libraryConfiguration = libraryConfiguration
                             setCategories(from: libraryConfiguration)

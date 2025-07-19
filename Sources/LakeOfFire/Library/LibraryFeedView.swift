@@ -97,7 +97,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                        let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                         self.feedEntries = realm.objects(FeedEntry.self).where { $0.feedID == feedID } .map { $0 }
                     }
                 })

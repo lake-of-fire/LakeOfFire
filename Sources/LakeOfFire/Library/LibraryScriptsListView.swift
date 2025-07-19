@@ -28,7 +28,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                         
                         try await { @MainActor [weak self] in
                             guard let self else { return }
-                            let realm = try await Realm(configuration: LibraryDataManager.realmConfiguration, actor: MainActor.shared)
+                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                             self.userScripts = userScriptIDs.compactMap { realm.object(ofType: UserScript.self, forPrimaryKey: $0) }
                             self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
                         }()
