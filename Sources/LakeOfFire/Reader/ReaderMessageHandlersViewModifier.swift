@@ -15,24 +15,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var readerContent: ReaderContent
     var navigator: WebViewNavigator
     
-    var webViewMessageHandlers: WebViewMessageHandlers
-    
-    init(
-        forceReaderModeWhenAvailable: Bool,
-        scriptCaller: WebViewScriptCaller,
-        readerViewModel: ReaderViewModel,
-        readerModeViewModel: ReaderModeViewModel,
-        readerContent: ReaderContent,
-        navigator: WebViewNavigator
-    ) {
-        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
-        self.scriptCaller = scriptCaller
-        self.readerViewModel = readerViewModel
-        self.readerModeViewModel = readerModeViewModel
-        self.readerContent = readerContent
-        self.navigator = navigator
-        
-        webViewMessageHandlers = WebViewMessageHandlers(OrderedDictionary([
+    lazy var webViewMessageHandlers = {
+        WebViewMessageHandlers([
             ("readerConsoleLog", { [weak self] message in
                 guard let self else { return }
                 guard let result = ConsoleLogMessage(fromMessage: message) else {
@@ -223,8 +207,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                    url.absoluteString.hasPrefix("\(scheme)://"),
                    url.isEBookURL,
                    let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
-                    Task { @MainActor in
-                        await scriptCaller.evaluateJavaScript(
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        try await scriptCaller.evaluateJavaScript(
                             "window.loadEBook({ url, layoutMode })",
                             arguments: [
                                 "url": loaderURL.absoluteString,
@@ -247,7 +232,23 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     print(error)
                 }
             })
-        ]))
+        ])
+    }()
+    
+    init(
+        forceReaderModeWhenAvailable: Bool,
+        scriptCaller: WebViewScriptCaller,
+        readerViewModel: ReaderViewModel,
+        readerModeViewModel: ReaderModeViewModel,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator
+    ) {
+        self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
+        self.scriptCaller = scriptCaller
+        self.readerViewModel = readerViewModel
+        self.readerModeViewModel = readerModeViewModel
+        self.readerContent = readerContent
+        self.navigator = navigator
     }
     
     // MARK: Readability
