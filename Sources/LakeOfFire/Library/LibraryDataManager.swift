@@ -292,6 +292,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     var realmCancellables = Set<AnyCancellable>()
+    @MainActor
     var cancellables = Set<AnyCancellable>()
 
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
@@ -300,31 +301,33 @@ public class LibraryDataManager: NSObject {
         super.init()
         
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
-        DownloadController.shared.$finishedDownloads
-            .debounce(for: .seconds(0.25), scheduler: RunLoop.main)
-            .sink(receiveValue: { [weak self] feedDownloads in
-                guard let self = self else { return }
-                importOPMLTask?.cancel()
-                importOPMLTask = Task { @RealmBackgroundActor [weak self] in
-                    let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
-                    //                    let libraryConfiguration = try await LibraryConfiguration.get()
-                    for download in opmlDownloads {
-                        try Task.checkCancellation()
-                        //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
-                        // ^ Re-enable reloading on every launch:
-                        if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
-                            do {
-                                try await self?.importOPML(download: download)
-                            } catch {
-                                if error as? CancellationError == nil {
-                                    print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+        Task { @MainActor in
+            DownloadController.shared.$finishedDownloads
+                .debounce(for: .seconds(0.25), scheduler: RunLoop.main)
+                .sink(receiveValue: { [weak self] feedDownloads in
+                    guard let self = self else { return }
+                    importOPMLTask?.cancel()
+                    importOPMLTask = Task { @RealmBackgroundActor [weak self] in
+                        let opmlDownloads = feedDownloads.filter({ $0.url.lastPathComponent.hasSuffix(".opml") })
+                        //                    let libraryConfiguration = try await LibraryConfiguration.get()
+                        for download in opmlDownloads {
+                            try Task.checkCancellation()
+                            //                        if (download.finishedDownloadingDuringCurrentLaunchAt == nil && (download.lastDownloaded ?? Date.distantPast) > libraryConfiguration?.opmlLastImportedAt ?? Date.distantPast) || ((download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast)) {
+                            // ^ Re-enable reloading on every launch:
+                            if download.finishedLoadingDuringCurrentLaunchAt == nil || (download.finishedDownloadingDuringCurrentLaunchAt ?? .distantPast) > (download.finishedLoadingDuringCurrentLaunchAt ?? .distantPast) {
+                                do {
+                                    try await self?.importOPML(download: download)
+                                } catch {
+                                    if error as? CancellationError == nil {
+                                        print("Failed to import OPML downloaded from \(download.url). Error: \(error.localizedDescription)")
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            })
-            .store(in: &cancellables)
+                })
+                .store(in: &cancellables)
+        }
         
         //        DownloadController.shared.finishedDownloads.publisher
         //            .print("FOOBAR ")

@@ -128,7 +128,7 @@ public class ReaderModeViewModel: ObservableObject {
         let url = content.url
         
         Task {
-            await scriptCaller.evaluateJavaScript("""
+            try await scriptCaller.evaluateJavaScript("""
             if (document.body) {
                 document.body.dataset.isNextLoadInReaderMode = 'true';
             }
