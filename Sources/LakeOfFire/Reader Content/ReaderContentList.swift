@@ -174,6 +174,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     var alwaysShowThumbnails = true
     var showSeparators = false
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
+    let onRequestDelete: ((C) -> Void)?
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -196,8 +197,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     unstyledCell(item: item)
                 } else {
                     unstyledCell(item: item)
-                    //                    .padding(.vertical, 4)
-                    //                    .padding(.horizontal, 8)
                         .padding(8)
                         .background(.ultraThinMaterial)
                         .background(.secondary.opacity(0.09))
@@ -211,50 +210,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     var body: some View {
         VStack(spacing: 0) {
-//#if os(macOS)
-//            // TODO: Optimize by using state instead of dynamic binding, and get rid of the readerWebViewState and just use readerPageURL
-//            Toggle(isOn: Binding<Bool>(
-//                get: {
-//                    //                                itemSelection == feedEntry.compoundKey && readerState.matches(content: feedEntry)
-//                    entrySelection == content.compoundKey
-//                    //                    readerWebViewState.matches(content: content)
-//                },
-//                set: {
-//                    let newValue = $0 ? content.compoundKey : nil
-//                    if entrySelection != newValue {
-//                        entrySelection = newValue
-//                    }
-//                }
-//            ), label: {
-//                cell(item: content)
-//                    .background(Color.white.opacity(0.00000001)) // Clickability
-//                    .overlay {
-//                        RoundedRectangle(cornerRadius: 12)
-//                            .stroke(.secondary.opacity(0.2))
-//                            .shadow(radius: 5)
-//                    }
-//            })
-//            .toggleStyle(ListItemToggleStyle())
-//            .clipShape(RoundedRectangle(cornerRadius: 12))
-//            
-//            if showSeparators, content.compoundKey != viewModel.filteredContentIDs.last {
-//                Divider()
-//                    .padding(.top, 4)
-//            }
-//            //                                    .contextMenu {
-//            //                    if let content = content as? (any DeletableReaderContent) {
-//            //                        Button(role: .destructive) {
-//            //                            readerContentListModalsModel.confirmDeletionOf = content
-//            //                            readerContentListModalsModel.confirmDelete = true
-//            //                        } label: {
-//            //                            Label(content.deleteActionTitle, image: "trash")
-//            //                        }
-//            //                    }
-//            //                }
-//            
-//            //                    .buttonStyle(.borderless)
-//            //                    .id(feedEntry.compoundKey)
-//#elseif os(iOS)
             if #available(iOS 16.0, *) {
                 cell(item: content)
             } else {
@@ -268,29 +223,43 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 .tint(.primary)
                 .frame(maxWidth: .infinity)
             }
-            //                .headerProminence(.increased)
-            //                    if showSeparators, content.compoundKey != viewModel.filteredContents.last?.compoundKey {
-            //                        Divider()
-            //                            .padding(.top, 8)
-            //                    }
-//#endif
         }
 #if os(iOS)
-        //                .listRowInsets(showSeparators ? nil : EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
         .deleteDisabled((content as? any DeletableReaderContent) == nil)
         .swipeActions {
             if let content = content as? any DeletableReaderContent {
-                Button {
-                    readerContentListModalsModel.confirmDeletionOf = content
-                    if readerContentListModalsModel.confirmDeletionOf != nil {
-                        readerContentListModalsModel.confirmDelete = true
+                Button(role: .destructive) {
+                    if let onRequestDelete {
+                        onRequestDelete(self.content)
+                    } else {
+                        // Fallback to legacy deletion
+                        readerContentListModalsModel.confirmDeletionOf = content
+                        if readerContentListModalsModel.confirmDeletionOf != nil {
+                            readerContentListModalsModel.confirmDelete = true
+                        }
                     }
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
             }
         }
-        //                .tint(.)
+#endif
+#if os(macOS)
+        .contextMenu {
+            if let content = content as? any DeletableReaderContent {
+                Button(role: .destructive) {
+                    if let onRequestDelete {
+                        onRequestDelete(self.content)
+                    } else {
+                        // Fallback to legacy deletion
+                        readerContentListModalsModel.confirmDeletionOf = content
+                        readerContentListModalsModel.confirmDelete = true
+                    }
+                } label: {
+                    Label(content.deleteActionTitle, systemImage: "trash")
+                }
+            }
+        }
 #endif
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
@@ -306,6 +275,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     var alwaysShowThumbnails = true
     var showSeparators = false
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
+    let onRequestDelete: ((C) -> Void)?
     
     var body: some View {
         Group {
@@ -315,7 +285,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     entrySelection: $entrySelection,
                     alwaysShowThumbnails: alwaysShowThumbnails,
                     showSeparators: showSeparators,
-                    viewModel: viewModel
+                    viewModel: viewModel,
+                    onRequestDelete: onRequestDelete
                 )
             }
 #if os(iOS)
@@ -324,19 +295,21 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
             }
 #endif
         }
-        .frame(minHeight: 10) // Needed so ScrollView doesn't collapse at start...
+        .frame(minHeight: 10)
     }
     
     init(
         entrySelection: Binding<String?>,
         alwaysShowThumbnails: Bool = true,
         showSeparators: Bool = false,
-        viewModel: ReaderContentListViewModel<C>
+        viewModel: ReaderContentListViewModel<C>,
+        onRequestDelete: ((C) -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.showSeparators = showSeparators
         self.viewModel = viewModel
+        self.onRequestDelete = onRequestDelete
     }
 }
 
@@ -345,35 +318,85 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
-    //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var contentFilter: ((C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
+    let allowEditing: Bool
+    let onDelete: (([C]) -> Void)?
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
-    
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
+#if os(iOS)
+    @State private var editMode: EditMode = .inactive
+#endif
+    @State private var multiSelection = Set<String>()
+    
     @ViewBuilder private var listItems: some View {
-        ReaderContentListItems(viewModel: viewModel, entrySelection: $entrySelection, contentSortAscending: contentSortAscending, alwaysShowThumbnails: alwaysShowThumbnails, showSeparators: false)
+        ReaderContentListItems(
+            viewModel: viewModel,
+            entrySelection: $entrySelection,
+            contentSortAscending: contentSortAscending,
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            showSeparators: false,
+            onRequestDelete: onRequestDelete
+        )
+    }
+    
+    private var onRequestDelete: ((C) -> Void)? {
+        if let onDelete = onDelete {
+            return { c in onDelete([c]) }
+        }
+        return nil
     }
     
     public var body: some View {
         Group {
-//#if os(macOS)
-//            ScrollView {
-//                LazyVStack {
-//                    listItems
-//                }
-//            }
-//#else
-            List(selection: $entrySelection) {
-                listItems
-                    .listRowSeparatorIfAvailable(.hidden)
+            if allowEditing {
+                List(selection: $multiSelection) {
+                    listItems
+                        .listRowSeparatorIfAvailable(.hidden)
+                }
+#if os(iOS)
+                .environment(\.editMode, .constant(.active))
+#endif
+            } else {
+                List(selection: $entrySelection) {
+                    listItems
+                        .listRowSeparatorIfAvailable(.hidden)
+                }
             }
-            .listStyle(.plain)
-            .scrollContentBackgroundIfAvailable(.hidden)
-            .listItemTint(appTint)
-//#endif
+        }
+        .listStyle(.plain)
+        .scrollContentBackgroundIfAvailable(.hidden)
+        .listItemTint(appTint)
+        .onChange(of: multiSelection) { newSelection in
+            if newSelection.count == 1 {
+                entrySelection = newSelection.first
+            } else if newSelection.count > 1 {
+                entrySelection = nil
+            }
+        }
+        .toolbar {
+#if os(iOS) || os(macOS)
+            if allowEditing {
+#if os(iOS)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    EditButton()
+                }
+#endif
+                if !multiSelection.isEmpty, let onDelete = onDelete {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(role: .destructive) {
+                            let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
+                            onDelete(selected)
+                            multiSelection.removeAll()
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+#endif
         }
         .task { @MainActor in
             try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
@@ -385,27 +408,25 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
         }
     }
     
-    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, sortOrder: ReaderContentSortOrder, contentFilter: ((C) async throws -> Bool)? = nil) {
+    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, sortOrder: ReaderContentSortOrder, contentFilter: ((C) async throws -> Bool)? = nil, allowEditing: Bool = false, onDelete: (([C]) -> Void)? = nil) {
         self.contents = contents
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.contentSortAscending = contentSortAscending
         self.sortOrder = sortOrder
         self.contentFilter = contentFilter
+        self.allowEditing = allowEditing
+        self.onDelete = onDelete
     }
 }
 
 public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     @ObservedObject private var viewModel = ReaderContentListViewModel<C>()
-    //    let contents: [C]
-    // TODO: Something with this triggers repreatedly in printchanges; change to an environmentkey
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
     var showSeparators = false
-    //    var contentFilter: ((C) async throws -> Bool)? = nil
-    //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
-    //    var sortOrder = ReaderContentSortOrder.publicationDate
+    let onRequestDelete: ((C) -> Void)?
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
@@ -416,7 +437,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             entrySelection: $entrySelection,
             alwaysShowThumbnails: alwaysShowThumbnails,
             showSeparators: showSeparators,
-            viewModel: viewModel
+            viewModel: viewModel,
+            onRequestDelete: onRequestDelete
         )
         .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
             guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
@@ -425,10 +447,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     content: content,
                     readerModeViewModel: readerModeViewModel
                 )
-                // TODO: This is crashy sadly.
-                //                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                //                        scrollViewProxy.scrollTo(entrySelection)
-                //                    }
             }
         }
         .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
@@ -436,7 +454,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                 refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
             }
         }
-        .onChange(of: viewModel.filteredContents/*, debounceTime: 0.1*/) { contents in
+        .onChange(of: viewModel.filteredContents) { contents in
             Task { @MainActor in
                 refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
             }
@@ -444,27 +462,20 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         .task { @MainActor in
             refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
         }
-        //            .onChange(of: contents) { contents in
-        //                Task { @MainActor in
-        //                    try? await viewModel.load(contents: contents, contentFilter: contentFilter, sortOrder: sortOrder)
-        //                    refreshSelection(state: readerState)
-        //                }
-        //            }
     }
     
-    public init(viewModel: ReaderContentListViewModel<C>, entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false) {
+    public init(viewModel: ReaderContentListViewModel<C>, entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, showSeparators: Bool = false, onRequestDelete: ((C) -> Void)? = nil) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.showSeparators = showSeparators
         self.contentSortAscending = contentSortAscending
+        self.onRequestDelete = onRequestDelete
     }
     
     private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
         viewModel.refreshSelectionTask?.cancel()
         guard !isReaderProvisionallyNavigating else { return }
-        
-        //        let readerContentCompoundKey = readerContent.compoundKey
         let entrySelection = entrySelection
         let filteredContentURLs = viewModel.filteredContents.map { $0.url }
         viewModel.refreshSelectionTask = Task.detached {
@@ -492,7 +503,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
                     }
                     return
                 }
-                //                if entrySelection == nil, oldState?.pageURL != state.pageURL, content.url != state.pageURL {
                 if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
                     let contentKey = await viewModel.filteredContentIDs[idx]
                     async let task = { @MainActor in
@@ -507,7 +517,21 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 }
 
 public extension ReaderContentProtocol {
-    static func readerContentListView(contents: [Self], entrySelection: Binding<String?>, sortOrder: ReaderContentSortOrder, contentFilter: ((Self) async throws -> Bool)? = nil) -> some View {
-        return ReaderContentList(contents: contents, entrySelection: entrySelection, sortOrder: sortOrder, contentFilter: contentFilter)
+    static func readerContentListView(
+        contents: [Self],
+        entrySelection: Binding<String?>,
+        sortOrder: ReaderContentSortOrder,
+        contentFilter: ((Self) async throws -> Bool)? = nil,
+        allowEditing: Bool = false,
+        onDelete: (([Self]) -> Void)? = nil
+    ) -> some View {
+        return ReaderContentList(
+            contents: contents,
+            entrySelection: entrySelection,
+            sortOrder: sortOrder,
+            contentFilter: contentFilter,
+            allowEditing: allowEditing,
+            onDelete: onDelete
+        )
     }
 }

@@ -5,6 +5,8 @@ import RealmSwiftGaps
 public class HistoryRecord: Bookmark {
     @Persisted public var lastVisitedAt = Date()
     
+    @Persisted public var isDemoted: Bool?
+
     @Persisted public var bookmarkID: String?
     
     public override func configureBookmark(_ bookmark: Bookmark) {
@@ -42,6 +44,42 @@ extension DeletableReaderContent {
 //            content.refreshChangeMetadata(explicitlyModified: true)
 //        }
 //    }
+}
+
+public extension HistoryRecord {
+    @RealmBackgroundActor
+    func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
+        guard isDemoted != false || !skipPreviouslyDemoted else {
+            return
+        }
+        guard let realm else {
+            print("Cannot refresh demoted status: no realm")
+            return
+        }
+        let demoted = try await { @RealmBackgroundActor in
+            if isReaderModeByDefault || isReaderModeAvailable {
+                return false
+            }
+            if rssContainsFullContent {
+                return false
+            }
+            if isFromClipboard || isPhysicalMedia {
+                return false
+            }
+            
+            if let bookmark = try await Bookmark.get(forURL: url), !bookmark.isDeleted {
+                return false
+            }
+            
+            return true
+        }()
+        if demoted != isDemoted {
+            try await realm.asyncWrite {
+                isDemoted = demoted
+                refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+    }
 }
 
 //public extension HistoryRecord {

@@ -415,6 +415,9 @@ public extension ReaderContentProtocol {
             try await realm.asyncWrite {
                 realm.add(record, update: .modified)
             }
+            
+            try await record.refreshDemotedStatus()
+
             return record
         }
     }

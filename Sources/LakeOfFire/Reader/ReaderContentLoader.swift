@@ -87,23 +87,10 @@ public struct ReaderContentLoader {
  
         var contentFile: ContentFile?
         if !skipContentFiles {
-            contentFile = historyRealm.objects(ContentFile.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-                .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-                .first
+            contentFile = try await ContentFile.get(forURL: url)
         }
-        
-        let history = historyRealm.objects(HistoryRecord.self)
-            .where { !$0.isDeleted }
-            .sorted(by: \.createdAt, ascending: false)
-            .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-            .first
-        let bookmark = bookmarkRealm.objects(Bookmark.self)
-            .where { !$0.isDeleted }
-            .sorted(by: \.createdAt, ascending: false)
-            .filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg))
-            .first
+        let history = try await HistoryRecord.get(forURL: url)
+        let bookmark = try await Bookmark.get(forURL: url)
         
         var feed: FeedEntry?
         if !skipFeedEntries {
@@ -136,6 +123,7 @@ public struct ReaderContentLoader {
             } else if url.absoluteString == "about:blank" { //}&& !persist {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
+                historyRecord.isDemoted = true
                 historyRecord.updateCompoundKey()
                 return ReaderContentLoader.ContentReference(content: historyRecord)
             }
@@ -178,6 +166,11 @@ public struct ReaderContentLoader {
                 }
             }
             guard let match else { return nil }
+            
+            if let historyRecord = match as? HistoryRecord {
+                try await historyRecord.refreshDemotedStatus()
+            }
+
             return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
@@ -223,6 +216,7 @@ public struct ReaderContentLoader {
             historyRecord.content = data
             // isReaderModeByDefault used to be commented out... why?
             historyRecord.isReaderModeByDefault = true
+            historyRecord.isDemoted = false
             historyRecord.updateCompoundKey()
             historyRecord.rssContainsFullContent = true
             historyRecord.url = snippetURL(key: historyRecord.compoundKey) ?? historyRecord.url
@@ -230,6 +224,7 @@ public struct ReaderContentLoader {
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
+            
             return ReaderContentLoader.ContentReference(content: historyRecord)
         }()
         

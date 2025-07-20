@@ -81,9 +81,19 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     readerModeViewModel.isReaderMode = false
                 }
                 
-                try? await content.asyncWrite { _, content in
-                    content.isReaderModeAvailable = false
-                    content.refreshChangeMetadata(explicitlyModified: true)
+                do {
+                    try await content.asyncWrite { _, content in
+                        content.isReaderModeAvailable = false
+                        content.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                    
+                    try await { @RealmBackgroundActor in
+                        if let historyRecord = try await HistoryRecord.get(forURL: url) {
+                            try await historyRecord.refreshDemotedStatus()
+                        }
+                    }()
+                } catch {
+                    print(error)
                 }
             }),
             ("readabilityParsed", { @MainActor [weak self] message in
@@ -130,11 +140,21 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         """)
                 }
                 
-                if !content.isReaderModeAvailable {
-                    try? await content.asyncWrite { _, content in
-                        content.isReaderModeAvailable = true
-                        content.refreshChangeMetadata(explicitlyModified: true)
+                do {
+                    if !content.isReaderModeAvailable {
+                        try await content.asyncWrite { _, content in
+                            content.isReaderModeAvailable = true
+                            content.refreshChangeMetadata(explicitlyModified: true)
+                        }
                     }
+                    
+                    try await { @RealmBackgroundActor in
+                        if let historyRecord = try await HistoryRecord.get(forURL: url) {
+                            try await historyRecord.refreshDemotedStatus()
+                        }
+                    }()
+                } catch {
+                    print(error)
                 }
             }),
             ("showOriginal", { @MainActor [weak self] _ in
