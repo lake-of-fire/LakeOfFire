@@ -1231,8 +1231,6 @@ public class LibraryDataManager: NSObject {
                 try Task.checkCancellation()
                 
                 let feeds = try category.getFeeds() ?? []
-                debugPrint("# feeds", feeds)
-                debugPrint("# feeds")
                 return OPMLEntry(
                     text: category.title,
                     attributes: [
@@ -1240,7 +1238,7 @@ public class LibraryDataManager: NSObject {
                         Attribute(name: "backgroundImageUrl", value: category.backgroundImageUrl.absoluteString),
                         Attribute(name: "isFeedCategory", value: "true"),
                     ],
-                    children: feeds.filter({ !$0.isArchived }).map { feed in
+                    children: try feeds.filter({ !$0.isArchived }).map { feed in
                         try Task.checkCancellation()
                         
                         var attributes = [
@@ -1249,8 +1247,8 @@ public class LibraryDataManager: NSObject {
                             Attribute(name: "isReaderModeByDefault", value: feed.isReaderModeByDefault ? "true" : "false"),
                             Attribute(name: "iconUrl", value: feed.iconUrl.absoluteString),
                         ]
-                        if !feed.markdownDescription.isEmpty {
-                            attributes.append(Attribute(name: "markdownDescription", value: feed.markdownDescription))
+                        if let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
+                            attributes.append(Attribute(name: "markdownDescription", value: markdownDescription))
                         }
                         attributes.append(Attribute(name: "rssContainsFullContent", value: feed.rssContainsFullContent ? "true" : "false"))
                         attributes.append(Attribute(name: "injectEntryImageIntoHeader", value: feed.injectEntryImageIntoHeader ? "true" : "false"))

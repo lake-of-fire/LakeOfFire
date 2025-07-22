@@ -32,8 +32,8 @@ public struct FeedCell: View {
                     .font(.headline.bold())
                     Spacer()
                 }
-                if includesDescription, !feed.markdownDescription.isEmpty {
-                    Text(feed.markdownDescription)
+                if includesDescription, let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
+                    Text(markdownDescription)
                         .font(.body)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineLimit(Int.max)

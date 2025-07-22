@@ -65,7 +65,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var title: String
     @Persisted public var categoryID: UUID?
-    @Persisted public var markdownDescription = ""
+    @Persisted public var markdownDescription: String?
     @Persisted public var rssUrl: URL
     @Persisted public var iconUrl: URL
     

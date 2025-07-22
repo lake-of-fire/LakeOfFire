@@ -28,7 +28,10 @@ struct LibraryFeedView: View {
         VStack(spacing: 0) {
             if let libraryFeedFormSectionsViewModel = libraryFeedFormSectionsViewModel {
                 Form {
-                    LibraryFeedFormSections(viewModel: libraryFeedFormSectionsViewModel)
+                    LibraryFeedFormSections(
+                        viewModel: libraryFeedFormSectionsViewModel,
+                        feed: feed
+                    )
                         .disabled(!feed.isUserEditable())
                 }
                 .formStyle(.grouped)
@@ -43,6 +46,22 @@ struct LibraryFeedView: View {
     }
 }
 
+fileprivate extension OPMLEntry {
+    var uuid: String? {
+        attributes?.first { $0.name == "uuid" }?.value
+    }
+}
+
+fileprivate func findEntry(uuid target: String, in entries: [OPMLEntry]) -> OPMLEntry? {
+    for entry in entries {
+        if entry.uuid == target { return entry }
+        if let kids = entry.children, let hit = findEntry(uuid: target, in: kids) {
+            return hit
+        }
+    }
+    return nil
+}
+
 private struct LibraryFeedMenu: View {
     let feed: Feed
     
@@ -52,7 +71,7 @@ private struct LibraryFeedMenu: View {
                 Task { @MainActor in
                     do {
                         let opml = try await LibraryDataManager.shared.exportUserOPML()
-                        guard let entry = opml.entries.last(where: { $0.attributeUUIDValue("uuid") == feed.id }) else {
+                        guard let entry = findEntry(uuid: feed.id.uuidString, in: opml.entries) else {
                             print("No matching OPML entry found for feed with UUID: \(feed.id) out of OPML entry IDs: \(opml.entries.map { $0.attributeUUIDValue("uuid") })")
                             return
                         }
@@ -148,25 +167,14 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
             
             await refresh()
             
-            func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
-                    await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        block(feed)
-                        feed.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                }
-            }
-            
             try await { @MainActor [weak self] in
                 guard let self else { return }
                 $feedTitle
                     .dropFirst()
                     .removeDuplicates()
                     .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-                    .sink { feedTitle in
+                    .sink { [weak self] feedTitle in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.title = feedTitle
                         }
@@ -176,7 +184,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .dropFirst()
                     .removeDuplicates()
                     .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-                    .sink { feedDescription in
+                    .sink { [weak self] feedDescription in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.markdownDescription = feedDescription
                         }
@@ -185,7 +194,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedEnabled
                     .dropFirst()
                     .removeDuplicates()
-                    .sink { feedEnabled in
+                    .sink { [weak self] feedEnabled in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.isArchived = !feedEnabled
                         }
@@ -195,7 +205,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .dropFirst()
                     .removeDuplicates()
                     .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-                    .sink { feedURL in
+                    .sink { [weak self] feedURL in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             if feedURL.isEmpty {
                                 feed.rssUrl = URL(string: "about:blank")!
@@ -209,7 +220,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                     .dropFirst()
                     .removeDuplicates()
                     .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-                    .sink { feedIconURL in
+                    .sink { [weak self] feedIconURL in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             if feedIconURL.isEmpty {
                                 feed.iconUrl = URL(string: "about:blank")!
@@ -222,7 +234,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedIsReaderModeByDefault
                     .dropFirst()
                     .removeDuplicates()
-                    .sink { feedIsReaderModeByDefault in
+                    .sink { [weak self] feedIsReaderModeByDefault in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.isReaderModeByDefault = feedIsReaderModeByDefault
                         }
@@ -231,7 +244,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedInjectEntryImageIntoHeader
                     .dropFirst()
                     .removeDuplicates()
-                    .sink { feedInjectEntryImageIntoHeader in
+                    .sink { [weak self] feedInjectEntryImageIntoHeader in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
                         }
@@ -240,7 +254,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedExtractImageFromContent
                     .dropFirst()
                     .removeDuplicates()
-                    .sink { feedExtractImageFromContent in
+                    .sink { [weak self] feedExtractImageFromContent in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.extractImageFromContent = feedExtractImageFromContent
                         }
@@ -249,7 +264,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedRssContainsFullContent
                     .dropFirst()
                     .removeDuplicates()
-                    .sink { feedRssContainsFullContent in
+                    .sink { [weak self] feedRssContainsFullContent in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.rssContainsFullContent = feedRssContainsFullContent
                         }
@@ -258,7 +274,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedDisplayPublicationDate
                     .dropFirst()
                     .removeDuplicates()
-                    .sink { feedDisplayPublicationDate in
+                    .sink { [weak self] feedDisplayPublicationDate in
+                        guard let self else { return }
                         writeFeedAsync { feed in
                             feed.displayPublicationDate = feedDisplayPublicationDate
                         }
@@ -274,10 +291,23 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         }
     }
     
+    func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
+        let feedID = feed.id
+        Task { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+            guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+            await realm.asyncRefresh()
+            try await realm.asyncWrite {
+                block(feed)
+                feed.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+    }
+    
     @MainActor
     func refresh() {
         feedTitle = feed.title
-        feedDescription = feed.markdownDescription
+        feedDescription = feed.markdownDescription ?? ""
         feedEnabled = !(feed.isArchived || feed.isDeleted)
         feedURL = feed.rssUrl.absoluteString == "about:blank" ? "" : feed.rssUrl.absoluteString
         feedIconURL = feed.iconUrl.absoluteString == "about:blank" ? "" : feed.iconUrl.absoluteString
@@ -303,7 +333,8 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
 @available(iOS 16.0, macOS 13, *)
 struct LibraryFeedFormSections: View {
     @ObservedObject var viewModel: LibraryFeedFormSectionsViewModel
-    
+    @ObservedRealmObject var feed: Feed
+
     @ScaledMetric(relativeTo: .body) private var textEditorHeight = 80
     @ScaledMetric(relativeTo: .body) private var readerPreviewHeight = 480
     
@@ -365,6 +396,9 @@ struct LibraryFeedFormSections: View {
                     }
                 }
             }
+            TextField("Icon URL", text: $viewModel.feedIconURL, prompt: Text("Enter website icon URL"), axis: .vertical)
+                .focused($focusedField, equals: .iconURL)
+                .onSubmit { focusedField = nil }
         } header: {
             Text("Feed")
         } footer: {
@@ -380,21 +414,23 @@ struct LibraryFeedFormSections: View {
         }
     }
     
-    @ViewBuilder private var iconSection: some View {
-        Section("Icon URL") {
-            TextField("Icon URL", text: $viewModel.feedIconURL, prompt: Text("Enter website icon URL"), axis: .vertical)
-                .focused($focusedField, equals: .iconURL)
-                .onSubmit { focusedField = nil }
-        }
-    }
-    
     private var descriptionSection: some View {
         Section("Description") {
-            TextEditor(text: $viewModel.feedDescription)
-                .foregroundColor(.secondary)
-                .frame(idealHeight: textEditorHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-                .focused($focusedField, equals: .description)
+            if viewModel.feedDescription.isEmpty && viewModel.feed.markdownDescription == nil {
+                Button {
+                    viewModel.writeFeedAsync { feed in
+                        feed.markdownDescription = ""
+                    }
+                } label: {
+                    Label("Add Description", systemImage: "plus")
+                }
+            } else {
+                TextEditor(text: $viewModel.feedDescription)
+                    .foregroundColor(.secondary)
+                    .frame(idealHeight: textEditorHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .focused($focusedField, equals: .description)
+            }
         }
     }
     
@@ -500,7 +536,7 @@ struct LibraryFeedFormSections: View {
                 synchronizationSection
             }
             feedLocationSection
-            iconSection
+            descriptionSection
             stylingSection
             feedPreviewSection
             feedEntryPreviewSection
@@ -547,18 +583,51 @@ struct LibraryFeedFormSections: View {
     private func refreshFromOpenGraph() {
         Task { @MainActor in
             guard viewModel.feed.isUserEditable(), !viewModel.feed.rssUrl.isNativeReaderView else { return }
-            let url = viewModel.feed.getEntries()?.first?.url ?? viewModel.feed.rssUrl.domainURL
-            do {
-                let og = try await OpenGraph.fetch(url: url)
-                guard let rawURL = og[.url], let url = URL(string: rawURL), url.domainURL == self.viewModel.feed.rssUrl.domainURL else { return }
-                if viewModel.feed.title.isEmpty, let name = og[.siteName] ?? og[.title], !name.isEmpty {
+            
+            let rssURL = viewModel.feed.rssUrl
+            let baseDomain = rssURL.domainURL
+            var titleSet = !viewModel.feed.title.isEmpty
+            var descSet = viewModel.feed.markdownDescription != nil
+            
+            @MainActor
+            func applyOG(_ og: OpenGraph, allowDescription: Bool) {
+                if !titleSet, let name = og[.siteName] ?? og[.title], !name.isEmpty {
                     viewModel.feedTitle = name
+                    titleSet = true
                 }
-                if viewModel.feed.markdownDescription.isEmpty, let description = og[.description], !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if allowDescription,
+                   !descSet,
+                   let description = og[.description]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !description.isEmpty {
                     viewModel.feedDescription = description
+                    descSet = true
                 }
-            } catch {
-                print(error)
+            }
+            
+            // 1. Try RSS URL with last path component removed (e.g. .../feed.rss -> .../newsroom/)
+            if !titleSet || !descSet {
+                let stripped = rssURL.deletingLastPathComponent()
+                if stripped != rssURL,
+                   let og = try? await OpenGraph.fetch(url: stripped),
+                   let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
+                    applyOG(og, allowDescription: true)
+                }
+            }
+            
+            // 2. Fall back to first entry URL – title only (description will come from pure domain)
+            if !titleSet, let entryURL = viewModel.feed.getEntries()?.first?.url {
+                if let og = try? await OpenGraph.fetch(url: entryURL),
+                   let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
+                    applyOG(og, allowDescription: false)
+                }
+            }
+            
+            // 3. Finally, fetch the bare domain for description (or still-missing title/desc)
+            if !descSet || !titleSet {
+                if let og = try? await OpenGraph.fetch(url: baseDomain),
+                   let raw = og[.url], let u = URL(string: raw), u.domainURL == baseDomain {
+                    applyOG(og, allowDescription: true)
+                }
             }
         }
     }
