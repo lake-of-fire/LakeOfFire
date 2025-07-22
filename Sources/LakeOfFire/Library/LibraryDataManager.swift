@@ -1230,6 +1230,9 @@ public class LibraryDataManager: NSObject {
             entries: try [scriptEntries] + (userCategories ?? []).map { category in
                 try Task.checkCancellation()
                 
+                let feeds = try category.getFeeds() ?? []
+                debugPrint("# feeds", feeds)
+                debugPrint("# feeds")
                 return OPMLEntry(
                     text: category.title,
                     attributes: [
@@ -1237,7 +1240,7 @@ public class LibraryDataManager: NSObject {
                         Attribute(name: "backgroundImageUrl", value: category.backgroundImageUrl.absoluteString),
                         Attribute(name: "isFeedCategory", value: "true"),
                     ],
-                    children: try (category.getFeeds() ?? []).filter({ !$0.isArchived }).map { feed in
+                    children: feeds.filter({ !$0.isArchived }).map { feed in
                         try Task.checkCancellation()
                         
                         var attributes = [

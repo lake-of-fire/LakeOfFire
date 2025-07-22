@@ -30,7 +30,7 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-collections.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/opml", branch: "master"),
+        .package(url: "https://github.com/lake-of-fire/opml.git", branch: "master"),
 //        .package(url: "https://github.com/nmdias/FeedKit.git", branch: "main"),
         .package(url: "https://github.com/nmdias/FeedKit.git", from: "9.1.2"),
 //        .package(url: "https://github.com/satoshi-takano/OpenGraph.git", branch: "main"),

@@ -1,4 +1,5 @@
 import SwiftUI
+import Html
 import Combine
 import RealmSwift
 import FilePicker
@@ -33,9 +34,45 @@ struct LibraryFeedView: View {
                 .formStyle(.grouped)
             }
         }
+        .toolbar {
+            LibraryFeedMenu(feed: feed)
+        }
         .task(id: feed.id) { @MainActor in
             libraryFeedFormSectionsViewModel = LibraryFeedFormSectionsViewModel(feed: feed)
         }
+    }
+}
+
+private struct LibraryFeedMenu: View {
+    let feed: Feed
+    
+    var body: some View {
+        Menu {
+            Button("Copy OPML Entry") {
+                Task { @MainActor in
+                    do {
+                        let opml = try await LibraryDataManager.shared.exportUserOPML()
+                        guard let entry = opml.entries.last(where: { $0.attributeUUIDValue("uuid") == feed.id }) else {
+                            print("No matching OPML entry found for feed with UUID: \(feed.id) out of OPML entry IDs: \(opml.entries.map { $0.attributeUUIDValue("uuid") })")
+                            return
+                        }
+                        let xml = entry.xml
+#if os(iOS)
+                        UIPasteboard.general.string = xml
+#else
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(xml, forType: .string)
+#endif
+                    } catch {
+                        print("Failed to copy OPML entry:", error)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuIndicator(.hidden)
     }
 }
 
@@ -47,7 +84,12 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @Published var feedDescription = ""
     @Published var feedEnabled = false
     @Published var feedURL = ""
-    @Published var feedIconURL = ""
+    @Published var feedIconURL = "" {
+        didSet {
+            debugPrint(feedIconURL)
+            debugPrint(feedIconURL)
+        }
+    }
     @Published var feedIsReaderModeByDefault = false
     @Published var feedInjectEntryImageIntoHeader = false
     @Published var feedExtractImageFromContent = false
@@ -57,6 +99,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
     @Published var feedEntries: [FeedEntry]?
     
     var isEditing = false
+    var hasInitializedValues = false
     
     var cancellables = Set<AnyCancellable>()
     
@@ -70,7 +113,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         // TODO: only resolve this once instead of repeatedly below...
         let feedID = feed.id
         Task { @RealmBackgroundActor [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             objectNotificationToken = feed
@@ -104,122 +147,125 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .store(in: &realmCancellables)
             
             await refresh()
-        }
-        
-        func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
-            Task { @RealmBackgroundActor in
-                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
-                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    block(feed)
-                    feed.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-        }
-        
-        $feedTitle
-            .dropFirst()
-            .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { feedTitle in
-                writeFeedAsync { feed in
-                    feed.title = feedTitle
-                }
-            }
-            .store(in: &cancellables)
-        $feedDescription
-            .dropFirst()
-            .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { feedDescription in
-                writeFeedAsync { feed in
-                    feed.markdownDescription = feedDescription
-                }
-            }
-            .store(in: &cancellables)
-        $feedEnabled
-            .dropFirst()
-            .removeDuplicates()
-            .sink { feedEnabled in
-                writeFeedAsync { feed in
-                    feed.isArchived = !feedEnabled
-                }
-            }
-            .store(in: &cancellables)
-        $feedURL
-            .dropFirst()
-            .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { feedURL in
-                writeFeedAsync { feed in
-                    if feedURL.isEmpty {
-                        feed.rssUrl = URL(string: "about:blank")!
-                    } else if let url = URL(string: feedURL) {
-                        feed.rssUrl = url
+            
+            func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
+                Task { @RealmBackgroundActor in
+                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+                    guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                    await realm.asyncRefresh()
+                    try await realm.asyncWrite {
+                        block(feed)
+                        feed.refreshChangeMetadata(explicitlyModified: true)
                     }
                 }
             }
-            .store(in: &cancellables)
-        $feedIconURL
-            .dropFirst()
-            .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
-            .sink { feedIconURL in
-                writeFeedAsync { feed in
-                    if feedIconURL.isEmpty {
-                        feed.iconUrl = URL(string: "about:blank")!
-                    } else if let url = URL(string: feedIconURL) {
-                        feed.iconUrl = url
+            
+            try await { @MainActor [weak self] in
+                guard let self else { return }
+                $feedTitle
+                    .dropFirst()
+                    .removeDuplicates()
+                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .sink { feedTitle in
+                        writeFeedAsync { feed in
+                            feed.title = feedTitle
+                        }
                     }
-                }
-            }
-            .store(in: &cancellables)
-        $feedIsReaderModeByDefault
-            .dropFirst()
-            .removeDuplicates()
-            .sink { feedIsReaderModeByDefault in
-                writeFeedAsync { feed in
-                    feed.isReaderModeByDefault = feedIsReaderModeByDefault
-                }
-            }
-            .store(in: &cancellables)
-        $feedInjectEntryImageIntoHeader
-            .dropFirst()
-            .removeDuplicates()
-            .sink { feedInjectEntryImageIntoHeader in
-                writeFeedAsync { feed in
-                    feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
-                }
-            }
-            .store(in: &cancellables)
-        $feedExtractImageFromContent
-            .dropFirst()
-            .removeDuplicates()
-            .sink { feedExtractImageFromContent in
-                writeFeedAsync { feed in
-                    feed.extractImageFromContent = feedExtractImageFromContent
-                }
-            }
-            .store(in: &cancellables)
-        $feedRssContainsFullContent
-            .dropFirst()
-            .removeDuplicates()
-            .sink { feedRssContainsFullContent in
-                writeFeedAsync { feed in
-                    feed.rssContainsFullContent = feedRssContainsFullContent
-                }
-            }
-            .store(in: &cancellables)
-        $feedDisplayPublicationDate
-            .dropFirst()
-            .removeDuplicates()
-            .sink { feedDisplayPublicationDate in
-                writeFeedAsync { feed in
-                    feed.displayPublicationDate = feedDisplayPublicationDate
-                }
-            }
-            .store(in: &cancellables)
+                    .store(in: &cancellables)
+                $feedDescription
+                    .dropFirst()
+                    .removeDuplicates()
+                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .sink { feedDescription in
+                        writeFeedAsync { feed in
+                            feed.markdownDescription = feedDescription
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedEnabled
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { feedEnabled in
+                        writeFeedAsync { feed in
+                            feed.isArchived = !feedEnabled
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedURL
+                    .dropFirst()
+                    .removeDuplicates()
+                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .sink { feedURL in
+                        writeFeedAsync { feed in
+                            if feedURL.isEmpty {
+                                feed.rssUrl = URL(string: "about:blank")!
+                            } else if let url = URL(string: feedURL) {
+                                feed.rssUrl = url
+                            }
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedIconURL
+                    .dropFirst()
+                    .removeDuplicates()
+                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .sink { feedIconURL in
+                        writeFeedAsync { feed in
+                            if feedIconURL.isEmpty {
+                                feed.iconUrl = URL(string: "about:blank")!
+                            } else if let url = URL(string: feedIconURL) {
+                                feed.iconUrl = url
+                            }
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedIsReaderModeByDefault
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { feedIsReaderModeByDefault in
+                        writeFeedAsync { feed in
+                            feed.isReaderModeByDefault = feedIsReaderModeByDefault
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedInjectEntryImageIntoHeader
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { feedInjectEntryImageIntoHeader in
+                        writeFeedAsync { feed in
+                            feed.injectEntryImageIntoHeader = feedInjectEntryImageIntoHeader
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedExtractImageFromContent
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { feedExtractImageFromContent in
+                        writeFeedAsync { feed in
+                            feed.extractImageFromContent = feedExtractImageFromContent
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedRssContainsFullContent
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { feedRssContainsFullContent in
+                        writeFeedAsync { feed in
+                            feed.rssContainsFullContent = feedRssContainsFullContent
+                        }
+                    }
+                    .store(in: &cancellables)
+                $feedDisplayPublicationDate
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { feedDisplayPublicationDate in
+                        writeFeedAsync { feed in
+                            feed.displayPublicationDate = feedDisplayPublicationDate
+                        }
+                    }
+                    .store(in: &cancellables)
+            }()
+        }
     }
     
     deinit {
@@ -249,6 +295,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 feed.rssUrl = URL(string: strings.first ?? "") ?? URL(string: "about:blank")!
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
+            refresh()
         }
     }
 }
@@ -272,7 +319,7 @@ struct LibraryFeedFormSections: View {
     @StateObject private var readerModeViewModel = ReaderModeViewModel()
     @StateObject private var readerLocationBarViewModel = ReaderLocationBarViewModel()
     @StateObject private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
-
+    
     @State private var readerFeedEntry: FeedEntry?
     
     @ScaledMetric(relativeTo: .headline) private var maxContentCellHeight: CGFloat = 100
@@ -323,7 +370,8 @@ struct LibraryFeedFormSections: View {
         } footer: {
             Text("Feeds use RSS or Atom syndication formats.").font(.footnote).foregroundColor(.secondary)
         }
-        .onChange(of: viewModel.feed.rssUrl, debounceTime: 1) { _ in
+        .onChange(of: viewModel.feed.rssUrl, debounceTime: 1.5) { _ in
+            // Note: this runs every time on first load...
             Task { @MainActor in
                 refreshFeed()
                 refreshIcon()
@@ -380,6 +428,7 @@ struct LibraryFeedFormSections: View {
         .environmentObject(readerModeViewModel)
         .environmentObject(readerLocationBarViewModel)
         .environmentObject(readerMediaPlayerViewModel)
+        .environmentObject(readerViewModel.scriptCaller)
         .environment(\.webViewNavigator, webNavigator)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .frame(idealHeight: readerPreviewHeight)
@@ -415,13 +464,6 @@ struct LibraryFeedFormSections: View {
                         .fixedSize()
                 }
                 .labelStyle(.iconOnly)
-            }
-        }
-        .onChange(of: viewModel.feed.rssUrl, debounceTime: 1.5) { _ in
-            Task { @MainActor in
-                refreshFeed()
-                refreshIcon()
-                refreshFromOpenGraph()
             }
         }
         .onChange(of: viewModel.feedEntries ?? []) { [oldEntries = viewModel.feedEntries] entries in
@@ -528,18 +570,20 @@ struct LibraryFeedFormSections: View {
             do {
                 let favicon = try await FaviconFinder(
                     url: url,
-                    preferredType: .html,
-                    preferences: [
-                        :
-                            //                        .html: FaviconType.appleTouchIcon.rawValue,
-                        //                        .ico: "favicon.ico",
-                        //                        .webApplicationManifestFile: FaviconType.launcherIcon4x.rawValue
-                    ],
-                    downloadImage: false
-                ).downloadFavicon()
+                    configuration: .init(
+                        preferredSource: .html,
+                        preferences: [
+                            .html: FaviconFormatType.appleTouchIcon.rawValue,
+                            .ico: "favicon.ico",
+                            .webApplicationManifestFile: FaviconFormatType.launcherIcon4x.rawValue
+                        ]
+                    )
+                )
+                    .fetchFaviconURLs()
+                    .largest()
                 await Task { @MainActor in
-                    guard !viewModel.feed.iconUrl.isNativeReaderView else { return }
-                    viewModel.feedIconURL = favicon.url.absoluteString
+                    guard !favicon.source.isNativeReaderView else { return }
+                    viewModel.feedIconURL = favicon.source.absoluteString
                 }.value
             } catch let error {
                 print("Error finding favicon: \(error)")

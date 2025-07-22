@@ -153,6 +153,8 @@ struct LibraryCategoriesView: View {
     @State private var window: NSWindow?
 #endif
     
+    @State private var selection = Set<AnyHashable>()
+    
     var addButtonPlacement: ToolbarItemPlacement {
 #if os(iOS)
         return .bottomBar
@@ -223,7 +225,6 @@ struct LibraryCategoriesView: View {
                 FeedCategoryButtonLabel(
                     title: category.title,
                     backgroundImageURL: category.backgroundImageUrl,
-                    font: .headline,
                     isCompact: true,
                     showEditingDisabled: !category.isUserEditable
                 )
@@ -267,7 +268,7 @@ struct LibraryCategoriesView: View {
     @ViewBuilder var archiveView: some View {
         ForEach(viewModel.archivedCategories ?? []) { category in
             NavigationLink(value: category) {
-                FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, font: .headline, isCompact: true)
+                FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .saturation(0)
             }
@@ -325,7 +326,7 @@ struct LibraryCategoriesView: View {
     
     var body: some View {
         ScrollViewReader { scrollProxy in
-            List {
+            List(selection: $selection) {
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }

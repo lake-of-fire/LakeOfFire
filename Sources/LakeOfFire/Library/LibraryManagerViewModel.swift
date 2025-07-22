@@ -74,7 +74,7 @@ struct LibraryManagerSheetModifier: ViewModifier {
                     if #available(iOS 16.4, macOS 13.1, *) {
                         LibraryManagerView()
 #if os(macOS)
-                            .frame(minWidth: 500, minHeight: 400)
+                            .frame(minWidth: 650, minHeight: 500)
 #endif
                     }
                 }
@@ -235,15 +235,18 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
         if category == nil {
             category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+            
+            if let category {
+                try await realm.asyncWrite {
+                    category.title = "User Library"
+                    category.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
         }
         guard let category = category else { return }
-        await realm.asyncRefresh()
-        try await realm.asyncWrite {
-            category.title = "User Library"
-            category.refreshChangeMetadata(explicitlyModified: true)
-        }
+//        await realm.asyncRefresh()
         guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
-        await realm.asyncRefresh()
+//        await realm.asyncRefresh()
         try await realm.asyncWrite {
             feed.rssUrl = rssURL
             if let title = title {
@@ -252,11 +255,16 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             feed.refreshChangeMetadata(explicitlyModified: true)
         }
         let assignRef = ThreadSafeReference(to: category)
+        let feedID = feed.id
         try await { @MainActor in
             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            await realm.asyncRefresh()
             if let category = realm.resolve(assignRef) {
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)
+                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
+                    selectedFeed = feed
+                }
             }
         }()
     }

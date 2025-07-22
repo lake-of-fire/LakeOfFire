@@ -150,19 +150,9 @@ struct WebFeedMenuAddButtons<C: ReaderContentProtocol>: View {
     
     var body: some View {
         if let userCategories = viewModel.userCategories {
-            if userCategories.isEmpty {
-                Text("You must create your own category for RSS feeds.")
-                Button {
-                    LibraryManagerViewModel.shared.isLibraryPresented = true
-                    Task { @MainActor in
-                        try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                    }
-                } label: {
-                    Label("New Library Category", systemImage: "square.and.pencil")
-                }
-            } else {
+            Group {
                 ForEach(userCategories) { category in
-                    Button("Add Feed to \(category.title)") {
+                    Button {
                         Task { @MainActor in
                             try await libraryViewModel.add(rssURL: url, title: title, toCategory: ThreadSafeReference(to: category))
 #if os(macOS)
@@ -171,11 +161,13 @@ struct WebFeedMenuAddButtons<C: ReaderContentProtocol>: View {
                             libraryViewModel.isLibraryPresented = true
 #endif
                         }
+                    } label: {
+                        Label("Add Feed to \(category.title.isEmpty ? "Untitled" : category.title)", systemImage: "plus")
                     }
                 }
             }
         } else {
-            Button("Add Feed to User Library") {
+            Button {
                 Task { @MainActor in
                     try await libraryViewModel.add(rssURL: url, title: title)
 #if os(macOS)
@@ -184,6 +176,8 @@ struct WebFeedMenuAddButtons<C: ReaderContentProtocol>: View {
                     libraryViewModel.isLibraryPresented = true
 #endif
                 }
+            } label: {
+                Label("Add Feed to User Library", systemImage: "plus")
             }
         }
     }
@@ -206,30 +200,33 @@ public struct WebFeedButton<C: ReaderContentProtocol>: View {
     
     public var body: some View {
         Menu {
-            if let feed = viewModel.feed, !feed.isDeleted, let category = feed.getCategory() {
-                Button("Edit Feed in Library") {
-                    libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
-                    libraryViewModel.navigationPath.append(category)
-                    libraryViewModel.selectedFeed = feed
-                    LibraryManagerViewModel.shared.isLibraryPresented = true
-                }
-            } else if let rssURLs = viewModel.rssURLs, let rssTitles = viewModel.rssTitles {
-                ForEach(Array(zip(rssURLs.indices, rssURLs)), id: \.1) { (idx, url) in
-                    let title = rssTitles[idx]
-                    if rssURLs.count == 1 {
-                        WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title)
-                    } else {
-                        Menu("Add Feed \"\(title)\"") {
+            Group {
+                if let feed = viewModel.feed, !feed.isDeleted, let category = feed.getCategory() {
+                    Button("Edit Feed in Library") {
+                        libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
+                        libraryViewModel.navigationPath.append(category)
+                        libraryViewModel.selectedFeed = feed
+                        LibraryManagerViewModel.shared.isLibraryPresented = true
+                    }
+                } else if let rssURLs = viewModel.rssURLs, let rssTitles = viewModel.rssTitles {
+                    ForEach(Array(zip(rssURLs.indices, rssURLs)), id: \.1) { (idx, url) in
+                        let title = rssTitles[idx]
+                        if rssURLs.count == 1 {
                             WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title)
+                        } else {
+                            Menu("Add Feed \"\(title)\"") {
+                                WebFeedMenuAddButtons(viewModel: viewModel, url: url, title: title)
+                            }
                         }
                     }
-                }
-                Divider()
-                Button( "Manage Library Categories") {
-                    libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
-                    LibraryManagerViewModel.shared.isLibraryPresented = true
+                    Divider()
+                    Button( "Manage Library Categories") {
+                        libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
+                        LibraryManagerViewModel.shared.isLibraryPresented = true
+                    }
                 }
             }
+            .labelStyle(.titleAndIcon)
         } label: {
             Label("RSS Feed", systemImage:  "dot.radiowaves.up.forward")
         }

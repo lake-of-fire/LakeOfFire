@@ -233,7 +233,11 @@ struct LibraryCategoryView: View {
     }
     
     @ViewBuilder private var categoryLabel: some View {
-        FeedCategoryButtonLabel(title: libraryCategoryViewModel.categoryTitle, backgroundImageURL: libraryCategoryViewModel.category.backgroundImageUrl, isCompact: true)
+        FeedCategoryButtonLabel(
+            title: libraryCategoryViewModel.categoryTitle,
+            backgroundImageURL: libraryCategoryViewModel.category.backgroundImageUrl,
+            isCompact: true
+        )
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .listRowInsets(EdgeInsets())
     }

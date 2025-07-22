@@ -314,6 +314,13 @@ public extension ReaderContentProtocol {
             if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
                 content.configureBookmark(bookmark)
             }
+            
+            if let historyRecord = try await HistoryRecord.get(forURL: url), historyRecord.isDemoted != false {
+                try await historyRecord.realm?.asyncWrite {
+                    historyRecord.isDemoted = false
+                    historyRecord.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
         }()
     }
     

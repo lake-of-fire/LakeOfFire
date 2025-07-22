@@ -51,7 +51,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
 public struct ContentCategoryButtons: View {
     @Binding var feedSelection: String?
     @Binding var categorySelection: String?
-    var font = Font.title3
+//    var font = Font.title3
     var isCompact = false
     
     @StateObject private var viewModel = ContentCategoryButtonsViewModel()
@@ -71,14 +71,14 @@ public struct ContentCategoryButtons: View {
 #if DEBUG
                 MangaCategoryButton(
                     categorySelection: $categorySelection,
-                    font: font,
+//                    font: font,
                     isCompact: isCompact
                 )
 #endif
                 
                 BooksCategoryButton(
                     categorySelection: $categorySelection,
-                    font: font,
+//                    font: font,
                     isCompact: isCompact
                 )
                 
@@ -87,7 +87,7 @@ public struct ContentCategoryButtons: View {
                         category: category,
                         feedSelection: $feedSelection,
                         categorySelection: $categorySelection,
-                        font: font,
+//                        font: font,
                         isCompact: isCompact
                     )
                 }
@@ -95,17 +95,22 @@ public struct ContentCategoryButtons: View {
         }
     }
     
-    public init(feedSelection: Binding<String?>, categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool = false) {
+    public init(
+        feedSelection: Binding<String?>,
+        categorySelection: Binding<String?>,
+//        font: Font = Font.title3,
+        isCompact: Bool = false
+    ) {
         _feedSelection = feedSelection
         _categorySelection = categorySelection
-        self.font = font
+//        self.font = font
         self.isCompact = isCompact
     }
 }
 
 public struct MangaCategoryButton: View {
     @Binding var categorySelection: String?
-    var font = Font.title3
+//    var font = Font.title3
     var isCompact = false
     
     public var body: some View {
@@ -114,21 +119,30 @@ public struct MangaCategoryButton: View {
                 categorySelection = "manga"
             }
         }) {
-            FeedCategoryButtonLabel(title: "Manga", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/manga.jpg")!, font: font, isCompact: isCompact)
+            FeedCategoryButtonLabel(
+                title: "Manga",
+                backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/manga.jpg")!,
+//                font: font,
+                isCompact: isCompact
+            )
         }
         .buttonStyle(ReaderCategoryButtonStyle())
     }
     
-    public init(categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
+    public init(
+        categorySelection: Binding<String?>,
+//        font: Font = Font.title3,
+        isCompact: Bool
+    ) {
         _categorySelection = categorySelection
-        self.font = font
+//        self.font = font
         self.isCompact = isCompact
     }
 }
 
 public struct BooksCategoryButton: View {
     @Binding var categorySelection: String?
-    var font = Font.title3
+//    var font = Font.title3
     var isCompact = false
     
     public var body: some View {
@@ -137,14 +151,18 @@ public struct BooksCategoryButton: View {
                 categorySelection = "books"
             }
         }) {
-            FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, font: font, isCompact: isCompact)
+            FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, /*font: font,*/ isCompact: isCompact)
         }
         .buttonStyle(ReaderCategoryButtonStyle())
     }
     
-    public init(categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
+    public init(
+        categorySelection: Binding<String?>,
+//        font: Font = Font.title3,
+        isCompact: Bool
+    ) {
         _categorySelection = categorySelection
-        self.font = font
+//        self.font = font
         self.isCompact = isCompact
     }
 }
@@ -153,7 +171,7 @@ public struct FeedCategoryButton: View {
     let category: FeedCategory
     @Binding var feedSelection: String?
     @Binding var categorySelection: String?
-    var font = Font.title3
+//    var font = Font.title3
     var isCompact = false
     
     public var body: some View {
@@ -161,16 +179,21 @@ public struct FeedCategoryButton: View {
             feedSelection = nil
             categorySelection = category.id.uuidString
         }) {
-            FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, font: font, isCompact: isCompact)
+            FeedCategoryButtonLabel(
+                title: category.title,
+                backgroundImageURL: category.backgroundImageUrl,
+//                font: font,
+                isCompact: isCompact
+            )
         }
         .buttonStyle(ReaderCategoryButtonStyle())
     }
     
-    public init(category: FeedCategory, feedSelection: Binding<String?>, categorySelection: Binding<String?>, font: Font = Font.title3, isCompact: Bool) {
+    public init(category: FeedCategory, feedSelection: Binding<String?>, categorySelection: Binding<String?>, /*font: Font = Font.title3,*/ isCompact: Bool) {
         self.category = category
         _feedSelection = feedSelection
         _categorySelection = categorySelection
-        self.font = font
+//        self.font = font
         self.isCompact = isCompact
     }
 }
@@ -205,7 +228,6 @@ struct ReaderCategoryButtonStyle: ButtonStyle {
 public struct FeedCategoryButtonLabel: View {
     let title: String
     let backgroundImageURL: URL
-    var font = Font.title3
     var isCompact = false
     var showEditingDisabled: Bool = false
     
@@ -231,16 +253,16 @@ public struct FeedCategoryButtonLabel: View {
                     Image(systemName: "lock.fill")
                 }
                 Text(titleToDisplay)
-                    .bold()
+                    .fontWeight(isCompact ? nil : .bold)
             }
-            .font(font)
+            .font(isCompact ? .headline : .title2)
 //            .foregroundColor(.white)
             .foregroundStyle(.white)
             .opacity(title.isEmpty ? 0.85 : 1)
             //                .shadow(color: .black.opacity(0.95), radius: 4)
             .shadow(color: .black, radius: 1)
             .shadow(color: .black, radius: 3)
-            .shadow(color: .black.opacity(0.5), radius: 15)
+            .shadow(color: .black, radius: 40)
             Spacer(minLength: 0)
         }
         .frame(minHeight: isCompact ? nil : scaledCategoryHeight, alignment: .leading)
@@ -263,14 +285,14 @@ public struct FeedCategoryButtonLabel: View {
     public init(
         title: String,
         backgroundImageURL: URL,
-        font: Font = Font.title3,
+//        font: Font = Font.title3,
         isCompact: Bool,
         scaledCategoryHeight: CGFloat? = nil,
         showEditingDisabled: Bool = false
     ) {
         self.title = title
         self.backgroundImageURL = backgroundImageURL
-        self.font = font
+//        self.font = font
         self.isCompact = isCompact
         self.showEditingDisabled = showEditingDisabled
     }

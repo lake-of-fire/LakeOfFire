@@ -408,7 +408,16 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
         }
     }
     
-    public init(contents: [C], entrySelection: Binding<String?>, contentSortAscending: Bool = false, alwaysShowThumbnails: Bool = true, sortOrder: ReaderContentSortOrder, contentFilter: ((C) async throws -> Bool)? = nil, allowEditing: Bool = false, onDelete: (([C]) -> Void)? = nil) {
+    public init(
+        contents: [C],
+        entrySelection: Binding<String?>,
+        contentSortAscending: Bool = false,
+        alwaysShowThumbnails: Bool = true,
+        sortOrder: ReaderContentSortOrder,
+        contentFilter: ((C) async throws -> Bool)? = nil,
+        allowEditing: Bool = false,
+        onDelete: (([C]) -> Void)? = nil
+    ) {
         self.contents = contents
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
