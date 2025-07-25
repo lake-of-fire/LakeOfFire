@@ -376,28 +376,28 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
                 entrySelection = nil
             }
         }
-        .toolbar {
 #if os(iOS) || os(macOS)
-            if allowEditing {
+        .toolbar {
 #if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if allowEditing {
                     EditButton()
-                }
-#endif
-                if !multiSelection.isEmpty, let onDelete = onDelete {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button(role: .destructive) {
-                            let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
-                            onDelete(selected)
-                            multiSelection.removeAll()
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    }
                 }
             }
 #endif
+            ToolbarItem(placement: .primaryAction) {
+                if allowEditing, !multiSelection.isEmpty, let onDelete = onDelete {
+                    Button(role: .destructive) {
+                        let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
+                        onDelete(selected)
+                        multiSelection.removeAll()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
         }
+#endif
         .task { @MainActor in
             try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
         }
