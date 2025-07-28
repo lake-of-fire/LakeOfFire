@@ -111,6 +111,9 @@ fileprivate struct ReaderFontSizeModifier: ViewModifier {
         content
             .task { @MainActor in
                 readerModeViewModel.defaultFontSize = defaultFontSize
+                if UserDefaults.standard.object(forKey: "readerFontSize") as? Int == nil {
+                    UserDefaults.standard.set(Int(round(defaultFontSize)), forKey: "readerFontSize")
+                }
             }
     }
 }

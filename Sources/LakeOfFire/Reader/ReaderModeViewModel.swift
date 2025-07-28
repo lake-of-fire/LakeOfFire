@@ -189,7 +189,7 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultTitle: titleForDisplay,
                 imageURL: imageURLToDisplay,
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
-                defaultFontSize: defaultFontSize ?? 20
+                defaultFontSize: defaultFontSize ?? 21
             )
 
             doc.outputSettings().charset(.utf8)
@@ -259,7 +259,11 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    public func onNavigationCommitted(readerContent: ReaderContent, newState: WebViewState, scriptCaller: WebViewScriptCaller) async throws {
+    public func onNavigationCommitted(
+        readerContent: ReaderContent,
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller
+    ) async throws {
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil
@@ -314,7 +318,9 @@ public class ReaderModeViewModel: ObservableObject {
                     // TODO: Fix content rules... images still load...
 //                    contentRules = contentRulesForReadabilityLoading
 
-                    navigator?.loadHTML(html, baseURL: committedURL)
+                    Task { @MainActor in
+                        navigator?.loadHTML(html, baseURL: committedURL)
+                    }
 //                    readerModeLoading(false)
                 } else {
                     readabilityContent = html
@@ -340,9 +346,19 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    public func onNavigationFinished(newState: WebViewState) {
+    public func onNavigationFinished(
+        newState: WebViewState,
+        scriptCaller: WebViewScriptCaller
+    ) async {
         if !newState.pageURL.isReaderURLLoaderURL {
-            readerModeLoading(false)
+            do {
+                let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
+                if !isNextReaderMode {
+                    readerModeLoading(false)
+                }
+            } catch {
+                readerModeLoading(false)
+            }
         }
     }
     

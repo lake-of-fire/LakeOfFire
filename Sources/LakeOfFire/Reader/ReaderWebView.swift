@@ -76,7 +76,10 @@ fileprivate class ReaderWebViewHandler {
         try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
         try Task.checkCancellation()
         
-        self.readerModeViewModel.onNavigationFinished(newState: state)
+        await self.readerModeViewModel.onNavigationFinished(
+            newState: state,
+            scriptCaller: scriptCaller
+        )
         try Task.checkCancellation()
         self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
             // no external callback here
@@ -98,8 +101,12 @@ fileprivate class ReaderWebViewHandler {
     }
     
     func onNavigationFinished(state: WebViewState) {
-        navigationTaskManager.startOnNavigationFinished { @MainActor in
-            self.readerModeViewModel.onNavigationFinished(newState: state)
+        navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
+            guard let self else { return }
+            await self.readerModeViewModel.onNavigationFinished(
+                newState: state,
+                scriptCaller: scriptCaller
+            )
             guard let content = self.readerContent.content else { return }
             self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
                 // no external callback here
