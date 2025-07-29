@@ -958,7 +958,7 @@ export class Paginator extends HTMLElement {
             threshold: [0],
         });
 
-        const selector = '#reader-content > *, manabi-tracking-section, manabi-container';
+        const selector = '#reader-content > *, manabi-tracking-section';
 
         this.#elementMutationObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
@@ -1636,12 +1636,12 @@ export class Paginator extends HTMLElement {
         return await this.#scrollTo(offset, reason, smooth)
     }
     async scrollToAnchor(anchor, select) {
-//            await new Promise(resolve => requestAnimationFrame(resolve));
-            await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        //            await new Promise(resolve => requestAnimationFrame(resolve));
+        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
     }
     // TODO: Fix newer way and stop using this one that calculates getClientRects
     async #scrollToAnchor(anchor, reason = 'anchor') {
-//        console.log('#scrollToAnchor0...', anchor)
+        //        console.log('#scrollToAnchor0...', anchor)
         this.#anchor = anchor
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
@@ -1650,7 +1650,7 @@ export class Paginator extends HTMLElement {
             // previous column, there is an extra zero width rect in that column
             const rect = Array.from(rects)
                 .find(r => r.width > 0 && r.height > 0) || rects[0]
-//            console.log('#scrollToAnchor...', rect)
+            //            console.log('#scrollToAnchor...', rect)
             if (!rect) return
             await this.#scrollToRect(rect, reason)
             return
@@ -1824,7 +1824,7 @@ export class Paginator extends HTMLElement {
                                 /[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(prev)) score += 3;
                             if (category(prev) !== category(ch)) score += 2;
                             // Prefer to avoid splitting in the middle of CJK words (kanji->kanji)
-                            if (category(prev) === 'cjk' && category(ch) === 'cjk') score -= 2;
+                            if (category(prev) === 'cjk' && category(ch) === 'cjk') score -= 6;
                             // Avoid splitting mid-latin word
                             if (category(prev) === 'other' && category(ch) === 'other' &&
                                 /[a-zA-Z0-9]/.test(prev) && /[a-zA-Z0-9]/.test(ch)) score -= 4;
@@ -1869,7 +1869,7 @@ export class Paginator extends HTMLElement {
                     }
                     charCount += remainingText.length - offsetInNode;
                 }
-                
+
                 resolve();
             });
         });
@@ -2062,7 +2062,7 @@ export class Paginator extends HTMLElement {
                 await view.load(src, afterLoad, beforeRender)
                 //                console.log("#display... awaited load")
                 this.#view = view
-                
+
                 await this.#applyVisibilitySentinels()
                 await this.#trackElementVisibilities()
 
@@ -2116,8 +2116,8 @@ export class Paginator extends HTMLElement {
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
 
-//                    await this.#applyVisibilitySentinels()
-//                    await this.#trackElementVisibilities()
+                    //                    await this.#applyVisibilitySentinels()
+                    //                    await this.#trackElementVisibilities()
                 }
 
                 this.dispatchEvent(new CustomEvent('load', {

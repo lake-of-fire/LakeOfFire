@@ -258,17 +258,13 @@ const partsToNode = (node, parts) => {
 }
 
 const nodeToParts = (node, offset) => {
-    console.log("DEBUG nodeToParts ENTRY:", { node, offset, tag: node.nodeType === 1 ? node.localName : null });
     if (node.nodeType === 1 && node.localName?.toLowerCase() === 'reader-sentinel') {
-        console.log("DEBUG nodeToParts SKIP sentinel:", node);
         return nodeToParts(node.parentNode, offset);
     }
     const { parentNode, id } = node
-    console.log("DEBUG nodeToParts PARENT & ID:", { parentNode, id });
     const indexed = indexChildNodes(parentNode)
     const index = indexed.findIndex(x =>
                                     Array.isArray(x) ? x.some(x => x === node) : x === node)
-    console.log("DEBUG nodeToParts indexed length:", indexed.length, "raw index:", index);
     // adjust offset as if merging the text nodes in the chunk
     const chunk = indexed[index]
     if (Array.isArray(chunk)) {
@@ -283,7 +279,6 @@ const nodeToParts = (node, offset) => {
     }
     const tagName = node.nodeType === 1 ? node.localName?.toLowerCase() : ''
     const part = { id, index, offset }
-    console.log("DEBUG nodeToParts RAW part:", part);
     // remove IDs for generated manabi- and reader-sentinel elements
     if (
         part.id?.startsWith('manabi-') ||
@@ -295,7 +290,6 @@ const nodeToParts = (node, offset) => {
     const result = parentNode !== node.ownerDocument.documentElement
     ? nodeToParts(parentNode).concat(part)
     : [part];
-    console.log("DEBUG nodeToParts RESULT parts:", result);
     return result;
 }
 
@@ -308,16 +302,11 @@ export const fromRange = range => {
         }
 
 export const toRange = (doc, parts) => {
-    console.log("DEBUG toRange ENTRY parts:", parts);
     const startParts = collapse(parts)
     const endParts = collapse(parts, true)
-    console.log("DEBUG toRange startParts:", startParts);
-    console.log("DEBUG toRange endParts:", endParts);
     const root = doc.documentElement
     const start = partsToNode(root, startParts[0])
     const end = partsToNode(root, endParts[0])
-    console.log("DEBUG toRange start:", start);
-    console.log("DEBUG toRange end:", end);
     const range = doc.createRange()
     if (start.before) range.setStartBefore(start.node)
         else if (start.after) range.setStartAfter(start.node)

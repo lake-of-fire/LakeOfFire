@@ -328,11 +328,16 @@ reader-sentinel {
     reader-sentinel {
          position: relative !important;
          display: inline-block !important;
-         width: 0px !important;
-         height: 0px !important;
+         width: 0 !important;
+         height: 0 !important;
+         padding: 0 !important;
          contain: strict !important;
          pointer-events: none !important;
          opacity: 0 !important;
+         vertical-align: bottom !important;
+         break-before: avoid !important;
+         break-after: avoid !important;
+         break-inside: avoid !important;
     }
 `
 
