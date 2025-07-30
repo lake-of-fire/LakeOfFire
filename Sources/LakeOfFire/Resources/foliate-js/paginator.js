@@ -280,7 +280,8 @@ class View {
         })
         // `allow-scripts` is needed for events because of WebKit bug
         // https://bugs.webkit.org/show_bug.cgi?id=218086
-        this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts') // Breaks font-src data: blobs...
+//        this.#iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-downloads')
+        //this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts') // Breaks font-src data: blobs...
         this.#iframe.setAttribute('scrolling', 'no')
     }
     get element() {
@@ -345,6 +346,11 @@ class View {
         }
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
+        
+        if (this.#vertical) {
+            this.document.body?.classList.add('reader-vertical-writing')
+        }
+
         if (this.#column) {
             //            console.log("render(layout)... await columnize(layout)")
             await this.columnize(layout)
@@ -958,7 +964,8 @@ export class Paginator extends HTMLElement {
             threshold: [0],
         });
 
-        const selector = '#reader-content > *, manabi-tracking-section';
+//        const selector = '#reader-content > *, manabi-tracking-section';
+        const selector = 'manabi-sentence';
 
         this.#elementMutationObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
@@ -1078,9 +1085,6 @@ export class Paginator extends HTMLElement {
         this.#topMargin = topMargin
         this.#bottomMargin = bottomMargin
         this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
-        if (this.#vertical) {
-            this.#view.document.documentElement.body?.addClass('reader-vertical-writing')
-        }
 
         // retro way:
         //                        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
