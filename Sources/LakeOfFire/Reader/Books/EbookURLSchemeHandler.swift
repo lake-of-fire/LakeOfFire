@@ -5,14 +5,14 @@ import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL) async throws -> Bool)?
-    let ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
-    let processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
+    let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
+    let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
     let processHTML: ((String, Bool) async -> String)?
     
     init(
         ebookTextProcessorCacheHits: ((URL) async throws -> Bool)?,
-        ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
-        processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?,
+        ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
+        processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?,
         processHTML: ((String, Bool) async -> String)?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
@@ -146,9 +146,9 @@ public extension URL {
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     var ebookTextProcessorCacheHits: ((URL) async throws -> Bool)? = nil
-    var ebookTextProcessor: ((URL, String, String, Bool, ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)? = nil
+    var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
-    var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)?
+    var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
     var processHTML: ((String, Bool) async -> String)?
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]

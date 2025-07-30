@@ -16,7 +16,7 @@ fileprivate actor ReaderViewModelActor {
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     public var ebookTextProcessorCacheHits: ((URL) async throws -> Bool)? = nil
-    public var processReadabilityContent: ((SwiftSoup.Document, URL, Bool) async -> SwiftSoup.Document)? = nil
+    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)? = nil
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
@@ -162,24 +162,42 @@ public class ReaderModeViewModel: ObservableObject {
         let processHTML = processHTML
         
         try await { @ReaderViewModelActor [weak self] in
-            let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
-            let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
-            var doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
-            doc.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
+            var doc: SwiftSoup.Document?
             
-            try await preprocessWebContentForReaderMode(
-                doc: doc,
-                url: url
-            )
-
             if let processReadabilityContent {
                 doc = await processReadabilityContent(
-                    doc,
+                    readabilityContent,
                     url,
-                    false
+                    nil,
+                    false,
+                    { doc in
+                        do {
+                            return try await preprocessWebContentForReaderMode(
+                                doc: doc,
+                                url: url
+                            )
+                        } catch {
+                            print(error)
+                            return doc
+                        }
+                    }
                 )
+            } else {
+                let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
+                let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
+                doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
+                doc?.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
+                doc?.outputSettings().charset(.utf8)
+                if isXML {
+                    doc?.outputSettings().escapeMode(.xhtml)
+                }
             }
             
+            guard let doc else {
+                print("Error: Unexpectedly failed to receive doc")
+                return
+            }
+
             try await processForReaderMode(
                 doc: doc,
                 url: url,
@@ -192,10 +210,6 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultFontSize: defaultFontSize ?? 21
             )
 
-            doc.outputSettings().charset(.utf8)
-            if isXML {
-                doc.outputSettings().escapeMode(.xhtml)
-            }
             var html = try doc.outerHtml()
             
             if let processHTML {
@@ -414,11 +428,12 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFont
 public func preprocessWebContentForReaderMode(
     doc: SwiftSoup.Document,
     url: URL
-) throws {
+) throws -> SwiftSoup.Document {
     transformContentSpecificToFeed(doc: doc, url: url)
     do {
         try wireViewOriginalLinks(doc: doc, url: url)
     } catch { }
+    return doc
 }
 
 public func processForReaderMode(

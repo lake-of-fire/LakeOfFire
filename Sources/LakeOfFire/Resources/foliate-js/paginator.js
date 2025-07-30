@@ -846,6 +846,9 @@ export class Paginator extends HTMLElement {
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
     open(book, isCacheWarmer) {
+        // hide the view until final relocate needs
+        this.style.display = 'none'
+
         this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
         this.sections = book.sections
@@ -896,13 +899,14 @@ export class Paginator extends HTMLElement {
         }
     }
     async #onBeforeExpand() {
+//        console.log("#onBeforeExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
         this.#setLoading(true)
     }
     async #onExpand() {
-        //        console.log("#onExpand...")
+//        console.log("#onExpand...", this.style.display)
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
@@ -948,48 +952,6 @@ export class Paginator extends HTMLElement {
             }
         })
     }
-    async #trackElementVisibilities() {
-        this.#disconnectElementVisibilityObserver();
-        await new Promise(r => requestAnimationFrame(r));
-
-        this.#elementVisibilityObserver = new IntersectionObserver(entries => {
-            for (const entry of entries) {
-                const el = entry.target;
-                if (entry.intersectionRatio > 0) {
-                    el.classList.remove('manabi-off-screen');
-                } else {
-                    el.classList.add('manabi-off-screen');
-                }
-            }
-        }, {
-            root: null,
-            threshold: [0],
-        });
-
-        //        const selector = '#reader-content > *, manabi-tracking-section';
-        const selector = 'manabi-sentence';
-
-        this.#elementMutationObserver = new MutationObserver(mutations => {
-            for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                    if (node instanceof Element && node.matches(selector)) {
-                        this.#elementVisibilityObserver.observe(node);
-                    }
-                }
-                for (const node of mutation.removedNodes) {
-                    if (node instanceof Element && node.matches(selector)) {
-                        this.#elementVisibilityObserver.unobserve(node);
-                    }
-                }
-            }
-        });
-
-        this.#view.document.body.querySelectorAll(selector).forEach(el => this.#elementVisibilityObserver.observe(el));
-        this.#elementMutationObserver.observe(this.#view.document.body, {
-            childList: true,
-            subtree: true
-        });
-    }
     #disconnectElementVisibilityObserver() {
         if (this.#elementVisibilityObserver) {
             this.#elementVisibilityObserver.disconnect();
@@ -1027,6 +989,8 @@ export class Paginator extends HTMLElement {
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
         //        this.#background.style.background = background
+
+        this.style.display = 'block'
 
         const {
             width,
@@ -1644,7 +1608,6 @@ export class Paginator extends HTMLElement {
             // previous column, there is an extra zero width rect in that column
             const rect = Array.from(rects)
                 .find(r => r.width > 0 && r.height > 0) || rects[0]
-            //            console.log('#scrollToAnchor...', rect)
             if (!rect) return
             await this.#scrollToRect(rect, reason)
             return
@@ -1756,122 +1719,6 @@ export class Paginator extends HTMLElement {
                 const textPages = _pages - 2;
                 const newPage = Math.round(anchor * (textPages - 1));
                 await this.#scrollToPage(newPage + 1, reason);
-                resolve();
-            });
-        });
-    }
-    /**
-     * Adds `reader-sentinel` to either an existing short element or an inserted span
-     * every `interval` characters in the body.
-     * - Short elements (<= interval characters) starting within the window are preferred.
-     * - If none exist, a sentinel span is inserted at the target text offset.
-     */
-    async #applyVisibilitySentinels() {
-        return new Promise(resolve => {
-            requestAnimationFrame(() => {
-                const doc = this.#view?.document;
-                if (!doc) return resolve();
-                const body = doc.body;
-
-                if (body.querySelector('reader-sentinel')) {
-                    // Already applied
-                    return
-                }
-
-                const interval = 16;
-                //                                const interval = 2;
-
-                function findSplitOffset(text, desiredOffset, maxDistance) {
-                    function category(ch) {
-                        if (!ch || typeof ch !== 'string') return 'other';
-                        const cp = ch.codePointAt(0);
-                        if (/\s/.test(ch)) return 'ws';
-                        if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch)) return 'punct';
-                        if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
-                            (cp >= 0x3400 && cp <= 0x4DBF) ||
-                            (cp >= 0x20000 && cp <= 0x2A6DF) ||
-                            (cp >= 0x2A700 && cp <= 0x2B73F)) return 'cjk';
-                        if (cp >= 0x3040 && cp <= 0x309F) return 'hiragana';
-                        if (cp >= 0x30A0 && cp <= 0x30FF) return 'katakana';
-                        return 'other';
-                    }
-                    const len = text.length;
-                    // Do not split at start or end of text node
-                    if (desiredOffset <= 0 || desiredOffset >= len) return desiredOffset;
-
-                    let bestOffset = desiredOffset;
-                    let bestScore = -Infinity;
-
-                    // Scan outward from desiredOffset (prioritize close, prefer "good" break)
-                    for (let dist = 0; dist <= maxDistance; dist++) {
-                        for (const offset of [desiredOffset - dist, desiredOffset + dist]) {
-                            if (offset <= 0 || offset >= len) continue;
-                            const ch = text[offset];
-                            const prev = text[offset - 1];
-                            // Prefer:
-                            // - At whitespace or punctuation,
-                            // - At element boundary (not directly detectable here),
-                            // - At transition: kanji <-> kana, hiragana <-> katakana, kana <-> other, etc.
-                            let score = 0;
-                            if (/\s/.test(ch) || /\s/.test(prev)) score += 3;
-                            if (/[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(ch) ||
-                                /[、。．，？！：；…‥ー－「」『』【】〔〕（）［］｛｝〈〉《》“”‘’『』《》·・／＼—〜～〃々〆ゝゞ]/.test(prev)) score += 3;
-                            if (category(prev) !== category(ch)) score += 2;
-                            // Prefer to avoid splitting in the middle of CJK words (kanji->kanji)
-                            if (category(prev) === 'cjk' && category(ch) === 'cjk') score -= 6;
-                            // Avoid splitting mid-latin word
-                            if (category(prev) === 'other' && category(ch) === 'other' &&
-                                /[a-zA-Z0-9]/.test(prev) && /[a-zA-Z0-9]/.test(ch)) score -= 4;
-                            // Strongly avoid start/end of node
-                            if (offset === 0 || offset === len) score -= 5;
-                            // Penalty for distance
-                            score -= Math.abs(offset - desiredOffset) * 0.5;
-
-                            if (score > bestScore) {
-                                bestScore = score;
-                                bestOffset = offset;
-                            }
-                            if (bestScore >= 3) break; // Early out for "good enough" score
-                        }
-                    }
-                    return bestOffset;
-                }
-
-                var idx = 0;
-                let charCount = 0;
-                let nextThreshold = interval;
-                // Walk only text nodes, splitting in-place for sentinel insertion
-                const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
-                let textNode;
-                while ((textNode = walker.nextNode())) {
-                    let remainingText = textNode.nodeValue || "";
-                    let offsetInNode = 0;
-                    while (charCount + (remainingText.length - offsetInNode) >= nextThreshold) {
-                        const desiredOffset = nextThreshold - charCount - offsetInNode;
-                        const bestOffset = findSplitOffset(remainingText, desiredOffset, interval * 2);
-                        const postSplit = textNode.splitText(bestOffset);
-                        const sentinel = doc.createElement("reader-sentinel")
-                        sentinel.id = `reader-sentinel-${idx}`
-                        idx++
-                        postSplit.parentNode.insertBefore(sentinel, postSplit);
-                        // Advance counters past the inserted sentinel
-                        textNode = postSplit;
-                        offsetInNode = 0;
-                        charCount = nextThreshold;
-                        nextThreshold += interval;
-                        remainingText = textNode.nodeValue || "";
-                    }
-                    charCount += remainingText.length - offsetInNode;
-                }
-
-                // Ensure at least one sentinel even if no splits occurred
-                if (idx === 0) {
-                    const sentinel = doc.createElement("reader-sentinel");
-                    sentinel.id = `reader-sentinel-0`;
-                    body.insertBefore(sentinel, body.firstChild);
-                    idx++;
-                }
-
                 resolve();
             });
         });
@@ -2065,9 +1912,6 @@ export class Paginator extends HTMLElement {
                 //                console.log("#display... awaited load")
                 this.#view = view
 
-                await this.#applyVisibilitySentinels()
-                await this.#trackElementVisibilities()
-
                 // Reset chevrons when loading new section
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
                 //            this.dispatchEvent(new CustomEvent('create-overlayer', {
@@ -2077,10 +1921,12 @@ export class Paginator extends HTMLElement {
                 //                    attach: overlayer => view.overlayer = overlayer,
                 //                },
                 //            }))
+                //                this.style.display = 'block'
             }
         }
 
         //            console.log("#display... call scroll to anchor")
+
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
         //            console.log("#display... scrolledToAnchorOnLoad = true")
@@ -2097,6 +1943,7 @@ export class Paginator extends HTMLElement {
         anchor,
         select
     }) {
+        //        console.log("#goTo...", this.style.display, index, anchor)
         const willLoadNewIndex = index !== this.#index;
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
@@ -2117,9 +1964,6 @@ export class Paginator extends HTMLElement {
 
                 if (!this.#isCacheWarmer) {
                     this.setStyles(this.#styles)
-
-                    //                    await this.#applyVisibilitySentinels()
-                    //                    await this.#trackElementVisibilities()
                 }
 
                 this.dispatchEvent(new CustomEvent('load', {
