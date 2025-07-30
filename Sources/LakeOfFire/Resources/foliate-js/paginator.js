@@ -379,6 +379,7 @@ class View {
 
             //            // columnize parity
             // columnGap: '0',
+            '--paginator-column-gap': `${gap}px`,
             'column-gap': `${gap}px`,
             'column-fill': 'auto',
             'overflow': 'hidden',
@@ -424,6 +425,7 @@ class View {
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
+            '--paginator-column-gap': `${gap}px`,
             'column-gap': `${gap}px`,
             'column-fill': 'auto',
             ...(vertical ? {

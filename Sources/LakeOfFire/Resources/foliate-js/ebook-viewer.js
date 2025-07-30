@@ -308,15 +308,16 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
-    body * {
+    #reader-content * {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
+        max-height: 99vh;
     }
 
 /*
 reader-sentinel {
   position: relative;
-  display: inline-block;
+  display: inline; /*-block;*/
   width: 4px !important;
   height: 4px !important;
   opacity: 1 !important;
