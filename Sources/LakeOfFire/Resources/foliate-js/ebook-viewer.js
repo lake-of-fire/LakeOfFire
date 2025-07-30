@@ -308,7 +308,7 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
-    body *:not(.manabi-tracking-container *) {
+    body *:not(.manabi-tracking-container *):not(manabi-segment *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
         max-height: 99vh;

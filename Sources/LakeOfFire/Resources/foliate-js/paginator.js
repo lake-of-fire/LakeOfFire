@@ -1955,6 +1955,9 @@ export class Paginator extends HTMLElement {
                 select
             })
         } else {
+            // hide the view until final relocate needs
+            this.style.display = 'none'
+ 
             const oldIndex = this.#index
             // Reset direction flags and promise before loading a new section
             this.#vertical = this.#verticalRTL = this.#rtl = null;
