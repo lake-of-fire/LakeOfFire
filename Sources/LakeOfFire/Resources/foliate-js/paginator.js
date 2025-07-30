@@ -280,7 +280,7 @@ class View {
         })
         // `allow-scripts` is needed for events because of WebKit bug
         // https://bugs.webkit.org/show_bug.cgi?id=218086
-//        this.#iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-downloads')
+        //        this.#iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-downloads')
         //this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts') // Breaks font-src data: blobs...
         this.#iframe.setAttribute('scrolling', 'no')
     }
@@ -346,7 +346,7 @@ class View {
         }
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
-        
+
         if (this.#vertical) {
             this.document.body?.classList.add('reader-vertical-writing')
         }
@@ -964,7 +964,7 @@ export class Paginator extends HTMLElement {
             threshold: [0],
         });
 
-//        const selector = '#reader-content > *, manabi-tracking-section';
+        //        const selector = '#reader-content > *, manabi-tracking-section';
         const selector = 'manabi-sentence';
 
         this.#elementMutationObserver = new MutationObserver(mutations => {
@@ -1002,25 +1002,13 @@ export class Paginator extends HTMLElement {
         const container = this.#view.document.getElementById('reader-content');
         if (!container) return false;
         const mediaTags = ['img', 'image', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
-        let mediaElement = null;
-
-        for (const node of container.childNodes) {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-                const tag = node.tagName?.toLowerCase();
-                const isMedia = mediaTags.includes(tag);
-
-                if (isMedia) {
-                    if (mediaElement) return false; // more than one media element
-                    mediaElement = node;
-                } else {
-                    if (node.textContent.trim() !== '') return false;
-                }
-            } else if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== '') {
-                return false;
-            }
-        }
-
-        return !!mediaElement;
+        const selector = mediaTags.join(',');
+        const mediaElements = container.querySelectorAll(selector);
+        // Must have exactly one media element anywhere
+        if (mediaElements.length !== 1) return false;
+        // Must have no non-whitespace text nodes
+        if (container.textContent.trim() !== '') return false;
+        return true;
     }
     async #beforeRender({
         vertical,
@@ -1872,6 +1860,14 @@ export class Paginator extends HTMLElement {
                         remainingText = textNode.nodeValue || "";
                     }
                     charCount += remainingText.length - offsetInNode;
+                }
+
+                // Ensure at least one sentinel even if no splits occurred
+                if (idx === 0) {
+                    const sentinel = doc.createElement("reader-sentinel");
+                    sentinel.id = `reader-sentinel-0`;
+                    body.insertBefore(sentinel, body.firstChild);
+                    idx++;
                 }
 
                 resolve();
