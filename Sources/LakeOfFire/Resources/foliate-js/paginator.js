@@ -1088,9 +1088,12 @@ export class Paginator extends HTMLElement {
         }
 
         let divisor, columnWidth
-        if (this.#isSingleMediaElementWithoutText()) {
+        const isSingleMediaElementWithoutText = this.#isSingleMediaElementWithoutText()
+        if (isSingleMediaElementWithoutText) {
             columnWidth = maxInlineSize
+            this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
+            this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
             // retro way:
             divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
             //                        divisor = Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize))

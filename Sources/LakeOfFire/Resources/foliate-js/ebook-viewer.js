@@ -311,9 +311,10 @@ const getCSSForBookContent = ({
     body *:not(.manabi-tracking-container *):not(manabi-segment *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
+    }
+    body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(manabi-segment *) {
         max-height: 99vh;
     }
-
 /*
 reader-sentinel {
   position: relative;
