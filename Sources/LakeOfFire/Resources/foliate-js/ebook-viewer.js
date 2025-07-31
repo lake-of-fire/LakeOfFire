@@ -812,6 +812,20 @@ class Reader {
             }
         }
     }
+    #flashChevron(left) {
+        this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+            detail: {
+                leftOpacity: left ? '1' : '',
+                rightOpacity: left ? '' : '1'
+            }
+        }))
+        this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+            detail: {
+                leftOpacity: left ? '0' : '',
+                rightOpacity: left ? '' : '0'
+            }
+        }))
+    }
     async #handleKeydown(event) {
         const k = event.key;
         const renderer = this.view.renderer;
@@ -824,6 +838,7 @@ class Reader {
                 this.buttons.prev.click();
             } else {
                 await this.view.goLeft();
+                this.#flashChevron(true);
             }
         } else if (k === 'ArrowRight' || k === 'l') {
             if (isRTL && await renderer.atStart()) {
@@ -832,6 +847,7 @@ class Reader {
                 this.buttons.next.click();
             } else {
                 await this.view.goRight();
+                this.#flashChevron(false);
             }
         }
     }
@@ -1068,7 +1084,7 @@ class CacheWarmer {
 
 window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
-//    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+    //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
 }
 
 window.setEbookViewerWritingDirection = (layoutMode) => {
