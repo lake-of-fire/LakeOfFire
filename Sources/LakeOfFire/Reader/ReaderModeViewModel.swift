@@ -262,8 +262,13 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                     readerModeLoading(false)
-                } else {
-                    navigator?.loadHTML(transformedContent, baseURL: url)
+                } else if let htmlData = transformedContent.data(using: .utf8) {
+                    navigator?.load(
+                        htmlData,
+                        mimeType: "text/html",
+                        characterEncodingName: "UTF-8",
+                        baseURL: url
+                    )
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
@@ -326,14 +331,21 @@ public class ReaderModeViewModel: ObservableObject {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
                     } else {
-                        html = "<body data-is-next-load-in-reader-mode='true'>\n\(html)\n</html>"
+                        html = "<body data-is-next-load-in-reader-mode='true'>\n" + html + "</html>"
                     }
                     try Task.checkCancellation()
                     // TODO: Fix content rules... images still load...
 //                    contentRules = contentRulesForReadabilityLoading
 
-                    Task { @MainActor in
-                        navigator?.loadHTML(html, baseURL: committedURL)
+                    if let htmlData = html.data(using: .utf8) {
+                        Task { @MainActor in
+                            navigator?.load(
+                                htmlData,
+                                mimeType: "text/html",
+                                characterEncodingName: "UTF-8",
+                                baseURL: committedURL
+                            )
+                        }
                     }
 //                    readerModeLoading(false)
                 } else {
