@@ -243,15 +243,6 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.readerFileManager = readerFileManager
         }
     }
-    
-    private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
-#if os(iOS)
-        let insets = EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
-        return insets
-#else
-        EdgeInsets()
-#endif
-    }
 }
 
 fileprivate struct ReaderWebViewInternal: View {
@@ -275,7 +266,12 @@ fileprivate struct ReaderWebViewInternal: View {
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
-        let insets = EdgeInsets(top: (obscuredInsets?.top ?? 0) + additionalInsets.top, leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading, bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom, trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
+        let insets = EdgeInsets(
+            top: (obscuredInsets?.top ?? 0) + additionalInsets.top,
+            leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading,
+            bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom,
+            trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing
+        )
         return insets
 #else
         EdgeInsets()
