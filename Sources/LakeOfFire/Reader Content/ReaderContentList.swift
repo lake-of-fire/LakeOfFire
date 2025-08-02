@@ -356,9 +356,9 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
                     listItems
                         .listRowSeparatorIfAvailable(.hidden)
                 }
-#if os(iOS)
-                .environment(\.editMode, .constant(.active))
-#endif
+//#if os(iOS)
+//                .environment(\.editMode, .constant(.active))
+//#endif
             } else {
                 List(selection: $entrySelection) {
                     listItems
@@ -378,13 +378,13 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
         }
 #if os(iOS) || os(macOS)
         .toolbar {
-#if os(iOS)
-            ToolbarItem(placement: .navigationBarTrailing) {
-                if allowEditing {
-                    EditButton()
-                }
-            }
-#endif
+//#if os(iOS)
+//            ToolbarItem(placement: .navigationBarTrailing) {
+//                if allowEditing {
+//                    EditButton()
+//                }
+//            }
+//#endif
             ToolbarItem(placement: .primaryAction) {
                 if allowEditing, !multiSelection.isEmpty, let onDelete = onDelete {
                     Button(role: .destructive) {
