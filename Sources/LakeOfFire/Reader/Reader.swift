@@ -231,11 +231,16 @@ public struct Reader: View {
         .background {
             GeometryReader { geometry in
                 Color.clear
-                    .task {
+                    .task { @MainActor in
                         obscuredInsets = geometry.safeAreaInsets
                     }
                     .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
-                        obscuredInsets = safeAreaInsets
+                        obscuredInsets = EdgeInsets(
+                            top: max(0, safeAreaInsets.top),
+                            leading: max(0, safeAreaInsets.leading),
+                            bottom: max(0, safeAreaInsets.bottom),
+                            trailing: max(0, safeAreaInsets.trailing)
+                        )
                     }
             }
         }

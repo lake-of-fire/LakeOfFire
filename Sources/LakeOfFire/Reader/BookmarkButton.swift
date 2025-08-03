@@ -100,8 +100,6 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
 }
 
 public struct BookmarkButton<C: ReaderContentProtocol>: View {
-    var width: CGFloat? = nil
-    var height: CGFloat? = nil
     let iconOnly: Bool
     var readerContent: C
     var hiddenIfUnbookmarked = false
@@ -124,7 +122,6 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
             //                .padding(.horizontal, 4)
             //                .padding(.vertical, 2)
                 .background(.secondary.opacity(0.000000001)) // clickability
-                .frame(width: width, height: height)
         }
         //        .buttonStyle(.borderless)
         //        .buttonStyle(.plain)
@@ -147,9 +144,7 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
         }
     }
     
-    public init(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool, readerContent: C, hiddenIfUnbookmarked: Bool = false) {
-        self.width = width
-        self.height = height
+    public init(iconOnly: Bool, readerContent: C, hiddenIfUnbookmarked: Bool = false) {
         self.iconOnly = iconOnly
         self.readerContent = readerContent
         self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
@@ -157,28 +152,24 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
 }
 
 public extension ReaderContentProtocol {
-    @ViewBuilder func bookmarkButtonView(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool) -> some View {
-        BookmarkButton(width: width, height: height, iconOnly: iconOnly, readerContent: self)
+    @ViewBuilder func bookmarkButtonView(iconOnly: Bool) -> some View {
+        BookmarkButton(iconOnly: iconOnly, readerContent: self)
+            .buttonStyle(.clearBordered)
     }
 }
 
 public struct CurrentWebViewBookmarkButton: View {
-    var width: CGFloat? = nil
-    var height: CGFloat? = nil
-    
     let iconOnly: Bool
     @EnvironmentObject private var readerContent: ReaderContent
     
     public var body: some View {
         if let content = readerContent.content {
-            AnyView(content.bookmarkButtonView(width: width, height: height, iconOnly: iconOnly))
+            AnyView(content.bookmarkButtonView(iconOnly: iconOnly))
                 .disabled(readerContent.isReaderProvisionallyNavigating || readerContent.pageURL.isNativeReaderView)
         }
     }
     
-    public init(width: CGFloat? = nil, height: CGFloat? = nil, iconOnly: Bool) {
-        self.width = width
-        self.height = height
+    public init(iconOnly: Bool) {
         self.iconOnly = iconOnly
     }
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 import RealmSwift
 import RealmSwiftGaps
+import LakeKit
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
@@ -192,8 +193,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     Spacer(minLength: 0)
                             
                     HStack(alignment: .center, spacing: 0) {
-                        BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
-                            .buttonStyle(.borderless)
+                        BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                            .buttonStyle(.clearBordered)
                             .padding(.leading, 2)
                         
                         if let item = item as? (any DeletableReaderContent) {
