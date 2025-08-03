@@ -11,6 +11,7 @@ import RealmSwift
 import SwiftUIWebView
 import RealmSwiftGaps
 import Combine
+import SwiftUtilities
 
 let bookmarksQueue = DispatchQueue(label: "BookmarksQueue")
 

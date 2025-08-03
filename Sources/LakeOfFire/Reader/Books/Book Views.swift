@@ -3,6 +3,7 @@ import SwiftUtilities
 import SwiftUIDownloads
 import LakeImage
 import Pow
+import SwiftUtilities
 
 struct BookThumbnail: View { //, Equatable {
     let imageURL: URL
