@@ -89,6 +89,8 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources/foliate-js/"), // CodeSign errors with "process"...
+                .copy("Resources/CSS/"),
+                .copy("Resources/User Scripts/"),
             ]),
 //        .testTarget(
 //            name: "LakeOfFireTests",

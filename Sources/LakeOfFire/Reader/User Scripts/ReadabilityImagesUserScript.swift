@@ -16,7 +16,7 @@ public struct ReadabilityImagesUserScript {
         var readabilityImagesJS: String
         
         do {
-            readabilityImagesJS = try loadFile(name: "readability_images", type: "js")
+            readabilityImagesJS = try loadModuleFile(name: "readability_images", type: "js", subdirectory: "User Scripts", in: Bundle.module)
         } catch {
             fatalError("Couldn't load Readability scripts. \(error)")
         }

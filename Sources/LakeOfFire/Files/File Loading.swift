@@ -12,10 +12,14 @@ public func loadFile(name: String, type: String) throws -> String {
     return try String(contentsOfFile: filePath)
 }
 
-public func loadModuleFile(name: String, extension fileExtension: String, subdirectory: String?) throws -> String {
-    guard let fileURL = Bundle.module.url(forResource: name, withExtension: fileExtension, subdirectory: subdirectory) else {
+public func loadModuleFile(
+    name: String,
+    type fileExtension: String,
+    subdirectory: String? = nil,
+    in bundle: Bundle
+) throws -> String {
+    guard let fileURL = bundle.url(forResource: name, withExtension: fileExtension, subdirectory: subdirectory) else {
         throw FileLoadingError.InvalidPath
     }
-    
     return try String(contentsOf: fileURL)
 }
