@@ -190,6 +190,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     public var isFromClipboard = false
     
+    public var locationBarTitle: String {
+        return url.normalizedHost() ?? url.absoluteString
+    }
+    
     public var isReaderModeAvailable: Bool {
         get { return isReaderModeByDefault }
         set { }

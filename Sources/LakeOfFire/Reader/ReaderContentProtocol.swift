@@ -62,7 +62,8 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var isDeleted: Bool { get set }
     
     var displayAbsolutePublicationDate: Bool { get }
-    
+    var locationBarTitle: String { get }
+
     func imageURLToDisplay() async throws -> URL?
     @RealmBackgroundActor
     func configureBookmark(_ bookmark: Bookmark)

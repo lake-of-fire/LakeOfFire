@@ -1,14 +1,22 @@
 import SwiftUI
+import Combine
 
 @MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
     @Published public var pageURL = URL(string: "about:blank")!
+    @Published public var locationBarTitle = ""
     @Published public var isReaderProvisionallyNavigating = false
-    
+    private var cancellables = Set<AnyCancellable>()
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
-
+    
     public init() {
+        $content
+            .sink { [weak self] newContent in
+                guard let self else { return }
+                self.locationBarTitle = newContent?.locationBarTitle ?? pageURL.normalizedHost() ?? pageURL.absoluteString
+            }
+            .store(in: &cancellables)
     }
     
     @MainActor

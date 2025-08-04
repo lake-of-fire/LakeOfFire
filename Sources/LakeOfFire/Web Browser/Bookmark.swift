@@ -44,6 +44,26 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
+    public var locationBarTitle: String {
+        let url = url
+        if url.isSnippetURL {
+            return "Snippet (\(createdAt.formatted())"
+        } else if url.isEBookURL {
+            return title
+        } else if url.isReaderFileURL {
+            return url.lastPathComponent
+        } else if url.isReaderURLLoaderURL {
+            if let loadURLHost = ReaderContentLoader.getContentURL(fromLoaderURL: url)?.normalizedHost() {
+                return loadURLHost
+            }
+        } else if url.absoluteString == "about:blank" {
+            return "Home"
+        } else if url.scheme == "http" || url.scheme == "https" {
+            return url.normalizedHost() ?? url.absoluteString
+        }
+        return url.normalizedHost() ?? url.absoluteString
+    }
+    
     public var displayAbsolutePublicationDate: Bool {
         return isPhysicalMedia
     }
