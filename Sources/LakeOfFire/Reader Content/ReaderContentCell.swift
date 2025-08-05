@@ -193,7 +193,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     Spacer(minLength: 0)
                             
                     HStack(alignment: .center, spacing: 0) {
-                        BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                        BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                            .labelStyle(.iconOnly)
                             .buttonStyle(.clearBordered)
                             .padding(.leading, 2)
                         

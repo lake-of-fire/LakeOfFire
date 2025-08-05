@@ -5,7 +5,7 @@ import Combine
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
     @Published public var pageURL = URL(string: "about:blank")!
-    @Published public var locationBarTitle = ""
+    @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
     private var cancellables = Set<AnyCancellable>()
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
@@ -14,7 +14,8 @@ public class ReaderContent: ObservableObject {
         $content
             .sink { [weak self] newContent in
                 guard let self else { return }
-                self.locationBarTitle = newContent?.locationBarTitle ?? pageURL.normalizedHost() ?? pageURL.absoluteString
+                debugPrint("# new content", newContent?.url)
+                self.locationBarTitle = newContent?.locationBarTitle
             }
             .store(in: &cancellables)
     }

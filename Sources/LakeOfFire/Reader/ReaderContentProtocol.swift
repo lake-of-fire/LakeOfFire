@@ -62,7 +62,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var isDeleted: Bool { get set }
     
     var displayAbsolutePublicationDate: Bool { get }
-    var locationBarTitle: String { get }
+    var locationBarTitle: String? { get }
 
     func imageURLToDisplay() async throws -> URL?
     @RealmBackgroundActor
@@ -72,6 +72,13 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 public extension ReaderContentProtocol {
     var keyPrefix: String? {
         return nil
+    }
+    
+    var canBookmark: Bool {
+        guard !url.isNativeReaderView else {
+            return false
+        }
+        return url.absoluteString != "about:blank"
     }
     
     @MainActor

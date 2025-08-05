@@ -15,7 +15,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var publicationDate: Date?
     @Persisted public var isFromClipboard = false
     @Persisted public var isPhysicalMedia = false
-
+    
     // Caches
     /// Deprecated, use `content` via `html`.
     @Persisted public var htmlContent: String?
@@ -44,7 +44,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
-    public var locationBarTitle: String {
+    public var locationBarTitle: String? {
         let url = url
         if url.isSnippetURL {
             return "Snippet (\(createdAt.formatted())"
@@ -57,8 +57,12 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
                 return loadURLHost
             }
         } else if url.absoluteString == "about:blank" {
-            return "Home"
+            return nil
         } else if url.scheme == "http" || url.scheme == "https" {
+            if let googleQuery = url.googleSearchQuery {
+                return googleQuery
+            }
+            // Otherwise, fall back to host or full URL
             return url.normalizedHost() ?? url.absoluteString
         }
         return url.normalizedHost() ?? url.absoluteString
@@ -67,7 +71,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     public var displayAbsolutePublicationDate: Bool {
         return isPhysicalMedia
     }
-
+    
     public func imageURLToDisplay() -> URL? {
         return imageUrl
     }
@@ -78,8 +82,8 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
         let url = url
         let targetBookmarkID = bookmark.compoundKey
         Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration) 
-//            await realm.asyncRefresh()
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
+            //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 let deletedBookmarkIDs = Set(realm.objects(Bookmark.self).where { $0.isDeleted }.map { $0.compoundKey })
                 for historyRecord in realm.objects(HistoryRecord.self).where({ ($0.bookmarkID == nil || $0.bookmarkID.in(deletedBookmarkIDs)) && !$0.isDeleted }).filter(NSPredicate(format: "url == %@", url.absoluteString)) {
@@ -129,7 +133,7 @@ public extension Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let pk = Bookmark.makePrimaryKey(url: url, html: html)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
-//            await realm.asyncRefresh()
+            //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 bookmark.title = title
                 bookmark.imageUrl = imageUrl
@@ -172,7 +176,7 @@ public extension Bookmark {
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
             bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
-//            await realm.asyncRefresh()
+            //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)
             }
@@ -180,19 +184,19 @@ public extension Bookmark {
         }
     }
     
-//    func fetchRecords() -> [HistoryRecord] {
-//        var limitedRecords: [HistoryRecord] = []
-//        let records = realm.objects(HistoryRecord.self).filter("isDeleted == false").sorted(byKeyPath: "lastVisitedAt", ascending: false)
-//        for idx in 0..<100 {
-//            limitedRecords.append(records[idx])
-//        }
-//        return limitedRecords
-//    }
+    //    func fetchRecords() -> [HistoryRecord] {
+    //        var limitedRecords: [HistoryRecord] = []
+    //        let records = realm.objects(HistoryRecord.self).filter("isDeleted == false").sorted(byKeyPath: "lastVisitedAt", ascending: false)
+    //        for idx in 0..<100 {
+    //            limitedRecords.append(records[idx])
+    //        }
+    //        return limitedRecords
+    //    }
     
     @RealmBackgroundActor
     static func removeAll(realmConfiguration: Realm.Configuration) async throws {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration) 
-//        await realm.asyncRefresh()
+        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        //        await realm.asyncRefresh()
         try await realm.asyncWrite {
             realm.objects(self).setValue(true, forKey: "isDeleted")
             realm.objects(self).setValue(Date(), forKey: "modifiedAt")

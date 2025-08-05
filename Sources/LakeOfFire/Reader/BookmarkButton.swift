@@ -101,7 +101,6 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
 }
 
 public struct BookmarkButton<C: ReaderContentProtocol>: View {
-    let iconOnly: Bool
     var readerContent: C
     var hiddenIfUnbookmarked = false
     
@@ -126,11 +125,6 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
         }
         //        .buttonStyle(.borderless)
         //        .buttonStyle(.plain)
-        .modifier {
-            if iconOnly {
-                $0.labelStyle(.iconOnly)
-            } else { $0 }
-        }
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
         //        .fixedSize()
@@ -145,32 +139,28 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
         }
     }
     
-    public init(iconOnly: Bool, readerContent: C, hiddenIfUnbookmarked: Bool = false) {
-        self.iconOnly = iconOnly
+    public init(readerContent: C, hiddenIfUnbookmarked: Bool = false) {
         self.readerContent = readerContent
         self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
     }
 }
 
 public extension ReaderContentProtocol {
-    @ViewBuilder func bookmarkButtonView(iconOnly: Bool) -> some View {
-        BookmarkButton(iconOnly: iconOnly, readerContent: self)
+    @ViewBuilder func bookmarkButtonView() -> some View {
+        BookmarkButton(readerContent: self)
             .buttonStyle(.clearBordered)
     }
 }
 
 public struct CurrentWebViewBookmarkButton: View {
-    let iconOnly: Bool
     @EnvironmentObject private var readerContent: ReaderContent
     
     public var body: some View {
         if let content = readerContent.content {
-            AnyView(content.bookmarkButtonView(iconOnly: iconOnly))
+            AnyView(content.bookmarkButtonView())
                 .disabled(readerContent.isReaderProvisionallyNavigating || readerContent.pageURL.isNativeReaderView)
         }
     }
     
-    public init(iconOnly: Bool) {
-        self.iconOnly = iconOnly
-    }
+    public init() { }
 }

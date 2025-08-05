@@ -190,7 +190,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     public var isFromClipboard = false
     
-    public var locationBarTitle: String {
+    public var locationBarTitle: String? {
         return url.normalizedHost() ?? url.absoluteString
     }
     
