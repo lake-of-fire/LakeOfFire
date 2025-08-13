@@ -476,7 +476,11 @@ struct LibraryFeedFormSections: View {
             if let readerFeedEntry = readerFeedEntry {
                 ReaderContentCell(
                     item: readerFeedEntry,
-                    maxCellHeight: maxContentCellHeight
+                    appearance: .init(
+                        maxCellHeight: maxContentCellHeight,
+                        alwaysShowThumbnails: false,
+                        includeSource: false
+                    )
                 )
             } else {
                 Text("Enter valid RSS or Atom URL above.")

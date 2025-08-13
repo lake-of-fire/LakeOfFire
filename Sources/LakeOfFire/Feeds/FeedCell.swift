@@ -1,6 +1,5 @@
 import SwiftUI
 import RealmSwift
-import LakeImage
 
 public struct FeedCell: View {
     @ObservedRealmObject var feed: Feed
@@ -14,12 +13,14 @@ public struct FeedCell: View {
             Spacer(minLength: 0)
             VStack(alignment: .leading) {
                 HStack(spacing: horizontalSpacing) {
-                    LakeImage(feed.iconUrl)
-                        .saturation(feed.isArchived ? 0 : 1)
-                        .opacity(feed.isArchived ? 0.8 : 1)
-                        .cornerRadius(scaledIconHeight / 5, antialiased: true)
-                        .frame(width: scaledIconHeight, height: scaledIconHeight)
-                        .padding(4)
+                    ReaderContentSourceIconImage(
+                        sourceIconURL: feed.iconUrl,
+                        iconSize: scaledIconHeight
+                    )
+                    .saturation(feed.isArchived ? 0 : 1)
+                    .opacity(feed.isArchived ? 0.8 : 1)
+                    .padding(4)
+                    
                     Group {
                         if feed.title.isEmpty {
                             Text("Untitled Feed")

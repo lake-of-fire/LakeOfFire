@@ -1,6 +1,7 @@
 import SwiftUI
 import RealmSwift
 import RealmSwiftGaps
+import LakeOfFire
 import LakeKit
 
 @globalActor
@@ -16,29 +17,64 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var title = ""
     @Published var humanReadablePublicationDate: String?
     @Published var imageURL: URL?
+    @Published var sourceIconURL: URL?
+    @Published var sourceTitle: String?
 
     init() { }
     
     @MainActor
-    func load(item: C) async throws {
+    func load(
+        item: C,
+        includeSource: Bool
+    ) async throws {
+        debugPrint("# loading", item.url.lastPathComponent)
+        
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let imageURL = try await item.imageURLToDisplay()
-        try await { @ReaderContentCellActor in
-            let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
+        try await { @ReaderContentCellActor [weak self] in
+            guard let self else { return }
+            let realm = try await Realm.open(configuration: config)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
                 try Task.checkCancellation()
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
-                try await { @MainActor [weak self] in
+                try Task.checkCancellation()
+
+                let sourceURL = item.url
+                var sourceTitle = sourceURL.host
+                // TODO: Store and get site names from OpenGraph
+                var sourceIconURL: URL?
+                
+                if includeSource, sourceURL.isHTTP {
+                    let readerRealm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
                     try Task.checkCancellation()
-                    self?.title = title
-                    self?.imageURL = imageURL
-                    self?.humanReadablePublicationDate = humanReadablePublicationDate
+                    
+                    if let feedEntry = item as? FeedEntry ?? readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
+                        try Task.checkCancellation()
+                        sourceTitle = feed.title
+                        sourceIconURL = feed.iconUrl
+                    } else if let host = sourceURL.host {
+                        sourceTitle = host.removingPrefix("www.")
+                        sourceIconURL = item.sourceIconURL
+                    }
+                }
+                
+                let sourceIconURLChoice = sourceIconURL
+                let sourceTitleChoice = sourceTitle
+                
+                try await { @MainActor [weak self] in
+                    guard let self else { return }
+                    try Task.checkCancellation()
+                    self.title = title
+                    self.imageURL = imageURL
+                    self.humanReadablePublicationDate = humanReadablePublicationDate
+                    self.sourceIconURL = sourceIconURLChoice
+                    self.sourceTitle = sourceTitleChoice
                     if let (progress, finished) = progressResult {
-                        self?.readingProgress = progress
-                        self?.isFullArticleFinished = finished
+                        self.readingProgress = progress
+                        self.isFullArticleFinished = finished
                     }
                 }()
             }
@@ -46,18 +82,48 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     }
 }
 
-extension ReaderContentProtocol {
-    @ViewBuilder func readerContentCellView(
+public struct ReaderContentCellAppearance {
+    public var maxCellHeight: CGFloat
+    public var alwaysShowThumbnails: Bool
+    public var isEbookStyle: Bool
+    public var includeSource: Bool
+    public init(
         maxCellHeight: CGFloat,
         alwaysShowThumbnails: Bool = true,
-        isEbookStyle: Bool = false
+        isEbookStyle: Bool = false,
+        includeSource: Bool = false
+    ) {
+        self.maxCellHeight = maxCellHeight
+        self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.isEbookStyle = isEbookStyle
+        self.includeSource = includeSource
+    }
+}
+
+extension ReaderContentProtocol {
+    @ViewBuilder func readerContentCellView(
+        appearance: ReaderContentCellAppearance
     ) -> some View {
         ReaderContentCell(
             item: self,
+            appearance: appearance
+        )
+    }
+    
+    // Back-compat convenience
+    @ViewBuilder func readerContentCellView(
+        maxCellHeight: CGFloat,
+        alwaysShowThumbnails: Bool = true,
+        isEbookStyle: Bool = false,
+        includeSource: Bool = false
+    ) -> some View {
+        let appearance = ReaderContentCellAppearance(
             maxCellHeight: maxCellHeight,
             alwaysShowThumbnails: alwaysShowThumbnails,
-            isEbookStyle: isEbookStyle
+            isEbookStyle: isEbookStyle,
+            includeSource: includeSource
         )
+        readerContentCellView(appearance: appearance)
     }
 }
 
@@ -116,22 +182,22 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
 
 struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
-    let maxCellHeight: CGFloat
-    var alwaysShowThumbnails = true
-    var isEbookStyle = false
+    var appearance: ReaderContentCellAppearance
     
     static var buttonSize: CGFloat {
         return 26
     }
     
-    var scaledImageWidth: CGFloat {
-        return maxCellHeight
-    }
+    var scaledImageWidth: CGFloat { appearance.maxCellHeight }
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
+    @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
+    @ScaledMetric private var progressViewPaddingBottom: CGFloat = 32 / 2
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-
+    
+    private let padding: CGFloat = 8
+    
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
     }
@@ -145,31 +211,56 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            if let imageUrl = viewModel.imageURL {
-                if isEbookStyle {
-                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: maxCellHeight)
-//                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                } else {
-                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: maxCellHeight, maxHeight: maxCellHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
-                }
-            }
+            //            if let imageUrl = viewModel.imageURL {
+            //                if appearance.isEbookStyle {
+            //                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: appearance.maxCellHeight)
+            ////                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
+            //                } else {
+            //                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: appearance.maxCellHeight, maxHeight: appearance.maxCellHeight)
+            //                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
+            //                }
+            //            }
             VStack(alignment: .leading, spacing: 0) {
-                Text(viewModel.title)
-                    .font(.headline)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
+                VStack(alignment: .leading, spacing: 0) {
+                    if appearance.includeSource {
+                        HStack(alignment: .center) {
+                            if let sourceIconURL = viewModel.sourceIconURL {
+                                ReaderContentSourceIconImage(
+                                    sourceIconURL: sourceIconURL,
+                                    iconSize: sourceIconSize
+                                )
+                                .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
+                            }
+                            if let sourceTitle = viewModel.sourceTitle {
+                                Text(sourceTitle)
+                                    .lineLimit(1)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.leading, 1)
+                        .padding(.bottom, 3)
+                    }
+                    
+                    Text(viewModel.title)
+                        .font(.headline)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+                .padding(.trailing, padding)
+
                 Spacer(minLength: 0)
+                
                 HStack(alignment: .bottom, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             if let publicationDate = viewModel.humanReadablePublicationDate {
                                 Text("\(publicationDate)")
-                                    .lineLimit(9001)
+                                    .lineLimit(1)
                                     .font(.footnote)
-                                    .fixedSize(horizontal: true, vertical: false)
                             }
                             if let item = item as? ContentFile {
                                 CloudDriveSyncStatusView(item: item)
@@ -178,26 +269,25 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             }
                         }
                         .foregroundStyle(.secondary)
-
+                        
                         if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-                                ProgressView(value: min(1, readingProgressFloat))
-                                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
-                            }
+                            ProgressView(value: min(1, readingProgressFloat))
+                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                        }
                     }
 #if os(macOS)
-                    .padding(.bottom, isProgressVisible ? buttonSize / 2 - 10 : buttonSize / 2 - 5)
+                    .padding(.bottom, progressViewPaddingBottom - (isProgressVisible ? 10 : 5))
 #elseif os(iOS)
-                    .padding(.bottom, isProgressVisible ? buttonSize / 2 - 3 : buttonSize / 2 - 7)
+                    .padding(.bottom, progressViewPaddingBottom - (isProgressVisible ? 3 : 7))
 #endif
-
+                    
                     Spacer(minLength: 0)
-                            
+                    
                     HStack(alignment: .center, spacing: 0) {
                         BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
                             .labelStyle(.iconOnly)
-                            .buttonStyle(.clearBordered)
                             .padding(.leading, 2)
-                        
+
                         if let item = item as? (any DeletableReaderContent) {
                             Menu {
                                 if let item = item as? ContentFile {
@@ -214,23 +304,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 }
                             } label: {
                                 Label("More Options", systemImage: "ellipsis")
-                                //                                .foregroundStyle(.secondary)
-                                //                                .foregroundStyle(.blue)
-                                    .background(.white.opacity(0.0000000001))
-                                //                                .overlay(.white.opacity(0.0000000001))
-                                    .frame(width: buttonSize, height: buttonSize)
-                                //                                .background(.green)
-                                //                            #if os(macOS)
-                                //                                .padding(.horizontal, 4)
-                                //                                .padding(.vertical, 10)
-                                //                            #else
-                                //#endif
                                     .labelStyle(.iconOnly)
                             }
-                            .foregroundStyle(.secondary)
-                            //                        .frame(width: buttonSize, height: buttonSize)
+                            .modifier {
+                                if #available(iOS 16, macOS 13, *) {
+                                    $0.menuStyle(.button)
+                                } else { $0 }
+                            }
                             .menuIndicator(.hidden)
-                            .buttonStyle(.borderless)
                             //                        .buttonStyle(.borderless)
                             //                        .buttonStyle(.plain)
                             //#if os(macOS)
@@ -239,18 +320,29 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             //#endif
                         }
                     }
+                    .buttonStyle(.clearBordered)
+                    .foregroundStyle(.secondary)
+                    .controlSize(.mini)
+                    .padding(.trailing, padding / 2)
                 }
-                .padding(.trailing, 5)
             }
-            .frame(maxHeight: maxCellHeight)
+            .padding(.leading, padding)
+            .padding(.top, padding)
+            .frame(maxHeight: appearance.maxCellHeight)
         }
-        .frame(minWidth: maxCellHeight, idealHeight: alwaysShowThumbnails ? maxCellHeight : (viewModel.imageURL == nil ? nil : maxCellHeight))
+        .frame(
+            minWidth: appearance.maxCellHeight,
+            idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : (viewModel.imageURL == nil ? nil : appearance.maxCellHeight)
+        )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }
         .onAppear {
             Task { @MainActor in
-                try? await viewModel.load(item: item)
+                try? await viewModel.load(
+                    item: item,
+                    includeSource: appearance.includeSource
+                )
             }
         }
         .onChange(of: item.imageUrl) { newImageURL in

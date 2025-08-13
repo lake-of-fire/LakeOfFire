@@ -125,6 +125,10 @@ public struct ReaderContentLoader {
                 historyRecord.url = url
                 historyRecord.isDemoted = true
                 historyRecord.updateCompoundKey()
+                let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+                try await historyRealm.asyncWrite {
+                    historyRealm.add(historyRecord, update: .modified)
+                }
                 return ReaderContentLoader.ContentReference(content: historyRecord)
             }
             

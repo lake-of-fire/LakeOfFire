@@ -64,12 +64,15 @@ public struct FeedView: View {
                     if isHorizontal {
                         ReaderContentHorizontalList(
                             contents: entries,
-                            sortOrder: .publicationDate)
+                            sortOrder: .publicationDate,
+                            includeSource: false
+                        )
                     } else {
                         ReaderContentList(
                             contents: entries,
                             entrySelection: $feedEntrySelection,
-                            sortOrder: .publicationDate)
+                            sortOrder: .publicationDate
+                        )
                     }
                 }
             }

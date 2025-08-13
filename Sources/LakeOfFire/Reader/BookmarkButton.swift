@@ -119,15 +119,9 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
             }
         } label: {
             Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark")
-            //                .padding(.horizontal, 4)
-            //                .padding(.vertical, 2)
-                .background(.secondary.opacity(0.000000001)) // clickability
         }
-        //        .buttonStyle(.borderless)
-        //        .buttonStyle(.plain)
         .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
         .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
-        //        .fixedSize()
         .onChange(of: readerContent) { readerContent in
             Task { @MainActor in
                 viewModel.forceShowBookmark = false

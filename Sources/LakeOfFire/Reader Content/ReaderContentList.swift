@@ -179,13 +179,16 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
-    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 100
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140
     
     @ViewBuilder private func unstyledCell(item: C) -> some View {
         item.readerContentCellView(
-            maxCellHeight: maxCellHeight,
-            alwaysShowThumbnails: alwaysShowThumbnails,
-            isEbookStyle: item.isPhysicalMedia
+            appearance: ReaderContentCellAppearance(
+                maxCellHeight: maxCellHeight,
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                isEbookStyle: item.isPhysicalMedia,
+                includeSource: true
+            )
         )
     }
     
@@ -197,10 +200,9 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     unstyledCell(item: item)
                 } else {
                     unstyledCell(item: item)
-                        .padding(8)
-                        .background(.ultraThinMaterial)
-                        .background(.secondary.opacity(0.09))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+//                        .background(.ultraThinMaterial)
+//                        .background(.secondary.opacity(0.09))
+//                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
             Spacer(minLength: 0)
@@ -356,9 +358,9 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
                     listItems
                         .listRowSeparatorIfAvailable(.hidden)
                 }
-//#if os(iOS)
-//                .environment(\.editMode, .constant(.active))
-//#endif
+                //#if os(iOS)
+                //                .environment(\.editMode, .constant(.active))
+                //#endif
             } else {
                 List(selection: $entrySelection) {
                     listItems
@@ -378,13 +380,13 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
         }
 #if os(iOS) || os(macOS)
         .toolbar {
-//#if os(iOS)
-//            ToolbarItem(placement: .navigationBarTrailing) {
-//                if allowEditing {
-//                    EditButton()
-//                }
-//            }
-//#endif
+            //#if os(iOS)
+            //            ToolbarItem(placement: .navigationBarTrailing) {
+            //                if allowEditing {
+            //                    EditButton()
+            //                }
+            //            }
+            //#endif
             ToolbarItem(placement: .primaryAction) {
                 if allowEditing, !multiSelection.isEmpty, let onDelete = onDelete {
                     Button(role: .destructive) {
