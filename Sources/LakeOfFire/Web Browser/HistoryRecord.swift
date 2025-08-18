@@ -6,7 +6,7 @@ public class HistoryRecord: Bookmark {
     @Persisted public var lastVisitedAt = Date()
     
     @Persisted public var isDemoted: Bool?
-
+    
     @Persisted public var bookmarkID: String?
     
     public override func configureBookmark(_ bookmark: Bookmark) {
@@ -26,7 +26,7 @@ extension DeletableReaderContent {
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
             guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-//            await content.realm?.asyncRefresh()
+            //            await content.realm?.asyncRefresh()
             try await content.realm?.asyncWrite {
                 //            for videoStatus in realm.objects(VideoS)
                 content.isDeleted = true
@@ -35,15 +35,15 @@ extension DeletableReaderContent {
         }()
     }
     
-//    @MainActor
-//    public func delete() async throws {
-//        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
-//        await realm.asyncRefresh()
-//        try await realm.asyncWrite {
-//            content.isDeleted = true
-//            content.refreshChangeMetadata(explicitlyModified: true)
-//        }
-//    }
+    //    @MainActor
+    //    public func delete() async throws {
+    //        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
+    //        await realm.asyncRefresh()
+    //        try await realm.asyncWrite {
+    //            content.isDeleted = true
+    //            content.refreshChangeMetadata(explicitlyModified: true)
+    //        }
+    //    }
 }
 
 public extension HistoryRecord {
@@ -57,6 +57,9 @@ public extension HistoryRecord {
             return
         }
         let demoted = try await { @RealmBackgroundActor in
+            if isGoogleSearchURL(url) {
+                return true
+            }
             if isReaderModeByDefault || isReaderModeAvailable {
                 return false
             }
@@ -80,6 +83,61 @@ public extension HistoryRecord {
             }
         }
     }
+}
+
+fileprivate func hostIsGoogleRegistrableDomain(_ host: String) -> Bool {
+    let labels = host.lowercased().split(separator: ".").map(String.init)
+    guard labels.count >= 2 else { return false }
+    let last = labels[labels.count - 1]
+    let secondLast = labels[labels.count - 2]
+    
+    // Case 1: *.google.<tld>  (e.g., google.com, www.google.de, news.google.dev)
+    if secondLast == "google" { return true }
+    
+    // Case 2: *.google.<sld>.<cc> (e.g., google.co.uk, www.google.com.au)
+    if labels.count >= 3 {
+        let thirdLast = labels[labels.count - 3]
+        let sld = secondLast
+        let cc = last
+        let allowedSLDs: Set<String> = [
+            "com", // e.g., google.com.au, google.com.br, google.com.mx, google.com.tr
+            "co"   // e.g., google.co.uk, google.co.jp, google.co.kr, google.co.za
+        ]
+        if thirdLast == "google",
+           allowedSLDs.contains(sld),
+           cc.count == 2, cc.allSatisfy({ $0.isLetter }) {
+            return true
+        }
+    }
+    
+    return false
+}
+
+fileprivate func isGoogleSearchURL(_ url: URL) -> Bool {
+    guard let host = url.host?.lowercased() else { return false }
+    // Host must contain a "google" label (e.g., google.com, www.google.co.jp, news.google.de)
+    guard hostIsGoogleRegistrableDomain(host) else { return false }
+    
+    let path = url.path.lowercased()
+    let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    let queryItems = comps?.queryItems ?? []
+    let q = queryItems.first(where: { $0.name == "q" })?.value
+    
+    // Common search entry points:
+    // - /search?q=...
+    // - /webhp?q=... (or with fragment #q=...)
+    // - /url?q=... (redirector) or /url?url=...
+    // - Root with fragment #q=... (older patterns)
+    if path == "/search" || path == "/webhp" || path == "/url" || path.isEmpty || path == "/" {
+        if let q, !q.isEmpty { return true }
+    }
+    
+    // Fallback: query in fragment (#q=...)
+    if let fragment = url.fragment?.lowercased(), fragment.contains("q=") {
+        return true
+    }
+    
+    return false
 }
 
 //public extension HistoryRecord {
