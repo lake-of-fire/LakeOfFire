@@ -32,7 +32,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
     //    @State private var viewWidth: CGFloat = 0
     
-    @ViewBuilder var body: some View {
+    var body: some View {
         Button {
             guard !content.url.matchesReaderURL(readerContent.pageURL) else { return }
             Task { @MainActor in
@@ -92,7 +92,10 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
         }
+        .enableInjection()
     }
+    
+    @ObserveInjection var forceRedraw
 }
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
@@ -126,8 +129,11 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
         //                }
         //            }
         //        }
+        .enableInjection()
     }
     
+    @ObserveInjection var forceRedraw
+
     init(
         filteredContents: [C],
         includeSource: Bool
@@ -176,7 +182,10 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
         }
+        .enableInjection()
     }
+    
+    @ObserveInjection var forceRedraw
     
     public init(
         contents: [C],
