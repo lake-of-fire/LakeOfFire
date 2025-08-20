@@ -267,10 +267,10 @@ fileprivate struct ReaderWebViewInternal: View {
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
         let insets = EdgeInsets(
-            top: (obscuredInsets?.top ?? 0) + additionalInsets.top,
-            leading: (obscuredInsets?.leading ?? 0) + additionalInsets.leading,
-            bottom: (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom,
-            trailing: (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing
+            top: max(0, (obscuredInsets?.top ?? 0) + additionalInsets.top),
+            leading: max(0, (obscuredInsets?.leading ?? 0) + additionalInsets.leading),
+            bottom: max(0, (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom),
+            trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
         return insets
 #else
