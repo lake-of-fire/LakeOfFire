@@ -9,7 +9,7 @@ let package = Package(
     products: [
         .library(
             name: "LakeOfFire",
-            type: .dynamic,
+//            type: .dynamic,
             targets: ["LakeOfFire"]),
     ],
     dependencies: [
@@ -27,7 +27,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
 //        .package(url: "https://github.com/techprimate/TPPDF.git", branch: "main"),
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.5.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.6.1"),
         .package(url: "https://github.com/Tunous/DebouncedOnChange.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-collections.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/opml.git", branch: "master"),
@@ -93,7 +93,13 @@ let package = Package(
                 .copy("Resources/foliate-js/"), // CodeSign errors with "process"...
                 .copy("Resources/CSS/"),
                 .copy("Resources/User Scripts/"),
-            ]),
+            ],
+            linkerSettings: [
+                .unsafeFlags(
+                    ["-Xlinker", "-interposable"],
+                    .when(configuration: .debug))
+            ]
+        ),
 //        .testTarget(
 //            name: "LakeOfFireTests",
 //            dependencies: ["LakeOfFire"]),

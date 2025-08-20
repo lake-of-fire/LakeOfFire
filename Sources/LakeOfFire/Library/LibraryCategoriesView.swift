@@ -331,7 +331,7 @@ struct LibraryCategoriesView: View {
                     importExportView
                 }
                 .labelStyle(.titleOnly)
-                .tint(appTint)
+                .accentColor(appTint)
                 
                 Section("Extensions") {
                     NavigationLink(value: LibraryRoute.userScripts, label: {

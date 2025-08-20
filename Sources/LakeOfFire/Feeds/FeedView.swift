@@ -66,7 +66,9 @@ public struct FeedView: View {
                             contents: entries,
                             sortOrder: .publicationDate,
                             includeSource: false
-                        )
+                        ) {
+                            EmptyView()
+                        }
                     } else {
                         ReaderContentList(
                             contents: entries,

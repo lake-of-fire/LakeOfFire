@@ -99,7 +99,11 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     }
     
     @MainActor
-    public func load(contents: [C], sortOrder: ReaderContentSortOrder? = nil, contentFilter: (@ReaderContentListActor (C) async throws -> Bool)? = nil) async throws {
+    public func load(
+        contents: [C],
+        sortOrder: ReaderContentSortOrder? = nil,
+        contentFilter: (@ReaderContentListActor (Int, C) async throws -> Bool)? = nil
+    ) async throws {
         if sortOrder == nil && contentFilter == nil {
             filteredContentIDs = contents.map { $0.compoundKey }
             filteredContents = contents
@@ -125,9 +129,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             }
             let realm = try await ReaderContentListActor.shared.cachedRealm(for: realmConfig)
             let contents = refs.compactMap { realm.resolve($0) }
-            for content in contents {
+            for (idx, content) in contents.enumerated() {
                 try Task.checkCancellation()
-                if try await contentFilter?(content) ?? true {
+                if try await contentFilter?(idx, content) ?? true {
                     filtered.append(content)
                 }
             }
@@ -320,7 +324,7 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
-    var contentFilter: ((C) async throws -> Bool)? = nil
+    var contentFilter: ((Int, C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
     let allowEditing: Bool
     let onDelete: (([C]) -> Void)?
@@ -401,11 +405,19 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
         }
 #endif
         .task { @MainActor in
-            try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+            try? await viewModel.load(
+                contents: contents,
+                sortOrder: sortOrder,
+                contentFilter: contentFilter
+            )
         }
         .onChange(of: contents) { contents in
             Task { @MainActor in
-                try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+                try? await viewModel.load(
+                    contents: contents,
+                    sortOrder: sortOrder,
+                    contentFilter: contentFilter
+                )
             }
         }
     }
@@ -416,7 +428,7 @@ public struct ReaderContentList<C: ReaderContentProtocol>: View {
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
         sortOrder: ReaderContentSortOrder,
-        contentFilter: ((C) async throws -> Bool)? = nil,
+        contentFilter: ((Int, C) async throws -> Bool)? = nil,
         allowEditing: Bool = false,
         onDelete: (([C]) -> Void)? = nil
     ) {
@@ -532,7 +544,7 @@ public extension ReaderContentProtocol {
         contents: [Self],
         entrySelection: Binding<String?>,
         sortOrder: ReaderContentSortOrder,
-        contentFilter: ((Self) async throws -> Bool)? = nil,
+        contentFilter: ((Int, Self) async throws -> Bool)? = nil,
         allowEditing: Bool = false,
         onDelete: (([Self]) -> Void)? = nil
     ) -> some View {

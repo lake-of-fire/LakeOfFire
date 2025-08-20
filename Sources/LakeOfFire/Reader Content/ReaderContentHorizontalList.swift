@@ -133,7 +133,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     }
     
     @ObserveInjection var forceRedraw
-
+    
     init(
         filteredContents: [C],
         includeSource: Bool
@@ -143,14 +143,15 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     }
 }
 
-public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
+public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: View>: View {
     let contents: [C]
     let includeSource: Bool
+    let emptyStateView: () -> EmptyState
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     
     let contentSortAscending = false
-    var contentFilter: (@ReaderContentListActor (C) async throws -> Bool) = { @ReaderContentListActor _ in return true }
+    var contentFilter: (@ReaderContentListActor (Int, C) async throws -> Bool) = { @ReaderContentListActor _, _ in return true }
     //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
@@ -164,6 +165,11 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
                 )
             }
             
+            if !viewModel.showLoadingIndicator,
+               viewModel.filteredContents.isEmpty {
+                emptyStateView()
+            }
+            
             if viewModel.showLoadingIndicator {
                 ProgressView()
                     .controlSize(.small)
@@ -173,12 +179,20 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
         .task { @MainActor in
             //                await Task { @RealmBackgroundActor in
             //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
-            try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+            try? await viewModel.load(
+                contents: contents,
+                sortOrder: sortOrder,
+                contentFilter: contentFilter
+            )
             //                }.value
         }
         .onChange(of: contents, debounceTime: 0.1) { contents in
             Task { @MainActor in
-                try? await viewModel.load(contents: contents, sortOrder: sortOrder, contentFilter: contentFilter)
+                try? await viewModel.load(
+                    contents: contents,
+                    sortOrder: sortOrder,
+                    contentFilter: contentFilter
+                )
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
         }
@@ -187,11 +201,13 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
     
     @ObserveInjection var forceRedraw
     
+    /// Initializer with a view builder for the empty state (required).
     public init(
         contents: [C],
-        contentFilter: ((C) async throws -> Bool)? = nil,
+        contentFilter: ((Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder? = nil,
-        includeSource: Bool
+        includeSource: Bool,
+        @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
         if let contentFilter = contentFilter {
@@ -201,5 +217,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
             self.sortOrder = sortOrder
         }
         self.includeSource = includeSource
+        self.emptyStateView = { emptyStateView() }
     }
 }

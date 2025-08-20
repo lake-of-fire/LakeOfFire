@@ -206,10 +206,13 @@ public struct BookLibraryView: View {
         }
         .task { @MainActor in
             if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
-                try? await readerContentListViewModel.load(contents: files, sortOrder: .createdAt, contentFilter: { contentFile in
-                    guard let fileFilter = viewModel.fileFilter else { return true }
-                    return try fileFilter(contentFile)
-                })
+                try? await readerContentListViewModel.load(
+                    contents: files,
+                    sortOrder: .createdAt,
+                    contentFilter: { _, contentFile in
+                        guard let fileFilter = viewModel.fileFilter else { return true }
+                        return try fileFilter(contentFile)
+                    })
             }
         }
         .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
