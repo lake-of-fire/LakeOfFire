@@ -6,13 +6,17 @@ import RealmSwift
 @MainActor
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration?
-
+    @Published var filteredCategories: [FeedCategory] = []
+    
+    private let categoryFilter: (FeedCategory) -> Bool
+    
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     
-    init() {
+    init(categoryFilter: @escaping (FeedCategory) -> Bool) {
+        self.categoryFilter = categoryFilter
         Task { @RealmBackgroundActor [weak self] in
-             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -28,11 +32,13 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                             guard let self else { return }
                             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
                             self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
+                            let active = self.libraryConfiguration?.getActiveCategories() ?? []
+                            self.filteredCategories = active.filter(self.categoryFilter)
                         }()
                     }
                 })
                 .store(in: &cancellables)
- 
+            
             realm.objects(FeedCategory.self)
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
@@ -40,7 +46,9 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        self?.objectWillChange.send() // Refresh view for LibraryConfiguration's categories
+                        guard let self else { return }
+                        let active = self.libraryConfiguration?.getActiveCategories() ?? []
+                        self.filteredCategories = active.filter(self.categoryFilter)
                     }
                 })
                 .store(in: &cancellables)
@@ -48,17 +56,18 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     }
 }
 
-public struct ContentCategoryButtons: View {
+public struct ContentCategoryButtons<AdditionalCategories: View>: View {
     @Binding var feedSelection: String?
     @Binding var categorySelection: String?
-//    var font = Font.title3
+    private let categoryFilter: (FeedCategory) -> Bool
+    private let additionalCategories: AdditionalCategories
     var isCompact = false
     
-    @StateObject private var viewModel = ContentCategoryButtonsViewModel()
+    @StateObject private var viewModel: ContentCategoryButtonsViewModel
     
     @ScaledMetric(relativeTo: .headline) private var minWidth: CGFloat = 190
     
-//    private var gridColumns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+    //    private var gridColumns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
     private var gridColumns: [GridItem] {
         get {
             [GridItem(.adaptive(minimum: minWidth))] //, maximum: maxWidth))]
@@ -66,31 +75,16 @@ public struct ContentCategoryButtons: View {
     }
     
     public var body: some View {
-        if let categories = viewModel.libraryConfiguration?.getActiveCategories() {
-            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
-#if DEBUG
-                MangaCategoryButton(
+        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
+            additionalCategories
+            
+            ForEach(viewModel.filteredCategories) { category in
+                FeedCategoryButton(
+                    category: category,
+                    feedSelection: $feedSelection,
                     categorySelection: $categorySelection,
-//                    font: font,
                     isCompact: isCompact
                 )
-#endif
-                
-                BooksCategoryButton(
-                    categorySelection: $categorySelection,
-//                    font: font,
-                    isCompact: isCompact
-                )
-                
-                ForEach(categories) { category in
-                    FeedCategoryButton(
-                        category: category,
-                        feedSelection: $feedSelection,
-                        categorySelection: $categorySelection,
-//                        font: font,
-                        isCompact: isCompact
-                    )
-                }
             }
         }
     }
@@ -98,72 +92,16 @@ public struct ContentCategoryButtons: View {
     public init(
         feedSelection: Binding<String?>,
         categorySelection: Binding<String?>,
-//        font: Font = Font.title3,
-        isCompact: Bool = false
+        isCompact: Bool = false,
+        categoryFilter: @escaping (FeedCategory) -> Bool = { _ in true },
+        @ViewBuilder additionalCategories: () -> AdditionalCategories = { EmptyView() }
     ) {
         _feedSelection = feedSelection
         _categorySelection = categorySelection
-//        self.font = font
         self.isCompact = isCompact
-    }
-}
-
-public struct MangaCategoryButton: View {
-    @Binding var categorySelection: String?
-//    var font = Font.title3
-    var isCompact = false
-    
-    public var body: some View {
-        Button(action: {
-            withAnimation {
-                categorySelection = "manga"
-            }
-        }) {
-            FeedCategoryButtonLabel(
-                title: "Manga",
-                backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/manga.jpg")!,
-//                font: font,
-                isCompact: isCompact
-            )
-        }
-        .buttonStyle(ReaderCategoryButtonStyle())
-    }
-    
-    public init(
-        categorySelection: Binding<String?>,
-//        font: Font = Font.title3,
-        isCompact: Bool
-    ) {
-        _categorySelection = categorySelection
-//        self.font = font
-        self.isCompact = isCompact
-    }
-}
-
-public struct BooksCategoryButton: View {
-    @Binding var categorySelection: String?
-//    var font = Font.title3
-    var isCompact = false
-    
-    public var body: some View {
-        Button(action: {
-            withAnimation {
-                categorySelection = "books"
-            }
-        }) {
-            FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, /*font: font,*/ isCompact: isCompact)
-        }
-        .buttonStyle(ReaderCategoryButtonStyle())
-    }
-    
-    public init(
-        categorySelection: Binding<String?>,
-//        font: Font = Font.title3,
-        isCompact: Bool
-    ) {
-        _categorySelection = categorySelection
-//        self.font = font
-        self.isCompact = isCompact
+        self.categoryFilter = categoryFilter
+        self.additionalCategories = additionalCategories()
+        _viewModel = StateObject(wrappedValue: ContentCategoryButtonsViewModel(categoryFilter: categoryFilter))
     }
 }
 
@@ -171,7 +109,7 @@ public struct FeedCategoryButton: View {
     let category: FeedCategory
     @Binding var feedSelection: String?
     @Binding var categorySelection: String?
-//    var font = Font.title3
+    //    var font = Font.title3
     var isCompact = false
     
     public var body: some View {
@@ -182,7 +120,6 @@ public struct FeedCategoryButton: View {
             FeedCategoryButtonLabel(
                 title: category.title,
                 backgroundImageURL: category.backgroundImageUrl,
-//                font: font,
                 isCompact: isCompact
             )
         }
@@ -193,7 +130,6 @@ public struct FeedCategoryButton: View {
         self.category = category
         _feedSelection = feedSelection
         _categorySelection = categorySelection
-//        self.font = font
         self.isCompact = isCompact
     }
 }
@@ -201,27 +137,27 @@ public struct FeedCategoryButton: View {
 struct ReaderCategoryButtonStyle: ButtonStyle {
     func makeBody(configuration: Self.Configuration) -> some View {
         configuration.label
-//            .clipped()
-//#if os(iOS)
-//            .clipShape(Capsule())
-//#else
+        //            .clipped()
+        //#if os(iOS)
+        //            .clipShape(Capsule())
+        //#else
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(.secondary.opacity(0.2))
                     .shadow(radius: 5)
             }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-//#endif
+        //#endif
             .buttonStyle(.borderless)
         //            .buttonStyle(.plain)
-//            .brightness(-0.1)
+        //            .brightness(-0.1)
             .scaleEffect(configuration.isPressed ? 0.994 : 1.0)
             .brightness(configuration.isPressed ? -0.06 : 0)
             .animation(.easeOut(duration: 0.05), value: configuration.isPressed)
-//            .overlay(
-//                RoundedRectangle(cornerRadius: 6, style: .continuous)
-//                    .stroke(Color.secondary.opacity(0.4), lineWidth: 1)
-//            )
+        //            .overlay(
+        //                RoundedRectangle(cornerRadius: 6, style: .continuous)
+        //                    .stroke(Color.secondary.opacity(0.4), lineWidth: 1)
+        //            )
     }
 }
 
@@ -232,7 +168,7 @@ public struct FeedCategoryButtonLabel: View {
     var showEditingDisabled: Bool = false
     
 #if os(iOS)
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 40
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 44
 #else
     @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 30
 #endif
@@ -256,7 +192,7 @@ public struct FeedCategoryButtonLabel: View {
                     .fontWeight(isCompact ? nil : .bold)
             }
             .font(isCompact ? .headline : .title2)
-//            .foregroundColor(.white)
+            //            .foregroundColor(.white)
             .foregroundStyle(.white)
             .opacity(title.isEmpty ? 0.85 : 1)
             //                .shadow(color: .black.opacity(0.95), radius: 4)
@@ -285,14 +221,14 @@ public struct FeedCategoryButtonLabel: View {
     public init(
         title: String,
         backgroundImageURL: URL,
-//        font: Font = Font.title3,
+        //        font: Font = Font.title3,
         isCompact: Bool,
         scaledCategoryHeight: CGFloat? = nil,
         showEditingDisabled: Bool = false
     ) {
         self.title = title
         self.backgroundImageURL = backgroundImageURL
-//        self.font = font
+        //        self.font = font
         self.isCompact = isCompact
         self.showEditingDisabled = showEditingDisabled
     }
