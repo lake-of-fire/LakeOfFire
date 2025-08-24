@@ -21,52 +21,6 @@ struct LibraryScriptForm: View {
 }
 
 @available(iOS 16.0, macOS 13.0, *)
-struct LibraryCategoryViewContainer: View {
-    let categoryID: UUID
-    let libraryConfiguration: LibraryConfiguration
-    @Binding var selectedFeed: Feed?
-    
-    @State private var loadedCategory: FeedCategory? = nil
-    
-#if os(iOS)
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-#endif
-    
-    // Ensure selection only applies to feeds in this category
-    private var effectiveSelectedFeed: Binding<Feed?> {
-        Binding(
-            get: {
-                if let feed = selectedFeed,
-                   let cid = loadedCategory?.id,
-                   feed.categoryID == cid { return feed }
-                return nil
-            },
-            set: { newValue in
-                selectedFeed = newValue
-            }
-        )
-    }
-    
-    var body: some View {
-        Group {
-            if let category = loadedCategory {
-                LibraryCategoryView(
-                    category: category,
-                    libraryConfiguration: libraryConfiguration,
-                    selectedFeed: effectiveSelectedFeed
-                )
-            } else {
-                LoadingLibraryView()
-            }
-        }
-        .task(id: categoryID) { @MainActor in
-            let categories = Array(libraryConfiguration.getCategories() ?? [])
-            self.loadedCategory = categories.first(where: { $0.id == categoryID })
-        }
-    }
-}
-
-@available(iOS 16.0, macOS 13.0, *)
 enum ContentPaneRoute: Hashable {
     case userScripts
     case contentCategory(UUID)
@@ -152,9 +106,10 @@ private struct ContentRouteSwitcher: View {
                 LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
                     .navigationTitle("User Scripts")
             case .contentCategory(let categoryID):
-                if let libraryConfiguration = viewModel.libraryConfiguration {
-                    LibraryCategoryViewContainer(
-                        categoryID: categoryID,
+                if let libraryConfiguration = viewModel.libraryConfiguration,
+                   let category = Array(libraryConfiguration.getCategories() ?? []).first(where: { $0.id == categoryID }) {
+                    LibraryCategoryView(
+                        category: category,
                         libraryConfiguration: libraryConfiguration,
                         selectedFeed: $viewModel.selectedFeed
                     )
@@ -224,8 +179,6 @@ public struct LibraryManagerView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 #endif
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
-    
-    @State private var libraryCategoryViewModel: LibraryCategoryViewModel?
     
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {

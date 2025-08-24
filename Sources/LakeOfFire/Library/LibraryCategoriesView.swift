@@ -1,152 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import RealmSwift
 import FilePicker
-import SwiftUIWebView
-import FaviconFinder
-import DebouncedOnChange
-import OpenGraph
+import RealmSwift
 import RealmSwiftGaps
 import SwiftUtilities
-import Combine
-
-let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
-
-@MainActor
-fileprivate class LibraryCategoriesViewModel: ObservableObject {
-    @Published var userLibraryCategories: [FeedCategory]? = nil
-    @Published var editorsPicksLibraryCategories: [FeedCategory]? = nil
-    @Published var archivedCategories: [FeedCategory]? = nil
-    
-    @RealmBackgroundActor
-    private var cancellables = Set<AnyCancellable>()
-    
-    @Published var libraryConfiguration: LibraryConfiguration?
-    
-    init() {
-        Task { @RealmBackgroundActor [weak self] in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-
-            realm.objects(LibraryConfiguration.self)
-                .collectionPublisher
-                .subscribe(on: libraryCategoriesQueue)
-                .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
-                .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.refreshData()
-                    }
-                })
-                .store(in: &cancellables)
-            
-            realm.objects(FeedCategory.self)
-                .collectionPublisher
-                .subscribe(on: libraryCategoriesQueue)
-                .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryCategoriesQueue)
-                .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.refreshData()
-                    }
-                })
-                .store(in: &cancellables)
-        }
-    }
-        
-    private func refreshData() {
-        Task { @RealmBackgroundActor in
-            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-            let libraryConfigurationID = libraryConfiguration.id
-            
-            try await { @MainActor [weak self] in
-                guard let self else { return }
-                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                
-                guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID) else { return }
-                self.libraryConfiguration = libraryConfiguration
-                let categories = Array(libraryConfiguration.getCategories() ?? [])
-                self.userLibraryCategories = categories.filter { $0.opmlURL == nil }
-                self.editorsPicksLibraryCategories = categories.filter { $0.opmlURL != nil }
-
-                let activeCategoryIDs = libraryConfiguration.getActiveCategories()?.map { $0.id } ?? []
-                self.archivedCategories = Array(realm.objects(FeedCategory.self).where { ($0.isArchived || !$0.id.in(activeCategoryIDs)) && !$0.isDeleted })
-            }()
-        }
-    }
-    
-    func deletionTitle(category: FeedCategory) -> String {
-        if category.isArchived {
-            return "Delete"
-        }
-        return "Archive"
-    }
-    
-    func showDeleteButton(category: FeedCategory) -> Bool {
-        return category.isUserEditable && !category.isDeleted
-    }
-    
-    func showRestoreButton(category: FeedCategory) -> Bool {
-        return category.isUserEditable && category.isArchived
-    }
-
-    @MainActor
-    func deleteCategory(_ category: FeedCategory) async throws {
-        let ref = ThreadSafeReference(to: category)
-        async let task = { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.deleteCategory(category)
-        }()
-        try await task
-    }
-    
-    @MainActor
-    func restoreCategory(_ category: FeedCategory) async throws {
-        let ref = ThreadSafeReference(to: category)
-        async let task = { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-            guard let category = realm.resolve(ref) else { return }
-            try await LibraryDataManager.shared.restoreCategory(category)
-        }()
-        try await task
-    }
-    
-    @MainActor
-    func deleteCategory(at offsets: IndexSet) {
-        Task { @MainActor in
-            guard let libraryConfiguration = libraryConfiguration else { return }
-            guard let categories = libraryConfiguration.getCategories() else { return }
-            for offset in offsets {
-                let category = categories[offset]
-                guard category.isUserEditable else { continue }
-                let ref = ThreadSafeReference(to: category)
-                try await Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.resolve(ref) else { return }
-                    try await LibraryDataManager.shared.deleteCategory(category)
-                }.value
-            }
-        }
-    }
-   
-    @MainActor
-    func moveCategories(fromOffsets: IndexSet, toOffset: Int) {
-        Task { @MainActor in
-            guard let libraryConfiguration = libraryConfiguration else { return }
-            try await Realm.asyncWrite(ThreadSafeReference(to: libraryConfiguration), configuration: LibraryDataManager.realmConfiguration) { _, libraryConfiguration in
-                libraryConfiguration.categoryIDs.move(fromOffsets: fromOffsets, toOffset: toOffset)
-                libraryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-            }
-        }
-    }
-}
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoriesView: View {
+    @Binding var contentRoute: ContentPaneRoute?
+    
     @StateObject private var viewModel = LibraryCategoriesViewModel()
     
     @EnvironmentObject private var libraryManagerViewModel: LibraryManagerViewModel
-
+    
     @AppStorage("appTint") private var appTint: Color = .accentColor
     
 #if os(iOS)
@@ -159,8 +25,6 @@ struct LibraryCategoriesView: View {
     @State private var savePanel: NSSavePanel?
     @State private var window: NSWindow?
 #endif
-    
-    @State private var selection = Set<AnyHashable>()
     
     var addButtonPlacement: ToolbarItemPlacement {
 #if os(iOS)
@@ -227,138 +91,142 @@ struct LibraryCategoriesView: View {
     }
     
     @ViewBuilder var userLibraryView: some View {
-        ForEach(viewModel.userLibraryCategories ?? []) { category in
-            NavigationLink(value: category) {
-                FeedCategoryButtonLabel(
-                    title: category.title,
-                    backgroundImageURL: category.backgroundImageUrl,
-                    isCompact: true,
-                    showEditingDisabled: !category.isUserEditable
-                )
+        if let categories = viewModel.userLibraryCategories {
+            ForEach(Array(categories), id: \.id) { category in
+                NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
+                    FeedCategoryButtonLabel(
+                        title: category.title,
+                        backgroundImageURL: category.backgroundImageUrl,
+                        isCompact: true,
+                        showEditingDisabled: !category.isUserEditable
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-            
-            .listRowSeparator(.hidden)
-            .deleteDisabled(!category.isUserEditable)
-            .moveDisabled(!category.isUserEditable)
-            .swipeActions(edge: .trailing) {
-                if viewModel.showDeleteButton(category: category) {
-                    Button(role: .destructive) {
-                        Task {
-                            try await viewModel.deleteCategory(category)
-                        }
-                    } label: {
-                        Text(viewModel.deletionTitle(category: category))
-                    }
-                    .tint(.red)
                 }
-            }
-            .contextMenu {
-                if viewModel.showDeleteButton(category: category) {
-                    Button(role: .destructive) {
-                        Task {
-                            try await viewModel.deleteCategory(category)
+                .id("library-sidebar-\(category.id.uuidString)")
+                .listRowSeparator(.hidden)
+                .deleteDisabled(!category.isUserEditable)
+                .moveDisabled(!category.isUserEditable)
+                .swipeActions(edge: .trailing) {
+                    if viewModel.showDeleteButton(category: category) {
+                        Button(role: .destructive) {
+                            Task {
+                                try await viewModel.deleteCategory(category)
+                            }
+                        } label: {
+                            Text(viewModel.deletionTitle(category: category))
                         }
-                    } label: {
-                        Label("Archive", systemImage: "archivebox")
+                        .tint(.red)
                     }
                 }
+                .contextMenu {
+                    if viewModel.showDeleteButton(category: category) {
+                        Button(role: .destructive) {
+                            Task {
+                                try await viewModel.deleteCategory(category)
+                            }
+                        } label: {
+                            Label("Archive", systemImage: "archivebox")
+                        }
+                    }
+                }
             }
-        }
-        .onMove {
-            viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
-        }
-        .onDelete {
-            viewModel.deleteCategory(at: $0)
+            .onMove {
+                viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+            }
+            .onDelete {
+                viewModel.deleteCategory(at: $0)
+            }
         }
     }
     
     @ViewBuilder var editorsPicksLibraryView: some View {
-        ForEach(viewModel.editorsPicksLibraryCategories ?? []) { category in
-            NavigationLink(value: category) {
-                FeedCategoryButtonLabel(
-                    title: category.title,
-                    backgroundImageURL: category.backgroundImageUrl,
-                    isCompact: true,
-                    showEditingDisabled: !category.isUserEditable
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        if let categories = viewModel.editorsPicksLibraryCategories {
+            ForEach(Array(categories), id: \.id) { category in
+                NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
+                    FeedCategoryButtonLabel(
+                        title: category.title,
+                        backgroundImageURL: category.backgroundImageUrl,
+                        isCompact: true,
+                        showEditingDisabled: !category.isUserEditable
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .id("library-sidebar-\(category.id.uuidString)")
+                .listRowSeparator(.hidden)
+                .deleteDisabled(true)
+                .moveDisabled(true)
             }
-            .listRowSeparator(.hidden)
-            .deleteDisabled(true)
-            .moveDisabled(true)
-        }
-        .onMove {
-            viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
-        }
-        .onDelete {
-            viewModel.deleteCategory(at: $0)
+            .onMove {
+                viewModel.moveCategories(fromOffsets: $0, toOffset: $1)
+            }
+            .onDelete {
+                viewModel.deleteCategory(at: $0)
+            }
         }
     }
-
+    
     @ViewBuilder var archiveView: some View {
-        ForEach(viewModel.archivedCategories ?? []) { category in
-            NavigationLink(value: category) {
-                FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .saturation(0)
-            }
-            
-            .listRowSeparator(.hidden)
-            .swipeActions(edge: .leading) {
-                if viewModel.showRestoreButton(category: category) {
-                    Button {
-                        Task {
-                            try await viewModel.restoreCategory(category)
+        if let categories = viewModel.archivedCategories {
+            ForEach(Array(categories), id: \.id) { category in
+                NavigationLink(value: ContentPaneRoute.contentCategory(category.id)) {
+                    FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .saturation(0)
+                }
+                .id("library-sidebar-\(category.id.uuidString)")
+                .listRowSeparator(.hidden)
+                .swipeActions(edge: .leading) {
+                    if viewModel.showRestoreButton(category: category) {
+                        Button {
+                            Task {
+                                try await viewModel.restoreCategory(category)
+                            }
+                        } label: {
+                            Text("Restore")
                         }
-                    } label: {
-                        Text("Restore")
+                    }
+                }
+                .swipeActions(edge: .trailing) {
+                    if viewModel.showDeleteButton(category: category) {
+                        Button(role: .destructive) {
+                            Task {
+                                try await viewModel.deleteCategory(category)
+                            }
+                        } label: {
+                            Text("Delete")
+                        }
+                        .tint(.red)
+                    }
+                }
+                .contextMenu {
+                    if viewModel.showRestoreButton(category: category) {
+                        Button {
+                            Task {
+                                try await viewModel.restoreCategory(category)
+                            }
+                        } label: {
+                            Label("Restore Category", systemImage: "plus")
+                        }
+                        Divider()
+                    }
+                    if viewModel.showDeleteButton(category: category) {
+                        Button(role: .destructive) {
+                            Task {
+                                try await viewModel.deleteCategory(category)
+                            }
+                        } label: {
+                            Text(viewModel.deletionTitle(category: category))
+                        }
+                        .tint(.red)
                     }
                 }
             }
-            .swipeActions(edge: .trailing) {
-                if viewModel.showDeleteButton(category: category) {
-                    Button(role: .destructive) {
-                        Task {
-                            try await viewModel.deleteCategory(category)
-                        }
-                    } label: {
-                        Text("Delete")
-                    }
-                    .tint(.red)
-                }
-            }
-            .contextMenu {
-                if viewModel.showRestoreButton(category: category) {
-                    Button {
-                        Task {
-                            try await viewModel.restoreCategory(category)
-                        }
-                    } label: {
-                        Label("Restore Category", systemImage: "plus")
-                    }
-                    Divider()
-                }
-                if viewModel.showDeleteButton(category: category) {
-                    Button(role: .destructive) {
-                        Task {
-                            try await viewModel.deleteCategory(category)
-                        }
-                    } label: {
-                        Text(viewModel.deletionTitle(category: category))
-                    }
-                    .tint(.red)
-                }
-            }
-        }
-        .onDelete {
-            viewModel.deleteCategory(at: $0)
         }
     }
     
     var body: some View {
         ScrollViewReader { scrollProxy in
-            List(selection: $selection) {
+            List(selection: $contentRoute) {
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
@@ -366,7 +234,7 @@ struct LibraryCategoriesView: View {
                 .accentColor(appTint)
                 
                 Section("Extensions") {
-                    NavigationLink(value: LibraryRoute.userScripts, label: {
+                    NavigationLink(value: ContentPaneRoute.userScripts, label: {
                         Label("User Scripts", systemImage: "wrench.and.screwdriver")
                     })
                 }
@@ -378,7 +246,7 @@ struct LibraryCategoriesView: View {
                 Section("Editor's Picks") {
                     editorsPicksLibraryView
                 }
-
+                
                 Section("Archive") {
                     archiveView
                 }
@@ -403,7 +271,7 @@ struct LibraryCategoriesView: View {
                 }
                 ToolbarItem/*Group*/(placement: addButtonPlacement) {
                     addCategoryButton(scrollProxy: scrollProxy)
-//                    Spacer(minLength: 0)
+                    //                    Spacer(minLength: 0)
                 }
             }
 #endif
@@ -420,8 +288,8 @@ struct LibraryCategoriesView: View {
                     guard let category = realm.resolve(ref) else { return }
                     categoryIDNeedsScrollTo = category.id.uuidString
                     try await Task.sleep(nanoseconds: 100_000_000)
-//                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
-                    libraryManagerViewModel.navigationPath.append(category)
+                    //                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
+                    contentRoute = .contentCategory(category.id)
                 }()
             }
         } label: {
