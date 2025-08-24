@@ -226,6 +226,7 @@ private struct ContentRouteSwitcher: View {
 private struct ContentColumn: View {
     @Binding var contentRoute: ContentPaneRoute?
     @Binding var middlePath: NavigationPath
+    @Binding var detailPath: NavigationPath
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
     var body: some View {
@@ -242,6 +243,22 @@ private struct ContentColumn: View {
             Color.clear.onAppear {
                 contentRoute = .userScripts
                 middlePath = NavigationPath()
+            }
+        }
+        .navigationDestination(for: Feed.self) { feed in
+            Color.clear.onAppear {
+                viewModel.selectedFeed = feed
+                viewModel.selectedScript = nil
+                detailPath = NavigationPath()
+                detailPath.append(feed)
+            }
+        }
+        .navigationDestination(for: UserScript.self) { script in
+            Color.clear.onAppear {
+                viewModel.selectedScript = script
+                viewModel.selectedFeed = nil
+                detailPath = NavigationPath()
+                detailPath.append(script)
             }
         }
     }
@@ -297,7 +314,7 @@ public struct LibraryManagerView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarColumn(contentRoute: $contentRoute, sidebarPath: $sidebarPath)
         } content: {
-            ContentColumn(contentRoute: $contentRoute, middlePath: $middlePath)
+            ContentColumn(contentRoute: $contentRoute, middlePath: $middlePath, detailPath: $detailPath)
         } detail: {
             DetailColumn(detailPath: $detailPath)
         }
