@@ -2,6 +2,7 @@ import SwiftUI
 import RealmSwift
 import RealmSwiftGaps
 import AsyncView
+import LakeKit
 import Combine
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
@@ -72,9 +73,16 @@ public struct FeedView: View {
                     } else {
                         ReaderContentList(
                             contents: entries,
-                            entrySelection: $feedEntrySelection,
-                            sortOrder: .publicationDate
-                        )
+                            sortOrder: .publicationDate,
+                            includeSource: false,
+                            entrySelection: $feedEntrySelection
+                        ) {
+                            EmptyStateBoxView(
+                                title: Text("No Entries Available"),
+                                text: Text("This feed is empty. Try refreshing or checking back later."),
+                                systemImageName: "newspaper.fill"
+                            )
+                        }
                     }
                 }
             }

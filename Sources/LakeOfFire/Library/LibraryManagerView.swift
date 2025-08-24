@@ -4,6 +4,7 @@ import FilePicker
 import UniformTypeIdentifiers
 import OPML
 import SwiftUIWebView
+import LakeKit
 import FaviconFinder
 import DebouncedOnChange
 import OpenGraph
@@ -63,25 +64,199 @@ struct LibraryScriptForm: View {
 
 @available(iOS 16.0, macOS 13.0, *)
 struct LibraryCategoryViewContainer: View {
-    let category: FeedCategory
+    let categoryID: UUID
     let libraryConfiguration: LibraryConfiguration
     @Binding var selectedFeed: Feed?
     
-    var body: some View {
-        LibraryCategoryView(
-            category: category,
-            libraryConfiguration: libraryConfiguration,
-            selectedFeed: $selectedFeed
-        )
-        .task(id: selectedFeed?.categoryID) { @MainActor in
-            if selectedFeed?.categoryID != category.id {
-                selectedFeed = nil
+    @State private var loadedCategory: FeedCategory? = nil
+    
+#if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+#endif
+    
+    // Ensure selection only applies to feeds in this category
+    private var effectiveSelectedFeed: Binding<Feed?> {
+        Binding(
+            get: {
+                if let feed = selectedFeed,
+                   let cid = loadedCategory?.id,
+                   feed.categoryID == cid { return feed }
+                return nil
+            },
+            set: { newValue in
+                selectedFeed = newValue
             }
-            //                        let feedsToDeselect = viewModel.selectedFeed.filter { $0.category != category }
-            //                        feedsToDeselect.forEach {
-            //                            viewModel.selectedFeed.remove($0)
-            //                        }
+        )
+    }
+    
+    var body: some View {
+        Group {
+            if let category = loadedCategory {
+                LibraryCategoryView(
+                    category: category,
+                    libraryConfiguration: libraryConfiguration,
+                    selectedFeed: effectiveSelectedFeed
+                )
+            } else {
+                LoadingLibraryView()
+            }
         }
+        .task(id: categoryID) { @MainActor in
+            let categories = Array(libraryConfiguration.getCategories() ?? [])
+            self.loadedCategory = categories.first(where: { $0.id == categoryID })
+        }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+enum ContentPaneRoute: Hashable {
+    case userScripts
+    case contentCategory(UUID)
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct SidebarColumn: View {
+    @EnvironmentObject private var viewModel: LibraryManagerViewModel
+#if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+#endif
+    var body: some View {
+        LibraryCategoriesView()
+#if os(iOS)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    if horizontalSizeClass == .compact {
+                        DismissButton {
+                            viewModel.isLibraryPresented = false
+                        }
+                    }
+                }
+            }
+#endif
+#if os(macOS)
+            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
+#endif
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct LoadingLibraryView: View {
+    var body: some View {
+        VStack {
+            Spacer()
+            ProgressView("Loading Library…").padding()
+            Spacer()
+        }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct SelectContentPlaceholderView: View {
+    var body: some View {
+        VStack {
+            Spacer(minLength: 0)
+            Text("Select a category or User Scripts")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct SelectDetailPlaceholderView: View {
+    var body: some View {
+        VStack {
+            Spacer()
+            Text("Select a feed or script to edit.")
+                .multilineTextAlignment(.center)
+                .padding().padding()
+                .foregroundColor(.secondary)
+                .font(.callout)
+            Spacer()
+        }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct ContentRouteSwitcher: View {
+    @EnvironmentObject private var viewModel: LibraryManagerViewModel
+    @Binding var contentRoute: ContentPaneRoute?
+    
+    var body: some View {
+        Group {
+            switch contentRoute {
+            case .userScripts:
+                LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
+                    .navigationTitle("User Scripts")
+            case .contentCategory(let categoryID):
+                if let libraryConfiguration = viewModel.libraryConfiguration {
+                    LibraryCategoryViewContainer(
+                        categoryID: categoryID,
+                        libraryConfiguration: libraryConfiguration,
+                        selectedFeed: $viewModel.selectedFeed
+                    )
+                } else {
+                    LoadingLibraryView()
+                }
+            case .none:
+                SelectContentPlaceholderView()
+            }
+        }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct ContentColumn: View {
+    @Binding var contentRoute: ContentPaneRoute?
+    @Binding var middlePath: NavigationPath
+    @EnvironmentObject private var viewModel: LibraryManagerViewModel
+    
+    var body: some View {
+        NavigationStack(path: $middlePath) {
+            ContentRouteSwitcher(contentRoute: $contentRoute)
+        }
+        .navigationDestination(for: FeedCategory.self) { category in
+            Color.clear.onAppear {
+                contentRoute = .contentCategory(category.id)
+                middlePath = NavigationPath()
+            }
+        }
+        .navigationDestination(for: LibraryRoute.self) { _ in
+            Color.clear.onAppear {
+                contentRoute = .userScripts
+                middlePath = NavigationPath()
+            }
+        }
+    }
+}
+
+@available(iOS 16.0, macOS 13.0, *)
+private struct DetailColumn: View {
+    @Binding var detailPath: NavigationPath
+    
+    var body: some View {
+        NavigationStack(path: $detailPath) {
+            SelectDetailPlaceholderView()
+        }
+#if os(macOS)
+        .navigationDestination(for: Feed.self) { feed in
+            ScrollView { LibraryFeedView(feed: feed) }
+        }
+#else
+        .navigationDestination(for: Feed.self) { feed in
+            LibraryFeedView(feed: feed)
+        }
+#endif
+#if os(macOS)
+        .navigationDestination(for: UserScript.self) { script in
+            ScrollView { LibraryScriptForm(script: script) }
+        }
+#else
+        .navigationDestination(for: UserScript.self) { script in
+            LibraryScriptForm(script: script)
+        }
+#endif
     }
 }
 
@@ -89,7 +264,10 @@ struct LibraryCategoryViewContainer: View {
 public struct LibraryManagerView: View {
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
-    @State private var columnVisibility = NavigationSplitViewVisibility.doubleColumn
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var middlePath = NavigationPath()
+    @State private var detailPath = NavigationPath()
+    @State private var contentRoute: ContentPaneRoute? = nil
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -99,89 +277,13 @@ public struct LibraryManagerView: View {
     @State private var libraryCategoryViewModel: LibraryCategoryViewModel?
     
     public var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
-            NavigationStack(path: $viewModel.navigationPath) {
-                LibraryCategoriesView()
-#if os(iOS)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            if horizontalSizeClass == .compact {
-                                Button {
-                                    viewModel.isLibraryPresented = false
-                                } label: {
-                                    Text("Done")
-                                        .bold()
-                                }
-                            }
-                        }
-                    }
-#endif
-                    .navigationDestination(for: FeedCategory.self) { category in
-                        if let libraryConfiguration = viewModel.libraryConfiguration {
-                            LibraryCategoryViewContainer(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $viewModel.selectedFeed)
-                        }
-                    }
-                    .navigationDestination(for: LibraryRoute.self) { route in
-                        // If we have more routes, gotta differentiate them here as a possible TODO.
-                        LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
-                            .navigationTitle("User Scripts")
-                    }
-            }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
-#endif
-        }, detail: {
-            VStack {
-                if let feed = viewModel.selectedFeed {
-#if os(macOS)
-                    ScrollView {
-                        LibraryFeedView(feed: feed)
-                        //                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
-                    }
-#else
-                    LibraryFeedView(feed: feed)
-                    //                            .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
-#endif
-                }
-                if let script = viewModel.selectedScript {
-#if os(macOS)
-                    ScrollView {
-                        LibraryScriptForm(script: script)
-                        //                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
-                    }
-#else
-                    LibraryScriptForm(script: script)
-                    //                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
-#endif
-                }
-                if viewModel.selectedFeed == nil && viewModel.selectedScript == nil {
-                    Spacer()
-                    Text("Select a category and feed to edit.\nImport or export user feeds (excluding Manabi Reader defaults) via the toolbar.")
-                        .multilineTextAlignment(.center)
-                        .padding().padding()
-                        .foregroundColor(.secondary)
-                        .font(.callout)
-                    Spacer()
-                }
-            }
-#if os(macOS)
-            .textFieldStyle(.roundedBorder)
-#endif
-            //                .fixedSize(horizontal: false, vertical: true)
-            //            }
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        viewModel.isLibraryPresented = false
-                    } label: {
-                        Text("Done")
-                            .bold()
-                    }
-                }
-#endif
-            }
-        })
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarColumn()
+        } content: {
+            ContentColumn(contentRoute: $contentRoute, middlePath: $middlePath)
+        } detail: {
+            DetailColumn(detailPath: $detailPath)
+        }
         .navigationSplitViewStyle(.balanced)
         .onChange(of: viewModel.selectedFeed) { feed in
             Task { @MainActor in

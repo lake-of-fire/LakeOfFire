@@ -181,8 +181,8 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             try? await viewModel.load(
                 contents: contents,
-                sortOrder: sortOrder,
-                contentFilter: contentFilter
+                contentFilter: contentFilter,
+                sortOrder: sortOrder
             )
             //                }.value
         }
@@ -190,8 +190,8 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             Task { @MainActor in
                 try? await viewModel.load(
                     contents: contents,
-                    sortOrder: sortOrder,
-                    contentFilter: contentFilter
+                    contentFilter: contentFilter,
+                    sortOrder: sortOrder
                 )
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }

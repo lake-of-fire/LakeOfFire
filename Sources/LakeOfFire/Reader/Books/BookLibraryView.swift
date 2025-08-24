@@ -149,15 +149,15 @@ public struct BookLibraryView: View {
             .buttonStyle(.bordered)
         }
     }
-
+    
     @ViewBuilder private var myBooksSection: some View {
         ReaderContentListItems(
             viewModel: readerContentListViewModel,
             entrySelection: $entrySelection,
+            includeSource: false,
             alwaysShowThumbnails: false,
-            showSeparators: false
-        )
-            .listRowSeparatorIfAvailable(.hidden)
+            showSeparators: false)
+        .listRowSeparatorIfAvailable(.hidden)
     }
 
     @ViewBuilder var list: some View {
@@ -208,17 +208,21 @@ public struct BookLibraryView: View {
             if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
                 try? await readerContentListViewModel.load(
                     contents: files,
-                    sortOrder: .createdAt,
                     contentFilter: { _, contentFile in
                         guard let fileFilter = viewModel.fileFilter else { return true }
                         return try fileFilter(contentFile)
-                    })
+                    },
+                    sortOrder: .createdAt,
+                )
             }
         }
         .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
             Task { @MainActor in
                 if let ebookFiles {
-                    try? await readerContentListViewModel.load(contents: ebookFiles, sortOrder: .createdAt)
+                    try? await readerContentListViewModel.load(
+                        contents: ebookFiles,
+                        sortOrder: .createdAt
+                    )
                 }
             }
         }

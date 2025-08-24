@@ -22,19 +22,11 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
-                    Task { @RealmBackgroundActor [weak self] in
-                        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-                        let libraryConfigurationID = libraryConfiguration.id
-                        
-                        try await { @MainActor [weak self] in
-                            guard let self else { return }
-                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                            self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
-                            let active = self.libraryConfiguration?.getActiveCategories() ?? []
-                            self.filteredCategories = active.filter(self.categoryFilter)
-                        }()
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        try await refresh()
                     }
                 })
                 .store(in: &cancellables)
@@ -43,16 +35,29 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
+                .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        let active = self.libraryConfiguration?.getActiveCategories() ?? []
-                        self.filteredCategories = active.filter(self.categoryFilter)
+                        try await refresh()
                     }
                 })
                 .store(in: &cancellables)
         }
+    }
+    
+    @RealmBackgroundActor
+    private func refresh() async throws {
+        let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+        let libraryConfigurationID = libraryConfiguration.id
+        
+        try await { @MainActor [weak self] in
+            guard let self else { return }
+            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+            self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
+            let active = self.libraryConfiguration?.getActiveCategories() ?? []
+            self.filteredCategories = active.filter(self.categoryFilter)
+        }()
     }
 }
 

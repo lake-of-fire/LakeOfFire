@@ -128,42 +128,42 @@ struct LibraryScriptsListView: View {
     
     @ViewBuilder func list(libraryConfiguration: LibraryConfiguration, userScripts: [UserScript]) -> some View {
         ScrollViewReader { scrollProxy in
-            List(selection: $selectedScript) {
+            List {
                 ForEach(userScripts) { script in
-                    VStack(alignment: .leading) {
-                        Group {
-                            if script.title.isEmpty {
-                                Text("Untitled Script")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text(script.title)
-                            }
-                        }
-                        .foregroundColor(script.isArchived ? .secondary : .primary)
-                        Group {
-                            if script.isArchived {
-                                Text("Disabled")
-                                    .foregroundColor(.secondary)
-                            } else {
-                                if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
-                                    Text("Official Manabi Reader system script")
-                                        .bold()
+                    NavigationLink(value: script) {
+                        VStack(alignment: .leading) {
+                            Group {
+                                if script.title.isEmpty {
+                                    Text("Untitled Script")
+                                        .foregroundColor(.secondary)
                                 } else {
-                                    if script.allowedDomainIDs.isEmpty {
-                                        Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
+                                    Text(script.title)
+                                }
+                            }
+                            .foregroundColor(script.isArchived ? .secondary : .primary)
+                            Group {
+                                if script.isArchived {
+                                    Text("Disabled")
+                                        .foregroundColor(.secondary)
+                                } else {
+                                    if let opmlURL = script.opmlURL, LibraryConfiguration.opmlURLs.contains(opmlURL) {
+                                        Text("Official Manabi Reader system script")
+                                            .bold()
+                                    } else {
+                                        if script.allowedDomainIDs.isEmpty {
+                                            Label("Granted access to all web domains", systemImage: "exclamationmark.triangle.fill")
+                                        }
                                     }
                                 }
                             }
+                            .font(.caption)
                         }
-                        .font(.caption)
                     }
-                    .tag(script)
                     //                    .listRowSeparator(.hidden)
                     .deleteDisabled(!script.isUserEditable)
                     .moveDisabled(!script.isUserEditable)
                     //                    .id("library-sidebar-\(script.id.uuidString)")
                 }
-//                .onMove(perform: $libraryConfiguration.userScripts.move)
                 .onMove {
                     viewModel.moveScripts(fromOffsets: $0, toOffset: $1)
                 }

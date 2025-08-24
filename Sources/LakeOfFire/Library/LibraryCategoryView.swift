@@ -245,7 +245,7 @@ struct LibraryCategoryView: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             Group {
-                List(selection: $libraryCategoryViewModel.selectedFeed) {
+                List {
                     categoryLabel
                     
                     if let opmlURL = libraryCategoryViewModel.category.opmlURL {
