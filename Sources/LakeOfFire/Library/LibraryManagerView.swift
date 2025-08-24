@@ -2,52 +2,10 @@ import SwiftUI
 import RealmSwift
 import FilePicker
 import UniformTypeIdentifiers
-import OPML
 import SwiftUIWebView
 import LakeKit
-import FaviconFinder
-import DebouncedOnChange
-import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
-
-struct UserScriptAllowedDomainCell: View {
-    let domainID: UUID
-    
-    init(domainID: UUID) {
-        self.domainID = domainID
-    }
-    
-    @State private var domainText: String = ""
-    
-    var body: some View {
-        TextField("Domain", text: $domainText, prompt: Text("example.com"))
-#if os(iOS)
-            .textInputAutocapitalization(.never)
-#endif
-            .onChange(of: domainText, debounceTime: 0.3) { domainText in
-                let domainID = domainID
-                Task { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
-                    try await realm.asyncWrite {
-                        domain.domain = domainText
-                    }
-                }
-            }
-            .task(id: domainID) {
-                let domainID = domainID
-                try? await { @RealmBackgroundActor in
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
-                    guard let domain = realm.object(ofType: UserScriptAllowedDomain.self, forPrimaryKey: domainID) else { return }
-                    let domainText = domain.domain
-                    await { @MainActor in
-                        self.domainText = domainText
-                    }()
-                }()
-            }
-    }
-}
 
 @available(iOS 16.0, macOS 13, *)
 struct LibraryScriptForm: View {
@@ -124,7 +82,7 @@ private struct SidebarColumn: View {
 #endif
     var body: some View {
         NavigationStack(path: $sidebarPath) {
-            LibraryCategoriesView()
+            LibraryCategoriesView(contentRoute: $contentRoute)
 #if os(iOS)
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
@@ -136,18 +94,6 @@ private struct SidebarColumn: View {
                     }
                 }
 #endif
-        }
-        .navigationDestination(for: FeedCategory.self) { category in
-            Color.clear.onAppear {
-                contentRoute = .contentCategory(category.id)
-                sidebarPath = NavigationPath()
-            }
-        }
-        .navigationDestination(for: LibraryRoute.self) { _ in
-            Color.clear.onAppear {
-                contentRoute = .userScripts
-                sidebarPath = NavigationPath()
-            }
         }
 #if os(macOS)
         .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
@@ -233,63 +179,34 @@ private struct ContentColumn: View {
         NavigationStack(path: $middlePath) {
             ContentRouteSwitcher(contentRoute: $contentRoute)
         }
-        .navigationDestination(for: FeedCategory.self) { category in
-            Color.clear.onAppear {
-                contentRoute = .contentCategory(category.id)
-                middlePath = NavigationPath()
-            }
-        }
-        .navigationDestination(for: LibraryRoute.self) { _ in
-            Color.clear.onAppear {
-                contentRoute = .userScripts
-                middlePath = NavigationPath()
-            }
-        }
-        .navigationDestination(for: Feed.self) { feed in
-            Color.clear.onAppear {
-                viewModel.selectedFeed = feed
-                viewModel.selectedScript = nil
-                detailPath = NavigationPath()
-                detailPath.append(feed)
-            }
-        }
-        .navigationDestination(for: UserScript.self) { script in
-            Color.clear.onAppear {
-                viewModel.selectedScript = script
-                viewModel.selectedFeed = nil
-                detailPath = NavigationPath()
-                detailPath.append(script)
-            }
-        }
     }
 }
 
 @available(iOS 16.0, macOS 13.0, *)
 private struct DetailColumn: View {
     @Binding var detailPath: NavigationPath
+    @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
     var body: some View {
         NavigationStack(path: $detailPath) {
-            SelectDetailPlaceholderView()
-        }
+            Group {
+                if let feed = viewModel.selectedFeed {
 #if os(macOS)
-        .navigationDestination(for: Feed.self) { feed in
-            ScrollView { LibraryFeedView(feed: feed) }
-        }
+                    ScrollView { LibraryFeedView(feed: feed) }
 #else
-        .navigationDestination(for: Feed.self) { feed in
-            LibraryFeedView(feed: feed)
-        }
+                    LibraryFeedView(feed: feed)
 #endif
+                } else if let script = viewModel.selectedScript {
 #if os(macOS)
-        .navigationDestination(for: UserScript.self) { script in
-            ScrollView { LibraryScriptForm(script: script) }
-        }
+                    ScrollView { LibraryScriptForm(script: script) }
 #else
-        .navigationDestination(for: UserScript.self) { script in
-            LibraryScriptForm(script: script)
-        }
+                    LibraryScriptForm(script: script)
 #endif
+                } else {
+                    SelectDetailPlaceholderView()
+                }
+            }
+        }
     }
 }
 
