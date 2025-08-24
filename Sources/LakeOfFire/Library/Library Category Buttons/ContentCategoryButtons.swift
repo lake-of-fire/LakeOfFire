@@ -56,7 +56,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             self.libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID)
             let active = self.libraryConfiguration?.getActiveCategories() ?? []
-            self.filteredCategories = active.filter(self.categoryFilter)
+            self.filteredCategories = active.filter(self.categoryFilter).map { $0.freeze() }
         }()
     }
 }

@@ -117,24 +117,40 @@ enum ContentPaneRoute: Hashable {
 @available(iOS 16.0, macOS 13.0, *)
 private struct SidebarColumn: View {
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
+    @Binding var contentRoute: ContentPaneRoute?
+    @Binding var sidebarPath: NavigationPath
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 #endif
     var body: some View {
-        LibraryCategoriesView()
+        NavigationStack(path: $sidebarPath) {
+            LibraryCategoriesView()
 #if os(iOS)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    if horizontalSizeClass == .compact {
-                        DismissButton {
-                            viewModel.isLibraryPresented = false
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        if horizontalSizeClass == .compact {
+                            DismissButton {
+                                viewModel.isLibraryPresented = false
+                            }
                         }
                     }
                 }
-            }
 #endif
+        }
+        .navigationDestination(for: FeedCategory.self) { category in
+            Color.clear.onAppear {
+                contentRoute = .contentCategory(category.id)
+                sidebarPath = NavigationPath()
+            }
+        }
+        .navigationDestination(for: LibraryRoute.self) { _ in
+            Color.clear.onAppear {
+                contentRoute = .userScripts
+                sidebarPath = NavigationPath()
+            }
+        }
 #if os(macOS)
-            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
+        .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
 #endif
     }
 }
@@ -268,6 +284,7 @@ public struct LibraryManagerView: View {
     @State private var middlePath = NavigationPath()
     @State private var detailPath = NavigationPath()
     @State private var contentRoute: ContentPaneRoute? = nil
+    @State private var sidebarPath = NavigationPath()
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -278,7 +295,7 @@ public struct LibraryManagerView: View {
     
     public var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarColumn()
+            SidebarColumn(contentRoute: $contentRoute, sidebarPath: $sidebarPath)
         } content: {
             ContentColumn(contentRoute: $contentRoute, middlePath: $middlePath)
         } detail: {
