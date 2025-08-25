@@ -54,7 +54,7 @@ public struct FeedView: View {
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
     
-    @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
+    @SceneStorage("contentSelection") private var contentSelection: String?
     
     public var body: some View {
         AsyncView(operation: { forceRefreshRequested in
@@ -75,8 +75,9 @@ public struct FeedView: View {
                             contents: entries,
                             sortOrder: .publicationDate,
                             includeSource: false,
-                            entrySelection: $feedEntrySelection
+                            entrySelection: $contentSelection
                         ) {
+                        } emptyStateView: {
                             EmptyStateBoxView(
                                 title: Text("No Entries Available"),
                                 text: Text("This feed is empty. Try refreshing or checking back later."),

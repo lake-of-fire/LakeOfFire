@@ -177,7 +177,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     let includeSource: Bool
     var alwaysShowThumbnails = true
-    var showSeparators = false
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: ((C) -> Void)?
     
@@ -186,30 +185,17 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140
     
-    @ViewBuilder private func unstyledCell(item: C) -> some View {
-        item.readerContentCellView(
-            appearance: ReaderContentCellAppearance(
-                maxCellHeight: maxCellHeight,
-                alwaysShowThumbnails: alwaysShowThumbnails,
-                isEbookStyle: item.isPhysicalMedia,
-                includeSource: includeSource
-            )
-        )
-    }
-    
     @ViewBuilder private func cell(item: C) -> some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            Group {
-                if showSeparators {
-                    unstyledCell(item: item)
-                } else {
-                    unstyledCell(item: item)
-//                        .background(.ultraThinMaterial)
-//                        .background(.secondary.opacity(0.09))
-//                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-            }
+            item.readerContentCellView(
+                appearance: ReaderContentCellAppearance(
+                    maxCellHeight: maxCellHeight,
+                    alwaysShowThumbnails: alwaysShowThumbnails,
+                    isEbookStyle: item.isPhysicalMedia,
+                    includeSource: includeSource
+                )
+            )
             Spacer(minLength: 0)
         }
         .tag(item.compoundKey)
@@ -281,7 +267,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     let includeSource: Bool
     var alwaysShowThumbnails = true
-    var showSeparators = false
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: ((C) -> Void)?
     
@@ -293,16 +278,15 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     entrySelection: $entrySelection,
                     includeSource: includeSource,
                     alwaysShowThumbnails: alwaysShowThumbnails,
-                    showSeparators: showSeparators,
                     viewModel: viewModel,
                     onRequestDelete: onRequestDelete
                 )
             }
-#if os(iOS)
-            .modifier {
-                $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
-            }
-#endif
+//#if os(iOS)
+//            .modifier {
+//                $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
+//            }
+//#endif
         }
         .frame(minHeight: 10)
     }
@@ -311,20 +295,18 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         entrySelection: Binding<String?>,
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
-        showSeparators: Bool = false,
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: ((C) -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
         self.alwaysShowThumbnails = alwaysShowThumbnails
-        self.showSeparators = showSeparators
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
     }
 }
 
-public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: View {
+public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptyState: View>: View {
     let contents: [C]
     var contentFilter: ((Int, C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
@@ -332,8 +314,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: Vie
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
+    let contentSectionTitle: String?
     let allowEditing: Bool
     let onDelete: (([C]) -> Void)?
+    @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
 
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
@@ -351,7 +335,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: Vie
             contentSortAscending: contentSortAscending,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
-            showSeparators: false,
             onRequestDelete: onRequestDelete
         )
     }
@@ -365,30 +348,37 @@ public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: Vie
     
     public var body: some View {
         Group {
-            if false { //!viewModel.showLoadingIndicator,
-//               viewModel.filteredContents.isEmpty {
-//                emptyStateView()
-                EmptyView()
+            if !viewModel.showLoadingIndicator, viewModel.filteredContents.isEmpty {
+                if #available(iOS 16, *) {
+                    emptyStateView()
+                        .padding()
+                        .frame(maxHeight: .infinity, alignment: .top)
+                }
             } else {
                 Group {
                     if allowEditing {
                         List(selection: $multiSelection) {
-                            listItems
-                                .listRowSeparatorIfAvailable(.hidden)
+                            listContent
                         }
                         //#if os(iOS)
                         //                .environment(\.editMode, .constant(.active))
                         //#endif
                     } else {
                         List(selection: $entrySelection) {
-                            listItems
-                                .listRowSeparatorIfAvailable(.hidden)
+                            listContent
                         }
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackgroundIfAvailable(.hidden)
+                .listStyle(.insetGrouped)
                 .listItemTint(appTint)
+                .scrollContentBackgroundIfAvailable(.hidden)
+                .modifier {
+                    if #available(iOS 17, macOS 14, *) {
+                        $0
+                            .listSectionSpacing(0)
+                            .contentMargins(.top, 0, for: .scrollContent)
+                    } else { $0 }
+                }
             }
         }
         .toolbar {
@@ -436,6 +426,26 @@ public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: Vie
         }
     }
     
+    @ViewBuilder
+    private var listContent: some View {
+        Section {
+            headerView()
+                .listRowBackground(Color.clear)
+                .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+            
+            Section {
+                listItems
+                    .listRowSeparatorIfAvailable(.hidden)
+            } header: {
+                if let contentSectionTitle {
+                    Text(contentSectionTitle)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .headerProminence(.increased)
+        }
+    }
+    
     public init(
         contents: [C],
         contentFilter: ((Int, C) async throws -> Bool)? = nil,
@@ -444,8 +454,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: Vie
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (([C]) -> Void)? = nil,
+        @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
@@ -455,8 +467,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, EmptyState: View>: Vie
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.contentSortAscending = contentSortAscending
+        self.contentSectionTitle = contentSectionTitle
         self.allowEditing = allowEditing
         self.onDelete = onDelete
+        self.headerView = headerView
         self.emptyStateView = emptyStateView
     }
 }
@@ -467,7 +481,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     var contentSortAscending = false
     let includeSource: Bool
     var alwaysShowThumbnails = true
-    var showSeparators = false
     let onRequestDelete: ((C) -> Void)?
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -479,7 +492,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             entrySelection: $entrySelection,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
-            showSeparators: showSeparators,
             viewModel: viewModel,
             onRequestDelete: onRequestDelete
         )
@@ -513,7 +525,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         contentSortAscending: Bool = false,
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
-        showSeparators: Bool = false,
         onRequestDelete: ((C) -> Void)? = nil
     ) {
         self.viewModel = viewModel
@@ -521,7 +532,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.contentSortAscending = contentSortAscending
         self.includeSource = includeSource
         self.alwaysShowThumbnails = alwaysShowThumbnails
-        self.showSeparators = showSeparators
         self.onRequestDelete = onRequestDelete
     }
     
@@ -569,14 +579,16 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 }
 
 public extension ReaderContentProtocol {
-    static func readerContentListView<EmptyState: View>(
+    static func readerContentListView<Header: View, EmptyState: View>(
         contents: [Self],
         contentFilter: ((Int, Self) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,
+        contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (([Self]) -> Void)? = nil,
+        @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) -> some View {
         return ReaderContentList(
@@ -585,8 +597,10 @@ public extension ReaderContentProtocol {
             sortOrder: sortOrder,
             includeSource: includeSource,
             entrySelection: entrySelection,
+            contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,
+            headerView: headerView,
             emptyStateView: emptyStateView
         )
     }

@@ -56,16 +56,9 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
             .frame(maxWidth: maxWidth)
             //            .frame(width: 275, height: maxCellHeight - (padding * 2))
-            .background(Color.primary.colorInvert())
+//            .background(Color.primary.colorInvert())
             //                .background(.regularMaterial)
             //                .background(.secondary.opacity(0.09))
-#if os(macOS)
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(.secondary.opacity(0.2))
-                    .shadow(radius: 5)
-            }
-#endif
         }
         //        .frame(width: 275, height: maxCellHeight - (padding * 2))
         //                    .buttonStyle(ReaderContentCellButtonStyle())
@@ -74,7 +67,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         //        .background(.cyan)
         //                    .padding(.vertical, 4)
         //                    .padding(.horizontal, 8)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
         //        //                    .id(feedEntry.compoundKey)
         //        .contextMenu {
         //            if let entry = content as? (any DeletableReaderContent) {
