@@ -23,9 +23,31 @@ public actor ReaderContentListActor: CachedRealmsActor {
 @MainActor
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
-    @Published var confirmDeletionOf: [(any DeletableReaderContent)]?
+    @Published var confirmDeletionOf: [(any DeletableReaderContent)]? {
+        didSet { refreshDeletionTexts() }
+    }
     
-    public init() { }
+    // Published strings instead of computed properties
+    @Published var deletionConfirmationTitle: String = "Are you sure?"
+    @Published var deletionConfirmationMessage: String = "Do you really want to delete?"
+    @Published var deletionConfirmationActionTitle: String = "Delete"
+    
+    public init() {
+        refreshDeletionTexts()
+    }
+    
+    private func refreshDeletionTexts() {
+        guard let first = confirmDeletionOf?.first else {
+            deletionConfirmationTitle = "Are you sure?"
+            deletionConfirmationMessage = "Do you really want to delete?"
+            deletionConfirmationActionTitle = "Delete"
+            return
+        }
+        deletionConfirmationTitle = first.deletionConfirmationTitle
+        deletionConfirmationMessage = first.deletionConfirmationMessage
+        // Use the content's delete action title if provided by the protocol
+        deletionConfirmationActionTitle = first.deletionConfirmationActionTitle
+    }
 }
 
 struct ReaderContentListSheetsModifier: ViewModifier {
@@ -34,11 +56,11 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .alert("Deletion Confirmation", isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
+            .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
                 Button("Cancel", role: .cancel) {
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
-                Button("Delete", role: .destructive) {
+                Button(readerContentListModalsModel.deletionConfirmationActionTitle, role: .destructive) {
                     guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
                     Task { @MainActor in
                         for item in items {
@@ -47,11 +69,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                     }
                 }
             }, message: {
-                guard let items = readerContentListModalsModel.confirmDeletionOf else { return Text("Are you sure?") }
-                if items.count == 1, let content = items.first {
-                    return Text("Do you really want to delete \(content.title.truncate(20))?")
-                }
-                return Text("Do you really want to delete these \(items.count) items?")
+                return Text(readerContentListModalsModel.deletionConfirmationMessage)
             })
     }
 }
@@ -83,6 +101,8 @@ public enum ReaderContentSortOrder {
     case publicationDate
     case createdAt
     case lastVisitedAt
+    case title
+    case urlAddress
 }
 
 @MainActor
@@ -146,7 +166,21 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             if let sortOrder {
                 switch sortOrder {
                 case .publicationDate:
-                    filtered = filtered.sorted(using: [KeyPathComparator(\.publicationDate, order: .reverse)])
+                    // Sort by publication date (descending). Place nils last and sub-sort nils by createdAt (descending).
+                    filtered = filtered.sorted { lhs, rhs in
+                        switch (lhs.publicationDate, rhs.publicationDate) {
+                        case let (l?, r?):
+                            if l != r { return l > r }
+                            // Tie-breaker: most recently added first
+                            return lhs.createdAt > rhs.createdAt
+                        case (nil, nil):
+                            return lhs.createdAt > rhs.createdAt
+                        case (nil, _?):
+                            return false // nils last
+                        case (_?, nil):
+                            return true // non-nil before nil
+                        }
+                    }
                 case .createdAt:
                     filtered = filtered.sorted(using: [KeyPathComparator(\.createdAt, order: .reverse)])
                 case .lastVisitedAt:
@@ -154,6 +188,24 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                         filtered = filteredHistoryRecords.sorted(using: [KeyPathComparator(\.lastVisitedAt, order: .reverse)]) as? [C] ?? []
                     } else {
                         print("ERROR No sorting for lastVisitedAt unless HistoryRecord")
+                    }
+                case .title:
+                    // Sort by title ascending; tie-breaker by createdAt descending
+                    filtered = filtered.sorted { lhs, rhs in
+                        if lhs.title != rhs.title {
+                            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                        }
+                        return lhs.createdAt > rhs.createdAt
+                    }
+                case .urlAddress:
+                    // Sort by URL absolute string ascending; tie-breaker by createdAt descending
+                    filtered = filtered.sorted { lhs, rhs in
+                        let l = lhs.url.absoluteString
+                        let r = rhs.url.absoluteString
+                        if l != r {
+                            return l.localizedCaseInsensitiveCompare(r) == .orderedAscending
+                        }
+                        return lhs.createdAt > rhs.createdAt
                     }
                 }
             }
@@ -301,11 +353,11 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     onRequestDelete: onRequestDelete
                 )
             }
-//#if os(iOS)
-//            .modifier {
-//                $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
-//            }
-//#endif
+            //#if os(iOS)
+            //            .modifier {
+            //                $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
+            //            }
+            //#endif
         }
         .frame(minHeight: 10)
     }
@@ -338,7 +390,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     let onDelete: (@MainActor ([C]) async throws -> Void)?
     @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
-
+    
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
@@ -354,7 +406,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     }
     
     private var showDeletionToolbarButton: Bool {
-        if allowEditing, onDelete != nil {
+        if allowEditing, C.self is DeletableReaderContent.Type {
 #if os(iOS)
             return editMode?.wrappedValue != .inactive
 #else
@@ -389,7 +441,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     }
     
     public var body: some View {
-        Group {
+        ZStack {
             if allowEditing {
                 List(selection: $multiSelection) {
                     listContent
@@ -418,29 +470,15 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
             //                }
             //            }
             //#endif
-            ToolbarItem(placement: .destructiveAction) {
-                if showDeletionToolbarButton {
-                    Button(role: .destructive) {
-                        Task { @MainActor in
-                            let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
-                            if let onDelete {
-                                do {
-                                    try await onDelete(selected)
-                                    //                                multiSelection.removeAll()
-                                } catch {
-                                    print(error)
-                                }
-                            } else {
-                                readerContentListModalsModel.confirmDeletionOf = selected
-                                readerContentListModalsModel.confirmDelete = true
-                            }
-                        }
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    .disabled(isDeletionToolbarButtonDisabled)
-                }
+#if os(iOS)
+            ToolbarItem(placement: .topBarLeading) {
+                deletionToolbarButtonView
             }
+#elseif os(macOS)
+            ToolbarItem(placement: .destructiveAction) {
+                deletionToolbarButtonView
+            }
+#endif
         }
         .onChange(of: multiSelection) { newSelection in
 #if os(iOS)
@@ -473,6 +511,31 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     }
     
     @ViewBuilder
+    private var deletionToolbarButtonView: some View {
+        if showDeletionToolbarButton {
+            Button(role: .destructive) {
+                let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
+                if let onDelete {
+                    do {
+                        Task { @MainActor in
+                            try await onDelete(selected)
+                            //                                    //                                multiSelection.removeAll()
+                        }
+                    } catch {
+                        print(error)
+                    }
+                } else if let selected = selected as? [any DeletableReaderContent] {
+                    readerContentListModalsModel.confirmDeletionOf = selected
+                    readerContentListModalsModel.confirmDelete = true
+                }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .disabled(isDeletionToolbarButtonDisabled)
+        }
+    }
+    
+    @ViewBuilder
     private var listContent: some View {
         Section {
             headerView()
@@ -499,7 +562,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                 Text(contentSectionTitle)
                     .bold()
                     .foregroundStyle(.secondary)
-//                    .listRowBackground(Color.clear)
+                //                    .listRowBackground(Color.clear)
             }
         }
         .headerProminence(.increased)

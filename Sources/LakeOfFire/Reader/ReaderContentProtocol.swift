@@ -101,6 +101,9 @@ public extension ReaderContentProtocol {
 public protocol DeletableReaderContent: ReaderContentProtocol {
     var isDeleted: Bool { get set }
     var deleteActionTitle: String { get }
+    var deletionConfirmationTitle: String { get }
+    var deletionConfirmationMessage: String { get }
+    var deletionConfirmationActionTitle: String { get }
     func delete() async throws
 }
 

@@ -4,7 +4,7 @@ import RealmSwiftGaps
 import SwiftCloudDrive
 import BigSyncKit
 
-public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol {
+public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol, DeletableReaderContent {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
@@ -92,6 +92,36 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
                 }
             }
         }
+    }
+    
+    public var deleteActionTitle: String {
+        "Remove from Saved for Later…"
+    }
+    
+    public var deletionConfirmationTitle: String {
+        return "Removal Confirmation"
+    }
+    
+    public var deletionConfirmationMessage: String {
+        return "Are you sure you want to remove from Saved for Later?"
+    }
+    
+    public var deletionConfirmationActionTitle: String {
+        return "Remove"
+    }
+
+    @MainActor
+    public func delete() async throws {
+        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
+        try await { @RealmBackgroundActor in
+            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
+            //            await content.realm?.asyncRefresh()
+            try await content.realm?.asyncWrite {
+                //            for videoStatus in realm.objects(VideoS)
+                content.isDeleted = true
+                content.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }()
     }
 }
 

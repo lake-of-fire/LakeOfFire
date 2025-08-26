@@ -301,7 +301,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 Divider()
                                 
                                 Button(role: .destructive) {
-                                    readerContentListModalsModel.confirmDeletionOf = item
+                                    readerContentListModalsModel.confirmDeletionOf = [item]
                                     readerContentListModalsModel.confirmDelete = true
                                 } label: {
                                     Label(item.deleteActionTitle, systemImage: "trash")

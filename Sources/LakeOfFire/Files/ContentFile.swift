@@ -18,18 +18,28 @@ public class ContentFile: Bookmark {
         super.configureBookmark(bookmark)
     }
     
-    public func zipArchive(accessMode: Archive.AccessMode = .read) throws -> Archive? {
-        try Archive(url: systemFileURL, accessMode: accessMode)
-    }
-}
-
-extension ContentFile: DeletableReaderContent {
-    public var deleteActionTitle: String {
+    public override var deleteActionTitle: String {
         "Delete File…"
     }
     
+    public override var deletionConfirmationTitle: String {
+        return "Deletion Confirmation"
+    }
+    
+    public override var deletionConfirmationMessage: String {
+        return "Are you sure you want to delete from storage?"
+    }
+    
+    public override var deletionConfirmationActionTitle: String {
+        return "Delete"
+    }
+    
+    public func zipArchive(accessMode: Archive.AccessMode = .read) throws -> Archive? {
+        try Archive(url: systemFileURL, accessMode: accessMode)
+    }
+    
     @MainActor
-    public func delete() async throws {
+    public override func delete() async throws {
         try await ReaderFileManager.shared.delete(readerFileURL: url)
 //        try await deleteRealmData()
         try await delete()

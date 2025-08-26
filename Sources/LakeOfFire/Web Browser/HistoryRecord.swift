@@ -12,38 +12,22 @@ public class HistoryRecord: Bookmark {
     public override func configureBookmark(_ bookmark: Bookmark) {
         super.configureBookmark(bookmark)
     }
-}
-
-extension HistoryRecord: DeletableReaderContent {
-    public var deleteActionTitle: String {
-        "Remove from History…"
-    }
-}
-
-extension DeletableReaderContent {
-    @MainActor
-    public func delete() async throws {
-        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
-        try await { @RealmBackgroundActor in
-            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
-            //            await content.realm?.asyncRefresh()
-            try await content.realm?.asyncWrite {
-                //            for videoStatus in realm.objects(VideoS)
-                content.isDeleted = true
-                content.refreshChangeMetadata(explicitlyModified: true)
-            }
-        }()
+    
+    public override var deleteActionTitle: String {
+        "Remove History…"
     }
     
-    //    @MainActor
-    //    public func delete() async throws {
-    //        guard let content = try await ReaderContentLoader.fromMainActor(content: self) as? Self, let realm = content.realm else { return }
-    //        await realm.asyncRefresh()
-    //        try await realm.asyncWrite {
-    //            content.isDeleted = true
-    //            content.refreshChangeMetadata(explicitlyModified: true)
-    //        }
-    //    }
+    public override var deletionConfirmationTitle: String {
+        return "Deletion Confirmation"
+    }
+    
+    public override var deletionConfirmationMessage: String {
+        return "Are you sure you want to delete from history?"
+    }
+    
+    public override var deletionConfirmationActionTitle: String {
+        return "Delete"
+    }
 }
 
 public extension HistoryRecord {
