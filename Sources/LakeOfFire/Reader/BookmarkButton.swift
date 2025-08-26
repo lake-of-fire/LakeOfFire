@@ -100,49 +100,9 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
     }
 }
 
-public struct BookmarkButton<C: ReaderContentProtocol>: View {
-    var readerContent: C
-    var hiddenIfUnbookmarked = false
-    
-    @Environment(\.isEnabled) private var isEnabled
-    
-    @StateObject private var viewModel = BookmarkButtonViewModel()
-    
-    private var showBookmarkExists: Bool {
-        return isEnabled && (viewModel.bookmarkExists || viewModel.forceShowBookmark)
-    }
-    
-    public var body: some View {
-        Button {
-            Task { @MainActor in
-                viewModel.forceShowBookmark = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
-            }
-        } label: {
-            Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark")
-        }
-        .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
-        .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
-        .onChange(of: readerContent) { readerContent in
-            Task { @MainActor in
-                viewModel.forceShowBookmark = false
-                viewModel.readerContent = nil
-            }
-        }
-        .task(id: readerContent) { @MainActor in
-            viewModel.readerContent = readerContent
-        }
-    }
-    
-    public init(readerContent: C, hiddenIfUnbookmarked: Bool = false) {
-        self.readerContent = readerContent
-        self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
-    }
-}
-
 public extension ReaderContentProtocol {
     @ViewBuilder func bookmarkButtonView() -> some View {
         BookmarkButton(readerContent: self)
-            .buttonStyle(.clearBordered)
     }
 }
 
@@ -157,4 +117,68 @@ public struct CurrentWebViewBookmarkButton: View {
     }
     
     public init() { }
+}
+
+private struct BookmarkToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            Label(configuration.isOn ? "Saved for Later" : "Save for Later", systemImage: configuration.isOn ? "bookmark.fill" : "bookmark")
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - BookmarkButton
+
+public struct BookmarkButton<C: ReaderContentProtocol>: View {
+    var readerContent: C
+    var hiddenIfUnbookmarked = false
+    
+    @Environment(\.isEnabled) private var isEnabled
+    @StateObject private var viewModel = BookmarkButtonViewModel()
+    
+    private var showBookmarkExists: Bool {
+        isEnabled && (viewModel.bookmarkExists || viewModel.forceShowBookmark)
+    }
+    
+    private var isBookmarkedBinding: Binding<Bool> {
+        Binding(
+            get: { showBookmarkExists },
+            set: { newValue in
+                Task { @MainActor in
+                    // Only toggle if the requested state differs from what is currently shown
+                    if newValue != showBookmarkExists {
+                        viewModel.forceShowBookmark = try await readerContent.toggleBookmark(
+                            realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration
+                        )
+                    }
+                }
+            }
+        )
+    }
+    
+    public var body: some View {
+        Toggle(isOn: isBookmarkedBinding) {
+            EmptyView()
+        }
+        .toggleStyle(BookmarkToggleStyle())
+        .opacity(hiddenIfUnbookmarked ? (showBookmarkExists ? 1 : 0) : 1)
+        .allowsHitTesting(hiddenIfUnbookmarked ? showBookmarkExists : true)
+        .onChange(of: readerContent) { _ in
+            Task { @MainActor in
+                viewModel.forceShowBookmark = false
+                viewModel.readerContent = nil
+            }
+        }
+        .task(id: readerContent) { @MainActor in
+            viewModel.readerContent = readerContent
+        }
+    }
+    
+    public init(readerContent: C, hiddenIfUnbookmarked: Bool = false) {
+        self.readerContent = readerContent
+        self.hiddenIfUnbookmarked = hiddenIfUnbookmarked
+    }
 }

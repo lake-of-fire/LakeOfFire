@@ -23,7 +23,7 @@ public actor ReaderContentListActor: CachedRealmsActor {
 @MainActor
 public class ReaderContentListModalsModel: ObservableObject {
     @Published var confirmDelete: Bool = false
-    @Published var confirmDeletionOf: (any DeletableReaderContent)?
+    @Published var confirmDeletionOf: [(any DeletableReaderContent)]?
     
     public init() { }
 }
@@ -34,17 +34,24 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .alert("Delete Confirmation", isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
+            .alert("Deletion Confirmation", isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
                 Button("Cancel", role: .cancel) {
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
                 Button("Delete", role: .destructive) {
+                    guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
                     Task { @MainActor in
-                        try await readerContentListModalsModel.confirmDeletionOf?.delete()
+                        for item in items {
+                            try await item.delete()
+                        }
                     }
                 }
             }, message: {
-                Text("Do you really want to delete \(readerContentListModalsModel.confirmDeletionOf?.title.truncate(20) ?? "")? Deletion cannot be undone.")
+                guard let items = readerContentListModalsModel.confirmDeletionOf else { return Text("Are you sure?") }
+                if items.count == 1, let content = items.first {
+                    return Text("Do you really want to delete \(content.title.truncate(20))?")
+                }
+                return Text("Do you really want to delete these \(items.count) items?")
             })
     }
 }
@@ -178,7 +185,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     let includeSource: Bool
     var alwaysShowThumbnails = true
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
-    let onRequestDelete: ((C) -> Void)?
+    let onRequestDelete: (@MainActor (C) async throws -> Void)?
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -223,10 +230,16 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             if let content = content as? any DeletableReaderContent {
                 Button(role: .destructive) {
                     if let onRequestDelete {
-                        onRequestDelete(self.content)
+                        Task { @MainActor in
+                            do {
+                                try await onRequestDelete(self.content)
+                            } catch {
+                                print(error)
+                            }
+                        }
                     } else {
-                        // Fallback to legacy deletion
-                        readerContentListModalsModel.confirmDeletionOf = content
+                        // Fallback to default deletion
+                        readerContentListModalsModel.confirmDeletionOf = [content]
                         if readerContentListModalsModel.confirmDeletionOf != nil {
                             readerContentListModalsModel.confirmDelete = true
                         }
@@ -242,10 +255,16 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             if let content = content as? any DeletableReaderContent {
                 Button(role: .destructive) {
                     if let onRequestDelete {
-                        onRequestDelete(self.content)
+                        Task { @MainActor in
+                            do {
+                                try await onRequestDelete(self.content)
+                            } catch {
+                                print(error)
+                            }
+                        }
                     } else {
-                        // Fallback to legacy deletion
-                        readerContentListModalsModel.confirmDeletionOf = content
+                        // Fallback to default deletion
+                        readerContentListModalsModel.confirmDeletionOf = [content]
                         readerContentListModalsModel.confirmDelete = true
                     }
                 } label: {
@@ -268,7 +287,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     let includeSource: Bool
     var alwaysShowThumbnails = true
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
-    let onRequestDelete: ((C) -> Void)?
+    let onRequestDelete: (@MainActor (C) async throws -> Void)?
     
     var body: some View {
         Group {
@@ -296,7 +315,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
         viewModel: ReaderContentListViewModel<C>,
-        onRequestDelete: ((C) -> Void)? = nil
+        onRequestDelete: (@MainActor (C) async throws -> Void)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
@@ -316,17 +335,38 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     var alwaysShowThumbnails = true
     let contentSectionTitle: String?
     let allowEditing: Bool
-    let onDelete: (([C]) -> Void)?
+    let onDelete: (@MainActor ([C]) async throws -> Void)?
     @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
 
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
     
 #if os(iOS)
-    @State private var editMode: EditMode = .inactive
+    @Environment(\.editMode) private var editMode
 #endif
     @State private var multiSelection = Set<String>()
+    
+    private var showEmptyState: Bool {
+        return !viewModel.showLoadingIndicator && viewModel.filteredContents.isEmpty
+    }
+    
+    private var showDeletionToolbarButton: Bool {
+        if allowEditing, onDelete != nil {
+#if os(iOS)
+            return editMode?.wrappedValue != .inactive
+#else
+            return true
+#endif
+        }
+        return false
+    }
+    
+    private var isDeletionToolbarButtonDisabled: Bool {
+        return multiSelection.isEmpty
+    }
     
     @ViewBuilder private var listItems: some View {
         ReaderContentListItems(
@@ -339,47 +379,36 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         )
     }
     
-    private var onRequestDelete: ((C) -> Void)? {
-        if let onDelete = onDelete {
-            return { c in onDelete([c]) }
+    private var onRequestDelete: (@MainActor (C) async throws -> Void)? {
+        if let onDelete {
+            return { c in
+                try await onDelete([c])
+            }
         }
         return nil
     }
     
     public var body: some View {
         Group {
-            if !viewModel.showLoadingIndicator, viewModel.filteredContents.isEmpty {
-                if #available(iOS 16, *) {
-                    emptyStateView()
-                        .padding()
-                        .frame(maxHeight: .infinity, alignment: .top)
+            if allowEditing {
+                List(selection: $multiSelection) {
+                    listContent
                 }
             } else {
-                Group {
-                    if allowEditing {
-                        List(selection: $multiSelection) {
-                            listContent
-                        }
-                        //#if os(iOS)
-                        //                .environment(\.editMode, .constant(.active))
-                        //#endif
-                    } else {
-                        List(selection: $entrySelection) {
-                            listContent
-                        }
-                    }
-                }
-                .listStyle(.insetGrouped)
-                .listItemTint(appTint)
-                .scrollContentBackgroundIfAvailable(.hidden)
-                .modifier {
-                    if #available(iOS 17, macOS 14, *) {
-                        $0
-                            .listSectionSpacing(0)
-                            .contentMargins(.top, 0, for: .scrollContent)
-                    } else { $0 }
+                List(selection: $entrySelection) {
+                    listContent
                 }
             }
+        }
+        .listStyle(.insetGrouped)
+        .listItemTint(appTint)
+        .scrollContentBackgroundIfAvailable(.hidden)
+        .modifier {
+            if #available(iOS 17, macOS 14, *) {
+                $0
+                    .listSectionSpacing(0)
+                    .contentMargins(.top, 0, for: .scrollContent)
+            } else { $0 }
         }
         .toolbar {
             //#if os(iOS)
@@ -389,19 +418,36 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
             //                }
             //            }
             //#endif
-            ToolbarItem(placement: .primaryAction) {
-                if allowEditing, !multiSelection.isEmpty, let onDelete = onDelete {
+            ToolbarItem(placement: .destructiveAction) {
+                if showDeletionToolbarButton {
                     Button(role: .destructive) {
-                        let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
-                        onDelete(selected)
-                        multiSelection.removeAll()
+                        Task { @MainActor in
+                            let selected = viewModel.filteredContents.filter { multiSelection.contains($0.compoundKey) }
+                            if let onDelete {
+                                do {
+                                    try await onDelete(selected)
+                                    //                                multiSelection.removeAll()
+                                } catch {
+                                    print(error)
+                                }
+                            } else {
+                                readerContentListModalsModel.confirmDeletionOf = selected
+                                readerContentListModalsModel.confirmDelete = true
+                            }
+                        }
                     } label: {
                         Label("Delete", systemImage: "trash")
                     }
+                    .disabled(isDeletionToolbarButtonDisabled)
                 }
             }
         }
         .onChange(of: multiSelection) { newSelection in
+#if os(iOS)
+            guard editMode?.wrappedValue != .inactive else {
+                return
+            }
+#endif
             if newSelection.count == 1 {
                 entrySelection = newSelection.first
             } else if newSelection.count > 1 {
@@ -432,18 +478,31 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
             headerView()
                 .listRowBackground(Color.clear)
                 .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
-            
-            Section {
+                .listRowSeparatorIfAvailable(.hidden)
+        }
+        
+        Section {
+            if showEmptyState {
+                if #available(iOS 16, *) {
+                    emptyStateView()
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+                        .listRowSeparatorIfAvailable(.hidden)
+                }
+            } else {
                 listItems
                     .listRowSeparatorIfAvailable(.hidden)
-            } header: {
-                if let contentSectionTitle {
-                    Text(contentSectionTitle)
-                        .foregroundStyle(.secondary)
-                }
             }
-            .headerProminence(.increased)
+        } header: {
+            if !showEmptyState, let contentSectionTitle {
+                Text(contentSectionTitle)
+                    .bold()
+                    .foregroundStyle(.secondary)
+//                    .listRowBackground(Color.clear)
+            }
         }
+        .headerProminence(.increased)
     }
     
     public init(
@@ -456,7 +515,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         alwaysShowThumbnails: Bool = true,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
-        onDelete: (([C]) -> Void)? = nil,
+        onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -481,7 +540,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     var contentSortAscending = false
     let includeSource: Bool
     var alwaysShowThumbnails = true
-    let onRequestDelete: ((C) -> Void)?
+    let onRequestDelete: (@MainActor (C) async throws -> Void)?
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
@@ -525,7 +584,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         contentSortAscending: Bool = false,
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
-        onRequestDelete: ((C) -> Void)? = nil
+        onRequestDelete: (@MainActor (C) async throws -> Void)? = nil
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -587,7 +646,7 @@ public extension ReaderContentProtocol {
         includeSource: Bool,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
-        onDelete: (([Self]) -> Void)? = nil,
+        onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) -> some View {

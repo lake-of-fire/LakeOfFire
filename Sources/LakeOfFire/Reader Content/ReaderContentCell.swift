@@ -296,6 +296,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     Divider()
                                 }
                                 
+                                AnyView(item.bookmarkButtonView())
+                                
+                                Divider()
+                                
                                 Button(role: .destructive) {
                                     readerContentListModalsModel.confirmDeletionOf = item
                                     readerContentListModalsModel.confirmDelete = true
