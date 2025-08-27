@@ -5,6 +5,22 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
+// MARK: - Grouping Support
+
+public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {
+    public let id: String
+    public let title: String
+    public let items: [C]
+    public let initiallyExpanded: Bool
+    
+    public init(id: String, title: String, items: [C], initiallyExpanded: Bool = true) {
+        self.id = id
+        self.title = title
+        self.items = items
+        self.initiallyExpanded = initiallyExpanded
+    }
+}
+
 @globalActor
 public actor ReaderContentListActor: CachedRealmsActor {
     public static var shared = ReaderContentListActor()
@@ -388,6 +404,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     let contentSectionTitle: String?
     let allowEditing: Bool
     let onDelete: (@MainActor ([C]) async throws -> Void)?
+    // Optional custom grouping
+    let customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])?
     @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
     
@@ -395,6 +413,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     
     @StateObject private var viewModel = ReaderContentListViewModel<C>()
     @AppStorage("appTint") private var appTint: Color = Color("AccentColor")
+    @State private var groupedSections: [ReaderContentGroupingSection<C>] = []
+    @State private var sectionExpanded: [String: Bool] = [:]
+
+    // Navigation/env for selection syncing when using custom grouping
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -441,72 +466,108 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     }
     
     public var body: some View {
-        ZStack {
-            if allowEditing {
-                List(selection: $multiSelection) {
-                    listContent
-                }
-            } else {
-                List(selection: $entrySelection) {
-                    listContent
+        Group {
+            ZStack {
+                if allowEditing {
+                    List(selection: $multiSelection) {
+                        listContent
+                    }
+                } else {
+                    List(selection: $entrySelection) {
+                        listContent
+                    }
                 }
             }
-        }
-        .listStyle(.insetGrouped)
-        .listItemTint(appTint)
-        .scrollContentBackgroundIfAvailable(.hidden)
-        .modifier {
-            if #available(iOS 17, macOS 14, *) {
-                $0
-                    .listSectionSpacing(0)
-                    .contentMargins(.top, 0, for: .scrollContent)
-            } else { $0 }
-        }
-        .toolbar {
-            //#if os(iOS)
-            //            ToolbarItem(placement: .navigationBarTrailing) {
-            //                if allowEditing {
-            //                    EditButton()
-            //                }
-            //            }
-            //#endif
+            .listItemTint(appTint)
+            .scrollContentBackgroundIfAvailable(.hidden)
+            .modifier {
+                if #available(iOS 17, macOS 14, *) {
+                    $0
+                        .listSectionSpacing(0)
+                        .contentMargins(.top, 0, for: .scrollContent)
+                } else { $0 }
+            }
+            .toolbar {
+                //#if os(iOS)
+                //            ToolbarItem(placement: .navigationBarTrailing) {
+                //                if allowEditing {
+                //                    EditButton()
+                //                }
+                //            }
+                //#endif
 #if os(iOS)
-            ToolbarItem(placement: .topBarLeading) {
-                deletionToolbarButtonView
-            }
+                ToolbarItem(placement: .topBarLeading) {
+                    deletionToolbarButtonView
+                }
 #elseif os(macOS)
-            ToolbarItem(placement: .destructiveAction) {
-                deletionToolbarButtonView
-            }
+                ToolbarItem(placement: .destructiveAction) {
+                    deletionToolbarButtonView
+                }
 #endif
-        }
-        .onChange(of: multiSelection) { newSelection in
+            }
+            .onChange(of: multiSelection) { newSelection in
 #if os(iOS)
-            guard editMode?.wrappedValue != .inactive else {
-                return
-            }
+                guard editMode?.wrappedValue != .inactive else {
+                    return
+                }
 #endif
-            if newSelection.count == 1 {
-                entrySelection = newSelection.first
-            } else if newSelection.count > 1 {
-                entrySelection = nil
+                if newSelection.count == 1 {
+                    entrySelection = newSelection.first
+                } else if newSelection.count > 1 {
+                    entrySelection = nil
+                }
             }
-        }
-        .task { @MainActor in
-            try? await viewModel.load(
-                contents: contents,
-                contentFilter: contentFilter,
-                sortOrder: sortOrder,
-            )
-        }
-        .onChange(of: contents) { contents in
-            Task { @MainActor in
+            .task { @MainActor in
                 try? await viewModel.load(
                     contents: contents,
                     contentFilter: contentFilter,
                     sortOrder: sortOrder,
                 )
+                refreshGrouping()
             }
+            .onChange(of: contents) { contents in
+                Task { @MainActor in
+                    try? await viewModel.load(
+                        contents: contents,
+                        contentFilter: contentFilter,
+                        sortOrder: sortOrder,
+                    )
+                    refreshGrouping()
+                }
+            }
+            .onChange(of: viewModel.filteredContents) { _ in
+                refreshGrouping()
+            }
+        }
+        //         Attach selection/navigation syncing only when custom grouping is active
+        .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
+            guard customGrouping != nil else { return }
+            guard oldValue != itemSelection,
+                  let itemSelection = itemSelection,
+                  let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
+                  !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+            Task { @MainActor in
+                try await navigator.load(
+                    content: content,
+                    readerModeViewModel: readerModeViewModel
+                )
+            }
+        }
+        .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
+            guard customGrouping != nil else { return }
+            if oldPageURL != readerPageURL {
+                refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
+            }
+        }
+        .onChange(of: viewModel.filteredContents) { _ in
+            guard customGrouping != nil else { return }
+            Task { @MainActor in
+                refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
+            }
+        }
+        .task { @MainActor in
+            guard customGrouping != nil else { return }
+            refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
         }
     }
     
@@ -544,28 +605,83 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                 .listRowSeparatorIfAvailable(.hidden)
         }
         
-        Section {
-            if showEmptyState {
-                if #available(iOS 16, *) {
-                    emptyStateView()
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+        if customGrouping == nil {
+            Section {
+                if showEmptyState {
+                    if #available(iOS 16, *) {
+                        emptyStateView()
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+                            .listRowSeparatorIfAvailable(.hidden)
+                    }
+                } else {
+                    listItems
                         .listRowSeparatorIfAvailable(.hidden)
                 }
-            } else {
-                listItems
-                    .listRowSeparatorIfAvailable(.hidden)
+            } header: {
+                if !showEmptyState, let contentSectionTitle {
+                    Text(contentSectionTitle)
+                        .bold()
+                        .foregroundStyle(.secondary)
+                }
             }
-        } header: {
-            if !showEmptyState, let contentSectionTitle {
-                Text(contentSectionTitle)
-                    .bold()
-                    .foregroundStyle(.secondary)
-                //                    .listRowBackground(Color.clear)
+            .headerProminence(.increased)
+        } else {
+            if showEmptyState {
+                if #available(iOS 16, *) {
+                    Section {
+                        emptyStateView()
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+                            .listRowSeparatorIfAvailable(.hidden)
+                    }
+                }
+            } else {
+                ForEach(groupedSections) { section in
+                    if #available(iOS 17, macOS 14, *) {
+                        Section(isExpanded: binding(for: section.id)) {
+                            ForEach(section.items, id: \.compoundKey) { (content: C) in
+                                ReaderContentInnerListItem(
+                                    content: content,
+                                    entrySelection: $entrySelection,
+                                    includeSource: includeSource,
+                                    alwaysShowThumbnails: alwaysShowThumbnails,
+                                    viewModel: viewModel,
+                                    onRequestDelete: onRequestDelete
+                                )
+                            }
+                            .listRowSeparatorIfAvailable(.hidden)
+                        } header: {
+                            Text(section.title)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                        }
+                        .headerProminence(.increased)
+                    } else {
+                        Section {
+                            ForEach(section.items, id: \.compoundKey) { (content: C) in
+                                ReaderContentInnerListItem(
+                                    content: content,
+                                    entrySelection: $entrySelection,
+                                    includeSource: includeSource,
+                                    alwaysShowThumbnails: alwaysShowThumbnails,
+                                    viewModel: viewModel,
+                                    onRequestDelete: onRequestDelete
+                                )
+                            }
+                            .listRowSeparatorIfAvailable(.hidden)
+                        } header: {
+                            Text(section.title)
+                                .bold()
+                                .foregroundStyle(.secondary)
+                        }
+                        .headerProminence(.increased)
+                    }
+                }
             }
         }
-        .headerProminence(.increased)
     }
     
     public init(
@@ -579,6 +695,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
+        customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -592,6 +709,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         self.contentSectionTitle = contentSectionTitle
         self.allowEditing = allowEditing
         self.onDelete = onDelete
+        self.customGrouping = customGrouping
         self.headerView = headerView
         self.emptyStateView = emptyStateView
     }
@@ -710,6 +828,7 @@ public extension ReaderContentProtocol {
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
+        customGrouping: (([Self]) -> [ReaderContentGroupingSection<Self>])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) -> some View {
@@ -722,8 +841,82 @@ public extension ReaderContentProtocol {
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,
+            customGrouping: customGrouping,
             headerView: headerView,
             emptyStateView: emptyStateView
         )
+    }
+}
+
+// MARK: - Private helpers
+
+extension ReaderContentList {
+    private func binding(for id: String) -> Binding<Bool> {
+        Binding<Bool>(
+            get: { sectionExpanded[id] ?? true },
+            set: { newValue in sectionExpanded[id] = newValue }
+        )
+    }
+    
+    private func refreshGrouping() {
+        guard let customGrouping else {
+            groupedSections = []
+            sectionExpanded = [:]
+            return
+        }
+        let newGroups = customGrouping(viewModel.filteredContents)
+        var nextExpanded = sectionExpanded
+        for g in newGroups {
+            if nextExpanded[g.id] == nil {
+                nextExpanded[g.id] = g.initiallyExpanded
+            }
+        }
+        // Drop any removed groups to keep state tidy
+        let validKeys = Set(newGroups.map { $0.id })
+        nextExpanded = nextExpanded.filter { validKeys.contains($0.key) }
+        sectionExpanded = nextExpanded
+        groupedSections = newGroups
+    }
+
+    private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
+        viewModel.refreshSelectionTask?.cancel()
+        guard !isReaderProvisionallyNavigating else { return }
+        let entrySelection = entrySelection
+        let filteredContentURLs = viewModel.filteredContents.map { $0.url }
+        viewModel.refreshSelectionTask = Task.detached {
+            try Task.checkCancellation()
+            do {
+                if !readerPageURL.isNativeReaderView,
+                   let entrySelection = entrySelection,
+                   let idx = await viewModel.filteredContentIDs.firstIndex(of: entrySelection),
+                   idx < filteredContentURLs.count,
+                   !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
+                    async let task = { @MainActor in
+                        try Task.checkCancellation()
+                        self.entrySelection = nil
+                    }()
+                    try await task
+                }
+                
+                guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
+                    if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
+                        async let task = { @MainActor in
+                            try Task.checkCancellation()
+                            self.entrySelection = nil
+                        }()
+                        try await task
+                    }
+                    return
+                }
+                if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
+                    let contentKey = await viewModel.filteredContentIDs[idx]
+                    async let task = { @MainActor in
+                        try Task.checkCancellation()
+                        self.entrySelection = contentKey
+                    }()
+                    try await task
+                }
+            } catch { }
+        }
     }
 }
