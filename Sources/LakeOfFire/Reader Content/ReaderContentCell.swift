@@ -3,6 +3,8 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeOfFire
 import LakeKit
+import Combine
+// Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
@@ -19,6 +21,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var imageURL: URL?
     @Published var sourceIconURL: URL?
     @Published var sourceTitle: String?
+    // Continue Reading menu is driven by an injected provider in the environment.
 
     init() { }
     
@@ -77,6 +80,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         self.isFullArticleFinished = finished
                     }
                 }()
+                // Continue Reading state is provided externally via environment provider.
             }
         }()
     }
@@ -313,14 +317,16 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                         .labelStyle(.titleAndIcon)
                                     Divider()
                                 }
-                                
+                
                                 AnyView(self.item.bookmarkButtonView())
-                                
+                
                                 // Inject any custom menu options provided by caller
                                 if let customMenuOptions {
                                     customMenuOptions(self.item)
                                 }
-                                
+
+                                // Continue Reading controls are injected via customMenuOptions.
+
                                 if let deletable {
                                     Divider()
                                     Button(role: .destructive) {
@@ -387,5 +393,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 viewModel.imageURL = try await item.imageURLToDisplay()
             }
         }
+        // No provider-based onReceive; lists refresh via Realm publishers.
     }
 }
+
+// No NotificationCenter for list refresh; view models observe Realm and republish via Combine.

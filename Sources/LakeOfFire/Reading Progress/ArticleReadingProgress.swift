@@ -1,0 +1,28 @@
+import Foundation
+import RealmSwift
+import LakeKit
+import RealmSwiftGaps
+import SwiftUtilities
+
+fileprivate func makeArticleReadingProgressCompoundKey(url: URL) -> String {
+    return String(format: "%02X", stableHash(url.absoluteString))
+}
+
+public class ArticleReadingProgress: ReadingSession {
+    @Persisted public var sentenceIdentifiersRead: List<String>
+
+    // Web only, not for ebooks
+    @Persisted public var articleSentenceCount: Int?
+    @Persisted public var scrollPositionSentenceIdentifier: String?
+
+    // For ebooks
+    @Persisted public var fractionalCompletion: Float?
+    @Persisted public var ebookCFI: String?
+
+    // When true, exclude from Continue Reading lists
+    @Persisted public var hideFromContinueReading: Bool = false
+
+    public static func makePrimaryKey(url: URL) -> String {
+        return makeArticleReadingProgressCompoundKey(url: url)
+    }
+}
