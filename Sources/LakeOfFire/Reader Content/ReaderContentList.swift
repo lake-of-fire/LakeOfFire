@@ -622,7 +622,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
             } header: {
                 if !showEmptyState, let contentSectionTitle {
                     Text(contentSectionTitle)
-                        .bold()
                         .foregroundStyle(.secondary)
                 }
             }
@@ -655,8 +654,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                             .listRowSeparatorIfAvailable(.hidden)
                         } header: {
                             Text(section.title)
-                                .bold()
-                                .foregroundStyle(.secondary)
                         }
                         .headerProminence(.increased)
                     } else {
