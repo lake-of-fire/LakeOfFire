@@ -22,6 +22,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     var content: C
     let includeSource: Bool
     let maxCellHeight: CGFloat
+    let customMenuOptions: ((C) -> AnyView)?
     
     @StateObject var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
@@ -42,15 +43,29 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 )
             }
         } label: {
-            //            AnyView(
-            content.readerContentCellView(
-                appearance: ReaderContentCellAppearance(
-                    maxCellHeight: maxCellHeight,
-                    alwaysShowThumbnails: true,
-                    isEbookStyle: false,
-                    includeSource: includeSource
-                )
-            )
+            Group {
+                //            AnyView(
+                if let customMenuOptions {
+                    content.readerContentCellView(
+                        appearance: ReaderContentCellAppearance(
+                            maxCellHeight: maxCellHeight,
+                            alwaysShowThumbnails: true,
+                            isEbookStyle: false,
+                            includeSource: includeSource
+                        ),
+                        customMenuOptions: customMenuOptions
+                    )
+                } else {
+                    content.readerContentCellView(
+                        appearance: ReaderContentCellAppearance(
+                            maxCellHeight: maxCellHeight,
+                            alwaysShowThumbnails: true,
+                            isEbookStyle: false,
+                            includeSource: includeSource
+                        )
+                    )
+                }
+            }
             //            )
             //                .background(Color.white.opacity(0.00000001)) // Clickability
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
@@ -93,6 +108,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
     var filteredContents: [C]
     let includeSource: Bool
+    let customMenuOptions: ((C) -> AnyView)?
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
@@ -105,7 +121,8 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                     ReaderContentInnerHorizontalListItem(
                         content: content,
                         includeSource: includeSource,
-                        maxCellHeight: maxCellHeight
+                        maxCellHeight: maxCellHeight,
+                        customMenuOptions: customMenuOptions
                     )
                 }
                 //                .headerProminence(.increased)
@@ -128,10 +145,12 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     
     init(
         filteredContents: [C],
-        includeSource: Bool
+        includeSource: Bool,
+        customMenuOptions: ((C) -> AnyView)?
     ) {
         self.filteredContents = filteredContents
         self.includeSource = includeSource
+        self.customMenuOptions = customMenuOptions
     }
 }
 
@@ -139,6 +158,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     let contents: [C]
     let includeSource: Bool
     let emptyStateView: () -> EmptyState
+    let customMenuOptions: ((C) -> AnyView)?
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     
@@ -153,7 +173,8 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
                 ReaderContentInnerHorizontalList(
                     filteredContents: viewModel.filteredContents,
-                    includeSource: includeSource
+                    includeSource: includeSource,
+                    customMenuOptions: customMenuOptions
                 )
             }
             
@@ -199,6 +220,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         contentFilter: ((Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder? = nil,
         includeSource: Bool,
+        customMenuOptions: ((C) -> AnyView)? = nil,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
@@ -209,6 +231,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             self.sortOrder = sortOrder
         }
         self.includeSource = includeSource
+        self.customMenuOptions = customMenuOptions
         self.emptyStateView = { emptyStateView() }
     }
 }

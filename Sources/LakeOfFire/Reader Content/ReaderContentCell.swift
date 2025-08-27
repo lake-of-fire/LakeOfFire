@@ -110,6 +110,18 @@ extension ReaderContentProtocol {
         )
     }
     
+    // Overload that allows injecting custom menu options.
+    @ViewBuilder func readerContentCellView(
+        appearance: ReaderContentCellAppearance,
+        customMenuOptions: ((Self) -> AnyView)?
+    ) -> some View {
+        ReaderContentCell(
+            item: self,
+            appearance: appearance,
+            customMenuOptions: customMenuOptions
+        )
+    }
+    
     // Back-compat convenience
     @ViewBuilder func readerContentCellView(
         maxCellHeight: CGFloat,
@@ -183,6 +195,9 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
 struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     var appearance: ReaderContentCellAppearance
+    // Optional custom menu items to include in the trailing menu.
+    // Using AnyView avoids templating this struct with another generic.
+    var customMenuOptions: ((C) -> AnyView)? = nil
     
     static var buttonSize: CGFloat {
         return 26
@@ -288,23 +303,32 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             .labelStyle(.iconOnly)
                             .padding(.leading, 2)
 
-                        if let item = item as? (any DeletableReaderContent) {
+                        // Show menu if item is deletable or caller provided custom menu items
+                        let deletable = (self.item as? (any DeletableReaderContent))
+                        let shouldShowMenu = deletable != nil || customMenuOptions != nil
+                        if shouldShowMenu {
                             Menu {
-                                if let item = item as? ContentFile {
+                                if let item = self.item as? ContentFile {
                                     CloudDriveSyncStatusView(item: item)
                                         .labelStyle(.titleAndIcon)
                                     Divider()
                                 }
                                 
-                                AnyView(item.bookmarkButtonView())
+                                AnyView(self.item.bookmarkButtonView())
                                 
-                                Divider()
+                                // Inject any custom menu options provided by caller
+                                if let customMenuOptions {
+                                    customMenuOptions(self.item)
+                                }
                                 
-                                Button(role: .destructive) {
-                                    readerContentListModalsModel.confirmDeletionOf = [item]
-                                    readerContentListModalsModel.confirmDelete = true
-                                } label: {
-                                    Label(item.deleteActionTitle, systemImage: "trash")
+                                if let deletable {
+                                    Divider()
+                                    Button(role: .destructive) {
+                                        readerContentListModalsModel.confirmDeletionOf = [deletable]
+                                        readerContentListModalsModel.confirmDelete = true
+                                    } label: {
+                                        Label(deletable.deleteActionTitle, systemImage: "trash")
+                                    }
                                 }
                             } label: {
                                 Label("More Options", systemImage: "ellipsis")

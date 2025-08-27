@@ -254,6 +254,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     var alwaysShowThumbnails = true
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
+    let customMenuOptions: ((C) -> AnyView)?
     
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -263,14 +264,26 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @ViewBuilder private func cell(item: C) -> some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            item.readerContentCellView(
-                appearance: ReaderContentCellAppearance(
-                    maxCellHeight: maxCellHeight,
-                    alwaysShowThumbnails: alwaysShowThumbnails,
-                    isEbookStyle: item.isPhysicalMedia,
-                    includeSource: includeSource
+            if let customMenuOptions {
+                item.readerContentCellView(
+                    appearance: ReaderContentCellAppearance(
+                        maxCellHeight: maxCellHeight,
+                        alwaysShowThumbnails: alwaysShowThumbnails,
+                        isEbookStyle: item.isPhysicalMedia,
+                        includeSource: includeSource
+                    ),
+                    customMenuOptions: customMenuOptions
                 )
-            )
+            } else {
+                item.readerContentCellView(
+                    appearance: ReaderContentCellAppearance(
+                        maxCellHeight: maxCellHeight,
+                        alwaysShowThumbnails: alwaysShowThumbnails,
+                        isEbookStyle: item.isPhysicalMedia,
+                        includeSource: includeSource
+                    )
+                )
+            }
             Spacer(minLength: 0)
         }
         .tag(item.compoundKey)
@@ -356,6 +369,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     var alwaysShowThumbnails = true
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
+    let customMenuOptions: ((C) -> AnyView)?
     
     var body: some View {
         Group {
@@ -366,7 +380,8 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     includeSource: includeSource,
                     alwaysShowThumbnails: alwaysShowThumbnails,
                     viewModel: viewModel,
-                    onRequestDelete: onRequestDelete
+                    onRequestDelete: onRequestDelete,
+                    customMenuOptions: customMenuOptions
                 )
             }
             //#if os(iOS)
@@ -383,13 +398,15 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
         viewModel: ReaderContentListViewModel<C>,
-        onRequestDelete: (@MainActor (C) async throws -> Void)? = nil
+        onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
+        self.customMenuOptions = customMenuOptions
     }
 }
 
@@ -408,6 +425,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     let customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])?
     @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
+    let customMenuOptions: ((C) -> AnyView)?
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
@@ -452,7 +470,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
             contentSortAscending: contentSortAscending,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
-            onRequestDelete: onRequestDelete
+            onRequestDelete: onRequestDelete,
+            customMenuOptions: customMenuOptions
         )
     }
     
@@ -648,7 +667,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                                     includeSource: includeSource,
                                     alwaysShowThumbnails: alwaysShowThumbnails,
                                     viewModel: viewModel,
-                                    onRequestDelete: onRequestDelete
+                                    onRequestDelete: onRequestDelete,
+                                    customMenuOptions: customMenuOptions
                                 )
                             }
                             .listRowSeparatorIfAvailable(.hidden)
@@ -665,7 +685,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                                     includeSource: includeSource,
                                     alwaysShowThumbnails: alwaysShowThumbnails,
                                     viewModel: viewModel,
-                                    onRequestDelete: onRequestDelete
+                                    onRequestDelete: onRequestDelete,
+                                    customMenuOptions: customMenuOptions
                                 )
                             }
                             .listRowSeparatorIfAvailable(.hidden)
@@ -693,6 +714,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -707,6 +729,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         self.allowEditing = allowEditing
         self.onDelete = onDelete
         self.customGrouping = customGrouping
+        self.customMenuOptions = customMenuOptions
         self.headerView = headerView
         self.emptyStateView = emptyStateView
     }
@@ -719,6 +742,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let includeSource: Bool
     var alwaysShowThumbnails = true
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
+    let customMenuOptions: ((C) -> AnyView)?
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
@@ -730,7 +754,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
             viewModel: viewModel,
-            onRequestDelete: onRequestDelete
+            onRequestDelete: onRequestDelete,
+            customMenuOptions: customMenuOptions
         )
         .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
             guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
@@ -762,7 +787,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         contentSortAscending: Bool = false,
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
-        onRequestDelete: (@MainActor (C) async throws -> Void)? = nil
+        onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -770,6 +796,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.includeSource = includeSource
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.onRequestDelete = onRequestDelete
+        self.customMenuOptions = customMenuOptions
     }
     
     private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
@@ -826,6 +853,7 @@ public extension ReaderContentProtocol {
         allowEditing: Bool = false,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
         customGrouping: (([Self]) -> [ReaderContentGroupingSection<Self>])? = nil,
+        customMenuOptions: ((Self) -> AnyView)? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) -> some View {
@@ -839,6 +867,7 @@ public extension ReaderContentProtocol {
             allowEditing: allowEditing,
             onDelete: onDelete,
             customGrouping: customGrouping,
+            customMenuOptions: customMenuOptions,
             headerView: headerView,
             emptyStateView: emptyStateView
         )
