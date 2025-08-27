@@ -32,7 +32,7 @@ public struct ReaderToastBar<Content: View>: View {
                     
                     if onDismiss != nil {
                         Spacer(minLength: 0)
-                        DismissButton(.xMark) {
+                        DismissButton(.xMark, fill: true) {
                             withAnimation {
                                 isPresented = false
                                 onDismiss?()
