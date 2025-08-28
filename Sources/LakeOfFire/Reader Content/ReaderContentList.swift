@@ -487,7 +487,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     public var body: some View {
         Group {
             ZStack {
-                if allowEditing {
+                if allowEditing && editMode?.wrappedValue != .inactive {
                     List(selection: $multiSelection) {
                         listContent
                     }
