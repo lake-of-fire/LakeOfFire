@@ -101,6 +101,103 @@ public extension View {
     }
 }
 
+// MARK: - Shared selection syncing
+
+private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
+    @ObservedObject var viewModel: ReaderContentListViewModel<C>
+    @Binding var entrySelection: String?
+    let enabled: Bool
+
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
+                guard enabled else { return }
+                guard oldValue != itemSelection,
+                      let itemSelection = itemSelection,
+                      let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
+                      !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+                Task { @MainActor in
+                    try await navigator.load(
+                        content: content,
+                        readerModeViewModel: readerModeViewModel
+                    )
+                }
+            }
+            .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
+                guard enabled else { return }
+                if oldPageURL != readerPageURL {
+                    refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
+                }
+            }
+            .onChange(of: viewModel.filteredContents) { _ in
+                guard enabled else { return }
+                Task { @MainActor in
+                    refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
+                }
+            }
+            .task { @MainActor in
+                guard enabled else { return }
+                refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
+            }
+    }
+
+    private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
+        viewModel.refreshSelectionTask?.cancel()
+        guard !isReaderProvisionallyNavigating else { return }
+        let currentSelection = entrySelection
+        let filteredContentURLs = viewModel.filteredContents.map { $0.url }
+        viewModel.refreshSelectionTask = Task.detached {
+            try Task.checkCancellation()
+            do {
+                if !readerPageURL.isNativeReaderView,
+                   let currentSelection = currentSelection,
+                   let idx = await viewModel.filteredContentIDs.firstIndex(of: currentSelection),
+                   idx < filteredContentURLs.count,
+                   !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
+                    async let task = { @MainActor in
+                        try Task.checkCancellation()
+                        self.entrySelection = nil
+                    }()
+                    try await task
+                }
+
+                guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
+                    if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), currentSelection != nil {
+                        async let task = { @MainActor in
+                            try Task.checkCancellation()
+                            self.entrySelection = nil
+                        }()
+                        try await task
+                    }
+                    return
+                }
+                if currentSelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
+                    let contentKey = await viewModel.filteredContentIDs[idx]
+                    async let task = { @MainActor in
+                        try Task.checkCancellation()
+                        self.entrySelection = contentKey
+                    }()
+                    try await task
+                }
+            } catch { }
+        }
+    }
+}
+
+private extension View {
+    func readerContentSelectionSync<C: ReaderContentProtocol>(
+        viewModel: ReaderContentListViewModel<C>,
+        entrySelection: Binding<String?>,
+        enabled: Bool
+    ) -> some View {
+        modifier(ReaderContentSelectionSyncModifier(viewModel: viewModel, entrySelection: entrySelection, enabled: enabled))
+    }
+}
+
 struct ListItemToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button {
@@ -558,36 +655,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                 refreshGrouping()
             }
         }
-        //         Attach selection/navigation syncing only when custom grouping is active
-        .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-            guard customGrouping != nil else { return }
-            guard oldValue != itemSelection,
-                  let itemSelection = itemSelection,
-                  let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
-                  !content.url.matchesReaderURL(readerContent.pageURL) else { return }
-            Task { @MainActor in
-                try await navigator.load(
-                    content: content,
-                    readerModeViewModel: readerModeViewModel
-                )
-            }
-        }
-        .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
-            guard customGrouping != nil else { return }
-            if oldPageURL != readerPageURL {
-                refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
-            }
-        }
-        .onChange(of: viewModel.filteredContents) { _ in
-            guard customGrouping != nil else { return }
-            Task { @MainActor in
-                refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
-            }
-        }
-        .task { @MainActor in
-            guard customGrouping != nil else { return }
-            refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
-        }
+        .readerContentSelectionSync(viewModel: viewModel, entrySelection: $entrySelection, enabled: customGrouping != nil)
     }
     
     @ViewBuilder
@@ -744,10 +812,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     
-    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    @EnvironmentObject private var readerContent: ReaderContent
-    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    
     public var body: some View {
         ReaderContentInnerListItems(
             entrySelection: $entrySelection,
@@ -757,28 +821,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
-        .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
-            guard oldValue != itemSelection, let itemSelection = itemSelection, let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }), !content.url.matchesReaderURL(readerContent.pageURL) else { return }
-            Task { @MainActor in
-                try await navigator.load(
-                    content: content,
-                    readerModeViewModel: readerModeViewModel
-                )
-            }
-        }
-        .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
-            if oldPageURL != readerPageURL {
-                refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
-            }
-        }
-        .onChange(of: viewModel.filteredContents) { contents in
-            Task { @MainActor in
-                refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
-            }
-        }
-        .task { @MainActor in
-            refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
-        }
+        .readerContentSelectionSync(viewModel: viewModel, entrySelection: $entrySelection, enabled: true)
     }
     
     public init(
@@ -799,47 +842,6 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.customMenuOptions = customMenuOptions
     }
     
-    private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
-        viewModel.refreshSelectionTask?.cancel()
-        guard !isReaderProvisionallyNavigating else { return }
-        let entrySelection = entrySelection
-        let filteredContentURLs = viewModel.filteredContents.map { $0.url }
-        viewModel.refreshSelectionTask = Task.detached {
-            try Task.checkCancellation()
-            do {
-                if !readerPageURL.isNativeReaderView,
-                   let entrySelection = entrySelection,
-                   let idx = await viewModel.filteredContentIDs.firstIndex(of: entrySelection),
-                   idx < filteredContentURLs.count,
-                   !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
-                    async let task = { @MainActor in
-                        try Task.checkCancellation()
-                        self.entrySelection = nil
-                    }()
-                    try await task
-                }
-                
-                guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
-                    if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
-                        async let task = { @MainActor in
-                            try Task.checkCancellation()
-                            self.entrySelection = nil
-                        }()
-                        try await task
-                    }
-                    return
-                }
-                if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
-                    let contentKey = await viewModel.filteredContentIDs[idx]
-                    async let task = { @MainActor in
-                        try Task.checkCancellation()
-                        self.entrySelection = contentKey
-                    }()
-                    try await task
-                }
-            } catch { }
-        }
-    }
 }
 
 public extension ReaderContentProtocol {
@@ -904,45 +906,4 @@ extension ReaderContentList {
         groupedSections = newGroups
     }
 
-    private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
-        viewModel.refreshSelectionTask?.cancel()
-        guard !isReaderProvisionallyNavigating else { return }
-        let entrySelection = entrySelection
-        let filteredContentURLs = viewModel.filteredContents.map { $0.url }
-        viewModel.refreshSelectionTask = Task.detached {
-            try Task.checkCancellation()
-            do {
-                if !readerPageURL.isNativeReaderView,
-                   let entrySelection = entrySelection,
-                   let idx = await viewModel.filteredContentIDs.firstIndex(of: entrySelection),
-                   idx < filteredContentURLs.count,
-                   !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
-                    async let task = { @MainActor in
-                        try Task.checkCancellation()
-                        self.entrySelection = nil
-                    }()
-                    try await task
-                }
-                
-                guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
-                    if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), entrySelection != nil {
-                        async let task = { @MainActor in
-                            try Task.checkCancellation()
-                            self.entrySelection = nil
-                        }()
-                        try await task
-                    }
-                    return
-                }
-                if entrySelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
-                    let contentKey = await viewModel.filteredContentIDs[idx]
-                    async let task = { @MainActor in
-                        try Task.checkCancellation()
-                        self.entrySelection = contentKey
-                    }()
-                    try await task
-                }
-            } catch { }
-        }
-    }
 }
