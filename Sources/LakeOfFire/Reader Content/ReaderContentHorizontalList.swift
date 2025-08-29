@@ -66,6 +66,11 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                     )
                 }
             }
+            .modifier {
+                if #available(iOS 17, macOS 14, *) {
+                    $0.background(.background.secondary)
+                } else { $0.background(.secondary.opacity(0.25)) }
+            }
             //            )
             //                .background(Color.white.opacity(0.00000001)) // Clickability
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
