@@ -368,14 +368,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             minWidth: appearance.maxCellHeight,
             idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : (viewModel.imageURL == nil ? nil : appearance.maxCellHeight)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-#if os(macOS)
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(.secondary.opacity(0.2))
-                .shadow(radius: 5)
-        }
-#endif
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }

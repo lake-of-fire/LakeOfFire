@@ -71,6 +71,14 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                     $0.background(.background.secondary)
                 } else { $0.background(.secondary.opacity(0.25)) }
             }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+#if os(macOS)
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(.secondary.opacity(0.2))
+                    .shadow(radius: 5)
+            }
+#endif
             //            )
             //                .background(Color.white.opacity(0.00000001)) // Clickability
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
