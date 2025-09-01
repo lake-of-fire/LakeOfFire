@@ -84,7 +84,9 @@ public struct FeedView: View {
                                 systemImageName: "newspaper.fill"
                             )
                         }
+#if os(iOS)
                         .listStyle(.insetGrouped)
+#endif
                     }
                 }
             }
