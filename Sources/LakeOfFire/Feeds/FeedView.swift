@@ -66,7 +66,8 @@ public struct FeedView: View {
                         ReaderContentHorizontalList(
                             contents: entries,
                             sortOrder: .publicationDate,
-                            includeSource: false
+                            includeSource: false,
+                            contentSelection: $contentSelection
                         ) {
                             EmptyView()
                         }
