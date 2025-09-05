@@ -2,6 +2,7 @@ import SwiftUI
 import Combine
 import RealmSwiftGaps
 import RealmSwift
+import SwiftUtilities
 
 @MainActor
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
@@ -22,7 +23,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
+                .debounceLeadingTrailing(for: .seconds(0.5), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -35,7 +36,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
+                .debounceLeadingTrailing(for: .seconds(0.5), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }

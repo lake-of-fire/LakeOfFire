@@ -8,6 +8,7 @@ import BackgroundAssets
 import Collections
 import SwiftUIDownloads
 import RealmSwiftGaps
+import SwiftUtilities
 
 let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
 
@@ -303,7 +304,7 @@ public class LibraryDataManager: NSObject {
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
         Task { @MainActor in
             DownloadController.shared.$finishedDownloads
-                .debounce(for: .seconds(0.25), scheduler: RunLoop.main)
+                .debounceLeadingTrailing(for: .seconds(0.25), scheduler: RunLoop.main)
                 .sink(receiveValue: { [weak self] feedDownloads in
                     guard let self = self else { return }
                     importOPMLTask?.cancel()
@@ -366,7 +367,7 @@ public class LibraryDataManager: NSObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }
@@ -379,7 +380,7 @@ public class LibraryDataManager: NSObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         guard let self = self else { return }

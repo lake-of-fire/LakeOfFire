@@ -2,6 +2,7 @@ import SwiftUI
 import Combine
 import RealmSwift
 import RealmSwiftGaps
+import SwiftUtilities
 import SwiftUIWebView
 
 let libraryScriptFormSectionsQueue = DispatchQueue(label: "LibraryScriptFormSections")
@@ -48,7 +49,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
     init() {
         $scriptTitle
             .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { @MainActor [weak self] scriptTitle in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
@@ -61,7 +62,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $scriptText
             .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { @MainActor [weak self] scriptText in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)
@@ -122,7 +123,7 @@ class LibraryScriptFormSectionsViewModel: ObservableObject {
             .store(in: &cancellables)
         $scriptPreviewURL
             .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { @MainActor [weak self] scriptPreviewURL in
                 guard let self = self, let script = script else { return }
                 let scriptRef = ThreadSafeReference(to: script)

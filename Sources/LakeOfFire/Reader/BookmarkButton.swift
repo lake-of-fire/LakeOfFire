@@ -59,7 +59,7 @@ fileprivate class BookmarkButtonViewModel: ObservableObject {
                 .collectionPublisher(keyPaths: ["isDeleted", "compoundKey"])
                 .subscribe(on: bookmarksQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.2), scheduler: bookmarksQueue)
+                .debounceLeadingTrailing(for: .seconds(0.2), scheduler: bookmarksQueue)
                 .receive(on: bookmarksQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in

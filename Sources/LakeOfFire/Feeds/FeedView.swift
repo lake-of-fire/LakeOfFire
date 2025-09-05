@@ -4,6 +4,7 @@ import RealmSwiftGaps
 import AsyncView
 import LakeKit
 import Combine
+import SwiftUtilities
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
@@ -24,7 +25,7 @@ public class FeedViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: feedQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in

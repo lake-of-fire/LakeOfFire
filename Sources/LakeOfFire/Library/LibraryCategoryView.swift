@@ -82,7 +82,7 @@ class LibraryCategoryViewModel: ObservableObject {
         
         $categoryTitle
             .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { categoryTitle in
                 Task { @MainActor in
                     try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in
@@ -94,7 +94,7 @@ class LibraryCategoryViewModel: ObservableObject {
             .store(in: &cancellables)
         $categoryBackgroundImageURL
             .removeDuplicates()
-            .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+            .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
             .sink { categoryBackgroundImageURL in
                 Task { @MainActor in
                     try await Realm.asyncWrite(ThreadSafeReference(to: category), configuration: LibraryDataManager.realmConfiguration) { _, category in

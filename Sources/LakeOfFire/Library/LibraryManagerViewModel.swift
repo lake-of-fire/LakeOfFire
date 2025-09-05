@@ -1,6 +1,7 @@
 import SwiftUI
 import RealmSwift
 import Combine
+import SwiftUtilities
 import OPML
 import UniformTypeIdentifiers
 import RealmSwiftGaps
@@ -148,7 +149,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                             self?.exportOPMLTask?.cancel()
                         }
                     })
-                    .debounce(for: .seconds(2), scheduler: libraryDataQueue)
+                    .debounceLeadingTrailing(for: .seconds(2), scheduler: libraryDataQueue)
                     .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                         Task { @MainActor [weak self] in
                             self?.refreshOPMLExport()
@@ -161,7 +162,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.2), scheduler: RunLoop.main)
+                .debounceLeadingTrailing(for: .seconds(0.2), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.objectWillChange.send()
@@ -173,7 +174,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: RunLoop.main)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         let currentConfigurationID = libraryConfiguration?.id

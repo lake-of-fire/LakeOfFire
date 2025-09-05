@@ -26,7 +26,7 @@ class LibraryCategoriesViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryCategoriesQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.refreshData()
@@ -38,7 +38,7 @@ class LibraryCategoriesViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryCategoriesQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryCategoriesQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryCategoriesQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.refreshData()

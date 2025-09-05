@@ -155,7 +155,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.5), scheduler: libraryDataQueue)
+                .debounceLeadingTrailing(for: .seconds(0.5), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -172,7 +172,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedTitle
                     .dropFirst()
                     .removeDuplicates()
-                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
                     .sink { [weak self] feedTitle in
                         guard let self else { return }
                         writeFeedAsync { feed in
@@ -183,7 +183,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedDescription
                     .dropFirst()
                     .removeDuplicates()
-                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
                     .sink { [weak self] feedDescription in
                         guard let self else { return }
                         writeFeedAsync { feed in
@@ -204,7 +204,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedURL
                     .dropFirst()
                     .removeDuplicates()
-                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
                     .sink { [weak self] feedURL in
                         guard let self else { return }
                         writeFeedAsync { feed in
@@ -219,7 +219,7 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
                 $feedIconURL
                     .dropFirst()
                     .removeDuplicates()
-                    .debounce(for: .seconds(0.35), scheduler: DispatchQueue.main)
+                    .debounceLeadingTrailing(for: .seconds(0.35), scheduler: DispatchQueue.main)
                     .sink { [weak self] feedIconURL in
                         guard let self else { return }
                         writeFeedAsync { feed in
