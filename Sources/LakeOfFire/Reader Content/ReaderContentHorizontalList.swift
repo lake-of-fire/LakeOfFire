@@ -114,10 +114,10 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
         }
-        .enableInjection()
+        //.enableInjection()
     }
     
-    @ObserveInjection var forceRedraw
+    //@ObserveInjection var forceRedraw
 }
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
@@ -155,10 +155,10 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
         //                }
         //            }
         //        }
-        .enableInjection()
+        //.enableInjection()
     }
     
-    @ObserveInjection var forceRedraw
+    //@ObserveInjection var forceRedraw
     
     init(
         filteredContents: [C],
@@ -230,10 +230,10 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
         }
-        .enableInjection()
+        //.enableInjection()
     }
     
-    @ObserveInjection var forceRedraw
+    //@ObserveInjection var forceRedraw
     
     /// Initializer with a view builder for the empty state (required).
     public init(

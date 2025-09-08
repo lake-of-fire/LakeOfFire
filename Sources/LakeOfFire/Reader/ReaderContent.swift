@@ -14,7 +14,7 @@ public class ReaderContent: ObservableObject {
         $content
             .sink { [weak self] newContent in
                 guard let self else { return }
-                debugPrint("# new content", newContent?.url)
+//                debugPrint("# new content", newContent?.url)
                 self.locationBarTitle = newContent?.locationBarTitle
             }
             .store(in: &cancellables)

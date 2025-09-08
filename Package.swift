@@ -95,9 +95,9 @@ let package = Package(
                 .copy("Resources/User Scripts/"),
             ],
             linkerSettings: [
-                .unsafeFlags(
-                    ["-Xlinker", "-interposable"],
-                    .when(configuration: .debug))
+//                .unsafeFlags(
+//                    ["-Xlinker", "-interposable"],
+//                    .when(configuration: .debug))
             ]
         ),
 //        .testTarget(
