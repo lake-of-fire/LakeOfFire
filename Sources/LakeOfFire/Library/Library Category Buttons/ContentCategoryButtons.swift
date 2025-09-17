@@ -62,6 +62,13 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     }
 }
 
+private struct ContentCategoryViewWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 public struct ContentCategoryButtons<AdditionalCategories: View>: View {
     @Binding var feedSelection: String?
     @Binding var categorySelection: String?
@@ -72,27 +79,70 @@ public struct ContentCategoryButtons<AdditionalCategories: View>: View {
     @StateObject private var viewModel: ContentCategoryButtonsViewModel
     
     @ScaledMetric(relativeTo: .headline) private var minWidth: CGFloat = 190
-    
-    //    private var gridColumns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+    @State private var availableWidth: CGFloat = 0
+
     private var gridColumns: [GridItem] {
         get {
             [GridItem(.adaptive(minimum: minWidth))] //, maximum: maxWidth))]
         }
     }
     
-    public var body: some View {
-        LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
-            additionalCategories
-            
-            ForEach(viewModel.filteredCategories) { category in
-                FeedCategoryButton(
-                    category: category,
-                    feedSelection: $feedSelection,
-                    categorySelection: $categorySelection,
-                    isCompact: isCompact
-                )
+    private func chunked<T>(_ items: [T], into columns: Int) -> [[T]] {
+        guard columns > 0 else { return [items] }
+        var result: [[T]] = []
+        var row: [T] = []
+        row.reserveCapacity(columns)
+        for item in items {
+            row.append(item)
+            if row.count == columns {
+                result.append(row)
+                row.removeAll(keepingCapacity: true)
             }
         }
+        if !row.isEmpty {
+            result.append(row)
+        }
+        return result
+    }
+    
+    public var body: some View {
+        let columns = max(Int(max(availableWidth, 1) / max(minWidth, 1)), 1)
+        let rows = chunked(viewModel.filteredCategories, into: columns)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            additionalCategories
+
+            ForEach(rows.indices, id: \.self) { rowIndex in
+                let row = rows[rowIndex]
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(row) { category in
+                        FeedCategoryButton(
+                            category: category,
+                            feedSelection: $feedSelection,
+                            categorySelection: $categorySelection,
+                            isCompact: isCompact
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    if row.count < columns {
+                        ForEach(0..<(columns - row.count), id: \.self) { _ in
+                            Color.clear.frame(maxWidth: .infinity)
+                        }
+                    }
+                }
+            }
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: ContentCategoryViewWidthKey.self, value: proxy.size.width)
+            }
+        )
+        .onPreferenceChange(ContentCategoryViewWidthKey.self) { width in
+            if width != availableWidth {
+                availableWidth = width
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
     
     public init(

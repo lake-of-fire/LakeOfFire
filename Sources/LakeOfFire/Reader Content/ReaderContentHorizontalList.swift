@@ -132,7 +132,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     
     var body: some View {
         ScrollView(.horizontal) {
-            LazyHStack {
+            HStack {
                 ForEach(filteredContents, id: \.compoundKey) { (content: C) in
                     ReaderContentInnerHorizontalListItem(
                         content: content,

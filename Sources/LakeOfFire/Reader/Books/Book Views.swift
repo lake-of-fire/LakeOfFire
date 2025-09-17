@@ -32,7 +32,7 @@ struct HorizontalBooks: View {
  
     var body: some View {
         ScrollView(.horizontal) {
-            LazyHStack {
+            HStack {
                 ForEach(publications) { publication in
                     BookGridCell(
                         imageURL: publication.coverURL,

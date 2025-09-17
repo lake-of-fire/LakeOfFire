@@ -291,7 +291,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         
                         if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
                             ProgressView(value: min(1, readingProgressFloat))
-                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
                         }
                     }
 #if os(macOS)
