@@ -148,6 +148,11 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
             //            .fixedSize()
             //            .padding(.horizontal)
         }
+        .modifier {
+            if #available(iOS 17, macOS 14, *) {
+                $0.scrollClipDisabled()
+            } else { $0 }
+        }
         //        .geometryReader { geometry in
         //            Task { @MainActor in
         //                if viewWidth != geometry.size.width {

@@ -101,6 +101,21 @@ public extension View {
     }
 }
 
+private extension View {
+    func readerContentListRowStyle(top: CGFloat = 0, bottom: CGFloat = 12) -> some View {
+        self
+            .listRowBackground(Color.clear)
+            .listRowInsets(.init(top: top, leading: 0, bottom: bottom, trailing: 0))
+            .modifier { content in
+                if #available(iOS 15, macOS 12, *) {
+                    content.listRowSeparator(.hidden)
+                } else {
+                    content
+                }
+            }
+    }
+}
+
 // MARK: - Shared selection syncing
 
 private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
@@ -481,11 +496,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     customMenuOptions: customMenuOptions
                 )
             }
-            //#if os(iOS)
-            //            .modifier {
-            //                $0.listRowInsets(.init(top: 4, leading: 8, bottom: 4, trailing: 8))
-            //            }
-            //#endif
+            .readerContentListRowStyle()
         }
         .frame(minHeight: 10)
     }
@@ -687,9 +698,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     private var listContent: some View {
         Section {
             headerView()
-                .listRowBackground(Color.clear)
-                .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
-                .listRowSeparatorIfAvailable(.hidden)
+                .readerContentListRowStyle(top: 0, bottom: 0)
         }
         
         if customGrouping == nil {
@@ -698,13 +707,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     if #available(iOS 16, *) {
                         emptyStateView()
                             .frame(maxHeight: .infinity, alignment: .top)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
-                            .listRowSeparatorIfAvailable(.hidden)
+                            .readerContentListRowStyle(top: 20, bottom: 0)
                     }
                 } else {
                     listItems
-                        .listRowSeparatorIfAvailable(.hidden)
+                        .readerContentListRowStyle()
                 }
             } header: {
                 if !showEmptyState, let contentSectionTitle {
@@ -719,9 +726,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     Section {
                         emptyStateView()
                             .frame(maxHeight: .infinity, alignment: .top)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
-                            .listRowSeparatorIfAvailable(.hidden)
+                            .readerContentListRowStyle(top: 20, bottom: 0)
                     }
                 }
             } else {
@@ -739,7 +744,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                                     customMenuOptions: customMenuOptions
                                 )
                             }
-                            .listRowSeparatorIfAvailable(.hidden)
+                            .readerContentListRowStyle()
                         } header: {
                             Text(section.title)
                         }
@@ -757,7 +762,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                                     customMenuOptions: customMenuOptions
                                 )
                             }
-                            .listRowSeparatorIfAvailable(.hidden)
+                            .readerContentListRowStyle()
                         } header: {
                             Text(section.title)
                                 .bold()
