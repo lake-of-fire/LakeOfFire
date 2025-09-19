@@ -160,7 +160,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
             }
     }
 
-    private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
+private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigating: Bool, oldPageURL: URL? = nil) {
         viewModel.refreshSelectionTask?.cancel()
         guard !isReaderProvisionallyNavigating else { return }
         let currentSelection = entrySelection
@@ -199,6 +199,32 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     try await task
                 }
             } catch { }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func readerContentListBackground(_ appearance: StackListAppearance) -> some View {
+        if #available(iOS 16, macOS 13, *) {
+            if appearance == .grouped {
+                self
+            } else {
+                self.scrollContentBackground(.hidden)
+            }
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func readerContentListLayoutAdjustments() -> some View {
+        if #available(iOS 17, macOS 14, *) {
+            self
+                .listSectionSpacing(0)
+                .contentMargins(.top, 0, for: .scrollContent)
+        } else {
+            self
         }
     }
 }
@@ -372,32 +398,34 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140
-    
+
     @ViewBuilder private func cell(item: C) -> some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-            if let customMenuOptions {
-                item.readerContentCellView(
-                    appearance: ReaderContentCellAppearance(
-                        maxCellHeight: maxCellHeight,
-                        alwaysShowThumbnails: alwaysShowThumbnails,
-                        isEbookStyle: item.isPhysicalMedia,
-                        includeSource: includeSource
-                    ),
-                    customMenuOptions: customMenuOptions
-                )
-            } else {
-                item.readerContentCellView(
-                    appearance: ReaderContentCellAppearance(
-                        maxCellHeight: maxCellHeight,
-                        alwaysShowThumbnails: alwaysShowThumbnails,
-                        isEbookStyle: item.isPhysicalMedia,
-                        includeSource: includeSource
+        GroupBox {
+            HStack(spacing: 0) {
+                if let customMenuOptions {
+                    item.readerContentCellView(
+                        appearance: ReaderContentCellAppearance(
+                            maxCellHeight: maxCellHeight,
+                            alwaysShowThumbnails: alwaysShowThumbnails,
+                            isEbookStyle: item.isPhysicalMedia,
+                            includeSource: includeSource
+                        ),
+                        customMenuOptions: customMenuOptions
                     )
-                )
+                } else {
+                    item.readerContentCellView(
+                        appearance: ReaderContentCellAppearance(
+                            maxCellHeight: maxCellHeight,
+                            alwaysShowThumbnails: alwaysShowThumbnails,
+                            isEbookStyle: item.isPhysicalMedia,
+                            includeSource: includeSource
+                        )
+                    )
+                }
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .groupBoxStyle(.groupedStackList)
         .tag(item.compoundKey)
     }
     
@@ -546,6 +574,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    @Environment(\.stackListStyle) private var stackListAppearance
     
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -592,28 +621,52 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         return nil
     }
     
-    public var body: some View {
-        Group {
-            ZStack {
-                if allowEditing && editMode?.wrappedValue != .inactive {
-                    List(selection: $multiSelection) {
-                        listContent
-                    }
-                } else {
-                    List(selection: $entrySelection) {
-                        listContent
-                    }
+    private var effectiveStackListAppearance: StackListAppearance {
+        switch stackListAppearance {
+        case .grouped:
+            return .grouped
+        case .plain, .automatic:
+            return .grouped
+        }
+    }
+
+    private var listContainer: some View {
+        let base = ZStack {
+            if allowEditing && editMode?.wrappedValue != .inactive {
+                List(selection: $multiSelection) {
+                    listContent
+                }
+            } else {
+                List(selection: $entrySelection) {
+                    listContent
                 }
             }
-            .listItemTint(appTint)
-            .scrollContentBackgroundIfAvailable(.hidden)
-            .modifier {
-                if #available(iOS 17, macOS 14, *) {
-                    $0
-                        .listSectionSpacing(0)
-                        .contentMargins(.top, 0, for: .scrollContent)
-                } else { $0 }
-            }
+        }
+        .listItemTint(appTint)
+        .readerContentListBackground(effectiveStackListAppearance)
+        .readerContentListLayoutAdjustments()
+        return applyGroupBoxStyle(to: base)
+    }
+
+    private func applyGroupBoxStyle<V: View>(to view: V) -> AnyView {
+        if effectiveStackListAppearance == .grouped {
+            return AnyView(
+                view
+                    .groupBoxStyle(.groupedStackList)
+                    .environment(\.stackListStyle, .grouped)
+            )
+        } else {
+            return AnyView(
+                view
+                    .groupBoxStyle(.stackList)
+                    .environment(\.stackListStyle, .plain)
+            )
+        }
+    }
+
+    public var body: some View {
+        Group {
+            listContainer
             .toolbar {
                 //#if os(iOS)
                 //            ToolbarItem(placement: .navigationBarTrailing) {

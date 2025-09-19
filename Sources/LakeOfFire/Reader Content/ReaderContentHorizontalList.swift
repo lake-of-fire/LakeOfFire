@@ -30,6 +30,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    @Environment(\.stackListStyle) private var stackListStyle
     
     @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
     //    @State private var viewWidth: CGFloat = 0
@@ -45,8 +46,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 )
             }
         } label: {
-            Group {
-                //            AnyView(
+            VStack(spacing: 0) {
                 if let customMenuOptions {
                     content.readerContentCellView(
                         appearance: ReaderContentCellAppearance(
@@ -68,15 +68,13 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                     )
                 }
             }
-            .modifier {
-                if #available(iOS 17, macOS 14, *) {
-                    $0.background(.background.secondary)
-                } else { $0.background(.secondary.opacity(0.25)) }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(cardBackground)
+            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 #if os(macOS)
             .overlay {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 20)
                     .stroke(.secondary.opacity(0.2))
                     .shadow(radius: 5)
             }
@@ -116,8 +114,13 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         }
         //.enableInjection()
     }
-    
+
     //@ObserveInjection var forceRedraw
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(stackListStyle == .grouped ? Color.stackListCardBackgroundGrouped : Color.stackListCardBackgroundPlain)
+    }
 }
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {

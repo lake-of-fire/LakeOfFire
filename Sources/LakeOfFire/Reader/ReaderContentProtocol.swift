@@ -142,7 +142,7 @@ extension String {
     }
 }
 
-fileprivate let longDateFormatter: DateFormatter = {
+fileprivate let humanReadableAbsoluteDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateStyle = .long
     formatter.timeStyle = .none
@@ -152,28 +152,17 @@ fileprivate let longDateFormatter: DateFormatter = {
 public extension ReaderContentProtocol {
     var humanReadablePublicationDate: String? {
         guard let publicationDate else { return nil}
-        
+
         if displayAbsolutePublicationDate {
-            return longDateFormatter.string(from: publicationDate)
+            return ReaderDateFormatter.absoluteString(
+                from: publicationDate,
+                dateFormatter: humanReadableAbsoluteDateFormatter
+            )
         } else {
-            let interval = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .nanosecond], from: publicationDate, to: Date())
-            let intervalText: String
-            if let year = interval.year, year > 0 {
-                intervalText = "\(year) year\(year != 1 ? "s" : "")"
-            } else if let month = interval.month, month > 0 {
-                intervalText = "\(month) month\(month != 1 ? "s" : "")"
-            } else if let day = interval.day, day > 0 {
-                intervalText = "\(day) day\(day != 1 ? "s" : "")"
-            } else if let hour = interval.hour, hour > 0 {
-                intervalText = "\(hour) hour\(hour != 1 ? "s" : "")"
-            } else if let minute = interval.minute, minute > 0 {
-                intervalText = "\(minute) minute\(minute != 1 ? "s" : "")"
-            } else if let nanosecond = interval.nanosecond, nanosecond > 0 {
-                intervalText = "\(nanosecond / 1000000000) second\(nanosecond != 1000000000 ? "s" : "")"
-            } else {
-                return nil
-            }
-            return "\(intervalText) ago"
+            return ReaderDateFormatter.relativeOrAbsoluteString(
+                from: publicationDate,
+                fallbackFormatter: humanReadableAbsoluteDateFormatter
+            )
         }
     }
     

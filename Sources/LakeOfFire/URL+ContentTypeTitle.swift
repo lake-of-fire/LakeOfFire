@@ -6,12 +6,39 @@ public extension URL {
             return nil
         }
         if isEBookURL {
-            return "book"
+            return "This Book"
         } else if isFileURL {
-            return "file"
+            return "This File"
         } else if isSnippetURL {
-            return "snippet"
+            return "This Snippet"
         }
-        return "webpage"
+        return "This Webpage"
+    }
+
+    var hostContentTypeTitle: String? {
+        guard !isNativeReaderView else {
+            return nil
+        }
+        if isEBookURL {
+            return "All Books"
+        } else if isFileURL {
+            return "All Files"
+        } else if isSnippetURL {
+            return "All Snippets"
+        }
+        guard let hostDisplayName = hostDisplayName else {
+            return "All Webpages"
+        }
+        return "All Pages on \(hostDisplayName)"
+    }
+}
+
+private extension URL {
+    var hostDisplayName: String? {
+        guard let host else { return nil }
+        if host.hasPrefix("www.") {
+            return String(host.dropFirst(4))
+        }
+        return host
     }
 }

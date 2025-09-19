@@ -215,8 +215,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ScaledMetric private var progressViewPaddingBottom: CGFloat = 32 / 2
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
-    private let padding: CGFloat = 8
-    
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
     }
@@ -229,7 +227,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
     
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: 12) {
             //            if let imageUrl = viewModel.imageURL {
             //                if appearance.isEbookStyle {
             //                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: appearance.maxCellHeight)
@@ -239,8 +237,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             //                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
             //                }
             //            }
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
                     if appearance.includeSource {
                         HStack(alignment: .center) {
                             if let sourceIconURL = viewModel.sourceIconURL {
@@ -269,11 +267,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .padding(.trailing, padding)
+                .padding(.trailing, 4)
 
                 Spacer(minLength: 0)
                 
-                HStack(alignment: .bottom, spacing: 0) {
+                HStack(alignment: .bottom, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             if let publicationDate = viewModel.humanReadablePublicationDate {
@@ -357,11 +355,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .buttonStyle(.clearBordered)
                     .foregroundStyle(.secondary)
                     .controlSize(.mini)
-                    .padding(.trailing, padding / 2)
+                    .padding(.trailing, 4)
                 }
             }
-            .padding(.leading, padding)
-            .padding(.top, padding)
             .frame(maxHeight: appearance.maxCellHeight)
         }
         .frame(
