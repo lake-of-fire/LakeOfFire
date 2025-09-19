@@ -214,9 +214,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @ScaledMetric private var progressViewPaddingBottom: CGFloat = 32 / 2
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    
+    @State private var captionHeight: CGFloat = 0
+    @State private var menuHeight: CGFloat = 0
+
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
+    }
+
+    private var footerBaselineOffset: CGFloat {
+        max(0, (menuHeight - captionHeight) / 2)
     }
     
     private var isProgressVisible: Bool {
@@ -278,6 +284,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 Text("\(publicationDate)")
                                     .lineLimit(1)
                                     .font(.footnote)
+                                    .background(HeightReporter(key: ReaderContentCellCaptionHeightKey.self, onChange: { captionHeight = $0 }))
                             }
                             if let item = item as? ContentFile {
                                 CloudDriveSyncStatusView(item: item)
@@ -337,6 +344,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             } label: {
                                 Label("More Options", systemImage: "ellipsis")
                                     .labelStyle(.iconOnly)
+                                    .background(HeightReporter(key: ReaderContentCellMenuHeightKey.self, onChange: { menuHeight = $0 }))
                             }
                             .modifier {
                                 if #available(iOS 16, macOS 13, *) {
@@ -356,6 +364,17 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .foregroundStyle(.secondary)
                     .controlSize(.mini)
                     .padding(.trailing, 4)
+                }
+                .offset(y: footerBaselineOffset)
+                .onPreferenceChange(ClearBorderedButtonHeightKey.self) { value in
+                    if value > 0 {
+                        menuHeight = value
+                    }
+                }
+                .onPreferenceChange(ReaderContentCellMenuHeightKey.self) { value in
+                    if value > 0 {
+                        menuHeight = value
+                    }
                 }
             }
             .frame(maxHeight: appearance.maxCellHeight)
@@ -386,3 +405,35 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 }
 
 // No NotificationCenter for list refresh; view models observe Realm and republish via Combine.
+
+private struct ReaderContentCellCaptionHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ReaderContentCellMenuHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct HeightReporter<Key: PreferenceKey>: View where Key.Value == CGFloat {
+    let key: Key.Type
+    let onChange: (CGFloat) -> Void
+
+    init(key: Key.Type, onChange: @escaping (CGFloat) -> Void) {
+        self.key = key
+        self.onChange = onChange
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .preference(key: key, value: proxy.size.height)
+        }
+        .onPreferenceChange(key, perform: onChange)
+    }
+}

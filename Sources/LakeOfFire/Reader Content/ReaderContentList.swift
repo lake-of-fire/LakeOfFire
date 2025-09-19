@@ -649,19 +649,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     }
 
     private func applyGroupBoxStyle<V: View>(to view: V) -> AnyView {
-        if effectiveStackListAppearance == .grouped {
-            return AnyView(
-                view
-                    .groupBoxStyle(.groupedStackList)
-                    .environment(\.stackListStyle, .grouped)
-            )
-        } else {
-            return AnyView(
-                view
-                    .groupBoxStyle(.stackList)
-                    .environment(\.stackListStyle, .plain)
-            )
-        }
+        AnyView(view.applyStackListGroupBoxStyle(isGrouped: effectiveStackListAppearance == .grouped))
     }
 
     public var body: some View {
