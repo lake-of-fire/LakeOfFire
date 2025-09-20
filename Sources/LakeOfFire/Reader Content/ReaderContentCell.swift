@@ -216,13 +216,21 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     @State private var captionHeight: CGFloat = 0
     @State private var menuHeight: CGFloat = 0
+    @State private var menuTrailingPadding: CGFloat = 0
 
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
     }
 
     private var footerBaselineOffset: CGFloat {
-        max(0, (menuHeight - captionHeight) / 2)
+        let caption = captionHeight > 0 ? captionHeight : fallbackCaptionHeight
+        guard caption > 0 else { return 0 }
+        return max(0, (menuHeight - caption) / 2)
+    }
+
+    private var fallbackCaptionHeight: CGFloat {
+        if isProgressVisible { return 14 }
+        return 16
     }
     
     private var isProgressVisible: Bool {
@@ -284,7 +292,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 Text("\(publicationDate)")
                                     .lineLimit(1)
                                     .font(.footnote)
-                                    .background(HeightReporter(key: ReaderContentCellCaptionHeightKey.self, onChange: { captionHeight = $0 }))
+                                    .background(
+                                        HeightReporter(key: ReaderContentCellCaptionHeightKey.self) { newHeight in
+                                            if abs(captionHeight - newHeight) > 0.5 {
+                                                debugPrint("# ReaderContentCell captionHeight=\(newHeight) menuHeight=\(menuHeight)")
+                                            }
+                                            captionHeight = newHeight
+                                        }
+                                    )
                             }
                             if let item = item as? ContentFile {
                                 CloudDriveSyncStatusView(item: item)
@@ -344,7 +359,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             } label: {
                                 Label("More Options", systemImage: "ellipsis")
                                     .labelStyle(.iconOnly)
-                                    .background(HeightReporter(key: ReaderContentCellMenuHeightKey.self, onChange: { menuHeight = $0 }))
                             }
                             .modifier {
                                 if #available(iOS 16, macOS 13, *) {
@@ -362,20 +376,20 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     }
                     .buttonStyle(.clearBordered)
                     .foregroundStyle(.secondary)
-                    .controlSize(.mini)
+                    .controlSize(.small)
                     .padding(.trailing, 4)
+                    .background(
+                        HeightReporter(key: ClearBorderedButtonHeightKey.self) { newHeight in
+                            if abs(menuHeight - newHeight) > 0.5 {
+                                debugPrint("# ReaderContentCell menuHeight=\(newHeight) captionHeight=\(captionHeight)")
+                            }
+                            menuHeight = newHeight
+                        }
+                    )
                 }
+                .padding(.trailing, -menuTrailingPadding)
+                .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
                 .offset(y: footerBaselineOffset)
-                .onPreferenceChange(ClearBorderedButtonHeightKey.self) { value in
-                    if value > 0 {
-                        menuHeight = value
-                    }
-                }
-                .onPreferenceChange(ReaderContentCellMenuHeightKey.self) { value in
-                    if value > 0 {
-                        menuHeight = value
-                    }
-                }
             }
             .frame(maxHeight: appearance.maxCellHeight)
         }
@@ -407,13 +421,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 // No NotificationCenter for list refresh; view models observe Realm and republish via Combine.
 
 private struct ReaderContentCellCaptionHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct ReaderContentCellMenuHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()

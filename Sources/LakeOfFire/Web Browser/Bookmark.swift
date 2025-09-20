@@ -135,10 +135,8 @@ extension Bookmark: SyncSkippablePropertiesModel {
 }
 
 public extension Bookmark {
-    @RealmBackgroundActor
-    static func get(forURL url: URL) async throws -> Self? {
-        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.bookmarkRealmConfiguration)
-        return bookmarkRealm.objects(Self.self)
+    static func get(forURL url: URL, realm: Realm) -> Self? {
+        return realm.objects(Self.self)
             .filter(NSPredicate(format: "isDeleted == false AND url == %@", url.absoluteString as CVarArg))
             .sorted(byKeyPath: "createdAt", ascending: false)
             .first

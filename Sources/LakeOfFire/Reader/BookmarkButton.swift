@@ -126,6 +126,7 @@ private struct BookmarkToggleStyle: ToggleStyle {
         } label: {
             Label(configuration.isOn ? "Saved for Later" : "Save for Later", systemImage: configuration.isOn ? "bookmark.fill" : "bookmark")
         }
+        .controlSize(.small)
         .buttonStyle(.clearBordered)
     }
 }

@@ -54,7 +54,7 @@ public extension HistoryRecord {
                 return false
             }
             
-            if let bookmark = try await Bookmark.get(forURL: url), !bookmark.isDeleted {
+            if let bookmark = Bookmark.get(forURL: url, realm: realm), !bookmark.isDeleted {
                 return false
             }
             

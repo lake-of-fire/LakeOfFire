@@ -87,10 +87,10 @@ public struct ReaderContentLoader {
  
         var contentFile: ContentFile?
         if !skipContentFiles {
-            contentFile = try await ContentFile.get(forURL: url)
+            contentFile = ContentFile.get(forURL: url, realm: bookmarkRealm)
         }
-        let history = try await HistoryRecord.get(forURL: url)
-        let bookmark = try await Bookmark.get(forURL: url)
+        let history = HistoryRecord.get(forURL: url, realm: historyRealm)
+        let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
         
         var feed: FeedEntry?
         if !skipFeedEntries {

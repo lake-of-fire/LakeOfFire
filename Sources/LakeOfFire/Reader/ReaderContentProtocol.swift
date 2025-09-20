@@ -315,7 +315,8 @@ public extension ReaderContentProtocol {
                 content.configureBookmark(bookmark)
             }
             
-            if let historyRecord = try await HistoryRecord.get(forURL: url), historyRecord.isDemoted != false {
+            let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+            if let historyRecord = HistoryRecord.get(forURL: url, realm: historyRealm), historyRecord.isDemoted != false {
                 try await historyRecord.realm?.asyncWrite {
                     historyRecord.isDemoted = false
                     historyRecord.refreshChangeMetadata(explicitlyModified: true)
