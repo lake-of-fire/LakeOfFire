@@ -294,9 +294,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     .font(.footnote)
                                     .background(
                                         HeightReporter(key: ReaderContentCellCaptionHeightKey.self) { newHeight in
-                                            if abs(captionHeight - newHeight) > 0.5 {
-                                                debugPrint("# ReaderContentCell captionHeight=\(newHeight) menuHeight=\(menuHeight)")
-                                            }
                                             captionHeight = newHeight
                                         }
                                     )
@@ -380,9 +377,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .padding(.trailing, 4)
                     .background(
                         HeightReporter(key: ClearBorderedButtonHeightKey.self) { newHeight in
-                            if abs(menuHeight - newHeight) > 0.5 {
-                                debugPrint("# ReaderContentCell menuHeight=\(newHeight) captionHeight=\(captionHeight)")
-                            }
                             menuHeight = newHeight
                         }
                     )
