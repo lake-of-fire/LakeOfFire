@@ -7,6 +7,7 @@ import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 import ZIPFoundation
+import UniformTypeIdentifiers
 
 @globalActor
 private actor ReaderFileManagerActor {
@@ -89,7 +90,19 @@ public class ReaderFileManager: ObservableObject {
     @MainActor @Published public var files: [ContentFile]?
     
     @MainActor public var readerContentFiles: [ContentFile]? {
-        return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
+        let allowedMimeTypes = Set(readerContentMimeTypes.compactMap { $0.preferredMIMEType?.lowercased() })
+        let ebookMimeTypes = Set([UTType.epub, .epubZip].compactMap { $0.preferredMIMEType?.lowercased() })
+
+        return files?.filter { content in
+            guard !content.isDeleted else { return false }
+
+            let mimeType = content.mimeType.lowercased()
+            if ebookMimeTypes.contains(mimeType) || content.url.pathExtension.lowercased() == "epub" {
+                return false
+            }
+
+            return allowedMimeTypes.contains(mimeType)
+        }
     }
     
     private var hasInitializedUbiquityContainerIdentifier = false

@@ -109,12 +109,12 @@ public struct ContentCategoryButtons<AdditionalCategories: View>: View {
         let columns = max(Int(max(availableWidth, 1) / max(minWidth, 1)), 1)
         let rows = chunked(viewModel.filteredCategories, into: columns)
 
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
             additionalCategories
 
             ForEach(rows.indices, id: \.self) { rowIndex in
                 let row = rows[rowIndex]
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: 6) {
                     ForEach(row) { category in
                         FeedCategoryButton(
                             category: category,
@@ -198,11 +198,11 @@ struct ReaderCategoryButtonStyle: ButtonStyle {
         //            .clipShape(Capsule())
         //#else
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: 12)
                     .stroke(.secondary.opacity(0.2))
                     .shadow(radius: 5)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         //#endif
             .buttonStyle(.borderless)
         //            .buttonStyle(.plain)
@@ -224,9 +224,9 @@ public struct FeedCategoryButtonLabel: View {
     var showEditingDisabled: Bool = false
     
 #if os(iOS)
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 44
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 46
 #else
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 30
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 32
 #endif
     
 #if os(iOS)

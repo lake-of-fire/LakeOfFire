@@ -18,6 +18,11 @@ public struct UserLibraryCategoryButtons: View {
                 return feedCategory.opmlURL == nil
             },
             additionalCategories: {
+                BooksCategoryButton(
+                    categorySelection: $categorySelection,
+                    isCompact: isCompact
+                )
+
 #if DEBUG
                 MangaCategoryButton(
                     categorySelection: $categorySelection,
@@ -25,7 +30,7 @@ public struct UserLibraryCategoryButtons: View {
                 )
 #endif
                 
-                BooksCategoryButton(
+                FilesCategoryButton(
                     categorySelection: $categorySelection,
                     isCompact: isCompact
                 )
@@ -83,6 +88,34 @@ public struct BooksCategoryButton: View {
             }
         }) {
             FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, isCompact: isCompact)
+        }
+        .buttonStyle(ReaderCategoryButtonStyle())
+    }
+    
+    public init(
+        categorySelection: Binding<String?>,
+        isCompact: Bool
+    ) {
+        _categorySelection = categorySelection
+        self.isCompact = isCompact
+    }
+}
+
+public struct FilesCategoryButton: View {
+    @Binding var categorySelection: String?
+    var isCompact = false
+    
+    public var body: some View {
+        Button(action: {
+            withAnimation {
+                categorySelection = "files"
+            }
+        }) {
+            FeedCategoryButtonLabel(
+                title: "Documents",
+                backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/documents.jpg")!,
+                isCompact: isCompact
+            )
         }
         .buttonStyle(ReaderCategoryButtonStyle())
     }
