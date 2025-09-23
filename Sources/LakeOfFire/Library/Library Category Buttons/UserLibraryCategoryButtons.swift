@@ -22,18 +22,18 @@ public struct UserLibraryCategoryButtons: View {
                     categorySelection: $categorySelection,
                     isCompact: isCompact
                 )
-
+                
+                FilesCategoryButton(
+                    categorySelection: $categorySelection,
+                    isCompact: isCompact
+                )
+                
 #if DEBUG
                 MangaCategoryButton(
                     categorySelection: $categorySelection,
                     isCompact: isCompact
                 )
 #endif
-                
-                FilesCategoryButton(
-                    categorySelection: $categorySelection,
-                    isCompact: isCompact
-                )
             }
         )
     }
