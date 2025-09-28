@@ -89,6 +89,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+        debugPrint("# FLASH ReaderViewModel.onNavigationCommitted", newState.pageURL, content.url)
         if let historyRecord = content as? HistoryRecord {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
             Task { @RealmBackgroundActor in
@@ -103,26 +104,32 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
+        debugPrint("# FLASH ReaderViewModel.onNavigationFinished", newState.pageURL, content.url)
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
             refreshSettingsInWebView(content: content, newState: newState)
-            
+
             completion?(newState)
+            debugPrint("# FLASH ReaderViewModel.onNavigationFinished completed", newState.pageURL)
         }
     }
     
     // TODO: Move to Loader probably
     @MainActor
     public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        debugPrint("# FLASH ReaderViewModel.getContent start", pageURL)
         if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
             try Task.checkCancellation()
+            debugPrint("# FLASH ReaderViewModel.getContent resolved via loader", contentURL)
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
+            debugPrint("# FLASH ReaderViewModel.getContent resolved direct", pageURL)
             return content
         }
         try Task.checkCancellation()
+        debugPrint("# FLASH ReaderViewModel.getContent no match", pageURL)
         return nil
     }
     

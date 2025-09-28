@@ -47,7 +47,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     public var locationBarTitle: String? {
         let url = url
         if url.isSnippetURL {
-            return "Snippet (\(createdAt.formatted())"
+            return "Snippet: \(createdAt.formatted())"
         } else if url.isEBookURL {
             return title
         } else if url.isReaderFileURL {

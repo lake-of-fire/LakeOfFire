@@ -29,8 +29,11 @@ fileprivate class ReaderWebViewHandler {
     var readerModeViewModel: ReaderModeViewModel
     var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     var scriptCaller: WebViewScriptCaller
-    
+
     private let navigationTaskManager = NavigationTaskManager()
+    private var lastHandledURL: URL?
+    private var lastHandledIsProvisionallyNavigating: Bool?
+    private var lastHandledIsLoading: Bool?
     
     init(
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
@@ -55,38 +58,64 @@ fileprivate class ReaderWebViewHandler {
     }
     
     func handleNewURL(state: WebViewState) async throws {
-//        debugPrint("Handle", state, self.readerViewModel.state, self.readerContent.pageURL)
-        
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating)
+
+        if state.pageURL.absoluteString == "about:blank", let existingContent = readerContent.content {
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL skipping about:blank", existingContent.url)
+            return
+        }
+
+        if let lastHandledURL, lastHandledURL.matchesReaderURL(state.pageURL), lastHandledIsProvisionallyNavigating == state.isProvisionallyNavigating, lastHandledIsLoading == state.isLoading {
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL skipping duplicate", state.pageURL)
+            return
+        }
+
+        lastHandledURL = state.pageURL
+        lastHandledIsProvisionallyNavigating = state.isProvisionallyNavigating
+        lastHandledIsLoading = state.isLoading
+
         try Task.checkCancellation()
         try await readerContent.load(url: state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerContent loaded", state.pageURL)
         try Task.checkCancellation()
         guard let content = readerContent.content else {
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL missing readerContent.content", state.pageURL)
             return
         }
         // TODO: Add onURLChanged or rename these view model methods to be more generic...
         try await readerViewModel.onNavigationCommitted(content: content, newState: state)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerViewModel committed", state.pageURL)
         try Task.checkCancellation()
         try await readerModeViewModel.onNavigationCommitted(
             readerContent: readerContent,
             newState: state,
             scriptCaller: scriptCaller
         )
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerModeViewModel committed", state.pageURL)
         try Task.checkCancellation()
         guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
         try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL mediaPlayer committed", state.pageURL)
         try Task.checkCancellation()
-        
+
         await self.readerModeViewModel.onNavigationFinished(
             newState: state,
             scriptCaller: scriptCaller
         )
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerModeViewModel finished", state.pageURL)
         try Task.checkCancellation()
         self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
             // no external callback here
         }
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerViewModel finished", state.pageURL)
     }
-    
+
     func onNavigationCommitted(state: WebViewState) {
+        if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
+            debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted skipping about:blank")
+            return
+        }
+        debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", state.pageURL)
         navigationTaskManager.startOnNavigationCommitted {
             do {
                 try await self.handleNewURL(state: state)
@@ -99,29 +128,46 @@ fileprivate class ReaderWebViewHandler {
             }
         }
     }
-    
+
     func onNavigationFinished(state: WebViewState) {
+        if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
+            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished skipping about:blank")
+            return
+        }
+        debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished event", state.pageURL)
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
             await self.readerModeViewModel.onNavigationFinished(
                 newState: state,
                 scriptCaller: scriptCaller
             )
+            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", state.pageURL)
             guard let content = self.readerContent.content else { return }
             self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
                 // no external callback here
             }
+            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerViewModel", state.pageURL)
         }
     }
-    
+
     func onNavigationFailed(state: WebViewState) {
+        if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
+            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed skipping about:blank")
+            return
+        }
+        debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed event", state.pageURL)
         navigationTaskManager.startOnNavigationFailed { @MainActor in
             self.readerModeViewModel.onNavigationFailed(newState: state)
             // no external callback here
         }
     }
-    
+
     func onURLChanged(state: WebViewState) {
+        if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
+            debugPrint("# FLASH ReaderWebViewHandler.onURLChanged skipping about:blank")
+            return
+        }
+        debugPrint("# FLASH ReaderWebViewHandler.onURLChanged event", state.pageURL)
         navigationTaskManager.startOnURLChanged { @MainActor in
             do {
                 try await self.handleNewURL(state: state)

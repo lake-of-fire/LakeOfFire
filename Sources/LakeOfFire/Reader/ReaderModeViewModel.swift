@@ -20,6 +20,8 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
+    private var lastFallbackLoaderURL: URL?
+    private var lastRenderedReadabilityURL: URL?
     
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
@@ -52,10 +54,19 @@ public class ReaderModeViewModel: ObservableObject {
     
     internal func readerModeLoading(_ isLoading: Bool) {
         if isLoading && !isReaderModeLoading {
+            debugPrint("# FLASH ReaderModeViewModel.readerModeLoading", isLoading)
             isReaderModeLoading = true
         } else if !isLoading && isReaderModeLoading {
+            debugPrint("# FLASH ReaderModeViewModel.readerModeLoading", isLoading)
             isReaderModeLoading = false
         }
+    }
+
+    @MainActor
+    public func invalidateLastRenderedReadabilityURL() {
+        debugPrint("# FLASH ReaderModeViewModel.invalidateLastRenderedReadabilityURL clearing", lastRenderedReadabilityURL?.absoluteString ?? "nil")
+        lastRenderedReadabilityURL = nil
+        lastFallbackLoaderURL = nil
     }
     
     public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
@@ -84,8 +95,10 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+        debugPrint("# FLASH ReaderModeViewModel.showReaderView invoked", readerContent.pageURL)
         guard let readabilityContent else {
             // FIME: WHY THIS CALLED WHEN LOAD??
+            debugPrint("# FLASH ReaderModeViewModel.showReaderView missing readabilityContent", readerContent.pageURL)
             readerModeLoading(false)
             return
         }
@@ -93,6 +106,7 @@ public class ReaderModeViewModel: ObservableObject {
         readerModeLoading(true)
         Task { @MainActor in
             guard contentURL == readerContent.pageURL else {
+                debugPrint("# FLASH ReaderModeViewModel.showReaderView contentURL mismatch", contentURL, readerContent.pageURL)
                 readerModeLoading(false)
                 return
             }
@@ -105,6 +119,7 @@ public class ReaderModeViewModel: ObservableObject {
                     scriptCaller: scriptCaller
                 )
             } catch {
+                debugPrint("# FLASH ReaderModeViewModel.showReaderView showReadabilityContent failed", error.localizedDescription)
                 print(error)
                 readerModeLoading(false)
             }
@@ -121,11 +136,27 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async throws {
         guard let content = try await readerContent.getContent() else {
+            debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent missing content")
             print("No content set to show in reader mode")
             readerModeLoading(false)
             return
         }
         let url = content.url
+        debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent start", url, "renderTo", renderToSelector ?? "<root>")
+
+        if let lastRenderedReadabilityURL {
+            debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent duplicate check", lastRenderedReadabilityURL.absoluteString, "candidate", url.absoluteString)
+            if lastRenderedReadabilityURL.matchesReaderURL(url) {
+                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent skipping duplicate render", url)
+                readerModeLoading(false)
+                return
+            }
+        }
+
+        if let lastFallbackLoaderURL {
+            debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent clearing lastFallbackLoaderURL", lastFallbackLoaderURL.absoluteString)
+            self.lastFallbackLoaderURL = nil
+        }
         
         Task {
             try await scriptCaller.evaluateJavaScript("""
@@ -163,8 +194,9 @@ public class ReaderModeViewModel: ObservableObject {
         
         try await { @ReaderViewModelActor [weak self] in
             var doc: SwiftSoup.Document?
-            
+
             if let processReadabilityContent {
+                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent processReadabilityContent", url)
                 doc = await processReadabilityContent(
                     readabilityContent,
                     url,
@@ -183,6 +215,7 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                 )
             } else {
+                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent direct parse", url)
                 let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
                 let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
                 doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
@@ -194,6 +227,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             
             guard let doc else {
+                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent doc missing", url)
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
@@ -211,8 +245,9 @@ public class ReaderModeViewModel: ObservableObject {
             )
 
             var html = try doc.outerHtml()
-            
+
             if let processHTML {
+                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent processHTML", url)
                 html = await processHTML(
                     html,
                     false
@@ -222,11 +257,13 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedContent = html
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
+                    debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent reader URL mismatch", url, readerContent.pageURL)
                     print("Readability content URL mismatch", url, readerContent.pageURL)
                     readerModeLoading(false)
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                    debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent injecting into frame", frameInfo)
                     try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
@@ -255,7 +292,8 @@ public class ReaderModeViewModel: ObservableObject {
                         style.textContent = css
                         document.head.appendChild(style)
                         document.body?.classList.add('readability-mode')
-                        """,
+                        """
+                        ,
                         arguments: [
                             "renderToSelector": renderToSelector ?? "",
                             "html": transformedContent,
@@ -263,6 +301,7 @@ public class ReaderModeViewModel: ObservableObject {
                         ], in: frameInfo)
                     readerModeLoading(false)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
+                    debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent navigator.load htmlData", url)
                     navigator?.load(
                         htmlData,
                         mimeType: "text/html",
@@ -270,19 +309,24 @@ public class ReaderModeViewModel: ObservableObject {
                         baseURL: url
                     )
                 }
+
 //                try await { @MainActor in
 //                    readerModeLoading(false)
 //                }()
             }()
+            try await { @MainActor in
+                lastRenderedReadabilityURL = url
+            }()
         }()
     }
-    
+
     @MainActor
     public func onNavigationCommitted(
         readerContent: ReaderContent,
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async throws {
+        debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted", newState.pageURL)
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil
@@ -290,6 +334,7 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
 
         guard let content = readerContent.content else {
+            debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted missing readerContent.content", newState.pageURL)
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
             readerModeLoading(false)
             return
@@ -298,6 +343,7 @@ public class ReaderModeViewModel: ObservableObject {
         
         let committedURL = content.url
         guard committedURL.matchesReaderURL(newState.pageURL) else {
+            debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted URL mismatch", committedURL, newState.pageURL)
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
             readerModeLoading(false)
             return
@@ -315,29 +361,48 @@ public class ReaderModeViewModel: ObservableObject {
             }
             try Task.checkCancellation()
         }
-        
+
         if newState.pageURL.isReaderURLLoaderURL {
+            debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted reader loader url", committedURL)
             if let readerFileManager, var html = try await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 try Task.checkCancellation()
-                
+
                 let currentURL = readerContent.pageURL
                 guard committedURL.matchesReaderURL(currentURL) else {
+                    debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted currentURL mismatch", committedURL, currentURL)
                     print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
                     readerModeLoading(false)
                     return
                 }
-                if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil, html.range(of: "<body.*?data-is-next-load-in-reader-mode=['\"]true['\"]>", options: .regularExpression) == nil {
-                    // TODO: is this code path still used at all?
+                if let lastFallbackLoaderURL, lastFallbackLoaderURL == newState.pageURL {
+                    debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted skipping duplicate fallback", newState.pageURL)
+                    return
+                }
+
+                let hasReadabilityMarkup = html.range(of: #"<body.*?class['"].*?readability-mode.*?['"]>"#, options: .regularExpression) != nil || html.range(of: #"<body.*?data-is-next-load-in-reader-mode['"]true['"]>"#, options: .regularExpression) != nil
+                let shouldUseReadability = committedURL.isSnippetURL || hasReadabilityMarkup
+
+                if shouldUseReadability {
+                    readabilityContent = html
+                    if committedURL.isSnippetURL {
+                        debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted snippet readabilityContent captured", committedURL)
+                    } else {
+                        debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted readabilityContent captured", committedURL)
+                    }
+                    showReaderView(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller
+                    )
+                    lastFallbackLoaderURL = nil
+                } else {
                     if let _ = html.range(of: "<body", options: .caseInsensitive) {
                         html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
                     } else {
                         html = "<body data-is-next-load-in-reader-mode='true'>\n" + html + "</html>"
                     }
                     try Task.checkCancellation()
-                    // TODO: Fix content rules... images still load...
-//                    contentRules = contentRulesForReadabilityLoading
-
                     if let htmlData = html.data(using: .utf8) {
+                        debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted navigator.load fallback html", committedURL)
                         Task { @MainActor in
                             navigator?.load(
                                 htmlData,
@@ -347,19 +412,14 @@ public class ReaderModeViewModel: ObservableObject {
                             )
                         }
                     }
-//                    readerModeLoading(false)
-                } else {
-                    readabilityContent = html
-                    showReaderView(
-                        readerContent: readerContent,
-                        scriptCaller: scriptCaller
-                    )
+                    lastFallbackLoaderURL = newState.pageURL
                 }
             } else {
                 guard let navigator else {
                     print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
                     return
                 }
+                debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted navigator.load fallback request", committedURL)
                 navigator.load(URLRequest(url: committedURL))
             }
 //        } else {
@@ -368,6 +428,8 @@ public class ReaderModeViewModel: ObservableObject {
 //                debugPrint("# on commit, read mode NOT avail, loading false")
 //                readerModeLoading(false)
 //            }
+        } else {
+            lastFallbackLoaderURL = nil
         }
     }
     
@@ -376,6 +438,7 @@ public class ReaderModeViewModel: ObservableObject {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
+        debugPrint("# FLASH ReaderModeViewModel.onNavigationFinished", newState.pageURL)
         if !newState.pageURL.isReaderURLLoaderURL {
             do {
                 let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
@@ -383,13 +446,15 @@ public class ReaderModeViewModel: ObservableObject {
                     readerModeLoading(false)
                 }
             } catch {
+                debugPrint("# FLASH ReaderModeViewModel.onNavigationFinished JS failed", error.localizedDescription)
                 readerModeLoading(false)
             }
         }
     }
-    
+
     @MainActor
     public func onNavigationFailed(newState: WebViewState) {
+        debugPrint("# FLASH ReaderModeViewModel.onNavigationFailed", newState.pageURL)
         readerModeLoading(false)
     }
 }

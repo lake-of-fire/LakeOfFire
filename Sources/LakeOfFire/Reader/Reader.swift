@@ -151,17 +151,22 @@ public extension WebViewNavigator {
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
+        debugPrint("# FLASH WebViewNavigator.load begin", content.url)
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            debugPrint("# FLASH WebViewNavigator.load resolved url", url)
             if let readerModeViewModel {
                 let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
-                    
+
                     let isLoading = (previouslyLoadedContent ?? content).isReaderModeByDefault
                     readerModeViewModel.readerModeLoading(isLoading)
-//                    debugPrint("# WebViewNavigator load", isLoading)
+                    debugPrint("# FLASH WebViewNavigator.load readerModeLoading", isLoading, url)
                 }
             }
             load(URLRequest(url: url))
+            debugPrint("# FLASH WebViewNavigator.load request issued", url)
+        } else {
+            debugPrint("# FLASH WebViewNavigator.load missing url", content.url)
         }
     }
 }
