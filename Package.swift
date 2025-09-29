@@ -8,6 +8,9 @@ let package = Package(
     platforms: [.macOS(.v13), .iOS(.v15)],
     products: [
         .library(
+            name: "LakeOfFireShareSupport",
+            targets: ["LakeOfFireShareSupport"]),
+        .library(
             name: "LakeOfFire",
 //            type: .dynamic,
             targets: ["LakeOfFire"]),
@@ -53,6 +56,13 @@ let package = Package(
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         // Targets can depend on other targets in this package, and on products in packages this package depends on.
+        .target(
+            name: "LakeOfFireShareSupport",
+            dependencies: [
+                .product(name: "SwiftSoup", package: "SwiftSoup"),
+                .product(name: "SwiftUtilities", package: "SwiftUtilities")
+            ]
+        ),
         .target(
             name: "LakeOfFire",
             dependencies: [
