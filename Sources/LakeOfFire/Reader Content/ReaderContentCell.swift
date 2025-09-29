@@ -46,21 +46,26 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 try Task.checkCancellation()
 
                 let sourceURL = item.url
-                var sourceTitle = sourceURL.host
+                var sourceTitle: String?
                 // TODO: Store and get site names from OpenGraph
                 var sourceIconURL: URL?
                 
-                if includeSource, sourceURL.isHTTP {
-                    let readerRealm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                    try Task.checkCancellation()
-                    
-                    if let feedEntry = item as? FeedEntry ?? readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
+                if includeSource {
+                    if sourceURL.isSnippetURL {
+                        sourceTitle = "Snippet"
+                    } else if sourceURL.isHTTP {
+                        sourceTitle = sourceURL.host
+                        let readerRealm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
                         try Task.checkCancellation()
-                        sourceTitle = feed.title
-                        sourceIconURL = feed.iconUrl
-                    } else if let host = sourceURL.host {
-                        sourceTitle = host.removingPrefix("www.")
-                        sourceIconURL = item.sourceIconURL
+                        
+                        if let feedEntry = item as? FeedEntry ?? readerRealm.objects(FeedEntry.self).filter(NSPredicate(format: "url == %@", sourceURL.absoluteString as CVarArg)).first, let feed = feedEntry.getFeed() {
+                            try Task.checkCancellation()
+                            sourceTitle = feed.title
+                            sourceIconURL = feed.iconUrl
+                        } else if let host = sourceURL.host {
+                            sourceTitle = host.removingPrefix("www.")
+                            sourceIconURL = item.sourceIconURL
+                        }
                     }
                 }
                 
