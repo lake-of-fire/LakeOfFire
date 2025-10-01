@@ -247,15 +247,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            //            if let imageUrl = viewModel.imageURL {
-            //                if appearance.isEbookStyle {
-            //                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: appearance.maxCellHeight)
-            ////                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-            //                } else {
-            //                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: appearance.maxCellHeight, maxHeight: appearance.maxCellHeight)
-            //                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
-            //                }
-            //            }
+            if let imageUrl = viewModel.imageURL {
+                if appearance.isEbookStyle {
+                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: appearance.maxCellHeight)
+                    //                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
+                } else {
+                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: appearance.maxCellHeight, maxHeight: appearance.maxCellHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
+                }
+            }
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     if appearance.includeSource {

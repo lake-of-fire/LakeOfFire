@@ -723,6 +723,17 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                             break
                         }
                     }
+                } else if property.type == .data {
+                    if let entryData = entry.value(forKey: propertyName) as? Data,
+                       let existingData = existingEntry.value(forKey: propertyName) as? Data {
+                        if entryData != existingData {
+                            differentEntries.append(entry)
+                            break
+                        }
+                    } else if (entry.value(forKey: propertyName) as? Data) != (existingEntry.value(forKey: propertyName) as? Data) {
+                        differentEntries.append(entry)
+                        break
+                    }
                 } else if property.isArray {
                     switch property.type {
                     case .string:

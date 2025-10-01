@@ -159,7 +159,7 @@ public extension Bookmark {
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url, html: html)
+        let pk = Bookmark.makePrimaryKey(url: url)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
             //            await realm.asyncRefresh()
             try await realm.asyncWrite {

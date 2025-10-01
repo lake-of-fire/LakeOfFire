@@ -236,12 +236,12 @@ public extension ReaderContentProtocol {
         }
     }
     
-    static func makePrimaryKey(url: URL? = nil, html: String? = nil) -> String? {
-        return makeReaderContentCompoundKey(url: url, html: html)
+    static func makePrimaryKey(url: URL? = nil, existingKey: String? = nil) -> String? {
+        return makeReaderContentCompoundKey(url: url, existingKey: existingKey)
     }
-    
+
     func updateCompoundKey() {
-        compoundKey = makeReaderContentCompoundKey(url: url, html: html) ?? compoundKey
+        compoundKey = makeReaderContentCompoundKey(url: url, existingKey: compoundKey) ?? compoundKey
     }
 }
 
@@ -332,7 +332,7 @@ public extension ReaderContentProtocol {
         let html = html
         return try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url, html: html)), !bookmark.isDeleted else {
+            guard let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: Bookmark.makePrimaryKey(url: url)), !bookmark.isDeleted else {
                 return false
             }
 //            await realm.asyncRefresh()
@@ -346,7 +346,7 @@ public extension ReaderContentProtocol {
     
     func bookmarkExists(realmConfiguration: Realm.Configuration) -> Bool {
         let realm = try! Realm(configuration: realmConfiguration)
-        let pk = Bookmark.makePrimaryKey(url: url, html: html)
+        let pk = Bookmark.makePrimaryKey(url: url)
         return !(realm.object(ofType: Bookmark.self, forPrimaryKey: pk)?.isDeleted ?? true)
     }
     
@@ -367,7 +367,7 @@ public extension ReaderContentProtocol {
             }()
         }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL, html: html)) {
+        if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL)) {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 record.title = title
@@ -431,16 +431,44 @@ public extension ReaderContentProtocol {
     }
 }
 
-public func makeReaderContentCompoundKey(url: URL?, html: String?) -> String? {
-    guard url != nil || html != nil else {
-//        fatalError("Needs either url or htmlContent.")
-        return nil
+public func makeReaderContentCompoundKey(url: URL?, existingKey: String? = nil) -> String? {
+    if let url = url {
+        if let snippetKey = extractSnippetKey(from: url) {
+            return snippetKey
+        }
+
+        if url.scheme?.lowercased() == "about" {
+            return existingKey.nonEmpty ?? UUID().uuidString
+        }
+
+        return String(format: "%02X", stableHash(url.absoluteString))
     }
-    var key = ""
-    if let url = url, !(url.absoluteString.hasPrefix("about:") || url.absoluteString.hasPrefix("internal://local")) || html == nil {
-        key.append(String(format: "%02X", stableHash(url.absoluteString)))
-    } else if let html = html {
-        key.append((String(format: "%02X", stableHash(html))))
+
+    return existingKey.nonEmpty ?? UUID().uuidString
+}
+
+private func extractSnippetKey(from url: URL) -> String? {
+    let absolute = url.absoluteString
+
+    if absolute.hasPrefix("internal://local/snippet") || absolute.hasPrefix("about:snippet") {
+        if let components = URLComponents(string: absolute),
+           let key = components.queryItems?.first(where: { $0.name == "key" })?.value,
+           !key.isEmpty {
+            return key
+        }
+
+        if let range = absolute.range(of: "key=") {
+            let key = String(absolute[range.upperBound...])
+            return key.isEmpty ? nil : key
+        }
     }
-    return key
+
+    return nil
+}
+
+private extension Optional where Wrapped == String {
+    var nonEmpty: String? {
+        guard let value = self, !value.isEmpty else { return nil }
+        return value
+    }
 }

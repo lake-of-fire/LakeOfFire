@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import RealmSwift
 import MarkdownKit
@@ -368,7 +369,22 @@ public struct ReaderContentLoader {
     @RealmBackgroundActor
     public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool) async throws {
         let html = Self.textToHTML(text)
-        try await _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, rssContainsFullContent: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
+        var resolvedURL = url
+        if resolvedURL == nil {
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+            if let data = html.readerContentData,
+               let existingSnippet = realm.objects(Bookmark.self)
+                   .sorted(by: \.createdAt, ascending: false)
+                   .where({ $0.content == data })
+                   .first(where: { !$0.isDeleted && $0.url.isSnippetURL }) {
+                resolvedURL = existingSnippet.url
+            } else {
+                let key = UUID().uuidString
+                resolvedURL = ReaderContentLoader.snippetURL(key: key) ?? URL(string: "internal://local/snippet?key=\(key)")
+            }
+        }
+
+        try await _ = Bookmark.add(url: resolvedURL, title: title ?? "", html: html, isFromClipboard: isFromClipboard, rssContainsFullContent: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
     }
 }
 
