@@ -25,6 +25,11 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     let customMenuOptions: ((C) -> AnyView)?
     let contentSelection: Binding<String?>
     
+    private enum Layout {
+        static var cardCornerRadius: CGFloat { 20 }
+        static var contentPadding: CGFloat { 16 }
+    }
+
     @StateObject var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
@@ -32,9 +37,9 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.stackListStyle) private var stackListStyle
     
-    @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
-    //    @State private var viewWidth: CGFloat = 0
-    
+    private var cardWidth: CGFloat { maxCellHeight * 3.5 }
+    private var thumbnailCornerRadius: CGFloat { max(0, Layout.cardCornerRadius - Layout.contentPadding) }
+
     var body: some View {
         Button {
             contentSelection.wrappedValue = content.compoundKey
@@ -53,7 +58,9 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                             maxCellHeight: maxCellHeight,
                             alwaysShowThumbnails: true,
                             isEbookStyle: false,
-                            includeSource: includeSource
+                            includeSource: includeSource,
+                            thumbnailDimension: maxCellHeight,
+                            thumbnailCornerRadius: thumbnailCornerRadius
                         ),
                         customMenuOptions: customMenuOptions
                     )
@@ -63,7 +70,9 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                             maxCellHeight: maxCellHeight,
                             alwaysShowThumbnails: true,
                             isEbookStyle: false,
-                            includeSource: includeSource
+                            includeSource: includeSource,
+                            thumbnailDimension: maxCellHeight,
+                            thumbnailCornerRadius: thumbnailCornerRadius
                         )
                     )
                 }
@@ -71,10 +80,10 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
             .background(cardBackground)
-            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous))
 #if os(macOS)
             .overlay {
-                RoundedRectangle(cornerRadius: 20)
+                RoundedRectangle(cornerRadius: Layout.cardCornerRadius)
                     .stroke(.secondary.opacity(0.2))
                     .shadow(radius: 5)
             }
@@ -82,7 +91,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             //            )
             //                .background(Color.white.opacity(0.00000001)) // Clickability
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
-            .frame(maxWidth: maxWidth)
+            .frame(width: cardWidth)
             //            .frame(width: 275, height: maxCellHeight - (padding * 2))
             //            .background(Color.primary.colorInvert())
             //                .background(.regularMaterial)
@@ -118,7 +127,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     //@ObserveInjection var forceRedraw
 
     private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 20, style: .continuous)
+        RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous)
             .fill(stackListStyle == .grouped ? Color.stackListCardBackgroundGrouped : Color.stackListCardBackgroundPlain)
     }
 }
@@ -129,8 +138,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     let customMenuOptions: ((C) -> AnyView)?
     let contentSelection: Binding<String?>
     
-    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140
-    @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140 * (2.0 / 3.0)
     //    @State private var viewWidth: CGFloat = 0
     
     var body: some View {

@@ -96,16 +96,22 @@ public struct ReaderContentCellAppearance {
     public var alwaysShowThumbnails: Bool
     public var isEbookStyle: Bool
     public var includeSource: Bool
+    public var thumbnailDimension: CGFloat?
+    public var thumbnailCornerRadius: CGFloat?
     public init(
         maxCellHeight: CGFloat,
         alwaysShowThumbnails: Bool = true,
         isEbookStyle: Bool = false,
-        includeSource: Bool = false
+        includeSource: Bool = false,
+        thumbnailDimension: CGFloat? = nil,
+        thumbnailCornerRadius: CGFloat? = nil
     ) {
         self.maxCellHeight = maxCellHeight
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.isEbookStyle = isEbookStyle
         self.includeSource = includeSource
+        self.thumbnailDimension = thumbnailDimension
+        self.thumbnailCornerRadius = thumbnailCornerRadius
     }
 }
 
@@ -136,13 +142,17 @@ extension ReaderContentProtocol {
         maxCellHeight: CGFloat,
         alwaysShowThumbnails: Bool = true,
         isEbookStyle: Bool = false,
-        includeSource: Bool = false
+        includeSource: Bool = false,
+        thumbnailDimension: CGFloat? = nil,
+        thumbnailCornerRadius: CGFloat? = nil
     ) -> some View {
         let appearance = ReaderContentCellAppearance(
             maxCellHeight: maxCellHeight,
             alwaysShowThumbnails: alwaysShowThumbnails,
             isEbookStyle: isEbookStyle,
-            includeSource: includeSource
+            includeSource: includeSource,
+            thumbnailDimension: thumbnailDimension,
+            thumbnailCornerRadius: thumbnailCornerRadius
         )
         readerContentCellView(appearance: appearance)
     }
@@ -212,7 +222,17 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return 26
     }
     
-    var scaledImageWidth: CGFloat { appearance.maxCellHeight }
+    private var thumbnailEdgeLength: CGFloat {
+        let base = appearance.thumbnailDimension ?? appearance.maxCellHeight
+        return max(1, base)
+    }
+    
+    private var thumbnailCornerRadius: CGFloat {
+        if let customCornerRadius = appearance.thumbnailCornerRadius {
+            return customCornerRadius
+        }
+        return thumbnailEdgeLength / 16
+    }
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
@@ -249,11 +269,16 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         HStack(alignment: .top, spacing: 12) {
             if let imageUrl = viewModel.imageURL {
                 if appearance.isEbookStyle {
-                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: appearance.maxCellHeight)
+                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: thumbnailEdgeLength, cellHeight: appearance.maxCellHeight)
                     //                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
                 } else {
-                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: appearance.maxCellHeight, maxHeight: appearance.maxCellHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
+                    ReaderImage(
+                        imageUrl,
+                        maxWidth: thumbnailEdgeLength,
+                        minHeight: thumbnailEdgeLength,
+                        maxHeight: thumbnailEdgeLength
+                    )
+                        .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius))
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
