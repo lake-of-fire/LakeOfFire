@@ -37,7 +37,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.stackListStyle) private var stackListStyle
     
-    private var cardWidth: CGFloat { maxCellHeight * 3.5 }
+    private var cardWidth: CGFloat { maxCellHeight * 3 }
     private var thumbnailCornerRadius: CGFloat { max(0, Layout.cardCornerRadius - Layout.contentPadding) }
 
     var body: some View {

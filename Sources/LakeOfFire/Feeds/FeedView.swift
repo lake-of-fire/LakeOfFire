@@ -54,9 +54,9 @@ public struct FeedView: View {
     @ObservedRealmObject var feed: Feed
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
-    
-    @SceneStorage("contentSelection") private var contentSelection: String?
-    
+
+    @Environment(\.contentSelection) private var contentSelection
+
     public var body: some View {
         AsyncView(operation: { forceRefreshRequested in
             try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
@@ -68,7 +68,7 @@ public struct FeedView: View {
                             contents: entries,
                             sortOrder: .publicationDate,
                             includeSource: false,
-                            contentSelection: $contentSelection
+                            contentSelection: contentSelection
                         ) {
                             EmptyView()
                         }
@@ -77,7 +77,7 @@ public struct FeedView: View {
                             contents: entries,
                             sortOrder: .publicationDate,
                             includeSource: false,
-                            entrySelection: $contentSelection
+                            entrySelection: contentSelection
                         ) {
                         } emptyStateView: {
                             EmptyStateBoxView(

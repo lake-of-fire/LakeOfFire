@@ -128,7 +128,7 @@ public struct BookLibraryView: View {
         self.viewModel = viewModel
     }
     
-    @SceneStorage("contentSelection") private var contentSelection: String?
+    @Environment(\.contentSelection) private var contentSelection
     
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -153,7 +153,7 @@ public struct BookLibraryView: View {
     @ViewBuilder private var myBooksSection: some View {
         ReaderContentListItems(
             viewModel: readerContentListViewModel,
-            entrySelection: $contentSelection,
+            entrySelection: contentSelection,
             includeSource: false,
             alwaysShowThumbnails: false,
         )
@@ -161,7 +161,7 @@ public struct BookLibraryView: View {
     }
 
     @ViewBuilder var list: some View {
-        List(selection: $contentSelection) {
+        List(selection: contentSelection) {
 //
 //            Button("Catalogs") {
 //                // Implementation remains unchanged

@@ -402,11 +402,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @ViewBuilder private func cell(item: C) -> some View {
         GroupBox {
             HStack(spacing: 0) {
+                let shouldReserveThumbnailSpace = alwaysShowThumbnails && item.imageUrl != nil
                 if let customMenuOptions {
                     item.readerContentCellView(
                         appearance: ReaderContentCellAppearance(
                             maxCellHeight: maxCellHeight,
-                            alwaysShowThumbnails: alwaysShowThumbnails,
+                            alwaysShowThumbnails: shouldReserveThumbnailSpace,
                             isEbookStyle: item.isPhysicalMedia,
                             includeSource: includeSource
                         ),
@@ -416,7 +417,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     item.readerContentCellView(
                         appearance: ReaderContentCellAppearance(
                             maxCellHeight: maxCellHeight,
-                            alwaysShowThumbnails: alwaysShowThumbnails,
+                            alwaysShowThumbnails: shouldReserveThumbnailSpace,
                             isEbookStyle: item.isPhysicalMedia,
                             includeSource: includeSource
                         )

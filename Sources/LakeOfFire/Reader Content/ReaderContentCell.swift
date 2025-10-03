@@ -234,28 +234,30 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return thumbnailEdgeLength / 16
     }
     
+    private var contentColumnHeight: CGFloat? {
+        if let dimension = appearance.thumbnailDimension {
+            return dimension
+        }
+        if viewModel.imageURL != nil || item.imageUrl != nil {
+            return appearance.maxCellHeight
+        }
+        return nil
+    }
+
+    private var titleLineLimit: Int {
+        if appearance.maxCellHeight >= 150 { return 3 }
+        if appearance.maxCellHeight >= 110 { return 2 }
+        return 1
+    }
+    
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
-    @ScaledMetric private var progressViewPaddingBottom: CGFloat = 32 / 2
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    @State private var captionHeight: CGFloat = 0
-    @State private var menuHeight: CGFloat = 0
     @State private var menuTrailingPadding: CGFloat = 0
 
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
-    }
-
-    private var footerBaselineOffset: CGFloat {
-        let caption = captionHeight > 0 ? captionHeight : fallbackCaptionHeight
-        guard caption > 0 else { return 0 }
-        return max(0, (menuHeight - caption) / 2)
-    }
-
-    private var fallbackCaptionHeight: CGFloat {
-        if isProgressVisible { return 14 }
-        return 16
     }
     
     private var isProgressVisible: Bool {
@@ -281,8 +283,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius))
                 }
             }
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 1) {
                     if appearance.includeSource {
                         HStack(alignment: .center) {
                             if let sourceIconURL = viewModel.sourceIconURL {
@@ -300,33 +302,36 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             }
                         }
                         .padding(.leading, 1)
-                        .padding(.bottom, 3)
+                        .padding(.bottom, 1.5)
                     }
                     
                     Text(viewModel.title)
                         .font(.headline)
-                        .lineLimit(3)
+                        .lineLimit(titleLineLimit)
                         .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
                         .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .layoutPriority(1)
                 }
                 .padding(.trailing, 4)
 
-                Spacer(minLength: 0)
-                
+                Spacer(minLength: 6)
+
                 HStack(alignment: .bottom, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                            ProgressView(value: min(1, readingProgressFloat))
+                                .progressViewStyle(LinearProgressViewStyle())
+                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        HStack(spacing: 6) {
                             if let publicationDate = viewModel.humanReadablePublicationDate {
                                 Text("\(publicationDate)")
                                     .lineLimit(1)
                                     .font(.footnote)
-                                    .background(
-                                        HeightReporter(key: ReaderContentCellCaptionHeightKey.self) { newHeight in
-                                            captionHeight = newHeight
-                                        }
-                                    )
+                                    .layoutPriority(1)
                             }
                             if let item = item as? ContentFile {
                                 CloudDriveSyncStatusView(item: item)
@@ -335,18 +340,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             }
                         }
                         .foregroundStyle(.secondary)
-                        
-                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-                            ProgressView(value: min(1, readingProgressFloat))
-                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                        }
                     }
-#if os(macOS)
-                    .padding(.bottom, progressViewPaddingBottom - (isProgressVisible ? 10 : 5))
-#elseif os(iOS)
-                    .padding(.bottom, progressViewPaddingBottom - (isProgressVisible ? 3 : 7))
-#endif
-                    
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
                     Spacer(minLength: 0)
                     
                     HStack(alignment: .center, spacing: 0) {
@@ -405,21 +401,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .foregroundStyle(.secondary)
                     .controlSize(.small)
                     .padding(.trailing, 4)
-                    .background(
-                        HeightReporter(key: ClearBorderedButtonHeightKey.self) { newHeight in
-                            menuHeight = newHeight
-                        }
-                    )
                 }
+                .frame(maxWidth: .infinity, alignment: .bottomLeading)
                 .padding(.trailing, -menuTrailingPadding)
                 .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
-                .offset(y: footerBaselineOffset)
+                .padding(.bottom, isProgressVisible ? 4 : 8)
+                // Keep menu and footer aligned without shifting content outside the card bounds.
             }
-            .frame(maxHeight: appearance.maxCellHeight)
+            .frame(height: contentColumnHeight, alignment: .top)
         }
         .frame(
             minWidth: appearance.maxCellHeight,
-            idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : (viewModel.imageURL == nil ? nil : appearance.maxCellHeight)
+            idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : ((viewModel.imageURL ?? item.imageUrl) == nil ? nil : appearance.maxCellHeight)
         )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
@@ -443,28 +436,3 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 }
 
 // No NotificationCenter for list refresh; view models observe Realm and republish via Combine.
-
-private struct ReaderContentCellCaptionHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct HeightReporter<Key: PreferenceKey>: View where Key.Value == CGFloat {
-    let key: Key.Type
-    let onChange: (CGFloat) -> Void
-
-    init(key: Key.Type, onChange: @escaping (CGFloat) -> Void) {
-        self.key = key
-        self.onChange = onChange
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .preference(key: key, value: proxy.size.height)
-        }
-        .onPreferenceChange(key, perform: onChange)
-    }
-}
