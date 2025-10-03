@@ -227,11 +227,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return max(1, base)
     }
     
+    @Environment(\.stackListGroupBoxContentInsets) private var stackListContentInsets
+
     private var thumbnailCornerRadius: CGFloat {
         if let customCornerRadius = appearance.thumbnailCornerRadius {
             return customCornerRadius
         }
-        return thumbnailEdgeLength / 16
+        let cardCornerRadius: CGFloat = 20
+        return max(0, cardCornerRadius - stackListContentInsets.leading)
     }
     
     private var contentColumnHeight: CGFloat? {
@@ -259,7 +262,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
     }
-    
+
+    private var contentLeadingInset: CGFloat {
+        appearance.includeSource ? 1 : 0
+    }
+
     private var isProgressVisible: Bool {
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
@@ -280,11 +287,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         minHeight: thumbnailEdgeLength,
                         maxHeight: thumbnailEdgeLength
                     )
-                        .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius))
+                        .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
                 }
             }
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 0) {
                     if appearance.includeSource {
                         HStack(alignment: .center) {
                             if let sourceIconURL = viewModel.sourceIconURL {
@@ -302,9 +309,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             }
                         }
                         .padding(.leading, 1)
-                        .padding(.bottom, 1.5)
                     }
-                    
+
                     Text(viewModel.title)
                         .font(.headline)
                         .lineLimit(titleLineLimit)
@@ -315,23 +321,26 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 }
                 .padding(.trailing, 4)
 
-                Spacer(minLength: 6)
+                Spacer(minLength: 4)
 
-                HStack(alignment: .bottom, spacing: 12) {
+                HStack(alignment: .bottom, spacing: 6) {
                     VStack(alignment: .leading, spacing: 6) {
                         if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
                             ProgressView(value: min(1, readingProgressFloat))
                                 .progressViewStyle(LinearProgressViewStyle())
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(maxWidth: .infinity)
+                                .padding(.leading, contentLeadingInset)
                         }
 
                         HStack(spacing: 6) {
                             if let publicationDate = viewModel.humanReadablePublicationDate {
                                 Text("\(publicationDate)")
                                     .lineLimit(1)
+                                    .allowsTightening(true)
+                                    .minimumScaleFactor(0.9)
                                     .font(.footnote)
-                                    .layoutPriority(1)
+                                    .layoutPriority(2)
                             }
                             if let item = item as? ContentFile {
                                 CloudDriveSyncStatusView(item: item)
@@ -339,18 +348,17 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     .font(.callout)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .foregroundStyle(.secondary)
+                        .padding(.leading, contentLeadingInset)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(2)
 
-                    Spacer(minLength: 0)
-                    
-                    HStack(alignment: .center, spacing: 0) {
+                    HStack(alignment: .center, spacing: 4) {
                         BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
                             .labelStyle(.iconOnly)
-                            .padding(.leading, 2)
 
-                        // Show menu if item is deletable or caller provided custom menu items
                         let deletable = (self.item as? (any DeletableReaderContent))
                         let shouldShowMenu = deletable != nil || customMenuOptions != nil
                         if shouldShowMenu {
@@ -360,15 +368,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                         .labelStyle(.titleAndIcon)
                                     Divider()
                                 }
-                
+
                                 AnyView(self.item.bookmarkButtonView())
-                
-                                // Inject any custom menu options provided by caller
+
                                 if let customMenuOptions {
                                     customMenuOptions(self.item)
                                 }
-
-                                // Continue Reading controls are injected via customMenuOptions.
 
                                 if let deletable {
                                     Divider()
@@ -389,12 +394,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 } else { $0 }
                             }
                             .menuIndicator(.hidden)
-                            //                        .buttonStyle(.borderless)
-                            //                        .buttonStyle(.plain)
-                            //#if os(macOS)
-                            //                        .offset(y: -(buttonSize / 2.5)) // IDK why
-                            //                                                        //                        .offset(y: 3)
-                            //#endif
                         }
                     }
                     .buttonStyle(.clearBordered)
@@ -404,8 +403,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 }
                 .frame(maxWidth: .infinity, alignment: .bottomLeading)
                 .padding(.trailing, -menuTrailingPadding)
+                .offset(y: menuTrailingPadding)
                 .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
-                .padding(.bottom, isProgressVisible ? 4 : 8)
                 // Keep menu and footer aligned without shifting content outside the card bounds.
             }
             .frame(height: contentColumnHeight, alignment: .top)

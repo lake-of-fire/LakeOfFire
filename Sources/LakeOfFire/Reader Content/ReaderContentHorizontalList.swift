@@ -42,13 +42,28 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 
     var body: some View {
         Button {
-            contentSelection.wrappedValue = content.compoundKey
-            guard !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+            let selection = content.compoundKey
+            contentSelection.wrappedValue = selection
+            if content.url.matchesReaderURL(readerContent.pageURL) {
+                Task { @MainActor in
+                    if contentSelection.wrappedValue == selection {
+                        contentSelection.wrappedValue = nil
+                    }
+                }
+                return
+            }
             Task { @MainActor in
-                try await navigator.load(
-                    content: content,
-                    readerModeViewModel: readerModeViewModel
-                )
+                do {
+                    try await navigator.load(
+                        content: content,
+                        readerModeViewModel: readerModeViewModel
+                    )
+                } catch {
+                    debugPrint("Failed to load reader content from horizontal list", error)
+                }
+                if contentSelection.wrappedValue == selection {
+                    contentSelection.wrappedValue = nil
+                }
             }
         } label: {
             VStack(spacing: 0) {

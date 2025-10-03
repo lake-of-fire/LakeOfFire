@@ -136,10 +136,17 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                       let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
                       !content.url.matchesReaderURL(readerContent.pageURL) else { return }
                 Task { @MainActor in
-                    try await navigator.load(
-                        content: content,
-                        readerModeViewModel: readerModeViewModel
-                    )
+                    do {
+                        try await navigator.load(
+                            content: content,
+                            readerModeViewModel: readerModeViewModel
+                        )
+                    } catch {
+                        debugPrint("Failed to load reader content for selection", error)
+                    }
+                    if entrySelection == itemSelection {
+                        entrySelection = nil
+                    }
                 }
             }
             .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
@@ -189,14 +196,6 @@ private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigatin
                         try await task
                     }
                     return
-                }
-                if currentSelection == nil, oldPageURL != readerPageURL, let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
-                    let contentKey = await viewModel.filteredContentIDs[idx]
-                    async let task = { @MainActor in
-                        try Task.checkCancellation()
-                        self.entrySelection = contentKey
-                    }()
-                    try await task
                 }
             } catch { }
         }
