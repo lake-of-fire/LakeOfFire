@@ -435,3 +435,192 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 }
 
 // No NotificationCenter for list refresh; view models observe Realm and republish via Combine.
+
+#if DEBUG
+@MainActor
+private final class ReaderContentCellPreviewStore: ObservableObject {
+    let modalsModel = ReaderContentListModalsModel()
+
+    let verticalImageEntry: FeedEntry
+    let verticalPlainEntry: FeedEntry
+    let horizontalImageEntry: FeedEntry
+    let horizontalPlainEntry: FeedEntry
+
+    let verticalImageAppearance = ReaderContentCellAppearance(
+        maxCellHeight: 140,
+        includeSource: true
+    )
+
+    let verticalPlainAppearance = ReaderContentCellAppearance(
+        maxCellHeight: 140,
+        alwaysShowThumbnails: false,
+        includeSource: true
+    )
+
+    private let horizontalMaxHeight: CGFloat = 140 * (2.0 / 3.0)
+
+    lazy var horizontalAppearance: ReaderContentCellAppearance = ReaderContentCellAppearance(
+        maxCellHeight: horizontalMaxHeight,
+        alwaysShowThumbnails: true,
+        includeSource: true,
+        thumbnailDimension: horizontalMaxHeight
+    )
+
+    init() {
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: "ReaderContentCellPreview",
+            objectTypes: [FeedEntry.self, Bookmark.self]
+        )
+
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+
+        let realm = try! Realm(configuration: configuration)
+
+        let verticalImage = FeedEntry()
+        verticalImage.compoundKey = "preview-vertical-image"
+        verticalImage.url = URL(string: "https://example.com/articles/with-image")!
+        verticalImage.title = "NHK Yasashii News Preview"
+        verticalImage.author = "NHK"
+        verticalImage.imageUrl = URL(string: "https://placehold.co/400x240.png?text=NHK+News")
+        verticalImage.sourceIconURL = URL(string: "https://placehold.co/48x48.png?text=N")
+        verticalImage.publicationDate = Calendar.current.date(byAdding: .day, value: -22, to: .now)
+
+        let verticalPlain = FeedEntry()
+        verticalPlain.compoundKey = "preview-vertical-plain"
+        verticalPlain.url = URL(string: "https://example.com/articles/no-image")!
+        verticalPlain.title = "Reading Practice Without Thumbnail"
+        verticalPlain.author = "NHK"
+        verticalPlain.publicationDate = Calendar.current.date(byAdding: .day, value: -6, to: .now)
+
+        let horizontalImage = FeedEntry()
+        horizontalImage.compoundKey = "preview-horizontal-image"
+        horizontalImage.url = URL(string: "https://example.com/articles/horizontal-image")!
+        horizontalImage.title = "Horizontal Card With Progress"
+        horizontalImage.author = "NHK"
+        horizontalImage.imageUrl = URL(string: "https://placehold.co/360x200.png?text=NHK")
+        horizontalImage.sourceIconURL = URL(string: "https://placehold.co/48x48.png?text=N")
+        horizontalImage.publicationDate = Calendar.current.date(byAdding: .day, value: -3, to: .now)
+
+        let horizontalPlain = FeedEntry()
+        horizontalPlain.compoundKey = "preview-horizontal-plain"
+        horizontalPlain.url = URL(string: "https://example.com/articles/horizontal-plain")!
+        horizontalPlain.title = "Horizontal Card Without Progress"
+        horizontalPlain.author = "NHK"
+        horizontalPlain.publicationDate = Calendar.current.date(byAdding: .day, value: -1, to: .now)
+
+        let entries = [verticalImage, verticalPlain, horizontalImage, horizontalPlain]
+
+        try! realm.write {
+            realm.add(entries, update: .modified)
+
+            for entry in entries {
+                let bookmark = Bookmark()
+                bookmark.compoundKey = entry.compoundKey
+                bookmark.url = entry.url
+                bookmark.title = entry.title
+                bookmark.author = entry.author
+                bookmark.imageUrl = entry.imageUrl
+                bookmark.sourceIconURL = entry.sourceIconURL
+                bookmark.publicationDate = entry.publicationDate
+                bookmark.isDeleted = false
+                realm.add(bookmark, update: .modified)
+            }
+        }
+
+        self.verticalImageEntry = verticalImage
+        self.verticalPlainEntry = verticalPlain
+        self.horizontalImageEntry = horizontalImage
+        self.horizontalPlainEntry = horizontalPlain
+
+        let progress: [URL: (Float, Bool)] = [
+            verticalImage.url: (0.35, false),
+            horizontalImage.url: (0.65, false)
+        ]
+
+        ReaderContentReadingProgressLoader.readingProgressLoader = { url in
+            progress[url]
+        }
+    }
+}
+
+private struct ReaderContentCellPreviewGallery: View {
+    @StateObject private var store = ReaderContentCellPreviewStore()
+    private let previewMenuOptions: (FeedEntry) -> AnyView = { _ in
+        AnyView(
+            Button {
+                debugPrint("Preview action tapped")
+            } label: {
+                Label("Preview Action", systemImage: "star")
+            }
+        )
+    }
+
+    var body: some View {
+        StackList {
+            variant("Vertical - Image - Progress") {
+                ReaderContentCell(
+                    item: store.verticalImageEntry,
+                    appearance: store.verticalImageAppearance,
+                    customMenuOptions: previewMenuOptions
+                )
+            }
+
+            variant("Vertical - No Image - No Progress") {
+                ReaderContentCell(
+                    item: store.verticalPlainEntry,
+                    appearance: store.verticalPlainAppearance,
+                    customMenuOptions: previewMenuOptions
+                )
+            }
+
+            variant("Horizontal - Image - Progress") {
+                ReaderContentCell(
+                    item: store.horizontalImageEntry,
+                    appearance: store.horizontalAppearance,
+                    customMenuOptions: previewMenuOptions
+                )
+            }
+
+            variant("Horizontal - No Image - No Progress") {
+                ReaderContentCell(
+                    item: store.horizontalPlainEntry,
+                    appearance: store.horizontalAppearance,
+                    customMenuOptions: previewMenuOptions
+                )
+            }
+        }
+        .stackListStyle(.grouped)
+        .stackListInterItemSpacing(18)
+        .environmentObject(store.modalsModel)
+        .frame(maxWidth: 420)
+        .padding()
+    }
+
+    private func variant<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> StackListRowItem {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+
+            GroupBox {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .stackListGroupBoxContentInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+            .stackListGroupBoxContentSpacing(12)
+            .groupBoxStyle(.groupedStackList)
+        }
+        .stackListRowSeparator(.hidden)
+    }
+}
+
+struct ReaderContentCell_Previews: PreviewProvider {
+    static var previews: some View {
+        ReaderContentCellPreviewGallery()
+            .previewLayout(.sizeThatFits)
+    }
+}
+#endif

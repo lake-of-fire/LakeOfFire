@@ -289,3 +289,177 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         self.emptyStateView = { emptyStateView() }
     }
 }
+
+#if DEBUG
+@MainActor
+private final class ReaderContentHorizontalListPreviewStore: ObservableObject {
+    let modalsModel = ReaderContentListModalsModel()
+    let readerContent = ReaderContent()
+    let readerModeViewModel = ReaderModeViewModel()
+
+    let entries: [FeedEntry]
+    let maxCellHeight: CGFloat = 140 * (2.0 / 3.0)
+
+    var cardWidth: CGFloat { maxCellHeight * 3 }
+
+    init() {
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: "ReaderContentHorizontalListPreview",
+            objectTypes: [FeedEntry.self, Bookmark.self]
+        )
+
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+
+        let realm = try! Realm(configuration: configuration)
+
+        let recentArticle = FeedEntry()
+        recentArticle.compoundKey = "preview-horizontal-recent"
+        recentArticle.url = URL(string: "https://example.com/articles/fresh")!
+        recentArticle.title = "Fresh Article With Thumbnail"
+        recentArticle.author = "Asahi"
+        recentArticle.imageUrl = URL(string: "https://placehold.co/360x200.png?text=Asahi")
+        recentArticle.sourceIconURL = URL(string: "https://placehold.co/48x48.png?text=A")
+        recentArticle.publicationDate = Calendar.current.date(byAdding: .hour, value: -6, to: .now)
+
+        let olderArticle = FeedEntry()
+        olderArticle.compoundKey = "preview-horizontal-older"
+        olderArticle.url = URL(string: "https://example.com/articles/older")!
+        olderArticle.title = "Older Article Without Image"
+        olderArticle.author = "Mainichi"
+        olderArticle.publicationDate = Calendar.current.date(byAdding: .day, value: -2, to: .now)
+        olderArticle.displayPublicationDate = true
+
+        let longformArticle = FeedEntry()
+        longformArticle.compoundKey = "preview-horizontal-longform"
+        longformArticle.url = URL(string: "https://example.com/articles/longform")!
+        longformArticle.title = "Longform Piece Highlighting Bookmark State"
+        longformArticle.author = "NHK"
+        longformArticle.imageUrl = URL(string: "https://placehold.co/360x200.png?text=NHK")
+        longformArticle.sourceIconURL = URL(string: "https://placehold.co/48x48.png?text=N")
+        longformArticle.publicationDate = Calendar.current.date(byAdding: .day, value: -7, to: .now)
+
+        let entries = [recentArticle, olderArticle, longformArticle]
+
+        try! realm.write {
+            realm.add(entries, update: .modified)
+
+            for entry in entries {
+                let bookmark = Bookmark()
+                bookmark.compoundKey = entry.compoundKey
+                bookmark.url = entry.url
+                bookmark.title = entry.title
+                bookmark.author = entry.author
+                bookmark.imageUrl = entry.imageUrl
+                bookmark.sourceIconURL = entry.sourceIconURL
+                bookmark.publicationDate = entry.publicationDate
+                bookmark.isDeleted = false
+                realm.add(bookmark, update: .modified)
+            }
+        }
+
+        let progress: [URL: (Float, Bool)] = [
+            recentArticle.url: (0.2, false),
+            longformArticle.url: (0.9, true)
+        ]
+
+        ReaderContentReadingProgressLoader.readingProgressLoader = { url in
+            progress[url]
+        }
+
+        readerContent.content = entries.first
+        readerContent.pageURL = entries.first?.url ?? URL(string: "https://example.com")!
+
+        self.entries = entries
+    }
+}
+
+private struct ReaderContentHorizontalListPreviewGallery: View {
+    @StateObject private var store = ReaderContentHorizontalListPreviewStore()
+    @State private var contentSelection: String? = nil
+
+    private let previewMenuOptions: (FeedEntry) -> AnyView = { entry in
+        AnyView(
+            Button {
+                debugPrint("Preview menu tapped for", entry.title)
+            } label: {
+                Label("Preview Menu", systemImage: "ellipsis.circle")
+            }
+        )
+    }
+
+    var body: some View {
+        StackList {
+            variant("Horizontal List - Scrollable") {
+                ReaderContentHorizontalList(
+                    contents: store.entries,
+                    includeSource: true,
+                    contentSelection: $contentSelection,
+                    customMenuOptions: previewMenuOptions
+                ) {
+                    Text("No Items")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: store.cardWidth * 1.9, height: store.maxCellHeight + 64)
+            }
+
+            variant("Single Card - Preset Width") {
+                ReaderContentInnerHorizontalListItem(
+                    content: store.entries[0],
+                    includeSource: true,
+                    maxCellHeight: store.maxCellHeight,
+                    customMenuOptions: previewMenuOptions,
+                    contentSelection: $contentSelection
+                )
+                .frame(width: store.cardWidth, height: store.maxCellHeight + 48)
+            }
+
+            variant("Single Card - Compact") {
+                ReaderContentInnerHorizontalListItem(
+                    content: store.entries[1],
+                    includeSource: true,
+                    maxCellHeight: store.maxCellHeight,
+                    customMenuOptions: previewMenuOptions,
+                    contentSelection: $contentSelection
+                )
+                .frame(width: store.cardWidth, height: store.maxCellHeight + 48)
+            }
+        }
+        .stackListStyle(.grouped)
+        .stackListInterItemSpacing(18)
+        .environmentObject(store.modalsModel)
+        .environmentObject(store.readerContent)
+        .environmentObject(store.readerModeViewModel)
+        .frame(maxWidth: store.cardWidth * 2.2)
+        .padding()
+    }
+
+    private func variant<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> StackListRowItem {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+
+            GroupBox {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .stackListGroupBoxContentInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+            .stackListGroupBoxContentSpacing(12)
+            .groupBoxStyle(.groupedStackList)
+        }
+        .stackListRowSeparator(.hidden)
+    }
+}
+
+struct ReaderContentHorizontalList_Previews: PreviewProvider {
+    static var previews: some View {
+        ReaderContentHorizontalListPreviewGallery()
+            .previewLayout(.sizeThatFits)
+    }
+}
+#endif
