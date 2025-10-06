@@ -1,9 +1,17 @@
 import SwiftUI
+import Foundation
 import RealmSwift
 import RealmSwiftGaps
 import LakeOfFire
 import LakeKit
 import Combine
+
+private let readerContentCellWordCountFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.maximumFractionDigits = 0
+    return formatter
+}()
 // Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
 
 @globalActor
@@ -21,6 +29,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var imageURL: URL?
     @Published var sourceIconURL: URL?
     @Published var sourceTitle: String?
+    @Published var totalWordCount: Int?
+    @Published var remainingTime: TimeInterval?
     // Continue Reading menu is driven by an injected provider in the environment.
 
     init() { }
@@ -43,6 +53,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
+                let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
                 try Task.checkCancellation()
 
                 let sourceURL = item.url
@@ -83,7 +94,12 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     if let (progress, finished) = progressResult {
                         self.readingProgress = progress
                         self.isFullArticleFinished = finished
+                    } else {
+                        self.readingProgress = nil
+                        self.isFullArticleFinished = nil
                     }
+                    self.totalWordCount = metadataResult?.totalWordCount
+                    self.remainingTime = metadataResult?.remainingTime
                 }()
                 // Continue Reading state is provided externally via environment provider.
             }
@@ -274,6 +290,25 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return false
     }
     
+    private var metadataText: String? {
+        Self.formatMetadata(wordCount: viewModel.totalWordCount, remainingTime: viewModel.remainingTime)
+    }
+    
+    private static func formatMetadata(wordCount: Int?, remainingTime: TimeInterval?) -> String? {
+        var parts: [String] = []
+        if let wordCount, wordCount > 0 {
+            let value = readerContentCellWordCountFormatter.string(from: NSNumber(value: wordCount)) ?? "\(wordCount)"
+            parts.append("\(value) words")
+        }
+        if let remainingTime, remainingTime > 1 {
+            if let formatted = ReaderDateFormatter.shortDurationString(from: remainingTime) {
+                parts.append("\(formatted) remaining")
+            }
+        }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " • ")
+    }
+    
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if let imageUrl = viewModel.imageURL {
@@ -308,7 +343,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .padding(.leading, 1)
+//                        .padding(.leading, 1)
                     }
 
                     Text(viewModel.title)
@@ -319,20 +354,29 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .layoutPriority(1)
                 }
-                .padding(.trailing, 4)
+//                .padding(.trailing, 4)
 
                 Spacer(minLength: 4)
 
-                HStack(alignment: .bottom, spacing: 6) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                VStack(spacing: 0) {
+                    if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                        HStack(spacing: 8) {
                             ProgressView(value: min(1, readingProgressFloat))
                                 .progressViewStyle(LinearProgressViewStyle())
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
                                 .frame(maxWidth: .infinity)
-                                .padding(.leading, contentLeadingInset)
+                            if let metadataText {
+                                Text(metadataText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .allowsTightening(true)
+                            }
                         }
-
+                        .padding(.leading, contentLeadingInset)
+                    }
+                    
+                    HStack(alignment: .center, spacing: 6) {
                         HStack(spacing: 6) {
                             if let publicationDate = viewModel.humanReadablePublicationDate {
                                 Text("\(publicationDate)")
@@ -351,61 +395,60 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .foregroundStyle(.secondary)
                         .padding(.leading, contentLeadingInset)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(2)
-
-                    HStack(alignment: .center, spacing: 4) {
-                        BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
-                            .labelStyle(.iconOnly)
-
-                        let deletable = (self.item as? (any DeletableReaderContent))
-                        let shouldShowMenu = deletable != nil || customMenuOptions != nil
-                        if shouldShowMenu {
-                            Menu {
-                                if let item = self.item as? ContentFile {
-                                    CloudDriveSyncStatusView(item: item)
-                                        .labelStyle(.titleAndIcon)
-                                    Divider()
-                                }
-
-                                AnyView(self.item.bookmarkButtonView())
-
-                                if let customMenuOptions {
-                                    customMenuOptions(self.item)
-                                }
-
-                                if let deletable {
-                                    Divider()
-                                    Button(role: .destructive) {
-                                        readerContentListModalsModel.confirmDeletionOf = [deletable]
-                                        readerContentListModalsModel.confirmDelete = true
-                                    } label: {
-                                        Label(deletable.deleteActionTitle, systemImage: "trash")
+                        
+                        HStack(alignment: .center, spacing: 0) {
+                            BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                                .labelStyle(.iconOnly)
+                            
+                            let deletable = (self.item as? (any DeletableReaderContent))
+                            let shouldShowMenu = deletable != nil || customMenuOptions != nil
+                            if shouldShowMenu {
+                                Menu {
+                                    if let item = self.item as? ContentFile {
+                                        CloudDriveSyncStatusView(item: item)
+                                            .labelStyle(.titleAndIcon)
+                                        Divider()
                                     }
+                                    
+                                    AnyView(self.item.bookmarkButtonView())
+                                    
+                                    if let customMenuOptions {
+                                        customMenuOptions(self.item)
+                                    }
+                                    
+                                    if let deletable {
+                                        Divider()
+                                        Button(role: .destructive) {
+                                            readerContentListModalsModel.confirmDeletionOf = [deletable]
+                                            readerContentListModalsModel.confirmDelete = true
+                                        } label: {
+                                            Label(deletable.deleteActionTitle, systemImage: "trash")
+                                        }
+                                    }
+                                } label: {
+                                    Label("More Options", systemImage: "ellipsis")
+                                        .labelStyle(.iconOnly)
                                 }
-                            } label: {
-                                Label("More Options", systemImage: "ellipsis")
-                                    .labelStyle(.iconOnly)
+                                .modifier {
+                                    if #available(iOS 16, macOS 13, *) {
+                                        $0.menuStyle(.button)
+                                    } else { $0 }
+                                }
+                                .menuIndicator(.hidden)
                             }
-                            .modifier {
-                                if #available(iOS 16, macOS 13, *) {
-                                    $0.menuStyle(.button)
-                                } else { $0 }
-                            }
-                            .menuIndicator(.hidden)
                         }
+                        .buttonStyle(.clearBordered)
+                        .foregroundStyle(.secondary)
+                        .controlSize(.small)
+//                        .padding(.trailing, 4)
+                        .offset(x: menuTrailingPadding)
                     }
-                    .buttonStyle(.clearBordered)
-                    .foregroundStyle(.secondary)
-                    .controlSize(.small)
-                    .padding(.trailing, 4)
+                    .frame(maxWidth: .infinity, alignment: .bottomLeading)
+                    //                .padding(.trailing, -menuTrailingPadding)
+                    .offset(y: menuTrailingPadding)
+                    .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
+                    // Keep menu and footer aligned without shifting content outside the card bounds.
                 }
-                .frame(maxWidth: .infinity, alignment: .bottomLeading)
-                .padding(.trailing, -menuTrailingPadding)
-                .offset(y: menuTrailingPadding)
-                .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
-                // Keep menu and footer aligned without shifting content outside the card bounds.
             }
             .frame(height: contentColumnHeight, alignment: .top)
         }
@@ -458,6 +501,7 @@ private final class ReaderContentCellPreviewStore: ObservableObject {
     )
 
     private let horizontalMaxHeight: CGFloat = 140 * (2.0 / 3.0)
+    let verticalCardWidth: CGFloat = 360
 
     lazy var horizontalAppearance: ReaderContentCellAppearance = ReaderContentCellAppearance(
         maxCellHeight: horizontalMaxHeight,
@@ -465,6 +509,8 @@ private final class ReaderContentCellPreviewStore: ObservableObject {
         includeSource: true,
         thumbnailDimension: horizontalMaxHeight
     )
+
+    var horizontalCardWidth: CGFloat { horizontalMaxHeight * 3 }
 
     init() {
         var configuration = Realm.Configuration(
@@ -541,6 +587,17 @@ private final class ReaderContentCellPreviewStore: ObservableObject {
         ReaderContentReadingProgressLoader.readingProgressLoader = { url in
             progress[url]
         }
+
+        let metadata: [URL: ReaderContentProgressMetadata] = [
+            verticalImage.url: ReaderContentProgressMetadata(totalWordCount: 640, remainingTime: 1800),
+            verticalPlain.url: ReaderContentProgressMetadata(totalWordCount: 520, remainingTime: 1400),
+            horizontalImage.url: ReaderContentProgressMetadata(totalWordCount: 890, remainingTime: 2600),
+            horizontalPlain.url: ReaderContentProgressMetadata(totalWordCount: 430, remainingTime: 900)
+        ]
+
+        ReaderContentReadingProgressLoader.readingProgressMetadataLoader = { url in
+            metadata[url]
+        }
     }
 }
 
@@ -558,7 +615,7 @@ private struct ReaderContentCellPreviewGallery: View {
 
     var body: some View {
         StackList {
-            variant("Vertical - Image - Progress") {
+            variant("Vertical - Image - Progress", targetWidth: store.verticalCardWidth) {
                 ReaderContentCell(
                     item: store.verticalImageEntry,
                     appearance: store.verticalImageAppearance,
@@ -566,7 +623,7 @@ private struct ReaderContentCellPreviewGallery: View {
                 )
             }
 
-            variant("Vertical - No Image - No Progress") {
+            variant("Vertical - No Image - No Progress", targetWidth: store.verticalCardWidth) {
                 ReaderContentCell(
                     item: store.verticalPlainEntry,
                     appearance: store.verticalPlainAppearance,
@@ -574,7 +631,7 @@ private struct ReaderContentCellPreviewGallery: View {
                 )
             }
 
-            variant("Horizontal - Image - Progress") {
+            variant("Horizontal - Image - Progress", targetWidth: store.horizontalCardWidth) {
                 ReaderContentCell(
                     item: store.horizontalImageEntry,
                     appearance: store.horizontalAppearance,
@@ -582,7 +639,7 @@ private struct ReaderContentCellPreviewGallery: View {
                 )
             }
 
-            variant("Horizontal - No Image - No Progress") {
+            variant("Horizontal - No Image - No Progress", targetWidth: store.horizontalCardWidth) {
                 ReaderContentCell(
                     item: store.horizontalPlainEntry,
                     appearance: store.horizontalAppearance,
@@ -597,7 +654,7 @@ private struct ReaderContentCellPreviewGallery: View {
         .padding()
     }
 
-    private func variant<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> StackListRowItem {
+    private func variant<Content: View>(_ title: String, targetWidth: CGFloat?, @ViewBuilder content: () -> Content) -> StackListRowItem {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.caption)
@@ -612,6 +669,7 @@ private struct ReaderContentCellPreviewGallery: View {
             .stackListGroupBoxContentInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
             .stackListGroupBoxContentSpacing(12)
             .groupBoxStyle(.groupedStackList)
+            .frame(width: targetWidth, alignment: .leading)
         }
         .stackListRowSeparator(.hidden)
     }

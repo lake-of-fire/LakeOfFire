@@ -66,7 +66,7 @@ public class ReaderContent: ObservableObject {
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
         if let content {
-            debugPrint("# FLASH ReaderContent.getContent cached", content.url)
+//            debugPrint("# FLASH ReaderContent.getContent cached", content.url)
             return content
         }
         debugPrint("# FLASH ReaderContent.getContent awaiting loadingTask", pageURL)

@@ -13,6 +13,17 @@ public actor ReaderContentReadingProgressLoader {
     
     /// Float is progress, Bool is whether article is "finished".
     public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
+    public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
+}
+
+public struct ReaderContentProgressMetadata {
+    public let totalWordCount: Int?
+    public let remainingTime: TimeInterval?
+    
+    public init(totalWordCount: Int?, remainingTime: TimeInterval?) {
+        self.totalWordCount = totalWordCount
+        self.remainingTime = remainingTime
+    }
 }
 
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
@@ -161,7 +172,8 @@ public extension ReaderContentProtocol {
         } else {
             return ReaderDateFormatter.relativeOrAbsoluteString(
                 from: publicationDate,
-                fallbackFormatter: humanReadableAbsoluteDateFormatter
+                fallbackFormatter: humanReadableAbsoluteDateFormatter,
+                style: .short
             )
         }
     }

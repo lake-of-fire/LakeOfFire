@@ -692,7 +692,8 @@ public extension Feed {
                         continuation.resume(throwing: FeedError.parserFailed)
                         return
                     }
-                case .failure(_):
+                case .failure(let error):
+                    debugPrint(error)
                     continuation.resume(throwing: FeedError.parserFailed)
                     return
                 }

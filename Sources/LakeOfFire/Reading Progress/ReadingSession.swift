@@ -21,6 +21,7 @@ public class ReadingSession: BaseReadingProgress {
     @Persisted public var startedAt = Date()
     @Persisted public var endedAt: Date?
     @Persisted public var articleMarkedAsFinished = false
+    @Persisted public var hasContributedToPaceSummary = false
 
     public var worthDisplayingSummaryToUser: Bool {
         return wordsRead > 0
@@ -30,4 +31,3 @@ public class ReadingSession: BaseReadingProgress {
         return !articleMarkedAsFinished && wordsRead == 0
     }
 }
-

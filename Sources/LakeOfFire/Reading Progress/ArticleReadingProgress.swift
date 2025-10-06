@@ -19,6 +19,14 @@ public class ArticleReadingProgress: ReadingSession {
     @Persisted public var fractionalCompletion: Float?
     @Persisted public var ebookCFI: String?
 
+    // Cached difficulty snapshot for time-estimation heuristics
+    @Persisted public var totalSegmentCount: Int = 0
+    @Persisted public var unknownSegmentCount: Int = 0
+    @Persisted public var learningSegmentCount: Int = 0
+    @Persisted public var familiarSegmentCount: Int = 0
+    @Persisted public var knownSegmentCount: Int = 0
+    @Persisted public var difficultySnapshotUpdatedAt: Date?
+
     // When true, exclude from Continue Reading lists
     @Persisted public var hideFromContinueReading: Bool = false
 
