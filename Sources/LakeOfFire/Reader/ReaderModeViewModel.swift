@@ -332,7 +332,7 @@ public class ReaderModeViewModel: ObservableObject {
         readabilityContainerSelector = nil
 //        contentRules = nil
         try Task.checkCancellation()
-
+        
         guard let content = readerContent.content else {
             debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted missing readerContent.content", newState.pageURL)
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
