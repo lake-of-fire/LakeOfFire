@@ -508,40 +508,13 @@ public extension Feed {
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
-            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = entriesToPersist.map { FeedEntryPayload(entry: $0) }
-            if deleteOrphans || !payloads.isEmpty {
-                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    if deleteOrphans {
-                        let orphans = realm.objects(FeedEntry.self)
-                            .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                        for orphan in orphans {
-                            orphan.isDeleted = true
-                            orphan.refreshChangeMetadata(explicitlyModified: true)
-                        }
-                    }
-                    for payload in payloads {
-                        if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: payload.compoundKey) {
-                            if applyPayload(payload, to: existing) {
-                                existing.refreshChangeMetadata(explicitlyModified: true)
-                            }
-                        } else {
-                            let newEntry = FeedEntry()
-                            newEntry.compoundKey = payload.compoundKey
-                            newEntry.feedID = payload.feedID
-                            newEntry.url = payload.url
-                            newEntry.createdAt = payload.createdAt
-                            if applyPayload(payload, to: newEntry) {
-                                realm.add(newEntry, update: .error)
-                                newEntry.refreshChangeMetadata(explicitlyModified: true)
-                            } else {
-                                realm.add(newEntry, update: .error)
-                            }
-                        }
-                    }
-                }
-            }
+            let payloads = try await upsertFeedEntries(
+                realm: realm,
+                entries: feedEntries,
+                existingEntryIDs: existingEntryIDs,
+                incomingIDs: incomingIDs,
+                deleteOrphans: deleteOrphans
+            )
             for payload in payloads {
                 try await syncRelatedReaderContent(with: payload)
             }
@@ -637,40 +610,13 @@ public extension Feed {
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
-            let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
-            let payloads = entriesToPersist.map { FeedEntryPayload(entry: $0) }
-            if deleteOrphans || !payloads.isEmpty {
-                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    if deleteOrphans {
-                        let orphans = realm.objects(FeedEntry.self)
-                            .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
-                        for orphan in orphans {
-                            orphan.isDeleted = true
-                            orphan.refreshChangeMetadata(explicitlyModified: true)
-                        }
-                    }
-                    for payload in payloads {
-                        if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: payload.compoundKey) {
-                            if applyPayload(payload, to: existing) {
-                                existing.refreshChangeMetadata(explicitlyModified: true)
-                            }
-                        } else {
-                            let newEntry = FeedEntry()
-                            newEntry.compoundKey = payload.compoundKey
-                            newEntry.feedID = payload.feedID
-                            newEntry.url = payload.url
-                            newEntry.createdAt = payload.createdAt
-                            if applyPayload(payload, to: newEntry) {
-                                realm.add(newEntry, update: .error)
-                                newEntry.refreshChangeMetadata(explicitlyModified: true)
-                            } else {
-                                realm.add(newEntry, update: .error)
-                            }
-                        }
-                    }
-                }
-            }
+            let payloads = try await upsertFeedEntries(
+                realm: realm,
+                entries: feedEntries,
+                existingEntryIDs: existingEntryIDs,
+                incomingIDs: incomingIDs,
+                deleteOrphans: deleteOrphans
+            )
             for payload in payloads {
                 try await syncRelatedReaderContent(with: payload)
             }
@@ -792,6 +738,66 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     return differentEntries
 }
 
+@RealmBackgroundActor
+fileprivate func upsertFeedEntries(
+    realm: Realm,
+    entries: [FeedEntry],
+    existingEntryIDs: [String],
+    incomingIDs: [String],
+    deleteOrphans: Bool
+) async throws -> [FeedEntryPayload] {
+    let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: entries)
+    if !deleteOrphans && entriesToPersist.isEmpty {
+        return []
+    }
+
+    let payloads: [FeedEntryPayload]
+    if entriesToPersist.isEmpty {
+        payloads = []
+    } else {
+        let existingByKey: [String: FeedEntry] = Dictionary(
+            uniqueKeysWithValues:
+                realm.objects(FeedEntry.self)
+                    .where { $0.compoundKey.in(entriesToPersist.map(\.compoundKey)) }
+                    .map { ($0.compoundKey, $0) }
+        )
+        payloads = entriesToPersist.map { entry in
+            FeedEntryPayload(entry: entry, existing: existingByKey[entry.compoundKey])
+        }
+    }
+
+    await realm.asyncRefresh()
+    try await realm.asyncWrite {
+        if deleteOrphans {
+            let orphans = realm.objects(FeedEntry.self)
+                .where { !$0.isDeleted && $0.compoundKey.in(existingEntryIDs) && !$0.compoundKey.in(incomingIDs) }
+            for orphan in orphans {
+                orphan.isDeleted = true
+                orphan.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+
+        for payload in payloads {
+            if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: payload.compoundKey) {
+                if applyPayload(payload, to: existing) {
+                    existing.refreshChangeMetadata(explicitlyModified: true)
+                }
+            } else {
+                let newEntry = FeedEntry()
+                newEntry.compoundKey = payload.compoundKey
+                newEntry.feedID = payload.feedID
+                newEntry.url = payload.url
+                newEntry.createdAt = payload.createdAt
+                applyPayload(payload, to: newEntry)
+                realm.add(newEntry, update: .error)
+                newEntry.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+    }
+
+    return payloads
+}
+
 fileprivate struct FeedEntryPayload {
     let compoundKey: String
     let feedID: UUID?
@@ -808,7 +814,7 @@ fileprivate struct FeedEntryPayload {
     let redditTranslationsTitle: String?
     let createdAt: Date
 
-    init(entry: FeedEntry) {
+    init(entry: FeedEntry, existing: FeedEntry?) {
         compoundKey = entry.compoundKey
         feedID = entry.feedID
         url = entry.url
@@ -822,7 +828,7 @@ fileprivate struct FeedEntryPayload {
         voiceAudioURLs = Array(entry.voiceAudioURLs)
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
-        createdAt = entry.createdAt
+        createdAt = existing?.createdAt ?? entry.createdAt
     }
 }
 
