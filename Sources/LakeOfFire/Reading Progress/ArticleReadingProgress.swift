@@ -26,6 +26,7 @@ public class ArticleReadingProgress: ReadingSession {
     @Persisted public var familiarSegmentCount: Int = 0
     @Persisted public var knownSegmentCount: Int = 0
     @Persisted public var difficultySnapshotUpdatedAt: Date?
+    @Persisted public var wordIDsUnknownWhenRead: MutableSet<Int>
 
     // When true, exclude from Continue Reading lists
     @Persisted public var hideFromContinueReading: Bool = false

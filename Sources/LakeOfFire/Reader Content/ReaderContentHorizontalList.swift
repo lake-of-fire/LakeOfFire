@@ -448,7 +448,7 @@ private struct ReaderContentHorizontalListPreviewGallery: View {
                 content()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .stackListGroupBoxContentInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+            .stackListGroupBoxContentInsets(ReaderContentCellDefaults.groupBoxContentInsets)
             .stackListGroupBoxContentSpacing(12)
             .groupBoxStyle(.groupedStackList)
         }

@@ -12,6 +12,10 @@ private let readerContentCellWordCountFormatter: NumberFormatter = {
     formatter.maximumFractionDigits = 0
     return formatter
 }()
+
+enum ReaderContentCellDefaults {
+    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.5)
+}
 // Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
 
 @globalActor
@@ -243,21 +247,81 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return max(1, base)
     }
     
+    private var displayImageURL: URL? {
+        viewModel.imageURL ?? item.imageUrl
+    }
+
+    private var resolvedSourceIconURL: URL? {
+        viewModel.sourceIconURL ?? item.sourceIconURL
+    }
+
+    private var usesSourceIconAsThumbnail: Bool {
+        displayImageURL == nil && resolvedSourceIconURL != nil
+    }
+
+    private var inlineSourceIconURL: URL? {
+        usesSourceIconAsThumbnail ? nil : resolvedSourceIconURL
+    }
+
     @Environment(\.stackListGroupBoxContentInsets) private var stackListContentInsets
 
     private var thumbnailCornerRadius: CGFloat {
         if let customCornerRadius = appearance.thumbnailCornerRadius {
             return customCornerRadius
         }
-        let cardCornerRadius: CGFloat = 20
-        return max(0, cardCornerRadius - stackListContentInsets.leading)
+
+        let outerCornerRadius = stackListCornerRadius
+        let insets = stackListContentInsets
+        let adjusted = outerCornerRadius - min(insets.leading, insets.top)
+        let maxCornerRadius = min(outerCornerRadius, thumbnailEdgeLength / 2)
+        return max(0, min(maxCornerRadius, adjusted))
     }
-    
+
+    private enum ThumbnailChoice {
+        case image(URL)
+        case icon(URL)
+        case initial
+    }
+
+    private var thumbnailChoice: ThumbnailChoice? {
+        if let url = displayImageURL {
+            return .image(url)
+        }
+        if let iconURL = resolvedSourceIconURL {
+            return .icon(iconURL)
+        }
+        return .initial
+    }
+
+    private var fallbackTitle: String {
+        let primary = viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !primary.isEmpty { return primary }
+        let secondary = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !secondary.isEmpty { return secondary }
+        if let host = item.url.host?.removingPrefix("www."), !host.isEmpty {
+            return host
+        }
+        return item.url.absoluteString
+    }
+
+    private var fallbackInitial: String {
+        guard let first = fallbackTitle.first else { return "#" }
+        return String(first).uppercased()
+    }
+
+    private var fallbackColorKey: String {
+        item.url.absoluteString
+    }
+
+    private var hasVisibleThumbnail: Bool {
+        thumbnailChoice != nil
+    }
+
     private var contentColumnHeight: CGFloat? {
         if let dimension = appearance.thumbnailDimension {
             return dimension
         }
-        if viewModel.imageURL != nil || item.imageUrl != nil {
+        if hasVisibleThumbnail {
             return appearance.maxCellHeight
         }
         return nil
@@ -279,10 +343,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return ReaderContentCell<C>.buttonSize
     }
 
-    private var contentLeadingInset: CGFloat {
-        appearance.includeSource ? 1 : 0
-    }
-
     private var isProgressVisible: Bool {
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
@@ -291,15 +351,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
     
     private var metadataText: String? {
-        Self.formatMetadata(wordCount: viewModel.totalWordCount, remainingTime: viewModel.remainingTime)
+        Self.formatMetadata(/*wordCount: viewModel.totalWordCount, */remainingTime: viewModel.remainingTime)
     }
     
-    private static func formatMetadata(wordCount: Int?, remainingTime: TimeInterval?) -> String? {
+    private static func formatMetadata(/*wordCount: Int?,*/ remainingTime: TimeInterval?) -> String? {
         var parts: [String] = []
-        if let wordCount, wordCount > 0 {
-            let value = readerContentCellWordCountFormatter.string(from: NSNumber(value: wordCount)) ?? "\(wordCount)"
-            parts.append("\(value) words")
-        }
+//        if let wordCount, wordCount > 0 {
+//            let value = readerContentCellWordCountFormatter.string(from: NSNumber(value: wordCount)) ?? "\(wordCount)"
+//            parts.append("\(value) words")
+//        }
         if let remainingTime, remainingTime > 1 {
             if let formatted = ReaderDateFormatter.shortDurationString(from: remainingTime) {
                 parts.append("\(formatted) remaining")
@@ -311,25 +371,41 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if let imageUrl = viewModel.imageURL {
-                if appearance.isEbookStyle {
-                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: thumbnailEdgeLength, cellHeight: appearance.maxCellHeight)
-                    //                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                } else {
-                    ReaderImage(
-                        imageUrl,
-                        maxWidth: thumbnailEdgeLength,
-                        minHeight: thumbnailEdgeLength,
-                        maxHeight: thumbnailEdgeLength
-                    )
+            if let thumbnailChoice {
+                switch thumbnailChoice {
+                case .image(let imageUrl):
+                    if appearance.isEbookStyle {
+                        BookThumbnail(imageURL: imageUrl, scaledImageWidth: thumbnailEdgeLength, cellHeight: appearance.maxCellHeight)
+                    } else {
+                        ReaderImage(
+                            imageUrl,
+                            maxWidth: thumbnailEdgeLength,
+                            minHeight: thumbnailEdgeLength,
+                            maxHeight: thumbnailEdgeLength
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+                    }
+                case .icon(let iconURL):
+                    ReaderContentThumbnailTile(
+                        content: .icon(iconURL),
+                        colorKey: fallbackColorKey,
+                        dimension: thumbnailEdgeLength,
+                        cornerRadius: thumbnailCornerRadius
+                    )
+                case .initial:
+                    ReaderContentThumbnailTile(
+                        content: .initial(fallbackInitial),
+                        colorKey: fallbackColorKey,
+                        dimension: thumbnailEdgeLength,
+                        cornerRadius: thumbnailCornerRadius
+                    )
                 }
             }
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading) {
                     if appearance.includeSource {
                         HStack(alignment: .center) {
-                            if let sourceIconURL = viewModel.sourceIconURL {
+                            if let sourceIconURL = inlineSourceIconURL {
                                 ReaderContentSourceIconImage(
                                     sourceIconURL: sourceIconURL,
                                     iconSize: sourceIconSize
@@ -343,28 +419,28 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     .foregroundStyle(.secondary)
                             }
                         }
-//                        .padding(.leading, 1)
                     }
 
                     Text(viewModel.title)
                         .font(.headline)
                         .lineLimit(titleLineLimit)
                         .multilineTextAlignment(.leading)
+                        .environment(\._lineHeightMultiple, 0.875)
                         .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .layoutPriority(1)
                 }
-//                .padding(.trailing, 4)
 
                 Spacer(minLength: 4)
 
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
                         HStack(spacing: 8) {
                             ProgressView(value: min(1, readingProgressFloat))
                                 .progressViewStyle(LinearProgressViewStyle())
                                 .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                                .frame(maxWidth: .infinity)
+                                .frame(width: 44)
+
                             if let metadataText {
                                 Text(metadataText)
                                     .font(.caption)
@@ -373,7 +449,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     .allowsTightening(true)
                             }
                         }
-                        .padding(.leading, contentLeadingInset)
                     }
                     
                     HStack(alignment: .center, spacing: 6) {
@@ -394,7 +469,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .foregroundStyle(.secondary)
-                        .padding(.leading, contentLeadingInset)
                         
                         HStack(alignment: .center, spacing: 0) {
                             BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
@@ -440,21 +514,19 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .buttonStyle(.clearBordered)
                         .foregroundStyle(.secondary)
                         .controlSize(.small)
-//                        .padding(.trailing, 4)
+                        .imageScale(.small)
                         .offset(x: menuTrailingPadding)
                     }
                     .frame(maxWidth: .infinity, alignment: .bottomLeading)
-                    //                .padding(.trailing, -menuTrailingPadding)
-                    .offset(y: menuTrailingPadding)
                     .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
-                    // Keep menu and footer aligned without shifting content outside the card bounds.
                 }
+                .offset(y: menuTrailingPadding)
             }
             .frame(height: contentColumnHeight, alignment: .top)
         }
         .frame(
             minWidth: appearance.maxCellHeight,
-            idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : ((viewModel.imageURL ?? item.imageUrl) == nil ? nil : appearance.maxCellHeight)
+            idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil
         )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
@@ -474,6 +546,57 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             }
         }
         // No provider-based onReceive; lists refresh via Realm publishers.
+    }
+}
+
+private struct ReaderContentThumbnailTile: View {
+    enum Content {
+        case icon(URL)
+        case initial(String)
+    }
+
+    let content: Content
+    let colorKey: String
+    let dimension: CGFloat
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(tileGradient(for: colorKey))
+            switch content {
+            case .icon(let iconURL):
+                ReaderImage(
+                    iconURL,
+                    contentMode: .fit,
+                    maxWidth: dimension * 0.7,
+                    maxHeight: dimension * 0.7
+                )
+                .frame(width: dimension * 0.7, height: dimension * 0.7)
+            case .initial(let letter):
+                Text(letter)
+                    .font(.system(size: dimension * 0.45, weight: .semibold, design: .rounded))
+                    .minimumScaleFactor(0.4)
+                    .foregroundStyle(Color.white)
+            }
+        }
+        .frame(width: dimension, height: dimension)
+    }
+
+    private func tileGradient(for key: String) -> LinearGradient {
+        let hue = gradientHue(for: key)
+        let start = Color(hue: hue, saturation: 0.6, brightness: 0.95)
+        let end = Color(hue: hue, saturation: 0.8, brightness: 0.75)
+        return LinearGradient(colors: [start, end], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private func gradientHue(for key: String) -> Double {
+        let hash = key.unicodeScalars.reduce(UInt64(0)) { accumulator, scalar in
+            let combined = accumulator &* 16_777_619 &+ UInt64(scalar.value)
+            return combined
+        }
+        let normalized = Double(hash % 360) / 360.0
+        return normalized
     }
 }
 
@@ -666,7 +789,7 @@ private struct ReaderContentCellPreviewGallery: View {
                 content()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .stackListGroupBoxContentInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+            .stackListGroupBoxContentInsets(ReaderContentCellDefaults.groupBoxContentInsets)
             .stackListGroupBoxContentSpacing(12)
             .groupBoxStyle(.groupedStackList)
             .frame(width: targetWidth, alignment: .leading)
