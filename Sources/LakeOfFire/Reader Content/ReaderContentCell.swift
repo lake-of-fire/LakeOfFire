@@ -14,7 +14,7 @@ private let readerContentCellWordCountFormatter: NumberFormatter = {
 }()
 
 enum ReaderContentCellDefaults {
-    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.8)
+    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.825)
 }
 // Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
 
@@ -515,7 +515,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         .buttonStyle(.clearBordered)
                         .foregroundStyle(.secondary)
                         .controlSize(.small)
-                        .imageScale(.small)
+//                        .imageScale(.small)
                         .offset(x: menuTrailingPadding)
                     }
                     .frame(maxWidth: .infinity, alignment: .bottomLeading)
@@ -564,7 +564,7 @@ private struct ReaderContentThumbnailTile: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(tileGradient(for: colorKey))
+                .fill(tileBackground)
             switch content {
             case .icon(let iconURL):
                 ReaderImage(
@@ -584,11 +584,18 @@ private struct ReaderContentThumbnailTile: View {
         .frame(width: dimension, height: dimension)
     }
 
-    private func tileGradient(for key: String) -> LinearGradient {
-        let hue = gradientHue(for: key)
-        let start = Color(hue: hue, saturation: 0.6, brightness: 0.95)
-        let end = Color(hue: hue, saturation: 0.8, brightness: 0.75)
-        return LinearGradient(colors: [start, end], startPoint: .topLeading, endPoint: .bottomTrailing)
+    private var tileBackground: LinearGradient {
+        switch content {
+        case .icon:
+            let hue = gradientHue(for: colorKey)
+            let start = Color(hue: hue, saturation: 0.6, brightness: 0.95)
+            let end = Color(hue: hue, saturation: 0.8, brightness: 0.75)
+            return LinearGradient(colors: [start, end], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .initial:
+            let light = Color.secondary.opacity(0.25)
+            let dark = Color.secondary.opacity(0.45)
+            return LinearGradient(colors: [light, dark], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
     }
 
     private func gradientHue(for key: String) -> Double {
