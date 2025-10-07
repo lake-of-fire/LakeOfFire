@@ -14,7 +14,7 @@ private let readerContentCellWordCountFormatter: NumberFormatter = {
 }()
 
 enum ReaderContentCellDefaults {
-    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.5)
+    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.8)
 }
 // Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
 
@@ -449,6 +449,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     .allowsTightening(true)
                             }
                         }
+                        .offset(y: max(0, menuTrailingPadding - 5))
                     }
                     
                     HStack(alignment: .center, spacing: 6) {
@@ -577,7 +578,7 @@ private struct ReaderContentThumbnailTile: View {
                 Text(letter)
                     .font(.system(size: dimension * 0.45, weight: .semibold, design: .rounded))
                     .minimumScaleFactor(0.4)
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Color.secondary)
             }
         }
         .frame(width: dimension, height: dimension)
