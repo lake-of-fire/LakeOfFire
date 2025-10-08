@@ -25,6 +25,11 @@ open class BaseReadingProgress: Object, ObjectKeyIdentifiable, ReadingProgressPr
     @Persisted public var wordsRead = 0
     @Persisted public var readSegmentIdentifiers: MutableSet<String>
 
+    @Persisted public var segmentsUnknownWhenRead: Int = 0
+    @Persisted public var segmentsLearningWhenRead: Int = 0
+    @Persisted public var segmentsFamiliarWhenRead: Int = 0
+    @Persisted public var segmentsKnownWhenRead: Int = 0
+
     @Persisted public var uniqueUnreadUnknownWordsRead = 0
     @Persisted public var uniqueUnknownWordsRead = 0
     @Persisted public var uniqueLearningWordsRead = 0
