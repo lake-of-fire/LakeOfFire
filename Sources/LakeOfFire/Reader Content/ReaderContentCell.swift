@@ -14,7 +14,7 @@ private let readerContentCellWordCountFormatter: NumberFormatter = {
 }()
 
 enum ReaderContentCellDefaults {
-    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.825)
+    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.815)
 }
 // Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
 
@@ -309,10 +309,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return String(first).uppercased()
     }
 
-    private var fallbackColorKey: String {
-        item.url.absoluteString
-    }
-
     private var hasVisibleThumbnail: Bool {
         thumbnailChoice != nil
     }
@@ -387,15 +383,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     }
                 case .icon(let iconURL):
                     ReaderContentThumbnailTile(
-                        content: .icon(iconURL),
-                        colorKey: fallbackColorKey,
+                        content: .icon(iconURL, placeholder: fallbackInitial),
                         dimension: thumbnailEdgeLength,
                         cornerRadius: thumbnailCornerRadius
                     )
                 case .initial:
                     ReaderContentThumbnailTile(
                         content: .initial(fallbackInitial),
-                        colorKey: fallbackColorKey,
                         dimension: thumbnailEdgeLength,
                         cornerRadius: thumbnailCornerRadius
                     )
@@ -552,21 +546,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
 private struct ReaderContentThumbnailTile: View {
     enum Content {
-        case icon(URL)
+        case icon(URL, placeholder: String)
         case initial(String)
     }
 
     let content: Content
-    let colorKey: String
     let dimension: CGFloat
     let cornerRadius: CGFloat
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(tileBackground)
-            switch content {
-            case .icon(let iconURL):
+            placeholderLayer
+            if case let .icon(iconURL, _) = content {
                 ReaderImage(
                     iconURL,
                     contentMode: .fit,
@@ -574,37 +565,42 @@ private struct ReaderContentThumbnailTile: View {
                     maxHeight: dimension * 0.7
                 )
                 .frame(width: dimension * 0.7, height: dimension * 0.7)
-            case .initial(let letter):
-                Text(letter)
-                    .font(.system(size: dimension * 0.45, weight: .semibold, design: .rounded))
-                    .minimumScaleFactor(0.4)
-                    .foregroundStyle(Color.secondary)
             }
         }
         .frame(width: dimension, height: dimension)
     }
 
-    private var tileBackground: LinearGradient {
+    @ViewBuilder
+    private var placeholderLayer: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(placeholderBackground)
+            .overlay {
+                if let letter = placeholderLetter {
+                    Text(letter)
+                        .font(.system(size: dimension * 0.45, weight: .semibold, design: .rounded))
+                        .minimumScaleFactor(0.4)
+                        .foregroundStyle(placeholderForeground)
+                }
+            }
+    }
+
+    private var placeholderLetter: String? {
         switch content {
-        case .icon:
-            let hue = gradientHue(for: colorKey)
-            let start = Color(hue: hue, saturation: 0.6, brightness: 0.95)
-            let end = Color(hue: hue, saturation: 0.8, brightness: 0.75)
-            return LinearGradient(colors: [start, end], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .initial:
-            let light = Color.secondary.opacity(0.25)
-            let dark = Color.secondary.opacity(0.45)
-            return LinearGradient(colors: [light, dark], startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .icon(_, let placeholder):
+            return placeholder.isEmpty ? nil : placeholder
+        case .initial(let letter):
+            return letter.isEmpty ? nil : letter
         }
     }
 
-    private func gradientHue(for key: String) -> Double {
-        let hash = key.unicodeScalars.reduce(UInt64(0)) { accumulator, scalar in
-            let combined = accumulator &* 16_777_619 &+ UInt64(scalar.value)
-            return combined
-        }
-        let normalized = Double(hash % 360) / 360.0
-        return normalized
+    private var placeholderBackground: LinearGradient {
+        let light = Color.secondary.opacity(0.18)
+        let dark = Color.secondary.opacity(0.32)
+        return LinearGradient(colors: [light, dark], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    private var placeholderForeground: Color {
+        Color.secondary.opacity(0.9)
     }
 }
 
