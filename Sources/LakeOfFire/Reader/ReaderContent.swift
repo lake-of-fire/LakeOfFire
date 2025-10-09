@@ -4,7 +4,16 @@ import Combine
 @MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)?// = ReaderContentLoader.unsavedHome
-    @Published public var pageURL = URL(string: "about:blank")!
+    @Published public var pageURL = URL(string: "about:blank")! {
+        didSet {
+            let pointer = Unmanaged.passUnretained(self).toOpaque()
+            if pageURL.isSnippetURL {
+                debugPrint("# LOOKUPS ReaderContent.pageURL didSet snippet", pageURL.absoluteString, "self=", pointer)
+            } else {
+                debugPrint("# LOOKUPS ReaderContent.pageURL didSet", pageURL.absoluteString, "self=", pointer)
+            }
+        }
+    }
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
     private var cancellables = Set<AnyCancellable>()

@@ -122,19 +122,31 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     @Binding var entrySelection: String?
     let enabled: Bool
+    let onSelection: ((C) -> Void)?
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
 
     func body(content: Content) -> some View {
-        content
+        let shouldSyncToReader = enabled && onSelection == nil
+        return content
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard enabled else { return }
                 guard oldValue != itemSelection,
                       let itemSelection = itemSelection,
                       let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
                       !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+                if let handler = onSelection {
+                    handler(content)
+                    Task { @MainActor in
+                        if entrySelection == itemSelection {
+                            entrySelection = nil
+                        }
+                    }
+                    return
+                }
+                guard shouldSyncToReader else { return }
                 Task { @MainActor in
                     do {
                         try await navigator.load(
@@ -150,19 +162,19 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 }
             }
             .onChange(of: readerContent.pageURL) { [oldPageURL = readerContent.pageURL] readerPageURL in
-                guard enabled else { return }
+                guard shouldSyncToReader else { return }
                 if oldPageURL != readerPageURL {
                     refreshSelection(readerPageURL: readerPageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating, oldPageURL: oldPageURL)
                 }
             }
             .onChange(of: viewModel.filteredContents) { _ in
-                guard enabled else { return }
+                guard shouldSyncToReader else { return }
                 Task { @MainActor in
                     refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
                 }
             }
             .task { @MainActor in
-                guard enabled else { return }
+                guard shouldSyncToReader else { return }
                 refreshSelection(readerPageURL: readerContent.pageURL, isReaderProvisionallyNavigating: readerContent.isReaderProvisionallyNavigating)
             }
     }
@@ -232,9 +244,10 @@ private extension View {
     func readerContentSelectionSync<C: ReaderContentProtocol>(
         viewModel: ReaderContentListViewModel<C>,
         entrySelection: Binding<String?>,
-        enabled: Bool
+        enabled: Bool,
+        onSelection: ((C) -> Void)? = nil
     ) -> some View {
-        modifier(ReaderContentSelectionSyncModifier(viewModel: viewModel, entrySelection: entrySelection, enabled: enabled))
+        modifier(ReaderContentSelectionSyncModifier(viewModel: viewModel, entrySelection: entrySelection, enabled: enabled, onSelection: onSelection))
     }
 }
 
@@ -563,6 +576,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentSelected: ((C) -> Void)?
     
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
@@ -609,7 +623,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
             onRequestDelete: onRequestDelete,
-            customMenuOptions: customMenuOptions
+            customMenuOptions: customMenuOptions,
+            onContentSelected: onContentSelected
         )
     }
     
@@ -708,7 +723,12 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                 refreshGrouping()
             }
         }
-        .readerContentSelectionSync(viewModel: viewModel, entrySelection: $entrySelection, enabled: customGrouping != nil)
+        .readerContentSelectionSync(
+            viewModel: viewModel,
+            entrySelection: $entrySelection,
+            enabled: customGrouping != nil && onContentSelected == nil,
+            onSelection: onContentSelected
+        )
     }
     
     @ViewBuilder
@@ -830,6 +850,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentSelected: ((C) -> Void)? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -847,6 +868,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         self.customMenuOptions = customMenuOptions
         self.headerView = headerView
         self.emptyStateView = emptyStateView
+        self.onContentSelected = onContentSelected
     }
 }
 
@@ -858,6 +880,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     var alwaysShowThumbnails = true
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentSelected: ((C) -> Void)?
     
     public var body: some View {
         ReaderContentInnerListItems(
@@ -868,7 +891,12 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
-        .readerContentSelectionSync(viewModel: viewModel, entrySelection: $entrySelection, enabled: true)
+        .readerContentSelectionSync(
+            viewModel: viewModel,
+            entrySelection: $entrySelection,
+            enabled: onContentSelected == nil,
+            onSelection: onContentSelected
+        )
     }
     
     public init(
@@ -878,7 +906,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
-        customMenuOptions: ((C) -> AnyView)? = nil
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentSelected: ((C) -> Void)? = nil
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -887,6 +916,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
+        self.onContentSelected = onContentSelected
     }
     
 }

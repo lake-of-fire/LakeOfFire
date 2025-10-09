@@ -24,6 +24,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     let maxCellHeight: CGFloat
     let customMenuOptions: ((C) -> AnyView)?
     let contentSelection: Binding<String?>
+    let onContentSelected: ((C) -> Void)?
     
     private enum Layout {
         static var cardCornerRadius: CGFloat { 20 }
@@ -45,6 +46,15 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             let selection = content.compoundKey
             contentSelection.wrappedValue = selection
             if content.url.matchesReaderURL(readerContent.pageURL) {
+                Task { @MainActor in
+                    if contentSelection.wrappedValue == selection {
+                        contentSelection.wrappedValue = nil
+                    }
+                }
+                return
+            }
+            if let handler = onContentSelected {
+                handler(content)
                 Task { @MainActor in
                     if contentSelection.wrappedValue == selection {
                         contentSelection.wrappedValue = nil
@@ -145,6 +155,22 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous)
             .fill(stackListStyle == .grouped ? Color.stackListCardBackgroundGrouped : Color.stackListCardBackgroundPlain)
     }
+
+    init(
+        content: C,
+        includeSource: Bool,
+        maxCellHeight: CGFloat,
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        contentSelection: Binding<String?>,
+        onContentSelected: ((C) -> Void)? = nil
+    ) {
+        self.content = content
+        self.includeSource = includeSource
+        self.maxCellHeight = maxCellHeight
+        self.customMenuOptions = customMenuOptions
+        self.contentSelection = contentSelection
+        self.onContentSelected = onContentSelected
+    }
 }
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
@@ -152,6 +178,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     let includeSource: Bool
     let customMenuOptions: ((C) -> AnyView)?
     let contentSelection: Binding<String?>
+    let onContentSelected: ((C) -> Void)?
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140 * (2.0 / 3.0)
     //    @State private var viewWidth: CGFloat = 0
@@ -165,7 +192,8 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                         includeSource: includeSource,
                         maxCellHeight: maxCellHeight,
                         customMenuOptions: customMenuOptions,
-                        contentSelection: contentSelection
+                        contentSelection: contentSelection,
+                        onContentSelected: onContentSelected
                     )
                 }
                 //                .headerProminence(.increased)
@@ -194,13 +222,15 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     init(
         filteredContents: [C],
         includeSource: Bool,
-        customMenuOptions: ((C) -> AnyView)?,
-        contentSelection: Binding<String?>
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        contentSelection: Binding<String?>,
+        onContentSelected: ((C) -> Void)? = nil
     ) {
         self.filteredContents = filteredContents
         self.includeSource = includeSource
         self.customMenuOptions = customMenuOptions
         self.contentSelection = contentSelection
+        self.onContentSelected = onContentSelected
     }
 }
 
@@ -210,6 +240,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     var contentSelection: Binding<String?>
     let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
+    let onContentSelected: ((C) -> Void)?
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     
@@ -226,7 +257,8 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                     filteredContents: viewModel.filteredContents,
                     includeSource: includeSource,
                     customMenuOptions: customMenuOptions,
-                    contentSelection: contentSelection
+                    contentSelection: contentSelection,
+                    onContentSelected: onContentSelected
                 )
             }
             
@@ -274,6 +306,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         includeSource: Bool,
         contentSelection: Binding<String?>,
         customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentSelected: ((C) -> Void)? = nil,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
@@ -286,6 +319,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         self.includeSource = includeSource
         self.contentSelection = contentSelection
         self.customMenuOptions = customMenuOptions
+        self.onContentSelected = onContentSelected
         self.emptyStateView = { emptyStateView() }
     }
 }
