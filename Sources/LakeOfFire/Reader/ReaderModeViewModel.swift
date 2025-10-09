@@ -62,12 +62,12 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
 
-    @MainActor
-    public func invalidateLastRenderedReadabilityURL() {
-        debugPrint("# FLASH ReaderModeViewModel.invalidateLastRenderedReadabilityURL clearing", lastRenderedReadabilityURL?.absoluteString ?? "nil")
-        lastRenderedReadabilityURL = nil
-        lastFallbackLoaderURL = nil
-    }
+//    @MainActor
+//    public func invalidateLastRenderedReadabilityURL() {
+//        debugPrint("# FLASH ReaderModeViewModel.invalidateLastRenderedReadabilityURL clearing", lastRenderedReadabilityURL?.absoluteString ?? "nil")
+//        lastRenderedReadabilityURL = nil
+//        lastFallbackLoaderURL = nil
+//    }
     
     public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && !content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
