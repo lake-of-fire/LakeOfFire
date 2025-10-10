@@ -301,13 +301,21 @@ public class ReaderModeViewModel: ObservableObject {
                         ], in: frameInfo)
                     readerModeLoading(false)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
+                    guard let navigator else {
+                        print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
+                        readerModeLoading(false)
+                        return
+                    }
                     debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent navigator.load htmlData", url)
-                    navigator?.load(
+                    navigator.load(
                         htmlData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: url
                     )
+                } else {
+                    print("ReaderModeViewModel: readability HTML data missing for", url.absoluteString)
+                    readerModeLoading(false)
                 }
 
 //                try await { @MainActor in
