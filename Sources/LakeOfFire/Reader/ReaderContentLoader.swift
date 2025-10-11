@@ -85,7 +85,7 @@ public struct ReaderContentLoader {
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
         try Task.checkCancellation()
- 
+        
         var contentFile: ContentFile?
         if !skipContentFiles {
             contentFile = ContentFile.get(forURL: url, realm: bookmarkRealm)

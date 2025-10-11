@@ -22,6 +22,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var defaultFontSize: Double?
     private var lastFallbackLoaderURL: URL?
     private var lastRenderedReadabilityURL: URL?
+    private var pendingReaderModeURL: URL?
     
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
@@ -62,6 +63,46 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
 
+    @MainActor
+    public func beginReaderModeLoad(for url: URL) {
+        if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) {
+            // already tracking this load
+        } else {
+            pendingReaderModeURL = url
+        }
+        readerModeLoading(true)
+    }
+
+    @MainActor
+    public func cancelReaderModeLoad(for url: URL? = nil) {
+        guard let pendingReaderModeURL else {
+            if url == nil {
+                readerModeLoading(false)
+            }
+            return
+        }
+        if let url, !pendingReaderModeURL.matchesReaderURL(url) {
+            return
+        }
+        self.pendingReaderModeURL = nil
+        readerModeLoading(false)
+    }
+
+    @MainActor
+    public func markReaderModeLoadComplete(for url: URL) {
+        guard let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) else {
+            return
+        }
+        self.pendingReaderModeURL = nil
+        readerModeLoading(false)
+    }
+
+    @MainActor
+    public func isReaderModeLoadPending(for url: URL) -> Bool {
+        guard let pendingReaderModeURL else { return false }
+        return pendingReaderModeURL.matchesReaderURL(url)
+    }
+
 //    @MainActor
 //    public func invalidateLastRenderedReadabilityURL() {
 //        debugPrint("# FLASH ReaderModeViewModel.invalidateLastRenderedReadabilityURL clearing", lastRenderedReadabilityURL?.absoluteString ?? "nil")
@@ -79,6 +120,9 @@ public class ReaderModeViewModel: ObservableObject {
     public init() { }
     
     func isReaderModeLoadPending(content: any ReaderContentProtocol) -> Bool {
+        if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(content.url) {
+            return true
+        }
         return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
     }
     
@@ -99,15 +143,15 @@ public class ReaderModeViewModel: ObservableObject {
         guard let readabilityContent else {
             // FIME: WHY THIS CALLED WHEN LOAD??
             debugPrint("# FLASH ReaderModeViewModel.showReaderView missing readabilityContent", readerContent.pageURL)
-            readerModeLoading(false)
+            cancelReaderModeLoad(for: readerContent.pageURL)
             return
         }
         let contentURL = readerContent.pageURL
-        readerModeLoading(true)
+        beginReaderModeLoad(for: contentURL)
         Task { @MainActor in
             guard contentURL == readerContent.pageURL else {
                 debugPrint("# FLASH ReaderModeViewModel.showReaderView contentURL mismatch", contentURL, readerContent.pageURL)
-                readerModeLoading(false)
+                cancelReaderModeLoad(for: contentURL)
                 return
             }
             do {
@@ -121,7 +165,7 @@ public class ReaderModeViewModel: ObservableObject {
             } catch {
                 debugPrint("# FLASH ReaderModeViewModel.showReaderView showReadabilityContent failed", error.localizedDescription)
                 print(error)
-                readerModeLoading(false)
+                cancelReaderModeLoad(for: contentURL)
             }
         }
     }
@@ -138,7 +182,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard let content = try await readerContent.getContent() else {
             debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent missing content")
             print("No content set to show in reader mode")
-            readerModeLoading(false)
+            cancelReaderModeLoad(for: readerContent.pageURL)
             return
         }
         let url = content.url
@@ -148,7 +192,7 @@ public class ReaderModeViewModel: ObservableObject {
             debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent duplicate check", lastRenderedReadabilityURL.absoluteString, "candidate", url.absoluteString)
             if lastRenderedReadabilityURL.matchesReaderURL(url) {
                 debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent skipping duplicate render", url)
-                readerModeLoading(false)
+                markReaderModeLoadComplete(for: url)
                 return
             }
         }
@@ -259,7 +303,7 @@ public class ReaderModeViewModel: ObservableObject {
                 guard url.matchesReaderURL(readerContent.pageURL) else {
                     debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent reader URL mismatch", url, readerContent.pageURL)
                     print("Readability content URL mismatch", url, readerContent.pageURL)
-                    readerModeLoading(false)
+                    cancelReaderModeLoad(for: url)
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
@@ -299,11 +343,11 @@ public class ReaderModeViewModel: ObservableObject {
                             "html": transformedContent,
                             "css": Readability.shared.css,
                         ], in: frameInfo)
-                    readerModeLoading(false)
+                    markReaderModeLoadComplete(for: url)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
                     guard let navigator else {
                         print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
-                        readerModeLoading(false)
+                        cancelReaderModeLoad(for: url)
                         return
                     }
                     debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent navigator.load htmlData", url)
@@ -315,7 +359,7 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                 } else {
                     print("ReaderModeViewModel: readability HTML data missing for", url.absoluteString)
-                    readerModeLoading(false)
+                    cancelReaderModeLoad(for: url)
                 }
 
 //                try await { @MainActor in
@@ -344,7 +388,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard let content = readerContent.content else {
             debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted missing readerContent.content", newState.pageURL)
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
-            readerModeLoading(false)
+            cancelReaderModeLoad(for: newState.pageURL)
             return
         }
         try Task.checkCancellation()
@@ -353,7 +397,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted URL mismatch", committedURL, newState.pageURL)
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
-            readerModeLoading(false)
+            cancelReaderModeLoad(for: committedURL)
             return
         }
         try Task.checkCancellation()
@@ -364,7 +408,11 @@ public class ReaderModeViewModel: ObservableObject {
         
         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
             withAnimation {
-                readerModeLoading(isReaderModeVerified)
+                if isReaderModeVerified {
+                    beginReaderModeLoad(for: committedURL)
+                } else {
+                    cancelReaderModeLoad(for: committedURL)
+                }
                 isReaderMode = isReaderModeVerified // Reset and confirm via JS later
             }
             try Task.checkCancellation()
@@ -378,8 +426,8 @@ public class ReaderModeViewModel: ObservableObject {
                 let currentURL = readerContent.pageURL
                 guard committedURL.matchesReaderURL(currentURL) else {
                     debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted currentURL mismatch", committedURL, currentURL)
-                    print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
-                    readerModeLoading(false)
+                    print("URL mismatch in ReaderModeViewModel.onNavigationCommitted", currentURL, committedURL)
+                    cancelReaderModeLoad(for: committedURL)
                     return
                 }
                 if let lastFallbackLoaderURL, lastFallbackLoaderURL == newState.pageURL {
@@ -448,14 +496,22 @@ public class ReaderModeViewModel: ObservableObject {
     ) async {
         debugPrint("# FLASH ReaderModeViewModel.onNavigationFinished", newState.pageURL)
         if !newState.pageURL.isReaderURLLoaderURL {
+            if newState.pageURL.isNativeReaderView, pendingReaderModeURL != nil {
+                // about:blank or native placeholder during the reader-mode bootstrap; keep loading state.
+                return
+            }
             do {
                 let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
                 if !isNextReaderMode {
-                    readerModeLoading(false)
+                    if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(newState.pageURL) {
+                        // Keep the spinner alive until the reader-mode initialization finishes.
+                    } else {
+                        readerModeLoading(false)
+                    }
                 }
             } catch {
                 debugPrint("# FLASH ReaderModeViewModel.onNavigationFinished JS failed", error.localizedDescription)
-                readerModeLoading(false)
+                cancelReaderModeLoad(for: newState.pageURL)
             }
         }
     }
@@ -463,7 +519,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func onNavigationFailed(newState: WebViewState) {
         debugPrint("# FLASH ReaderModeViewModel.onNavigationFailed", newState.pageURL)
-        readerModeLoading(false)
+        cancelReaderModeLoad(for: newState.pageURL)
     }
 }
 

@@ -438,8 +438,6 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .stackListGroupBoxContentInsets(ReaderContentCellDefaults.groupBoxContentInsets)
-        .groupBoxStyle(.groupedStackList)
         .tag(item.compoundKey)
     }
     
@@ -538,7 +536,6 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     customMenuOptions: customMenuOptions
                 )
             }
-            .readerContentListRowStyle()
         }
         .frame(minHeight: 10)
     }

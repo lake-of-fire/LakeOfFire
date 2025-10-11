@@ -13,11 +13,6 @@ private let readerContentCellWordCountFormatter: NumberFormatter = {
     return formatter
 }()
 
-enum ReaderContentCellDefaults {
-    static let groupBoxContentInsets = StackListGroupBoxDefaults.contentInsets(scaledBy: 0.815)
-}
-// Do not import ManabiCommon from LakeOfFire. Integrations happen via environment.
-
 @globalActor
 fileprivate actor ReaderContentCellActor {
     static var shared = ReaderContentCellActor()
@@ -175,6 +170,7 @@ extension ReaderContentProtocol {
             thumbnailCornerRadius: thumbnailCornerRadius
         )
         readerContentCellView(appearance: appearance)
+            .stackListGroupBoxContentInsets(StackListGroupBoxDefaults.contentInsets(scaledBy: 0.815))
     }
 }
 
@@ -263,7 +259,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         usesSourceIconAsThumbnail ? nil : resolvedSourceIconURL
     }
 
-    @Environment(\.stackListGroupBoxContentInsets) private var stackListContentInsets
+    @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
 
     private var thumbnailCornerRadius: CGFloat {
         if let customCornerRadius = appearance.thumbnailCornerRadius {
@@ -271,8 +267,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
 
         let outerCornerRadius = stackListCornerRadius
-        let insets = stackListContentInsets
-        let adjusted = outerCornerRadius - min(insets.leading, insets.top)
+        let adjusted = outerCornerRadius - min(stackListGroupBoxContentInsets.leading, stackListGroupBoxContentInsets.top)
         let maxCornerRadius = min(outerCornerRadius, thumbnailEdgeLength / 2)
         return max(0, min(maxCornerRadius, adjusted))
     }
@@ -793,8 +788,6 @@ private struct ReaderContentCellPreviewGallery: View {
                 content()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .stackListGroupBoxContentInsets(ReaderContentCellDefaults.groupBoxContentInsets)
-            .stackListGroupBoxContentSpacing(12)
             .groupBoxStyle(.groupedStackList)
             .frame(width: targetWidth, alignment: .leading)
         }

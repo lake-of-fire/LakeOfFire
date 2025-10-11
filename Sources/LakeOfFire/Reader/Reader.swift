@@ -157,9 +157,14 @@ public extension WebViewNavigator {
             if let readerModeViewModel {
                 let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
-
-                    let isLoading = (previouslyLoadedContent ?? content).isReaderModeByDefault
-                    readerModeViewModel.readerModeLoading(isLoading)
+                    let trackingContent = (previouslyLoadedContent ?? content)
+                    let isLoading = trackingContent.isReaderModeByDefault
+                    let trackingURL = trackingContent.url
+                    if isLoading {
+                        readerModeViewModel.beginReaderModeLoad(for: trackingURL)
+                    } else {
+                        readerModeViewModel.cancelReaderModeLoad(for: trackingURL)
+                    }
                     debugPrint("# FLASH WebViewNavigator.load readerModeLoading", isLoading, url)
                 }
             }

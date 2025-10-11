@@ -39,7 +39,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @Environment(\.stackListStyle) private var stackListStyle
     
     private var cardWidth: CGFloat { maxCellHeight * 3 }
-    private var thumbnailCornerRadius: CGFloat { max(0, Layout.cardCornerRadius - Layout.contentPadding) }
 
     var body: some View {
         Button {
@@ -76,43 +75,43 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 }
             }
         } label: {
-            VStack(spacing: 0) {
-                if let customMenuOptions {
-                    content.readerContentCellView(
-                        appearance: ReaderContentCellAppearance(
-                            maxCellHeight: maxCellHeight,
-                            alwaysShowThumbnails: true,
-                            isEbookStyle: false,
-                            includeSource: includeSource,
-                            thumbnailDimension: maxCellHeight,
-                            thumbnailCornerRadius: thumbnailCornerRadius
-                        ),
-                        customMenuOptions: customMenuOptions
-                    )
-                } else {
-                    content.readerContentCellView(
-                        appearance: ReaderContentCellAppearance(
-                            maxCellHeight: maxCellHeight,
-                            alwaysShowThumbnails: true,
-                            isEbookStyle: false,
-                            includeSource: includeSource,
-                            thumbnailDimension: maxCellHeight,
-                            thumbnailCornerRadius: thumbnailCornerRadius
+            GroupBox {
+                VStack(spacing: 0) {
+                    if let customMenuOptions {
+                        content.readerContentCellView(
+                            appearance: ReaderContentCellAppearance(
+                                maxCellHeight: maxCellHeight,
+                                alwaysShowThumbnails: true,
+                                isEbookStyle: false,
+                                includeSource: includeSource,
+                                thumbnailDimension: maxCellHeight
+                            ),
+                            customMenuOptions: customMenuOptions
                         )
-                    )
+                    } else {
+                        content.readerContentCellView(
+                            appearance: ReaderContentCellAppearance(
+                                maxCellHeight: maxCellHeight,
+                                alwaysShowThumbnails: true,
+                                isEbookStyle: false,
+                                includeSource: includeSource,
+                                thumbnailDimension: maxCellHeight
+                            )
+                        )
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(cardBackground)
-            .contentShape(RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous))
-#if os(macOS)
-            .overlay {
-                RoundedRectangle(cornerRadius: Layout.cardCornerRadius)
-                    .stroke(.secondary.opacity(0.2))
-                    .shadow(radius: 5)
-            }
-#endif
+//            .padding(16)
+//            .background(cardBackground)
+//            .contentShape(RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous))
+//#if os(macOS)
+//            .overlay {
+//                RoundedRectangle(cornerRadius: Layout.cardCornerRadius)
+//                    .stroke(.secondary.opacity(0.2))
+//                    .shadow(radius: 5)
+//            }
+//#endif
             //            )
             //                .background(Color.white.opacity(0.00000001)) // Clickability
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
@@ -199,6 +198,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                 //                .headerProminence(.increased)
             }
             .frame(minHeight: maxCellHeight)
+            .applyStackListGroupBoxStyle(.grouped)
             //            .fixedSize()
             //            .padding(.horizontal)
         }
@@ -421,10 +421,10 @@ private struct ReaderContentHorizontalListPreviewGallery: View {
             }
         )
     }
-
+    
     var body: some View {
         StackList {
-            variant("Horizontal List - Scrollable") {
+            StackSection("Horizontal List - Scrollable") {
                 ReaderContentHorizontalList(
                     contents: store.entries,
                     includeSource: true,
@@ -438,28 +438,6 @@ private struct ReaderContentHorizontalListPreviewGallery: View {
                 }
                 .frame(width: store.cardWidth * 1.9, height: store.maxCellHeight + 64)
             }
-
-            variant("Single Card - Preset Width") {
-                ReaderContentInnerHorizontalListItem(
-                    content: store.entries[0],
-                    includeSource: true,
-                    maxCellHeight: store.maxCellHeight,
-                    customMenuOptions: previewMenuOptions,
-                    contentSelection: $contentSelection
-                )
-                .frame(width: store.cardWidth, height: store.maxCellHeight + 48)
-            }
-
-            variant("Single Card - Compact") {
-                ReaderContentInnerHorizontalListItem(
-                    content: store.entries[1],
-                    includeSource: true,
-                    maxCellHeight: store.maxCellHeight,
-                    customMenuOptions: previewMenuOptions,
-                    contentSelection: $contentSelection
-                )
-                .frame(width: store.cardWidth, height: store.maxCellHeight + 48)
-            }
         }
         .stackListStyle(.grouped)
         .stackListInterItemSpacing(18)
@@ -468,25 +446,6 @@ private struct ReaderContentHorizontalListPreviewGallery: View {
         .environmentObject(store.readerModeViewModel)
         .frame(maxWidth: store.cardWidth * 2.2)
         .padding()
-    }
-
-    private func variant<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> StackListRowItem {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
-
-            GroupBox {
-                content()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .stackListGroupBoxContentInsets(ReaderContentCellDefaults.groupBoxContentInsets)
-            .stackListGroupBoxContentSpacing(12)
-            .groupBoxStyle(.groupedStackList)
-        }
-        .stackListRowSeparator(.hidden)
     }
 }
 
