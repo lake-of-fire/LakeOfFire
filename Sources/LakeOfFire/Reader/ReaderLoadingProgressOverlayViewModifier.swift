@@ -25,8 +25,10 @@ private struct ReaderLoadingOverlay: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    @State private var displayedMessage: String?
     @State private var isShowingStatus = false
-    @State private var statusWorkItem: DispatchWorkItem?
+    @State private var showWorkItem: DispatchWorkItem?
+    @State private var hideWorkItem: DispatchWorkItem?
 
     var body: some View {
         ZStack {
@@ -37,7 +39,7 @@ private struct ReaderLoadingOverlay: View {
                     .tint(.secondary)
                     .delayedAppearance()
                 Group {
-                    if let message = statusMessage, !message.isEmpty {
+                    if let message = displayedMessage, !message.isEmpty {
                         Text(message)
                             .font(.callout)
                             .multilineTextAlignment(.center)
@@ -45,11 +47,10 @@ private struct ReaderLoadingOverlay: View {
                             .opacity(isShowingStatus ? 1 : 0)
                             .scaleEffect(isShowingStatus ? 1 : 0.98)
                     } else {
-                        Spacer()
-                            .frame(height: 0)
+                        Color.clear
                     }
                 }
-                .frame(minHeight: 24)
+                .frame(height: 24)
                 .animation(.easeInOut(duration: 0.2), value: isShowingStatus)
             }
         }
@@ -58,23 +59,19 @@ private struct ReaderLoadingOverlay: View {
         .allowsHitTesting(isLoading)
         .animation(.easeInOut(duration: 0.2), value: isLoading)
         .animation(.easeInOut(duration: 0.2), value: isShowingStatus)
-        .onChange(of: isLoading) { newValue in
-            if newValue {
-                scheduleStatus()
-            } else {
-                cancelStatus()
-            }
+        .onChange(of: isLoading) { _ in
+            syncStatusDisplay()
         }
         .onChange(of: statusMessage) { _ in
-            scheduleStatus()
+            syncStatusDisplay()
         }
         .onAppear {
-            if isLoading {
-                scheduleStatus()
-            }
+            syncStatusDisplay()
         }
         .onDisappear {
-            cancelStatus()
+            cancelAllWork()
+            displayedMessage = nil
+            isShowingStatus = false
         }
     }
 
@@ -83,22 +80,59 @@ private struct ReaderLoadingOverlay: View {
     }
 
     @MainActor
-    private func scheduleStatus() {
-        cancelStatus()
-        guard isLoading, let message = statusMessage, !message.isEmpty else {
-            isShowingStatus = false
-            return
-        }
+    private func syncStatusDisplay() {
+        cancelShowWork()
+        let trimmedMessage = statusMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasMessage = isLoading && !(trimmedMessage?.isEmpty ?? true)
 
-        let workItem = DispatchWorkItem { isShowingStatus = true }
-        statusWorkItem = workItem
+        if hasMessage, let message = trimmedMessage {
+            cancelHideWork()
+            let sameMessage = displayedMessage == message
+            displayedMessage = message
+
+            if sameMessage && (isShowingStatus || showWorkItem != nil) {
+                return
+            }
+
+            let workItem = DispatchWorkItem {
+                isShowingStatus = true
+            }
+            showWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
+        } else {
+            scheduleHide()
+        }
+    }
+
+    @MainActor
+    private func scheduleHide() {
+        cancelHideWork()
+
+        guard isShowingStatus || displayedMessage != nil else { return }
+
+        let workItem = DispatchWorkItem {
+            isShowingStatus = false
+            displayedMessage = nil
+        }
+        hideWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
     }
 
     @MainActor
-    private func cancelStatus() {
-        statusWorkItem?.cancel()
-        statusWorkItem = nil
-        isShowingStatus = false
+    private func cancelShowWork() {
+        showWorkItem?.cancel()
+        showWorkItem = nil
+    }
+
+    @MainActor
+    private func cancelHideWork() {
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
+    }
+
+    @MainActor
+    private func cancelAllWork() {
+        cancelShowWork()
+        cancelHideWork()
     }
 }

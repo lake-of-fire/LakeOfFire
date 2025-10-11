@@ -300,6 +300,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
+    @State private var lastAppendedHandlerKeys: [String] = []
     
     func body(content: Content) -> some View {
         content
@@ -324,8 +325,11 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
+                let handlerKeys = Array(webViewMessageHandlers.handlers.keys)
+                guard handlerKeys != lastAppendedHandlerKeys else { return }
                 if let existing = readerMessageHandlers?.webViewMessageHandlers {
                     readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
+                    lastAppendedHandlerKeys = handlerKeys
                 }
             }
     }

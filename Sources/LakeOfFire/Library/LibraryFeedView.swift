@@ -19,6 +19,7 @@ struct LibraryFeedView: View {
     let feed: Feed
     
     @State private var libraryFeedFormSectionsViewModel: LibraryFeedFormSectionsViewModel?
+    @State private var initializedFeedID: UUID?
     
     func unfrozen(_ feed: Feed) -> Feed {
         return feed.isFrozen ? feed.thaw() ?? feed : feed
@@ -41,7 +42,9 @@ struct LibraryFeedView: View {
             LibraryFeedMenu(feed: feed)
         }
         .task(id: feed.id) { @MainActor in
+            guard initializedFeedID != feed.id else { return }
             libraryFeedFormSectionsViewModel = LibraryFeedFormSectionsViewModel(feed: feed)
+            initializedFeedID = feed.id
         }
     }
 }
@@ -352,6 +355,7 @@ struct LibraryFeedFormSections: View {
     @StateObject private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
     
     @State private var readerFeedEntry: FeedEntry?
+    @State private var lastReinitializedFeedID: UUID?
     
     @ScaledMetric(relativeTo: .headline) private var maxContentCellHeight: CGFloat = 100
     
@@ -558,7 +562,9 @@ struct LibraryFeedFormSections: View {
             }
         }
         .task(id: viewModel.feed.id) { @MainActor in
+            guard lastReinitializedFeedID != viewModel.feed.id else { return }
             reinitializeState()
+            lastReinitializedFeedID = viewModel.feed.id
         }
     }
     
