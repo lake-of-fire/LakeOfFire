@@ -57,7 +57,6 @@ private struct ReaderLoadingOverlay: View {
         .ignoresSafeArea(.all)
         .opacity(isLoading ? 1 : 0)
         .allowsHitTesting(isLoading)
-        .animation(.easeInOut(duration: 0.2), value: isLoading)
         .animation(.easeInOut(duration: 0.2), value: isShowingStatus)
         .onChange(of: isLoading) { _ in
             syncStatusDisplay()

@@ -81,16 +81,20 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .onChange(of: readerViewModel.state) { [oldState = readerViewModel.state] state in
-                if readerContent.isReaderProvisionallyNavigating != state.isProvisionallyNavigating {
+            .onChange(of: readerViewModel.state) { state in
+                let shouldSyncProvisionalFlag: Bool
+                if state.isProvisionallyNavigating {
+                    shouldSyncProvisionalFlag = true
+                } else {
+                    shouldSyncProvisionalFlag = readerContent.pageURL.matchesReaderURL(state.pageURL)
+                }
+
+                if shouldSyncProvisionalFlag,
+                   readerContent.isReaderProvisionallyNavigating != state.isProvisionallyNavigating {
                     readerContent.isReaderProvisionallyNavigating = state.isProvisionallyNavigating
                 }
                 
-                //            if !state.isLoading && !state.isProvisionallyNavigating, oldState.pageURL != state.pageURL, readerContent.content.url != state.pageURL {
-                // May be from replaceState or pushState
-                // TODO: Improve replaceState support
-                //                onNavigationCommitted(state: state)
-                //            }
+                // TODO: Improve replaceState support if we need to detect navigation changes without provisional events.
             }
     }
 }
@@ -114,11 +118,6 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .modifier(ReaderLoadingProgressOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading))
-//            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }
-//            .overlay {
-//                Text(readerModeViewModel.isReaderModeLoading.description)
-//                    .font(.title)
-//            }
     }
 }
 

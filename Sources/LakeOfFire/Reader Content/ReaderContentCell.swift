@@ -131,15 +131,6 @@ public struct ReaderContentCellAppearance {
 }
 
 extension ReaderContentProtocol {
-    @ViewBuilder func readerContentCellView(
-        appearance: ReaderContentCellAppearance
-    ) -> some View {
-        ReaderContentCell(
-            item: self,
-            appearance: appearance
-        )
-    }
-    
     // Overload that allows injecting custom menu options.
     @ViewBuilder func readerContentCellView(
         appearance: ReaderContentCellAppearance,
@@ -149,6 +140,15 @@ extension ReaderContentProtocol {
             item: self,
             appearance: appearance,
             customMenuOptions: customMenuOptions
+        )
+    }
+    
+    @ViewBuilder func readerContentCellView(
+        appearance: ReaderContentCellAppearance
+    ) -> some View {
+        readerContentCellView(
+            appearance: appearance,
+            customMenuOptions: nil
         )
     }
     
@@ -170,7 +170,6 @@ extension ReaderContentProtocol {
             thumbnailCornerRadius: thumbnailCornerRadius
         )
         readerContentCellView(appearance: appearance)
-            .stackListGroupBoxContentInsets(StackListGroupBoxDefaults.contentInsets(scaledBy: 0.815))
     }
 }
 
@@ -261,15 +260,20 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
 
+    // Match the parent card's rounding minus its padding and scale it with the actual thumbnail size.
     private var thumbnailCornerRadius: CGFloat {
         if let customCornerRadius = appearance.thumbnailCornerRadius {
-            return customCornerRadius
+            return max(0, min(customCornerRadius, thumbnailEdgeLength / 2))
         }
 
-        let outerCornerRadius = stackListCornerRadius
-        let adjusted = outerCornerRadius - min(stackListGroupBoxContentInsets.leading, stackListGroupBoxContentInsets.top)
-        let maxCornerRadius = min(outerCornerRadius, thumbnailEdgeLength / 2)
-        return max(0, min(maxCornerRadius, adjusted))
+        let containerCornerRadius = stackListCornerRadius
+        let insetOffset = min(stackListGroupBoxContentInsets.leading, stackListGroupBoxContentInsets.top)
+        let baseCornerRadius = max(0, containerCornerRadius - insetOffset)
+        let scale = min(thumbnailEdgeLength / max(appearance.maxCellHeight, 1), 1)
+        let scaledCornerRadius = baseCornerRadius * scale
+        let upperBound = min(containerCornerRadius, thumbnailEdgeLength / 2)
+
+        return max(0, min(upperBound, scaledCornerRadius))
     }
 
     private enum ThumbnailChoice {
@@ -361,159 +365,159 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
     
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if let thumbnailChoice {
-                switch thumbnailChoice {
-                case .image(let imageUrl):
-                    if appearance.isEbookStyle {
-                        BookThumbnail(imageURL: imageUrl, scaledImageWidth: thumbnailEdgeLength, cellHeight: appearance.maxCellHeight)
-                    } else {
-                        ReaderImage(
-                            imageUrl,
-                            maxWidth: thumbnailEdgeLength,
-                            minHeight: thumbnailEdgeLength,
-                            maxHeight: thumbnailEdgeLength
+//        GroupBox {
+            HStack(alignment: .top, spacing: 12) {
+                if let thumbnailChoice {
+                    switch thumbnailChoice {
+                    case .image(let imageUrl):
+                        if appearance.isEbookStyle {
+                            BookThumbnail(imageURL: imageUrl, scaledImageWidth: thumbnailEdgeLength, cellHeight: appearance.maxCellHeight)
+                        } else {
+                            ReaderImage(
+                                imageUrl,
+                                maxWidth: thumbnailEdgeLength,
+                                minHeight: thumbnailEdgeLength,
+                                maxHeight: thumbnailEdgeLength
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+                        }
+                    case .icon(let iconURL):
+                        ReaderContentThumbnailTile(
+                            content: .icon(iconURL, placeholder: fallbackInitial),
+                            dimension: thumbnailEdgeLength,
+                            cornerRadius: thumbnailCornerRadius
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+                    case .initial:
+                        ReaderContentThumbnailTile(
+                            content: .initial(fallbackInitial),
+                            dimension: thumbnailEdgeLength,
+                            cornerRadius: thumbnailCornerRadius
+                        )
                     }
-                case .icon(let iconURL):
-                    ReaderContentThumbnailTile(
-                        content: .icon(iconURL, placeholder: fallbackInitial),
-                        dimension: thumbnailEdgeLength,
-                        cornerRadius: thumbnailCornerRadius
-                    )
-                case .initial:
-                    ReaderContentThumbnailTile(
-                        content: .initial(fallbackInitial),
-                        dimension: thumbnailEdgeLength,
-                        cornerRadius: thumbnailCornerRadius
-                    )
                 }
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading) {
-                    if appearance.includeSource {
-                        HStack(alignment: .center) {
-                            if let sourceIconURL = inlineSourceIconURL {
-                                ReaderContentSourceIconImage(
-                                    sourceIconURL: sourceIconURL,
-                                    iconSize: sourceIconSize
-                                )
-                                .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
-                            }
-                            if let sourceTitle = viewModel.sourceTitle {
-                                Text(sourceTitle)
-                                    .lineLimit(1)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    Text(viewModel.title)
-                        .font(.headline)
-                        .lineLimit(titleLineLimit)
-                        .multilineTextAlignment(.leading)
-                        .environment(\._lineHeightMultiple, 0.875)
-                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .layoutPriority(1)
-                }
-
-                Spacer(minLength: 4)
-
                 VStack(alignment: .leading, spacing: 0) {
-                    if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-                        HStack(spacing: 8) {
-                            ProgressView(value: min(1, readingProgressFloat))
-                                .progressViewStyle(LinearProgressViewStyle())
-                                .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                                .frame(width: 44)
-
-                            if let metadataText {
-                                Text(metadataText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .allowsTightening(true)
+                    VStack(alignment: .leading) {
+                        if appearance.includeSource {
+                            HStack(alignment: .center) {
+                                if let sourceIconURL = inlineSourceIconURL {
+                                    ReaderContentSourceIconImage(
+                                        sourceIconURL: sourceIconURL,
+                                        iconSize: sourceIconSize
+                                    )
+                                    .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
+                                }
+                                if let sourceTitle = viewModel.sourceTitle {
+                                    Text(sourceTitle)
+                                        .lineLimit(1)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
-                        .offset(y: max(0, menuTrailingPadding - 5))
+                        
+                        Text(viewModel.title)
+                            .font(.headline)
+                            .lineLimit(titleLineLimit)
+                            .multilineTextAlignment(.leading)
+                            .environment(\._lineHeightMultiple, 0.875)
+                            .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .layoutPriority(1)
                     }
                     
-                    HStack(alignment: .center, spacing: 6) {
-                        HStack(spacing: 6) {
-                            if let publicationDate = viewModel.humanReadablePublicationDate {
-                                Text("\(publicationDate)")
-                                    .lineLimit(1)
-                                    .allowsTightening(true)
-                                    .minimumScaleFactor(0.9)
-                                    .font(.footnote)
-                                    .layoutPriority(2)
+                    Spacer(minLength: 4)
+                    
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                            HStack(spacing: 8) {
+                                ProgressView(value: min(1, readingProgressFloat))
+                                    .progressViewStyle(LinearProgressViewStyle())
+                                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
+                                    .frame(width: 44)
+                                
+                                if let metadataText {
+                                    Text(metadataText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .allowsTightening(true)
+                                }
                             }
-                            if let item = item as? ContentFile {
-                                CloudDriveSyncStatusView(item: item)
-                                    .labelStyle(.iconOnly)
-                                    .font(.callout)
-                            }
+                            .offset(y: max(0, menuTrailingPadding - 5))
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .foregroundStyle(.secondary)
                         
-                        HStack(alignment: .center, spacing: 0) {
-                            BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
-                                .labelStyle(.iconOnly)
-                            
-                            let deletable = (self.item as? (any DeletableReaderContent))
-                            let shouldShowMenu = deletable != nil || customMenuOptions != nil
-                            if shouldShowMenu {
-                                Menu {
-                                    if let item = self.item as? ContentFile {
-                                        CloudDriveSyncStatusView(item: item)
-                                            .labelStyle(.titleAndIcon)
-                                        Divider()
-                                    }
-                                    
-                                    AnyView(self.item.bookmarkButtonView())
-                                    
-                                    if let customMenuOptions {
-                                        customMenuOptions(self.item)
-                                    }
-                                    
-                                    if let deletable {
-                                        Divider()
-                                        Button(role: .destructive) {
-                                            readerContentListModalsModel.confirmDeletionOf = [deletable]
-                                            readerContentListModalsModel.confirmDelete = true
-                                        } label: {
-                                            Label(deletable.deleteActionTitle, systemImage: "trash")
-                                        }
-                                    }
-                                } label: {
-                                    Label("More Options", systemImage: "ellipsis")
+                        HStack(alignment: .center, spacing: 6) {
+                            HStack(spacing: 6) {
+                                if let publicationDate = viewModel.humanReadablePublicationDate {
+                                    Text("\(publicationDate)")
+                                        .lineLimit(1)
+                                        .allowsTightening(true)
+                                        .minimumScaleFactor(0.9)
+                                        .font(.footnote)
+                                        .layoutPriority(2)
+                                }
+                                if let item = item as? ContentFile {
+                                    CloudDriveSyncStatusView(item: item)
                                         .labelStyle(.iconOnly)
+                                        .font(.callout)
                                 }
-                                .modifier {
-                                    if #available(iOS 16, macOS 13, *) {
-                                        $0.menuStyle(.button)
-                                    } else { $0 }
-                                }
-                                .menuIndicator(.hidden)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .foregroundStyle(.secondary)
+                            
+                            HStack(alignment: .center, spacing: 0) {
+                                BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                                    .labelStyle(.iconOnly)
+                                
+                                let deletable = (self.item as? (any DeletableReaderContent))
+                                let shouldShowMenu = deletable != nil || customMenuOptions != nil
+                                if shouldShowMenu {
+                                    Menu {
+                                        if let item = self.item as? ContentFile {
+                                            CloudDriveSyncStatusView(item: item)
+                                                .labelStyle(.titleAndIcon)
+                                            Divider()
+                                        }
+                                        
+                                        AnyView(self.item.bookmarkButtonView())
+                                        
+                                        if let customMenuOptions {
+                                            customMenuOptions(self.item)
+                                        }
+                                        
+                                        if let deletable {
+                                            Divider()
+                                            Button(role: .destructive) {
+                                                readerContentListModalsModel.confirmDeletionOf = [deletable]
+                                                readerContentListModalsModel.confirmDelete = true
+                                            } label: {
+                                                Label(deletable.deleteActionTitle, systemImage: "trash")
+                                            }
+                                        }
+                                    } label: {
+                                        Label("More Options", systemImage: "ellipsis")
+                                            .labelStyle(.iconOnly)
+                                    }
+                                    .modifier {
+                                        if #available(iOS 16, macOS 13, *) {
+                                            $0.menuStyle(.button)
+                                        } else { $0 }
+                                    }
+                                    .menuIndicator(.hidden)
+                                }
+                            }
+                            .buttonStyle(.clearBordered)
+                            .foregroundStyle(.secondary)
+                            .controlSize(.small)
                         }
-                        .buttonStyle(.clearBordered)
-                        .foregroundStyle(.secondary)
-                        .controlSize(.small)
-//                        .imageScale(.small)
-                        .offset(x: menuTrailingPadding)
+                        .frame(maxWidth: .infinity, alignment: .bottomLeading)
+                        .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
                     }
-                    .frame(maxWidth: .infinity, alignment: .bottomLeading)
-                    .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
+                    .offset(y: menuTrailingPadding)
                 }
-                .offset(y: menuTrailingPadding)
+                .frame(height: contentColumnHeight, alignment: .top)
             }
-            .frame(height: contentColumnHeight, alignment: .top)
-        }
+//        }
         .frame(
             minWidth: appearance.maxCellHeight,
             idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil
@@ -769,6 +773,7 @@ private struct ReaderContentCellPreviewGallery: View {
                 )
             }
         }
+//        .groupBoxStyle(.groupedStackList)
         .stackListStyle(.grouped)
         .stackListInterItemSpacing(18)
         .environmentObject(store.modalsModel)
@@ -788,7 +793,6 @@ private struct ReaderContentCellPreviewGallery: View {
                 content()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .groupBoxStyle(.groupedStackList)
             .frame(width: targetWidth, alignment: .leading)
         }
         .stackListRowSeparator(.hidden)

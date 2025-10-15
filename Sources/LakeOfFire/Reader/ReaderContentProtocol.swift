@@ -193,14 +193,55 @@ public extension ReaderContentProtocol {
     // TODO: Refactor to put on background thread
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
+        let formatInterval: (TimeInterval) -> String = { interval in
+            String(format: "%.3fs", interval)
+        }
         // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
         if rssContainsFullContent || isFromClipboard {
+            let decompressStartedAt = Date()
+            let html = self.html
+            let decompressDuration = Date().timeIntervalSince(decompressStartedAt)
+            debugPrint(
+                "# READERTRACE",
+                "htmlToDisplay.embedded",
+                "Δ\(formatInterval(decompressDuration))",
+                "bytes=\(html?.utf8.count ?? 0)",
+                url.absoluteString
+            )
             try Task.checkCancellation()
             return html
         } else if url.isReaderFileURL {
-            guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
+            let readStartedAt = Date()
+            guard let data = try? await readerFileManager.read(fileURL: url) else {
+                let readDuration = Date().timeIntervalSince(readStartedAt)
+                debugPrint(
+                    "# READERTRACE",
+                    "htmlToDisplay.fileReadFailed",
+                    "Δ\(formatInterval(readDuration))",
+                    url.absoluteString
+                )
+                return nil
+            }
+            let readDuration = Date().timeIntervalSince(readStartedAt)
+            debugPrint(
+                "# READERTRACE",
+                "htmlToDisplay.fileRead",
+                "Δ\(formatInterval(readDuration))",
+                "bytes=\(data.count)",
+                url.absoluteString
+            )
             try Task.checkCancellation()
-            return String(decoding: data, as: UTF8.self)
+            let decodeStartedAt = Date()
+            let html = String(decoding: data, as: UTF8.self)
+            let decodeDuration = Date().timeIntervalSince(decodeStartedAt)
+            debugPrint(
+                "# READERTRACE",
+                "htmlToDisplay.decode",
+                "Δ\(formatInterval(decodeDuration))",
+                "bytes=\(html.utf8.count)",
+                url.absoluteString
+            )
+            return html
         }
         return nil
     }

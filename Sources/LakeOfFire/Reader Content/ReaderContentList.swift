@@ -102,10 +102,9 @@ public extension View {
 }
 
 private extension View {
-    func readerContentListRowStyle(top: CGFloat = 0, bottom: CGFloat = 12) -> some View {
+    func readerContentListRowStyle() -> some View {
         self
-            .listRowBackground(Color.clear)
-            .listRowInsets(.init(top: top, leading: 0, bottom: bottom, trailing: 0))
+            .listRowInsets(.init())
             .modifier { content in
                 if #available(iOS 15, macOS 12, *) {
                     content.listRowSeparator(.hidden)
@@ -216,23 +215,12 @@ private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigatin
 
 private extension View {
     @ViewBuilder
-    func readerContentListBackground(_ appearance: StackListAppearance) -> some View {
-        if #available(iOS 16, macOS 13, *) {
-            if appearance == .grouped {
-                self
-            } else {
-                self.scrollContentBackground(.hidden)
-            }
-        } else {
-            self
-        }
-    }
-
-    @ViewBuilder
     func readerContentListLayoutAdjustments() -> some View {
         if #available(iOS 17, macOS 14, *) {
             self
+#if os(iOS)
                 .listSectionSpacing(0)
+#endif
                 .contentMargins(.top, 0, for: .scrollContent)
         } else {
             self
@@ -409,35 +397,30 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     
-    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140
-
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 120
+    
     @ViewBuilder private func cell(item: C) -> some View {
-        GroupBox {
-            HStack(spacing: 0) {
-                let shouldReserveThumbnailSpace = alwaysShowThumbnails && item.imageUrl != nil
-                if let customMenuOptions {
-                    item.readerContentCellView(
-                        appearance: ReaderContentCellAppearance(
-                            maxCellHeight: maxCellHeight,
-                            alwaysShowThumbnails: shouldReserveThumbnailSpace,
-                            isEbookStyle: item.isPhysicalMedia,
-                            includeSource: includeSource
-                        ),
-                        customMenuOptions: customMenuOptions
-                    )
-                } else {
-                    item.readerContentCellView(
-                        appearance: ReaderContentCellAppearance(
-                            maxCellHeight: maxCellHeight,
-                            alwaysShowThumbnails: shouldReserveThumbnailSpace,
-                            isEbookStyle: item.isPhysicalMedia,
-                            includeSource: includeSource
-                        )
-                    )
-                }
+        HStack(spacing: 0) {
+            let shouldReserveThumbnailSpace = alwaysShowThumbnails && item.imageUrl != nil
+            let appearance = ReaderContentCellAppearance(
+                maxCellHeight: maxCellHeight,
+                alwaysShowThumbnails: shouldReserveThumbnailSpace,
+                isEbookStyle: item.isPhysicalMedia,
+                includeSource: includeSource,
+                thumbnailCornerRadius: 12
+            )
+            if let customMenuOptions {
+                item.readerContentCellView(
+                    appearance: appearance,
+                    customMenuOptions: customMenuOptions
+                )
+            } else {
+                item.readerContentCellView(
+                    appearance: appearance
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(11)
         .tag(item.compoundKey)
     }
     
@@ -586,7 +569,6 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
-    @Environment(\.stackListStyle) private var stackListAppearance
     
 #if os(iOS)
     @Environment(\.editMode) private var editMode
@@ -634,17 +616,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         return nil
     }
     
-    private var effectiveStackListAppearance: StackListAppearance {
-        switch stackListAppearance {
-        case .grouped:
-            return .grouped
-        case .plain, .automatic:
-            return .grouped
-        }
-    }
-
     private var listContainer: some View {
-        let base = ZStack {
+        ZStack {
+#if os(iOS)
             if allowEditing && editMode?.wrappedValue != .inactive {
                 List(selection: $multiSelection) {
                     listContent
@@ -654,60 +628,51 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     listContent
                 }
             }
+#else
+            List(selection: $entrySelection) {
+                listContent
+            }
+#endif
         }
         .listItemTint(appTint)
-        .readerContentListBackground(effectiveStackListAppearance)
         .readerContentListLayoutAdjustments()
-        return applyGroupBoxStyle(to: base)
-    }
-
-    private func applyGroupBoxStyle<V: View>(to view: V) -> AnyView {
-        AnyView(view.applyStackListGroupBoxStyle(isGrouped: effectiveStackListAppearance == .grouped))
     }
 
     public var body: some View {
         Group {
             listContainer
-            .toolbar {
-                //#if os(iOS)
-                //            ToolbarItem(placement: .navigationBarTrailing) {
-                //                if allowEditing {
-                //                    EditButton()
-                //                }
-                //            }
-                //#endif
+                .listRowSpacing(15)
+                .toolbar {
+                    //#if os(iOS)
+                    //            ToolbarItem(placement: .navigationBarTrailing) {
+                    //                if allowEditing {
+                    //                    EditButton()
+                    //                }
+                    //            }
+                    //#endif
 #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) {
-                    deletionToolbarButtonView
-                }
+                    ToolbarItem(placement: .topBarLeading) {
+                        deletionToolbarButtonView
+                    }
 #elseif os(macOS)
-                ToolbarItem(placement: .destructiveAction) {
-                    deletionToolbarButtonView
-                }
+                    ToolbarItem(placement: .destructiveAction) {
+                        deletionToolbarButtonView
+                    }
 #endif
-            }
-            .onChange(of: multiSelection) { newSelection in
+                }
+                .onChange(of: multiSelection) { newSelection in
 #if os(iOS)
-                guard editMode?.wrappedValue != .inactive else {
-                    return
-                }
+                    guard editMode?.wrappedValue != .inactive else {
+                        return
+                    }
 #endif
-                if newSelection.count == 1 {
-                    entrySelection = newSelection.first
-                } else if newSelection.count > 1 {
-                    entrySelection = nil
+                    if newSelection.count == 1 {
+                        entrySelection = newSelection.first
+                    } else if newSelection.count > 1 {
+                        entrySelection = nil
+                    }
                 }
-            }
-            .task { @MainActor in
-                try? await viewModel.load(
-                    contents: contents,
-                    contentFilter: contentFilter,
-                    sortOrder: sortOrder,
-                )
-                refreshGrouping()
-            }
-            .onChange(of: contents) { contents in
-                Task { @MainActor in
+                .task { @MainActor in
                     try? await viewModel.load(
                         contents: contents,
                         contentFilter: contentFilter,
@@ -715,10 +680,19 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     )
                     refreshGrouping()
                 }
-            }
-            .onChange(of: viewModel.filteredContents) { _ in
-                refreshGrouping()
-            }
+                .onChange(of: contents) { contents in
+                    Task { @MainActor in
+                        try? await viewModel.load(
+                            contents: contents,
+                            contentFilter: contentFilter,
+                            sortOrder: sortOrder,
+                        )
+                        refreshGrouping()
+                    }
+                }
+                .onChange(of: viewModel.filteredContents) { _ in
+                    refreshGrouping()
+                }
         }
         .readerContentSelectionSync(
             viewModel: viewModel,
@@ -757,16 +731,16 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     private var listContent: some View {
         Section {
             headerView()
-                .readerContentListRowStyle(top: 0, bottom: 0)
+                .listRowInsets(.init())
+                .listRowBackground(Color.clear)
         }
-        
+
         if customGrouping == nil {
             Section {
                 if showEmptyState {
                     if #available(iOS 16, *) {
                         emptyStateView()
                             .frame(maxHeight: .infinity, alignment: .top)
-                            .readerContentListRowStyle(top: 20, bottom: 0)
                     }
                 } else {
                     listItems
@@ -785,7 +759,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     Section {
                         emptyStateView()
                             .frame(maxHeight: .infinity, alignment: .top)
-                            .readerContentListRowStyle(top: 20, bottom: 0)
+                            .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
                     }
                 }
             } else {
@@ -981,3 +955,135 @@ extension ReaderContentList {
     }
 
 }
+
+#if DEBUG
+@MainActor
+private final class ReaderContentListPreviewStore: ObservableObject {
+    let modalsModel = ReaderContentListModalsModel()
+    let readerContent = ReaderContent()
+    let readerModeViewModel = ReaderModeViewModel()
+
+    let entries: [FeedEntry]
+
+    init() {
+        var configuration = Realm.Configuration(
+            inMemoryIdentifier: "ReaderContentListPreview",
+            objectTypes: [FeedEntry.self, Bookmark.self]
+        )
+
+        ReaderContentLoader.feedEntryRealmConfiguration = configuration
+        ReaderContentLoader.bookmarkRealmConfiguration = configuration
+
+        let realm = try! Realm(configuration: configuration)
+
+        let recentArticle = FeedEntry()
+        recentArticle.compoundKey = "preview-list-recent"
+        recentArticle.url = URL(string: "https://example.com/articles/fresh")!
+        recentArticle.title = "Fresh Article with Thumbnail"
+        recentArticle.author = "Asahi"
+        recentArticle.imageUrl = URL(string: "https://placehold.co/360x200.png?text=Asahi")
+        recentArticle.sourceIconURL = URL(string: "https://placehold.co/48x48.png?text=A")
+        recentArticle.publicationDate = Calendar.current.date(byAdding: .hour, value: -6, to: .now)
+
+        let olderArticle = FeedEntry()
+        olderArticle.compoundKey = "preview-list-older"
+        olderArticle.url = URL(string: "https://example.com/articles/older")!
+        olderArticle.title = "Older Article without Image"
+        olderArticle.author = "Mainichi"
+        olderArticle.publicationDate = Calendar.current.date(byAdding: .day, value: -2, to: .now)
+        olderArticle.displayPublicationDate = true
+
+        let longformArticle = FeedEntry()
+        longformArticle.compoundKey = "preview-list-longform"
+        longformArticle.url = URL(string: "https://example.com/articles/longform")!
+        longformArticle.title = "Longform Piece Highlighting Bookmark State"
+        longformArticle.author = "NHK"
+        longformArticle.imageUrl = URL(string: "https://placehold.co/360x200.png?text=NHK")
+        longformArticle.sourceIconURL = URL(string: "https://placehold.co/48x48.png?text=N")
+        longformArticle.publicationDate = Calendar.current.date(byAdding: .day, value: -7, to: .now)
+
+        let entries = [recentArticle, olderArticle, longformArticle]
+
+        try! realm.write {
+            realm.add(entries, update: .modified)
+
+            for entry in entries {
+                let bookmark = Bookmark()
+                bookmark.compoundKey = entry.compoundKey
+                bookmark.url = entry.url
+                bookmark.title = entry.title
+                bookmark.author = entry.author
+                bookmark.imageUrl = entry.imageUrl
+                bookmark.sourceIconURL = entry.sourceIconURL
+                bookmark.publicationDate = entry.publicationDate
+                bookmark.isDeleted = false
+                realm.add(bookmark, update: .modified)
+            }
+        }
+
+        let progress: [URL: (Float, Bool)] = [
+            recentArticle.url: (0.25, false),
+            longformArticle.url: (0.85, true)
+        ]
+
+        ReaderContentReadingProgressLoader.readingProgressLoader = { url in
+            progress[url]
+        }
+
+        readerContent.content = entries.first
+        readerContent.pageURL = entries.first?.url ?? URL(string: "https://example.com")!
+
+        self.entries = entries
+    }
+}
+
+private struct ReaderContentListPreviewGallery: View {
+    @StateObject private var store = ReaderContentListPreviewStore()
+    @State private var entrySelection: String? = nil
+
+    private let previewMenuOptions: (FeedEntry) -> AnyView = { entry in
+        AnyView(
+            Button {
+                debugPrint("Preview menu tapped for", entry.title)
+            } label: {
+                Label("Preview Menu", systemImage: "ellipsis.circle")
+            }
+        )
+    }
+    
+    var body: some View {
+        ReaderContentList(
+            contents: store.entries,
+            sortOrder: .publicationDate,
+            includeSource: true,
+            entrySelection: $entrySelection,
+            contentSectionTitle: "Saved Articles",
+            allowEditing: true,
+            customMenuOptions: previewMenuOptions
+        ) {
+            HStack {
+                Text("Library")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+            }
+            .padding(.vertical, 12)
+        } emptyStateView: {
+            Text("Nothing to read yet")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxHeight: 420)
+        .environmentObject(store.modalsModel)
+        .environmentObject(store.readerContent)
+        .environmentObject(store.readerModeViewModel)
+//        .padding()
+    }
+}
+
+struct ReaderContentList_Previews: PreviewProvider {
+    static var previews: some View {
+        ReaderContentListPreviewGallery()
+    }
+}
+#endif

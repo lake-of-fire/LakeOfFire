@@ -102,6 +102,8 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .groupBoxStyle(.groupedStackList)
+            .stackListGroupBoxContentInsets(EdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11))
 //            .padding(16)
 //            .background(cardBackground)
 //            .contentShape(RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous))
@@ -179,12 +181,12 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     let contentSelection: Binding<String?>
     let onContentSelected: ((C) -> Void)?
     
-    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 140 * (2.0 / 3.0)
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
     //    @State private var viewWidth: CGFloat = 0
     
     var body: some View {
         ScrollView(.horizontal) {
-            HStack {
+            HStack(spacing: 15) {
                 ForEach(filteredContents, id: \.compoundKey) { (content: C) in
                     ReaderContentInnerHorizontalListItem(
                         content: content,
@@ -332,9 +334,9 @@ private final class ReaderContentHorizontalListPreviewStore: ObservableObject {
     let readerModeViewModel = ReaderModeViewModel()
 
     let entries: [FeedEntry]
-    let maxCellHeight: CGFloat = 140 * (2.0 / 3.0)
+    let maxCellHeight: CGFloat = 110
 
-    var cardWidth: CGFloat { maxCellHeight * 3 }
+    var cardWidth: CGFloat { maxCellHeight * 2.75 }
 
     init() {
         var configuration = Realm.Configuration(
@@ -444,8 +446,8 @@ private struct ReaderContentHorizontalListPreviewGallery: View {
         .environmentObject(store.modalsModel)
         .environmentObject(store.readerContent)
         .environmentObject(store.readerModeViewModel)
-        .frame(maxWidth: store.cardWidth * 2.2)
-        .padding()
+//        .frame(maxWidth: store.cardWidth * 2.2)
+//        .padding()
     }
 }
 
