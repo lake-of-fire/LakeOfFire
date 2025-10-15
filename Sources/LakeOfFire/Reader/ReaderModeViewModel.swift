@@ -302,11 +302,20 @@ public class ReaderModeViewModel: ObservableObject {
         }
         
         Task {
-            try await scriptCaller.evaluateJavaScript("""
-            if (document.body) {
-                document.body.dataset.isNextLoadInReaderMode = 'true';
+            let jsStart = Date()
+            debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSStart", url.absoluteString)
+            do {
+                try await scriptCaller.evaluateJavaScript("""
+                if (document.body) {
+                    document.body.dataset.isNextLoadInReaderMode = 'true';
+                }
+                """)
+                let duration = formattedInterval(Date().timeIntervalSince(jsStart))
+                debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSFinish", "duration=\(duration)", url.absoluteString)
+            } catch {
+                let duration = formattedInterval(Date().timeIntervalSince(jsStart))
+                debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSFailure", "duration=\(duration) | error=\(error.localizedDescription)", url.absoluteString)
             }
-            """)
         }
         
         let asyncWriteStartedAt = Date()
@@ -425,6 +434,13 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent injecting into frame", frameInfo)
+                    let injectionStartedAt = Date()
+                    debugPrint(
+                        "# READERTRACE",
+                        "readerMode.jsInjectionStart",
+                        "target=frame | selector=\(renderToSelector ?? "<root>")",
+                        url.absoluteString
+                    )
                     try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
@@ -460,6 +476,13 @@ public class ReaderModeViewModel: ObservableObject {
                             "html": transformedContent,
                             "css": Readability.shared.css,
                         ], in: frameInfo)
+                    let injectionDuration = formattedInterval(Date().timeIntervalSince(injectionStartedAt))
+                    debugPrint(
+                        "# READERTRACE",
+                        "readerMode.jsInjectionFinish",
+                        "target=frame | duration=\(injectionDuration)",
+                        url.absoluteString
+                    )
                     logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
                     markReaderModeLoadComplete(for: url)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
@@ -475,6 +498,12 @@ public class ReaderModeViewModel: ObservableObject {
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: url
+                    )
+                    debugPrint(
+                        "# READERTRACE",
+                        "readerMode.navigatorDispatch",
+                        "bytes=\(transformedContent.utf8.count)",
+                        url.absoluteString
                     )
                 } else {
                     print("ReaderModeViewModel: readability HTML data missing for", url.absoluteString)
