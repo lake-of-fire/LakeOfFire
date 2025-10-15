@@ -277,27 +277,27 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async throws {
         guard let content = try await readerContent.getContent() else {
-            debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent missing content")
+            debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent missing content")
             print("No content set to show in reader mode")
             cancelReaderModeLoad(for: readerContent.pageURL)
             return
         }
         let url = content.url
-        debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent start", url, "renderTo", renderToSelector ?? "<root>")
+        debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent start", url, "renderTo", renderToSelector ?? "<root>")
         let renderTarget = renderToSelector ?? "<root>"
         logTrace(.readabilityProcessingStart, url: url, details: "renderTo=\(renderTarget) | frameIsMain=\(frameInfo?.isMainFrame ?? true)")
 
         if let lastRenderedReadabilityURL {
-            debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent duplicate check", lastRenderedReadabilityURL.absoluteString, "candidate", url.absoluteString)
+            debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent duplicate check", lastRenderedReadabilityURL.absoluteString, "candidate", url.absoluteString)
             if lastRenderedReadabilityURL.matchesReaderURL(url) {
-                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent skipping duplicate render", url)
+                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent skipping duplicate render", url)
                 markReaderModeLoadComplete(for: url)
                 return
             }
         }
 
         if let lastFallbackLoaderURL {
-            debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent clearing lastFallbackLoaderURL", lastFallbackLoaderURL.absoluteString)
+            debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent clearing lastFallbackLoaderURL", lastFallbackLoaderURL.absoluteString)
             self.lastFallbackLoaderURL = nil
         }
         
@@ -343,7 +343,7 @@ public class ReaderModeViewModel: ObservableObject {
             var doc: SwiftSoup.Document?
 
             if let processReadabilityContent {
-                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent processReadabilityContent", url)
+                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent processReadabilityContent", url)
                 doc = await processReadabilityContent(
                     readabilityContent,
                     url,
@@ -362,7 +362,7 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                 )
             } else {
-                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent direct parse", url)
+                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent direct parse", url)
                 let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
                 let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
                 doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
@@ -374,7 +374,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             
             guard let doc else {
-                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent doc missing", url)
+                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent doc missing", url)
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
