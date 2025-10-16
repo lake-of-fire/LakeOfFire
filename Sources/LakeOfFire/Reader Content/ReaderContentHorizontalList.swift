@@ -336,7 +336,7 @@ private final class ReaderContentHorizontalListPreviewStore: ObservableObject {
     let entries: [FeedEntry]
     let maxCellHeight: CGFloat = 110
 
-    var cardWidth: CGFloat { maxCellHeight * 2.75 }
+    var cardWidth: CGFloat { maxCellHeight * 2.25 }
 
     init() {
         var configuration = Realm.Configuration(
