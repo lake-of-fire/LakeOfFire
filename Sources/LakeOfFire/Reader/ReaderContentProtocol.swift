@@ -42,8 +42,6 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var isFromClipboard: Bool { get set }
     var isPhysicalMedia: Bool { get set }
     
-    var isReaderModeOfferHidden: Bool { get set }
-
     // Caches.
     var isReaderModeAvailable: Bool { get set }
     
@@ -345,7 +343,6 @@ public extension ReaderContentProtocol {
         let isReaderModeByDefault = isReaderModeByDefault
         let rssContainsFullContent = rssContainsFullContent
         let isReaderModeAvailable = isReaderModeAvailable
-        let isReaderModeOfferHidden = isReaderModeOfferHidden
         try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(
@@ -360,7 +357,6 @@ public extension ReaderContentProtocol {
                 rssContainsFullContent: rssContainsFullContent,
                 isReaderModeByDefault: isReaderModeByDefault,
                 isReaderModeAvailable: isReaderModeAvailable,
-                isReaderModeOfferHidden: isReaderModeOfferHidden,
                 realmConfiguration: realmConfiguration
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)

@@ -183,7 +183,6 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var publicationDate: Date?
     @Persisted public var isPhysicalMedia = false
     
-    @Persisted public var isReaderModeOfferHidden = false
     //    @Persisted public var isFromClipboard = false
     @Persisted public var content: Data?
     //    @Persisted public var readerModeAvailabilityOverride: Bool? = nil

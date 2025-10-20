@@ -205,11 +205,11 @@ public class ReaderModeViewModel: ObservableObject {
 //        lastFallbackLoaderURL = nil
 //    }
     
-    public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
-        return !isReaderMode && !content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
+    public func isReaderModeButtonAvailable(content: any ReaderContentProtocol) -> Bool {
+        return !isReaderMode && content.isReaderModeAvailable && !content.isReaderModeByDefault
     }
     public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
-        return !isReaderMode && content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
+        return !isReaderMode && content.isReaderModeAvailable && !content.isReaderModeByDefault
     }
     
     public init() { }
@@ -222,18 +222,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     @MainActor
-    func hideReaderModeButtonBar(content: (any ReaderContentProtocol)) async throws {
-        if !content.isReaderModeOfferHidden {
-            try await content.asyncWrite { _, content in
-                content.isReaderModeOfferHidden = true
-                content.refreshChangeMetadata(explicitlyModified: true)
-            }
-            objectWillChange.send()
-        }
-    }
-    
-    @MainActor
-    internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+    public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# FLASH ReaderModeViewModel.showReaderView invoked", readerContent.pageURL)
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
         logTrace(.readabilityTaskScheduled, url: readerContent.pageURL, details: "readabilityBytes=\(readabilityBytes)")
@@ -323,7 +312,6 @@ public class ReaderModeViewModel: ObservableObject {
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
-            content.isReaderModeOfferHidden = false
             if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
                 if !url.isReaderFileURL && (content.content?.isEmpty ?? true) {
                     content.html = readabilityContent

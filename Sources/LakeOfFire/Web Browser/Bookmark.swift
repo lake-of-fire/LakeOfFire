@@ -33,7 +33,6 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     
     // Feed options.
     @Persisted public var isReaderModeByDefault = false
-    @Persisted public var isReaderModeOfferHidden = false
     @Persisted public var rssContainsFullContent = false
     @Persisted public var meaningfulContentMinLength = 0
     @Persisted public var injectEntryImageIntoHeader = false
@@ -155,7 +154,6 @@ public extension Bookmark {
         rssContainsFullContent: Bool,
         isReaderModeByDefault: Bool,
         isReaderModeAvailable: Bool,
-        isReaderModeOfferHidden: Bool,
         realmConfiguration: Realm.Configuration
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
@@ -176,7 +174,6 @@ public extension Bookmark {
                 bookmark.isReaderModeByDefault = isReaderModeByDefault
                 bookmark.isReaderModeAvailable = isReaderModeAvailable
                 bookmark.rssContainsFullContent = rssContainsFullContent
-                bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
                 bookmark.isDeleted = false
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
@@ -203,7 +200,6 @@ public extension Bookmark {
             bookmark.isReaderModeByDefault = isReaderModeByDefault
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
-            bookmark.isReaderModeOfferHidden = isReaderModeOfferHidden
             //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(bookmark, update: .modified)
