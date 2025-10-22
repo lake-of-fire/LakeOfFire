@@ -80,7 +80,7 @@ fileprivate struct EditorsPicksView: View {
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-
+    
     var body: some View {
         if let errorMessage = viewModel.errorMessage {
             errorView(errorMessage: errorMessage)

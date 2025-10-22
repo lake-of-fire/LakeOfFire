@@ -224,6 +224,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# FLASH ReaderModeViewModel.showReaderView invoked", readerContent.pageURL)
+        debugPrint("# READERMODEBUTTON showReaderView start url=\(readerContent.pageURL.absoluteString) isReaderMode=\(isReaderMode) isLoading=\(isReaderModeLoading) pending=\(pendingReaderModeURL?.absoluteString ?? "nil")")
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
         logTrace(.readabilityTaskScheduled, url: readerContent.pageURL, details: "readabilityBytes=\(readabilityBytes)")
         guard let readabilityContent else {
@@ -234,6 +235,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let contentURL = readerContent.pageURL
         beginReaderModeLoad(for: contentURL)
+        debugPrint("# READERMODEBUTTON showReaderView beginLoad url=\(contentURL.absoluteString)")
         Task { @MainActor in
             guard contentURL == readerContent.pageURL else {
                 debugPrint("# FLASH ReaderModeViewModel.showReaderView contentURL mismatch", contentURL, readerContent.pageURL)
@@ -299,6 +301,7 @@ public class ReaderModeViewModel: ObservableObject {
                     document.body.dataset.isNextLoadInReaderMode = 'true';
                 }
                 """)
+                debugPrint("# READERMODEBUTTON dataset set isNextLoadInReaderMode=true url=\(url.absoluteString)")
                 let duration = formattedInterval(Date().timeIntervalSince(jsStart))
                 debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSFinish", "duration=\(duration)", url.absoluteString)
             } catch {
@@ -327,6 +330,7 @@ public class ReaderModeViewModel: ObservableObject {
 
         if !isReaderMode {
             isReaderMode = true
+            debugPrint("# READERMODEBUTTON isReaderMode toggled true url=\(url.absoluteString)")
         }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
@@ -669,6 +673,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             do {
                 let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
+                debugPrint("# READERMODEBUTTON navFinished datasetNext=\(isNextReaderMode) url=\(newState.pageURL.absoluteString)")
                 if !isNextReaderMode {
                     if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(newState.pageURL) {
                         // Keep the spinner alive until the reader-mode initialization finishes.

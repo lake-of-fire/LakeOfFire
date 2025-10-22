@@ -65,6 +65,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else {
                     return
                 }
+                debugPrint("# READERMODEBUTTON readabilityParsed message url=\(url.absoluteString) isReaderMode=\(readerModeViewModel.isReaderMode) isLoading=\(readerModeViewModel.isReaderModeLoading) contentAvailable=\(content.isReaderModeAvailable) default=\(content.isReaderModeByDefault)")
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
@@ -118,6 +119,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 guard !url.isNativeReaderView else { return }
+
+                let outputLooksLikeReader = result.outputHTML.contains("class=\"readability-mode\"") &&
+                    result.outputHTML.contains("id=\"reader-content\"")
+
+                if readerModeViewModel.isReaderMode || outputLooksLikeReader {
+                    debugPrint("# READERMODEBUTTON readabilityParsed shortCircuit url=\(url.absoluteString) readerMode=\(readerModeViewModel.isReaderMode) loading=\(readerModeViewModel.isReaderModeLoading) outputLooksLikeReader=\(outputLooksLikeReader)")
+                    try? await scriptCaller.evaluateJavaScript("""
+                        if (document.body) {
+                            document.body.dataset.manabiReaderModeAvailable = 'false';
+                            document.body.dataset.manabiReaderModeAvailableFor = '';
+                            document.body.dataset.isNextLoadInReaderMode = 'false';
+                        }
+                        """)
+                    try? await content.asyncWrite { _, content in
+                        if content.isReaderModeAvailable {
+                            content.isReaderModeAvailable = false
+                            content.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    }
+                    if !readerModeViewModel.isReaderMode {
+                        readerModeViewModel.isReaderMode = true
+                        debugPrint("# READERMODEBUTTON readabilityParsed toggled viewModel.isReaderMode true url=\(url.absoluteString)")
+                    }
+                    return
+                }
+
                 readerModeViewModel.readabilityContent = result.outputHTML
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
