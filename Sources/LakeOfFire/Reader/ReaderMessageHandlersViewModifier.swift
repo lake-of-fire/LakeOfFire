@@ -57,7 +57,15 @@ private let readerModeDatasetProbeScript = """
             knownCount: statsObject.knownCount ?? null
         };
     }
-    return JSON.stringify(summary);
+    const payload = JSON.stringify(summary);
+    try {
+        if (typeof window !== 'undefined') {
+            window.manabiDatasetDebugSummary = payload;
+        }
+    } catch (error) {
+        // no-op
+    }
+    return payload;
 })()
 """
 
@@ -346,14 +354,69 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         summary.count <= 360 ? summary : String(summary.prefix(360)) + "…"
     }
     
+    private func unwrapJavaScriptValue(_ value: Any?) -> Any? {
+        guard let value else { return nil }
+        let mirror = Mirror(reflecting: value)
+        guard mirror.displayStyle == .optional else {
+            return value
+        }
+        if let child = mirror.children.first {
+            return unwrapJavaScriptValue(child.value)
+        }
+        return nil
+    }
+    
+    private func datasetSummaryString(from value: Any?) -> String? {
+        guard let unwrapped = unwrapJavaScriptValue(value) else {
+            return nil
+        }
+        if let string = unwrapped as? String {
+            return trimmedDatasetSummary(string)
+        }
+        if let nsString = unwrapped as? NSString {
+            return trimmedDatasetSummary(nsString as String)
+        }
+        if unwrapped is NSNull {
+            return nil
+        }
+        if let data = unwrapped as? Data, let string = String(data: data, encoding: .utf8) {
+            return trimmedDatasetSummary(string)
+        }
+        if JSONSerialization.isValidJSONObject(unwrapped),
+           let jsonData = try? JSONSerialization.data(withJSONObject: unwrapped, options: [.sortedKeys]),
+           let string = String(data: jsonData, encoding: .utf8) {
+            return trimmedDatasetSummary(string)
+        }
+        return nil
+    }
+    
     private func readerDatasetSummary(stage: String, frameInfo: WKFrameInfo?) async -> String? {
         do {
+            let rawResult: Any?
             if let frameInfo {
-                if let summary = try await scriptCaller.evaluateJavaScript(readerModeDatasetProbeScript, in: frameInfo) as? String {
-                    return trimmedDatasetSummary(summary)
-                }
-            } else if let summary = try await scriptCaller.evaluateJavaScript(readerModeDatasetProbeScript) as? String {
-                return trimmedDatasetSummary(summary)
+                rawResult = try await scriptCaller.evaluateJavaScript(readerModeDatasetProbeScript, in: frameInfo)
+            } else {
+                rawResult = try await scriptCaller.evaluateJavaScript(readerModeDatasetProbeScript)
+            }
+            if let summary = datasetSummaryString(from: rawResult) {
+                return summary
+            }
+            let fallbackRaw: Any?
+            if let frameInfo {
+                fallbackRaw = try? await scriptCaller.evaluateJavaScript("return window.manabiDatasetDebugSummary ?? null", in: frameInfo)
+            } else {
+                fallbackRaw = try? await scriptCaller.evaluateJavaScript("return window.manabiDatasetDebugSummary ?? null")
+            }
+            if let summary = datasetSummaryString(from: fallbackRaw) {
+                debugPrint("# READERMODEBUTTON datasetProbeFallback stage=\(stage) urlSummary=\(summary)")
+                return summary
+            }
+            if let rawResult {
+                debugPrint(
+                    "# READERMODEBUTTON datasetProbeUnexpected stage=\(stage)",
+                    "type=\(type(of: rawResult))",
+                    "value=\(String(describing: rawResult))"
+                )
             }
         } catch {
             debugPrint("# READERMODEBUTTON datasetProbeError stage=\(stage) error=\(error.localizedDescription)")

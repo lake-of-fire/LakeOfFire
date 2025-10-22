@@ -582,7 +582,7 @@ public class ReaderModeViewModel: ObservableObject {
                         return
                     }
 
-                    let hasReadabilityMarkup = html.range(of: #"<body.*?class['"].*?readability-mode.*?['"]>"#, options: .regularExpression) != nil || html.range(of: #"<body.*?data-is-next-load-in-reader-mode['"]true['"]>"#, options: .regularExpression) != nil
+                    let hasReadabilityMarkup = html.range(of: #"<body.*?class=['"].*?readability-mode.*?['"]>"#, options: .regularExpression) != nil || html.range(of: #"<body.*?data-is-next-load-in-reader-mode=['"]true['"]>"#, options: .regularExpression) != nil
                     let shouldUseReadability = committedURL.isSnippetURL || hasReadabilityMarkup
 
                     if shouldUseReadability {
