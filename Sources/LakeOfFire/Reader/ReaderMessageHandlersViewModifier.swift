@@ -4,6 +4,62 @@ import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
+import WebKit
+
+private let readerModeDatasetProbeScript = """
+(() => {
+    const hasDocument = typeof document !== 'undefined';
+    const hasBody = hasDocument && !!document.body;
+    const summary = { hasBody };
+    if (!hasBody) {
+        return JSON.stringify(summary);
+    }
+    const ds = document.body.dataset ?? {};
+    const dataset = {};
+    [
+        "manabiReaderModeAvailable",
+        "manabiReaderModeAvailableFor",
+        "manabiReaderModeAvailableConfidently",
+        "isNextLoadInReaderMode",
+        "manabiTrackingEnabled",
+        "manabiSettingsInitialized",
+        "manabiFuriganaEnabled",
+        "manabiKnownFuriganaEnabled",
+        "manabiFamiliarFuriganaEnabled",
+        "manabiTrackingHighlightsEnabled",
+        "manabiLearningFuriganaEnabled",
+        "manabiSubscriptionIsActive",
+        "manabiShowKnown",
+        "manabiShowFamiliar",
+        "manabiHasMarkedSectionRead"
+    ].forEach((key) => {
+        dataset[key] = ds[key] ?? null;
+    });
+    const trackedWordsSource = (hasDocument && typeof document.manabi_trackedWords === "object" && document.manabi_trackedWords) ? document.manabi_trackedWords : null;
+    const trackedWordCount = trackedWordsSource ? Object.keys(trackedWordsSource).length : 0;
+    const statsObject = (typeof window.manabi_latestContentStats === "object" && window.manabi_latestContentStats) ? window.manabi_latestContentStats : null;
+    summary.hasReadabilityClass = document.body.classList.contains("readability-mode");
+    summary.readerHeaderPresent = !!document.getElementById("reader-header");
+    summary.readerContentPresent = !!document.getElementById("reader-content");
+    summary.dataset = dataset;
+    summary.swiftuiFrameUUID = ds.swiftuiwebviewFrameUuid ?? null;
+    summary.trackedWordCount = trackedWordCount;
+    summary.updateTrackedWordsType = typeof window.manabi_updateTrackedWords;
+    summary.updateContentStatsType = typeof window.manabi_updateContentStats;
+    summary.selectionHandlerType = typeof window.manabi_getPrimaryTrackedWordForSegment;
+    summary.pendingContentStats = !!window.manabi_latestContentStatsPending;
+    summary.hasStatsPayload = !!statsObject;
+    if (statsObject) {
+        summary.statsPreview = {
+            tokenCount: statsObject.tokenCount ?? null,
+            kanjiCount: statsObject.kanjiCount ?? null,
+            familiarCount: statsObject.familiarCount ?? null,
+            knownCount: statsObject.knownCount ?? null
+        };
+    }
+    return JSON.stringify(summary);
+})()
+"""
 
 @MainActor
 fileprivate class ReaderMessageHandlers: Identifiable {
@@ -125,6 +181,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 
                 if readerModeViewModel.isReaderMode || outputLooksLikeReader {
                     debugPrint("# READERMODEBUTTON readabilityParsed shortCircuit url=\(url.absoluteString) readerMode=\(readerModeViewModel.isReaderMode) loading=\(readerModeViewModel.isReaderModeLoading) outputLooksLikeReader=\(outputLooksLikeReader)")
+                    await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: url, frameInfo: message.frameInfo)
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.manabiReaderModeAvailable = 'false';
@@ -142,6 +199,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         readerModeViewModel.isReaderMode = true
                         debugPrint("# READERMODEBUTTON readabilityParsed toggled viewModel.isReaderMode true url=\(url.absoluteString)")
                     }
+                    await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.postUpdate", url: url, frameInfo: message.frameInfo)
                     return
                 }
 
@@ -283,6 +341,33 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             })
         ])
     }()
+    
+    private func trimmedDatasetSummary(_ summary: String) -> String {
+        summary.count <= 360 ? summary : String(summary.prefix(360)) + "…"
+    }
+    
+    private func readerDatasetSummary(stage: String, frameInfo: WKFrameInfo?) async -> String? {
+        do {
+            if let frameInfo {
+                if let summary = try await scriptCaller.evaluateJavaScript(readerModeDatasetProbeScript, in: frameInfo) as? String {
+                    return trimmedDatasetSummary(summary)
+                }
+            } else if let summary = try await scriptCaller.evaluateJavaScript(readerModeDatasetProbeScript) as? String {
+                return trimmedDatasetSummary(summary)
+            }
+        } catch {
+            debugPrint("# READERMODEBUTTON datasetProbeError stage=\(stage) error=\(error.localizedDescription)")
+        }
+        return nil
+    }
+    
+    private func logReaderDatasetState(stage: String, url: URL, frameInfo: WKFrameInfo?) async {
+        if let summary = await readerDatasetSummary(stage: stage, frameInfo: frameInfo) {
+            debugPrint("# READERMODEBUTTON dataset stage=\(stage) url=\(url.absoluteString) state=\(summary)")
+        } else {
+            debugPrint("# READERMODEBUTTON dataset stage=\(stage) url=\(url.absoluteString) state=<nil>")
+        }
+    }
     
     init(
         forceReaderModeWhenAvailable: Bool,
