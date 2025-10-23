@@ -102,7 +102,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .groupBoxStyle(.groupedStackList)
+            .applyStackListGroupBoxStyle(.automatic, defaultIsGrouped: stackListStyle == .grouped)
             .stackListGroupBoxContentInsets(EdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11))
 //            .padding(16)
 //            .background(cardBackground)
@@ -200,7 +200,6 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                 //                .headerProminence(.increased)
             }
             .frame(minHeight: maxCellHeight)
-            .applyStackListGroupBoxStyle(.grouped)
             //            .fixedSize()
             //            .padding(.horizontal)
         }
