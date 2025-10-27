@@ -184,10 +184,12 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
         guard let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) else {
+            debugPrint("# READERMODEBUTTON readerModeLoadCompleteSkipped url=\(url.absoluteString) pending=\(self.pendingReaderModeURL?.absoluteString ?? "nil")")
             return
         }
         let traceURL = pendingReaderModeURL
         self.pendingReaderModeURL = nil
+        debugPrint("# READERMODEBUTTON readerModeLoadComplete url=\(traceURL.absoluteString)")
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         readerModeLoading(false)
     }

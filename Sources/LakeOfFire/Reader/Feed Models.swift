@@ -416,11 +416,23 @@ public enum FeedError: Error {
 
 fileprivate func getRssData(rssUrl: URL) async throws -> Data? {
     let configuration = URLSessionConfiguration.ephemeral
-    let (data, response) = try await URLSession(configuration: configuration).data(from: rssUrl)
-    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-        throw FeedError.downloadFailed
+    debugPrint("# FeedRequest start url=\(rssUrl.absoluteString)")
+    do {
+        let (data, response) = try await URLSession(configuration: configuration).data(from: rssUrl)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            debugPrint("# FeedRequest missingHTTPResponse url=\(rssUrl.absoluteString)")
+            throw FeedError.downloadFailed
+        }
+        debugPrint("# FeedRequest response url=\(rssUrl.absoluteString) status=\(httpResponse.statusCode) bytes=\(data.count)")
+        guard httpResponse.statusCode == 200 else {
+            debugPrint("# FeedRequest nonSuccess url=\(rssUrl.absoluteString) status=\(httpResponse.statusCode)")
+            throw FeedError.downloadFailed
+        }
+        return data
+    } catch {
+        debugPrint("# FeedRequest error url=\(rssUrl.absoluteString) \(error)")
+        throw error
     }
-    return data
 }
 
 fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderContentElement: Bool = true) throws {
@@ -624,52 +636,70 @@ public extension Feed {
     
     @MainActor
     func fetch(realmConfiguration: Realm.Configuration) async throws {
+        debugPrint("# Feed.fetch start feedID=\(id) title=\(title)")
         guard var rssData = try await getRssData(rssUrl: rssUrl) else {
+            debugPrint("# Feed.fetch noData feedID=\(id)")
             throw FeedError.downloadFailed
         }
+        debugPrint("# Feed.fetch cleaningData feedID=\(id) bytes=\(rssData.count)")
         rssData = cleanRssData(rssData)
         let parser = FeedKit.FeedParser(data: rssData)
         return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
             parser.parseAsync { [weak self] parserResult in
+                let feedIDString = self?.id.uuidString ?? "unknown"
                 switch parserResult {
                 case .success(let feed):
+                    debugPrint("# Feed.fetch parseSuccess feedID=\(feedIDString)")
                     switch feed {
                     case .rss(let rssFeed):
+                        debugPrint("# Feed.fetch rssParsed feedID=\(feedIDString) rawItems=\(rssFeed.items?.count ?? 0)")
                         guard let items = rssFeed.items else {
+                            debugPrint("# Feed.fetch rssNoItems feedID=\(feedIDString)")
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
                         Task { @MainActor [weak self] in
                             guard let self = self else { return }
+                            let resolvedFeedIDString = self.id.uuidString
                             do {
+                                debugPrint("# Feed.fetch persistRSS feedID=\(resolvedFeedIDString) items=\(items.count)")
                                 try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                debugPrint("# Feed.fetch persistRSSFinished feedID=\(resolvedFeedIDString)")
                                 continuation.resume(returning: ())
                             } catch {
+                                debugPrint("# Feed.fetch persistRSSFailed feedID=\(resolvedFeedIDString) \(error)")
                                 continuation.resume(throwing: error)
                             }
                         }
                         return
                     case .atom(let atomFeed):
+                        debugPrint("# Feed.fetch atomParsed feedID=\(feedIDString) rawEntries=\(atomFeed.entries?.count ?? 0)")
                         guard let items = atomFeed.entries else {
+                            debugPrint("# Feed.fetch atomNoEntries feedID=\(feedIDString)")
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
                         Task { @MainActor [weak self] in
                             guard let self = self else { return }
+                            let resolvedFeedIDString = self.id.uuidString
                             do {
+                                debugPrint("# Feed.fetch persistAtom feedID=\(resolvedFeedIDString) entries=\(items.count)")
                                 try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                debugPrint("# Feed.fetch persistAtomFinished feedID=\(resolvedFeedIDString)")
                                 continuation.resume(returning: ())
                             } catch {
+                                debugPrint("# Feed.fetch persistAtomFailed feedID=\(resolvedFeedIDString) \(error)")
                                 continuation.resume(throwing: error)
                             }
                         }
                         return
                     case .json(let jsonFeed):
+                        debugPrint("# Feed.fetch jsonUnsupported feedID=\(feedIDString)")
                         continuation.resume(throwing: FeedError.parserFailed)
                         return
                     }
                 case .failure(let error):
-                    debugPrint(error)
+                    debugPrint("# Feed.fetch parseFailed feedID=\(feedIDString) \(error)")
                     continuation.resume(throwing: FeedError.parserFailed)
                     return
                 }

@@ -187,7 +187,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let outputLooksLikeReader = result.outputHTML.contains("class=\"readability-mode\"") &&
                     result.outputHTML.contains("id=\"reader-content\"")
 
-                if readerModeViewModel.isReaderMode || outputLooksLikeReader {
+                let hasProcessedReadability = readerModeViewModel.readabilityContent != nil
+                debugPrint("# READERMODEBUTTON readabilityParsed shortCircuitCheck url=\(url.absoluteString) readerMode=\(readerModeViewModel.isReaderMode) outputLooksLikeReader=\(outputLooksLikeReader) hasProcessedReadability=\(hasProcessedReadability)")
+                if (readerModeViewModel.isReaderMode || outputLooksLikeReader) && hasProcessedReadability {
                     debugPrint("# READERMODEBUTTON readabilityParsed shortCircuit url=\(url.absoluteString) readerMode=\(readerModeViewModel.isReaderMode) loading=\(readerModeViewModel.isReaderModeLoading) outputLooksLikeReader=\(outputLooksLikeReader)")
                     await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: url, frameInfo: message.frameInfo)
                     try? await scriptCaller.evaluateJavaScript("""
@@ -212,6 +214,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
 
                 readerModeViewModel.readabilityContent = result.outputHTML
+                debugPrint("# READERMODEBUTTON readabilityParsed storedContent url=\(url.absoluteString) bytes=\(result.outputHTML.utf8.count)")
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {

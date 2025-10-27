@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import RealmSwift
 import RealmSwiftGaps
 import AsyncView
@@ -10,14 +11,24 @@ let feedQueue = DispatchQueue(label: "FeedQueue")
 
 @MainActor
 public class FeedViewModel: ObservableObject {
-    @Published var entries: [FeedEntry]? = nil
+    @Published var entries: [FeedEntry]? = nil {
+        didSet {
+            let countDescription = entries.map { "\($0.count)" } ?? "nil"
+            debugPrint("# FeedViewModel.entries updated feedID=\(feedID.uuidString) title=\(feedTitle) count=\(countDescription)")
+        }
+    }
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
     private static var lastFetchTimes: [UUID: Date] = [:] // Tracks last fetch time for each feed
+    private let feedID: UUID
+    private let feedTitle: String
     
     public init(feed: Feed) {
+        self.feedID = feed.id
+        self.feedTitle = feed.title
         let feedID = feed.id
+        debugPrint("# FeedViewModel.init feedID=\(feedID.uuidString) title=\(feedTitle)")
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration) 
             realm.objects(FeedEntry.self)
@@ -28,9 +39,12 @@ public class FeedViewModel: ObservableObject {
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
+                    debugPrint("# FeedViewModel.subscriptionTriggered feedID=\(feedID.uuidString)")
                     Task { @MainActor [weak self] in
                         let realm = try await Realm.open(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
+                        debugPrint("# FeedViewModel.reloadEntries feedID=\(feedID.uuidString)")
                         self?.entries = realm.objects(FeedEntry.self).where { $0.feedID == feedID && !$0.isDeleted } .map { $0 }
+                        debugPrint("# FeedViewModel.reloadEntriesFinished feedID=\(feedID.uuidString) count=\(self?.entries?.count ?? 0)")
                     }
                 })
                 .store(in: &cancellables)
@@ -40,12 +54,24 @@ public class FeedViewModel: ObservableObject {
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
         let now = Date()
-        let feedID = feed.id
+        let feedID = self.feedID
         let lastFetchTime = FeedViewModel.lastFetchTimes[feedID]
+        let isoFormatter = ISO8601DateFormatter()
+        let lastFetchDescription = lastFetchTime.map { isoFormatter.string(from: $0) } ?? "never"
+        debugPrint("# FeedViewModel.fetchIfNeeded start feedID=\(feedID.uuidString) title=\(feedTitle) force=\(force) lastFetch=\(lastFetchDescription)")
         
         if force || lastFetchTime == nil || now.timeIntervalSince(lastFetchTime!) > 30 * 60 {
-            try await feed.fetch()
-            FeedViewModel.lastFetchTimes[feedID] = now
+            debugPrint("# FeedViewModel.fetchIfNeeded executing feedID=\(feedID.uuidString)")
+            do {
+                try await feed.fetch()
+                FeedViewModel.lastFetchTimes[feedID] = now
+                debugPrint("# FeedViewModel.fetchIfNeeded finished feedID=\(feedID.uuidString) nextEligible=\(isoFormatter.string(from: now))")
+            } catch {
+                debugPrint("# FeedViewModel.fetchIfNeeded failed feedID=\(feedID.uuidString) \(error)")
+                throw error
+            }
+        } else {
+            debugPrint("# FeedViewModel.fetchIfNeeded skipped feedID=\(feedID.uuidString)")
         }
     }
 }
