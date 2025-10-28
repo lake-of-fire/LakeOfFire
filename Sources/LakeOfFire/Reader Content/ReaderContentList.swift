@@ -641,7 +641,15 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     public var body: some View {
         Group {
             listContainer
-                .listRowSpacing(15)
+                .modifier {
+#if os(iOS)
+                    if #available(iOS 16, *) {
+                        $0.listRowSpacing(15)
+                    } else { $0 }
+#else
+                    $0
+#endif
+                }
                 .toolbar {
                     //#if os(iOS)
                     //            ToolbarItem(placement: .navigationBarTrailing) {
@@ -741,6 +749,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     if #available(iOS 16, *) {
                         emptyStateView()
                             .frame(maxHeight: .infinity, alignment: .top)
+                            .listRowBackground(Color.clear)
+                            .stackListStyle(.grouped)
                     }
                 } else {
                     listItems
@@ -760,6 +770,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                         emptyStateView()
                             .frame(maxHeight: .infinity, alignment: .top)
                             .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+                            .listRowBackground(Color.clear)
+                            .stackListStyle(.grouped)
                     }
                 }
             } else {

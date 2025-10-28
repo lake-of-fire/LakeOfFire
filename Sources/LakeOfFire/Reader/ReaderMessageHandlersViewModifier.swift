@@ -197,6 +197,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             document.body.dataset.manabiReaderModeAvailable = 'false';
                             document.body.dataset.manabiReaderModeAvailableFor = '';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
+                            if (!document.body.classList.contains('readability-mode')) {
+                                document.body.classList.add('readability-mode');
+                            }
                         }
                         """)
                     try? await content.asyncWrite { _, content in
@@ -208,6 +211,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     if !readerModeViewModel.isReaderMode {
                         readerModeViewModel.isReaderMode = true
                         debugPrint("# READERMODEBUTTON readabilityParsed toggled viewModel.isReaderMode true url=\(url.absoluteString)")
+                    }
+                    if readerModeViewModel.isReaderModeLoadPending(for: url) {
+                        readerModeViewModel.markReaderModeLoadComplete(for: url)
                     }
                     await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.postUpdate", url: url, frameInfo: message.frameInfo)
                     return
