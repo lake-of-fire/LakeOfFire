@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 import ZIPFoundation
+import RealmSwift
 
 fileprivate extension URL {
     var deletingQuery: URL? {
@@ -75,19 +76,19 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }
                         }()
                     }
-                } else if let contentFile = try? await ReaderFileManager.get(fileURL: url), var data = try? await readerFileManager.read(fileURL: url) {
+                } else if let mimeType = try? await ReaderFileManager.mimeType(for: url), var data = try? await readerFileManager.read(fileURL: url) {
                     // File
-                    var mimeType = contentFile.mimeType
+                    var resolvedMimeType = mimeType
                     var textEncodingName: String?
-                    if contentFile.mimeType == "text/plain", let text = String(data: data, encoding: .utf8), let convertedData = ReaderContentLoader.textToHTML(text, forceRaw: true).data(using: .utf8) {
-                        mimeType = "text/html"
+                    if mimeType == "text/plain", let text = String(data: data, encoding: .utf8), let convertedData = ReaderContentLoader.textToHTML(text, forceRaw: true).data(using: .utf8) {
+                        resolvedMimeType = "text/html"
                         textEncodingName = "UTF-8"
                         data = convertedData
                     }
                     
                     let response = HTTPURLResponse(
                         url: url,
-                        mimeType: mimeType,
+                        mimeType: resolvedMimeType,
                         expectedContentLength: data.count,
                         textEncodingName: textEncodingName)
                     

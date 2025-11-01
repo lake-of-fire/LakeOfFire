@@ -207,11 +207,14 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor
-    public static func get(fileURL: URL) async throws -> ContentFile? {
-        let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-        //        try validate(readerFileURL: fileURL)
-        let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), fileURL.absoluteString as CVarArg)).first
-        return existing
+    public static func mimeType(for fileURL: URL) async throws -> String? {
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+            return realm.objects(ContentFile.self)
+                .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), fileURL.absoluteString as CVarArg))
+                .first?
+                .mimeType
+        }()
     }
     
     //    private static func validate(readerFileURL: URL) throws {
