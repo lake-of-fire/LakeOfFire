@@ -59,6 +59,7 @@ let package = Package(
         .target(
             name: "LakeOfFireShareSupport",
             dependencies: [
+                .target(name: "LakeOfFire"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities")
             ]
@@ -71,6 +72,7 @@ let package = Package(
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "AsyncView", package: "AsyncView"),
+                .product(name: "Collections", package: "swift-collections"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
                 .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
                 .product(name: "MarkdownKit", package: "Swift-MarkdownKit"),

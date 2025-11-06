@@ -120,9 +120,9 @@ public extension URL {
     func matchesReaderURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }
         if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) {
-            return contentURL == self
+            return urlsMatchWithoutHash(contentURL, self)
         }
-        return url == self
+        return urlsMatchWithoutHash(url, self)
     }
 }
 

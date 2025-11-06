@@ -20,6 +20,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
+    public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     private var lastFallbackLoaderURL: URL?
     private var lastRenderedReadabilityURL: URL?
     private var pendingReaderModeURL: URL?
@@ -152,6 +153,8 @@ public class ReaderModeViewModel: ObservableObject {
             isContinuing = true
         } else {
             pendingReaderModeURL = url
+            lastRenderedReadabilityURL = nil
+            lastFallbackLoaderURL = nil
         }
         logTrace(
             .begin,
@@ -192,6 +195,7 @@ public class ReaderModeViewModel: ObservableObject {
         debugPrint("# READERMODEBUTTON readerModeLoadComplete url=\(traceURL.absoluteString)")
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         readerModeLoading(false)
+        readerModeLoadCompletionHandler?(traceURL)
     }
 
     @MainActor
@@ -239,7 +243,7 @@ public class ReaderModeViewModel: ObservableObject {
         beginReaderModeLoad(for: contentURL)
         debugPrint("# READERMODEBUTTON showReaderView beginLoad url=\(contentURL.absoluteString)")
         Task { @MainActor in
-            guard contentURL == readerContent.pageURL else {
+            guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
                 debugPrint("# FLASH ReaderModeViewModel.showReaderView contentURL mismatch", contentURL, readerContent.pageURL)
                 cancelReaderModeLoad(for: contentURL)
                 return
@@ -356,7 +360,8 @@ public class ReaderModeViewModel: ObservableObject {
                         do {
                             return try await preprocessWebContentForReaderMode(
                                 doc: doc,
-                                url: url
+                                url: url,
+                                fallbackTitle: titleForDisplay
                             )
                         } catch {
                             print(error)
@@ -742,12 +747,28 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFont
 
 public func preprocessWebContentForReaderMode(
     doc: SwiftSoup.Document,
-    url: URL
+    url: URL,
+    fallbackTitle: String? = nil
 ) throws -> SwiftSoup.Document {
     transformContentSpecificToFeed(doc: doc, url: url)
     do {
         try wireViewOriginalLinks(doc: doc, url: url)
     } catch { }
+    
+    if let fallbackTitle, !fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let titleElement = try doc.getElementById("reader-title") {
+            let currentTitleText = try titleElement.text(trimAndNormaliseWhitespace: false)
+            if currentTitleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try titleElement.text(fallbackTitle)
+                if let headTitle = try doc.head()?.getElementsByTag("title").first() {
+                    let currentHeadTitle = try headTitle.text()
+                    if currentHeadTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        try headTitle.text(fallbackTitle)
+                    }
+                }
+            }
+        }
+    }
     return doc
 }
 

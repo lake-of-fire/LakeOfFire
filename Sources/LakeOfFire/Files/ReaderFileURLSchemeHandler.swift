@@ -76,19 +76,22 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }
                         }()
                     }
-                } else if let mimeType = try? await ReaderFileManager.mimeType(for: url), var data = try? await readerFileManager.read(fileURL: url) {
+                } else if
+                    let contentFilePrimaryKey = try? await ReaderFileManager.contentFilePrimaryKey(for: url),
+                    var data = try? await readerFileManager.read(fileURL: url)
+                {
                     // File
-                    var resolvedMimeType = mimeType
+                    var mimeType = (try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey)) ?? "application/octet-stream"
                     var textEncodingName: String?
                     if mimeType == "text/plain", let text = String(data: data, encoding: .utf8), let convertedData = ReaderContentLoader.textToHTML(text, forceRaw: true).data(using: .utf8) {
-                        resolvedMimeType = "text/html"
+                        mimeType = "text/html"
                         textEncodingName = "UTF-8"
                         data = convertedData
                     }
                     
                     let response = HTTPURLResponse(
                         url: url,
-                        mimeType: resolvedMimeType,
+                        mimeType: mimeType,
                         expectedContentLength: data.count,
                         textEncodingName: textEncodingName)
                     

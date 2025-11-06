@@ -267,9 +267,7 @@ public struct ReaderContentLoader {
     }
 
     private static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
-        return (
-            ((doc.body()?.children().isEmpty()) ?? true)
-            || ((doc.body()?.children().first()?.tagNameNormal() ?? "") == "pre" && doc.body()?.children().count == 1) )
+        PlainTextHTMLConverter.isPlainText(document: doc)
     }
     
     public static func textToHTMLDoc(_ text: String) throws -> SwiftSoup.Document {
@@ -278,17 +276,7 @@ public struct ReaderContentLoader {
     }
     
     public static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
-        var convertedText = text
-        if forceRaw {
-            convertedText = convertedText.escapeHtml()
-        } else if let doc = try? SwiftSoup.parse(text) {
-            if docIsPlainText(doc: doc) {
-                convertedText = "<html><body>\(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>"))</body></html>"
-            }
-        } else {
-            convertedText = "<html><body>\(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>"))</body></html>"
-        }
-        return convertedText
+        PlainTextHTMLConverter.convert(text, forceRaw: forceRaw) { $0.escapeHtml() }
     }
     
     public static func snippetURL(key: String) -> URL? {
@@ -318,7 +306,7 @@ public struct ReaderContentLoader {
         } else if let html {
             if let doc = try? SwiftSoup.parse(html) {
                 if docIsPlainText(doc: doc), let text = text {
-                    match = try await load(html: textToHTML(text))
+                    match = try await load(html: PlainTextHTMLConverter.makeHTMLBody(fromPlainText: text))
                 } else {
                     match = try await load(html: html)
                 }

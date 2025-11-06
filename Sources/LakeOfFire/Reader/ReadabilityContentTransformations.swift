@@ -264,10 +264,12 @@ private func nhk(doc: Document) throws {
     guard let pageElement = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
     
     // Un-link words that have NHK popup dictionaries.
+    var removedLinks = 0
     for wordLink in try pageElement.select("a.dicWin") {
         if let word = try wordLink.select("span.under").first()?.ownText() {
             try wordLink.before(word)
             try wordLink.remove()
+            removedLinks += 1
         }
     }
 }

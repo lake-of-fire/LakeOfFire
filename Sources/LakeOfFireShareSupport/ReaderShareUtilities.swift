@@ -1,6 +1,7 @@
 import Foundation
 import SwiftSoup
 import SwiftUtilities
+import LakeOfFire
 
 public enum ReaderShareUtilities {
     public static func snippetURL(forKey key: String) -> URL? {
@@ -8,17 +9,7 @@ public enum ReaderShareUtilities {
     }
 
     public static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
-        var convertedText = text
-        if forceRaw {
-            convertedText = escapeHTML(convertedText)
-        } else if let document = try? SwiftSoup.parse(text) {
-            if docIsPlainText(document: document) {
-                convertedText = makeHTMLBody(fromPlainText: text)
-            }
-        } else {
-            convertedText = makeHTMLBody(fromPlainText: text)
-        }
-        return convertedText
+        PlainTextHTMLConverter.convert(text, forceRaw: forceRaw, escape: escapeHTML)
     }
 
     public static func makeCompoundKey(url: URL?, html: String?) -> String? {
@@ -33,15 +24,6 @@ public enum ReaderShareUtilities {
             key.append(String(format: "%02X", stableHash(html)))
         }
         return key
-    }
-
-    private static func docIsPlainText(document: SwiftSoup.Document) -> Bool {
-        (document.body()?.children().isEmpty() ?? true)
-        || ((document.body()?.children().first()?.tagNameNormal() ?? "") == "pre" && document.body()?.children().count == 1)
-    }
-
-    private static func makeHTMLBody(fromPlainText text: String) -> String {
-        "<html><body>\(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>"))</body></html>"
     }
 
     private static func escapeHTML(_ text: String) -> String {

@@ -60,9 +60,10 @@ fileprivate class ReaderWebViewHandler {
     func handleNewURL(state: WebViewState) async throws {
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating)
 
-        if state.pageURL.absoluteString == "about:blank", let existingContent = readerContent.content {
-            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL skipping about:blank", existingContent.url)
-            return
+        if state.pageURL.absoluteString == "about:blank" {
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL native reader view", state.pageURL)
+            let cancelURL = readerContent.content?.url ?? readerContent.pageURL
+            readerModeViewModel.cancelReaderModeLoad(for: cancelURL)
         }
 
         if let lastHandledURL, lastHandledURL.matchesReaderURL(state.pageURL), lastHandledIsProvisionallyNavigating == state.isProvisionallyNavigating, lastHandledIsLoading == state.isLoading {
@@ -111,10 +112,6 @@ fileprivate class ReaderWebViewHandler {
     }
 
     func onNavigationCommitted(state: WebViewState) {
-        if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
-            debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted skipping about:blank")
-            return
-        }
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", state.pageURL)
         navigationTaskManager.startOnNavigationCommitted {
             do {
@@ -130,10 +127,6 @@ fileprivate class ReaderWebViewHandler {
     }
 
     func onNavigationFinished(state: WebViewState) {
-        if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
-            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished skipping about:blank")
-            return
-        }
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished event", state.pageURL)
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }

@@ -56,7 +56,7 @@ fileprivate struct PageMetadataModifier: ViewModifier {
                       let contentItem = readerContent.content,
                       contentItem.realm != nil else { return }
                 let contentURL = contentItem.url
-                guard contentURL == readerViewModel.state.pageURL else { return }
+                guard urlsMatchWithoutHash(contentURL, readerViewModel.state.pageURL) else { return }
                 Task { @RealmBackgroundActor in
                     let contents = try await ReaderContentLoader.loadAll(url: contentURL)
                     for content in contents where content.imageUrl == nil {
@@ -87,6 +87,7 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
                     shouldSyncProvisionalFlag = true
                 } else {
                     shouldSyncProvisionalFlag = readerContent.pageURL.matchesReaderURL(state.pageURL)
+                    || state.pageURL.isNativeReaderView
                 }
 
                 if shouldSyncProvisionalFlag,

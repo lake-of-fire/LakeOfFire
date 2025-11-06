@@ -126,7 +126,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 // TODO: Reuse guard code across this and readabilityParsed
-                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                guard let url = result.windowURL,
+                      urlsMatchWithoutHash(url, readerViewModel.state.pageURL),
+                      let content = try? await ReaderViewModel.getContent(forURL: url) else {
                     return
                 }
                 debugPrint("# READERMODEBUTTON readabilityParsed message url=\(url.absoluteString) isReaderMode=\(readerModeViewModel.isReaderMode) isLoading=\(readerModeViewModel.isReaderModeLoading) contentAvailable=\(content.isReaderModeAvailable) default=\(content.isReaderModeByDefault)")
@@ -167,7 +169,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
-                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                guard let url = result.windowURL,
+                      urlsMatchWithoutHash(url, readerViewModel.state.pageURL),
+                      let content = try? await ReaderViewModel.getContent(forURL: url) else {
                     return
                 }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
@@ -299,7 +303,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard result.url == readerViewModel.state.pageURL else { return }
+                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
                     try await readerViewModel.pageMetadataUpdated(title: result.title, author: result.author)
                 } catch {
                     print(error)
