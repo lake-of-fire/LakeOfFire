@@ -25,6 +25,10 @@ struct IsReaderModeLoadPendingKey: EnvironmentKey {
     static let defaultValue: @MainActor (any ReaderContentProtocol) -> Bool = { _ in false }
 }
 
+struct ReaderUpdateReadingProgressHandlerKey: EnvironmentKey {
+    static let defaultValue: ((FractionalCompletionMessage) async -> Void)? = nil
+}
+
 public extension EnvironmentValues {
     var readerWebViewState: WebViewState {
         get { self[ReaderWebViewStateKey.self] }
@@ -49,6 +53,10 @@ public extension EnvironmentValues {
     var isReaderModeLoadPending: @MainActor (any ReaderContentProtocol) -> Bool {
         get { self[IsReaderModeLoadPendingKey.self] }
         set { self[IsReaderModeLoadPendingKey.self] = newValue }
+    }
+    var readerUpdateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)? {
+        get { self[ReaderUpdateReadingProgressHandlerKey.self] }
+        set { self[ReaderUpdateReadingProgressHandlerKey.self] = newValue }
     }
 }
 

@@ -78,6 +78,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var readerModeViewModel: ReaderModeViewModel
     var readerContent: ReaderContent
     var navigator: WebViewNavigator
+    var hideNavigationDueToScroll: Binding<Bool>
+    var updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
     
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -108,6 +110,33 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard result.source.isEBookURL || result.source.scheme == "blob" || result.source.isFileURL || result.source.isReaderFileURL || result.source.isSnippetURL else { return }
                 
                 Logger.shared.logger.error("[JS] Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
+            }),
+            ("ebookNavigationVisibility", { @MainActor [weak self] message in
+                guard let self else { return }
+                guard let payload = message.body as? [String: Any], let shouldHide = payload["hideNavigationDueToScroll"] as? Bool else {
+                    return
+                }
+                let source = payload["source"] as? String
+                let direction = payload["direction"] as? String
+                debugPrint("# HIDENAV message ebookNavigationVisibility hide=\(shouldHide) source=\(source ?? "<nil>") direction=\(direction ?? "<nil>") url=\(readerContent.pageURL.absoluteString)")
+
+                self.setHideNavigationDueToScroll(
+                    shouldHide,
+                    reason: nil,
+                    source: source,
+                    direction: direction
+                )
+            }),
+            ("updateReadingProgress", { @MainActor [weak self] message in
+                guard let self else { return }
+                guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
+                debugPrint(
+                    "# HIDENAV message updateReadingProgress reason=\(result.reason) fraction=\(result.fractionalCompletion) url=\(result.mainDocumentURL?.absoluteString ?? readerContent.pageURL.absoluteString) hideNavigation=\(hideNavigationDueToScroll.wrappedValue)"
+                )
+                self.handleNavigationVisibility(for: result)
+                if let handler = self.updateReadingProgressHandler {
+                    Task { await handler(result) }
+                }
             }),
             ("readabilityFramePing", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -403,6 +432,35 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         return nil
     }
     
+    private func setHideNavigationDueToScroll(
+        _ shouldHide: Bool,
+        reason: String? = nil,
+        source: String? = nil,
+        direction: String? = nil
+    ) {
+        let previousValue = hideNavigationDueToScroll.wrappedValue
+        debugPrint(
+            "# HIDENAV set request prev=\(previousValue) new=\(shouldHide) url=\(readerContent.pageURL.absoluteString) reason=\(reason ?? "<nil>") source=\(source ?? "<nil>") direction=\(direction ?? "<nil>")"
+        )
+        guard previousValue != shouldHide else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            hideNavigationDueToScroll.wrappedValue = shouldHide
+        }
+    }
+    
+    private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
+        let normalizedReason = result.reason.lowercased()
+        debugPrint("# HIDENAV handler updateReadingProgress reason=\(result.reason) normalized=\(normalizedReason)")
+        if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
+            setHideNavigationDueToScroll(
+                false,
+                reason: normalizedReason,
+                source: "updateReadingProgress",
+                direction: nil
+            )
+        }
+    }
+    
     private func readerDatasetSummary(stage: String, frameInfo: WKFrameInfo?) async -> String? {
         do {
             let rawResult: Any?
@@ -451,7 +509,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         readerViewModel: ReaderViewModel,
         readerModeViewModel: ReaderModeViewModel,
         readerContent: ReaderContent,
-        navigator: WebViewNavigator
+        navigator: WebViewNavigator,
+        hideNavigationDueToScroll: Binding<Bool>,
+        updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -459,6 +519,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.readerModeViewModel = readerModeViewModel
         self.readerContent = readerContent
         self.navigator = navigator
+        self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.updateReadingProgressHandler = updateReadingProgressHandler
     }
     
     // MARK: Readability
@@ -477,6 +539,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
+    var hideNavigationDueToScroll: Binding<Bool> = .constant(false)
     
     @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "paginated"
     
@@ -486,6 +549,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @EnvironmentObject internal var readerContent: ReaderContent
     @Environment(\.webViewMessageHandlers) internal var webViewMessageHandlers
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+    @Environment(\.readerUpdateReadingProgressHandler) private var updateReadingProgressHandler
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
@@ -501,7 +565,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         readerViewModel: readerViewModel,
                         readerModeViewModel: readerModeViewModel,
                         readerContent: readerContent,
-                        navigator: navigator
+                        navigator: navigator,
+                        hideNavigationDueToScroll: hideNavigationDueToScroll,
+                        updateReadingProgressHandler: updateReadingProgressHandler
                     )
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -510,6 +576,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.readerModeViewModel = readerModeViewModel
                     readerMessageHandlers.readerContent = readerContent
                     readerMessageHandlers.navigator = navigator
+                    readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
+                    readerMessageHandlers.updateReadingProgressHandler = updateReadingProgressHandler
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {

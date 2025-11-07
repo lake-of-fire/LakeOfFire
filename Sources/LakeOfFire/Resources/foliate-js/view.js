@@ -4,6 +4,18 @@ import { Overlayer } from './overlayer.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
 
+const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
+    try {
+        window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+            hideNavigationDueToScroll: !!shouldHide,
+            source: source ?? null,
+            direction: direction ?? null,
+        });
+    } catch (error) {
+        console.error('Failed to notify navigation chrome visibility', error);
+    }
+}
+
 class History extends EventTarget {
     #arr = []
     #index = -1
@@ -369,9 +381,23 @@ export class View extends HTMLElement {
         await this.renderer.next(distance)
     }
     async goLeft() {
+        const isForward = this.book.dir === 'rtl'
+        if (!this.#isCacheWarmer) {
+            postNavigationChromeVisibility(isForward, {
+                source: 'swipe-left',
+                direction: isForward ? 'forward' : 'backward'
+            })
+        }
         return this.book.dir === 'rtl' ? await this.next() : await this.prev()
     }
     async goRight() {
+        const isForward = this.book.dir !== 'rtl'
+        if (!this.#isCacheWarmer) {
+            postNavigationChromeVisibility(isForward, {
+                source: 'swipe-right',
+                direction: isForward ? 'forward' : 'backward'
+            })
+        }
         return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {

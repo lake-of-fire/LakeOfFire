@@ -103,23 +103,6 @@
                     min-width: 0;
                     gap: 4px;
                 }
-                /* Left stack: label left, icon right */
-                #left-stack .button-label {
-                    order: 1;
-                }
-                #left-stack .icon {
-                    order: 2;
-                    margin-left: auto;
-                }
-                
-                /* Right stack: label right, icon left */
-                #right-stack .button-label {
-                    order: 2;
-                    margin-left: auto;
-                }
-                #right-stack .icon {
-                    order: 1;
-                }
                 .toolbar button:hover {
                     background: rgba(0, 0, 0, .1);
                     color: currentcolor;
@@ -170,10 +153,46 @@
                     bottom: 0;
                     -webkit-backdrop-filter: blur(30px);
                     contain: strict;
+                    padding: 0;
+                }
+                #nav-content {
+                    display: flex;
+                    flex-direction: column;
+                    width: 100%;
+                    gap: 0;
+                }
+                #nav-top-row {
+                    min-height: 40px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 4px 20px 0;
+                    box-sizing: border-box;
+                }
+                #nav-top-row button {
+                    justify-content: center;
+                }
+                #nav-top-row .button-label {
+                    margin-left: auto !important;
+                    margin-right: auto !important;
+                }
+                #nav-bottom-row {
+                    width: 100%;
+                    padding: 0 20px 12px;
+                    box-sizing: border-box;
+                    display: flex;
+                    align-items: center;
+                }
+                #progress-wrapper {
+                    display: flex;
+                    align-items: center;
+                    width: 100%;
+                    flex: 1;
+                    gap: 12px;
                 }
                 #progress-button {
                     all: unset; /* Remove default styling */
-                    margin: 0 5px;
+                    margin: 0;
                     padding: 1px 8px;
                     color: var(--secondary-color);
                     border: 1px solid var(--secondary-color);
@@ -194,9 +213,24 @@
                 }
                 #progress-slider {
                     flex-grow: 1;
-                    margin: 0 12px;
+                    margin: 0;
                     visibility: hidden;
                     /*accent-color: GrayText;*/
+                }
+                #nav-hidden-buttons {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 1px;
+                    height: 1px;
+                    overflow: hidden;
+                    clip: rect(0 0 0 0);
+                    clip-path: inset(50%);
+                    pointer-events: none;
+                }
+                #nav-hidden-buttons button {
+                    position: absolute;
+                    left: -9999px;
                 }
                 #side-bar {
                     visibility: hidden;
@@ -445,17 +479,6 @@
                     }
                 }
                 
-                /* Ensure left/right button stacks match width */
-                #left-stack, #right-stack {
-                    display: grid;
-                    grid-template-columns: 1fr;
-                }
-                #left-stack > button,
-                #right-stack > button {
-                    width: 100%;
-                    max-width: 100%;
-                }
-                
                 /* Center-align prev/next labels within their buttons */
                 button[data-button-type="prev"] .button-label,
                 button[data-button-type="next"] .button-label {
@@ -673,40 +696,42 @@
             <div id="toc-view"></div>
         </div>
         <div id="nav-bar" class="toolbar">
-            <div id="left-button-container" style="display: grid; grid-template-columns: 1fr;">
-                <div id="left-stack" class="button-stack">
-                    <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
-                        <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                        <span class="button-label full">Previous</span>
-                        <span class="button-label short">Prev</span>
-                    </button>
+            <div id="nav-content">
+                <div id="nav-top-row">
+                    <div id="completion-stack" class="button-stack">
+                        <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
+                            <span class="button-label full">Finish Book</span>
+                            <span class="button-label short">Finish</span>
+                            <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
+                        </button>
+                        <button id="btn-restart" data-button-type="restart" aria-label="Start over">
+                            <span class="button-label full">Start Over</span>
+                            <span class="button-label short">Restart</span>
+                            <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
+                                <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div id="nav-bottom-row">
+                    <div id="progress-wrapper">
+                        <button id="progress-button"></button>
+                        <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
+                        <datalist id="tick-marks"></datalist>
+                    </div>
                 </div>
             </div>
-            <div id="progress-wrapper" style="display: flex; flex: 1; justify-content: center; align-items: center;">
-                <button id="progress-button"></button>
-                <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
-                    <datalist id="tick-marks"></datalist>
-            </div>
-            <div id="right-button-container" style="display: grid; grid-template-columns: 1fr;">
-                <div id="right-stack" class="button-stack">
-                    <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
-                        <span class="button-label full">Next</span>
-                        <span class="button-label short">Next</span>
-                        <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
-                    </button>
-                    <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                        <span class="button-label full">Finish Book</span>
-                        <span class="button-label short">Finish</span>
-                        <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
-                    </button>
-                    <button id="btn-restart" data-button-type="restart" aria-label="Start over">
-                        <span class="button-label full">Start Over</span>
-                        <span class="button-label short">Restart</span>
-                        <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
-                            <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
-                        </svg>
-                    </button>
-                </div>
+            <div id="nav-hidden-buttons" aria-hidden="true">
+                <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter" tabindex="-1">
+                    <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
+                    <span class="button-label full">Previous</span>
+                    <span class="button-label short">Prev</span>
+                </button>
+                <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter" tabindex="-1">
+                    <span class="button-label full">Next</span>
+                    <span class="button-label short">Next</span>
+                    <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
+                </button>
             </div>
         </div>
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">

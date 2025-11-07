@@ -49,6 +49,18 @@ function forwardShadowErrors(root) {
     });
 }
 
+const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
+    try {
+        window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+            hideNavigationDueToScroll: !!shouldHide,
+            source: source ?? null,
+            direction: direction ?? null,
+        });
+    } catch (error) {
+        console.error('Failed to notify native navigation chrome visibility', error);
+    }
+};
+
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
@@ -554,16 +566,18 @@ class Reader {
         // Listen for resetSideNavChevrons custom event to reset chevrons
         document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
         
-        // Reorder toolbar children for RTL/LTR so left/right stacks and progress are positioned correctly
+        // Legacy layout support: reorder toolbar children only if the old stacks exist
         const navBar = document.getElementById('nav-bar');
         const leftStack = document.getElementById('left-stack');
         const rightStack = document.getElementById('right-stack');
         const progressWrapper = document.getElementById('progress-wrapper');
-        navBar.innerHTML = '';
-        if (this.isRTL) {
-            navBar.append(rightStack, progressWrapper, leftStack);
-        } else {
-            navBar.append(leftStack, progressWrapper, rightStack);
+        if (navBar && leftStack && rightStack && progressWrapper) {
+            navBar.innerHTML = '';
+            if (this.isRTL) {
+                navBar.append(rightStack, progressWrapper, leftStack);
+            } else {
+                navBar.append(leftStack, progressWrapper, rightStack);
+            }
         }
         
         const slider = $('#progress-slider')
@@ -764,10 +778,12 @@ class Reader {
         // Use public helpers to detect prev/next section
         const hasPrevSection = typeof r.getHasPrevSection === "function" ? await r.getHasPrevSection() : true;
         const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
+        const shouldShowPrev = atSectionStart && hasPrevSection;
+        const shouldShowNext = atSectionEnd && hasNextSection;
         
-        this.#show(this.buttons.prev, atSectionStart && hasPrevSection);
+        this.#show(this.buttons.prev, shouldShowPrev);
         
-        if (atSectionEnd && hasNextSection) {
+        if (shouldShowNext) {
             this.#show(this.buttons.next, true);
             this.#show(this.buttons.finish, false);
             this.#show(this.buttons.restart, false);
@@ -785,6 +801,7 @@ class Reader {
             this.#show(this.buttons.finish, false);
             this.#show(this.buttons.restart, false);
         }
+        this.#setForwardChevronHint(shouldShowNext);
         
         // RTL/LTR logic for disabling/hiding side chevrons
         const btnScrollLeft = document.getElementById('btn-scroll-left');
@@ -812,6 +829,21 @@ class Reader {
                 iconPath.setAttribute('fill', 'currentColor');
                 iconPath.setAttribute('stroke', 'none');
             }
+        }
+    }
+    #setForwardChevronHint(shouldShow) {
+        const forwardBtn = document.getElementById(this.isRTL ? 'btn-scroll-left' : 'btn-scroll-right');
+        if (!forwardBtn) return;
+        forwardBtn.classList.toggle('show-next', !!shouldShow);
+        const icon = forwardBtn.querySelector('.icon');
+        if (!icon) return;
+        const isHovered = typeof forwardBtn.matches === 'function' ? forwardBtn.matches(':hover') : false;
+        if (shouldShow) {
+            icon.classList.add('chevron-visible');
+            icon.style.opacity = '1';
+        } else if (!forwardBtn.classList.contains('pressed') && !isHovered) {
+            icon.classList.remove('chevron-visible');
+            icon.style.opacity = '';
         }
     }
     #flashChevron(left) {
@@ -993,6 +1025,7 @@ class Reader {
         switch (type) {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'prev':
+                postNavigationChromeVisibility(false, { source: 'button-prev', direction: 'backward' });
                 // Go to previous section, then jump to its end
                 nav = this.view.renderer.prevSection().then(() => {
                     // TODO: Add this here...
@@ -1000,6 +1033,7 @@ class Reader {
                 });
                 break;
             case 'next':
+                postNavigationChromeVisibility(true, { source: 'button-next', direction: 'forward' });
                 nav = this.view.renderer.nextSection();
                 break;
             case 'finish':

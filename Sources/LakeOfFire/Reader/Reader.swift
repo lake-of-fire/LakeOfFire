@@ -181,6 +181,7 @@ public struct Reader: View {
     var forceReaderModeWhenAvailable = false
 //    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
+    var additionalBottomSafeAreaInset: CGFloat? = nil
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -197,6 +198,7 @@ public struct Reader: View {
         forceReaderModeWhenAvailable: Bool = false,
 //        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
+        additionalBottomSafeAreaInset: CGFloat? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -210,6 +212,7 @@ public struct Reader: View {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
 //        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
+        self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -237,6 +240,16 @@ public struct Reader: View {
         )
 #if os(iOS)
         .ignoresSafeArea(.all, edges: .all)
+        .modifier {
+            if #available(iOS 26, *) {
+                $0.safeAreaBar(edge: .bottom, spacing: 0) {
+                    if let additionalBottomSafeAreaInset {
+                        Color.white.opacity(0.0000000001)
+                            .frame(height: additionalBottomSafeAreaInset)
+                    }
+                }
+            } else { $0 }
+        }
 #endif
         .background {
             GeometryReader { geometry in
@@ -261,7 +274,12 @@ public struct Reader: View {
         //#endif
 //                .ignoresSafeArea(.all, edges: [.top, .bottom])
         .modifier(ReaderLoadingOverlayModifier())
-        .modifier(ReaderMessageHandlersViewModifier(forceReaderModeWhenAvailable: forceReaderModeWhenAvailable))
+        .modifier(
+            ReaderMessageHandlersViewModifier(
+                forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+                hideNavigationDueToScroll: $hideNavigationDueToScroll
+            )
+        )
         .modifier(ReaderStateChangeModifier())
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
