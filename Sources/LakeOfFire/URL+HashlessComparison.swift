@@ -15,7 +15,8 @@ public func urlsMatchWithoutHash(_ lhs: URL?, _ rhs: URL?) -> Bool {
     }
 }
 
-private extension URL {
+internal extension URL {
+    @usableFromInline
     func removingFragmentIfNeeded() -> URL {
         guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false),
               components.fragment != nil else {
