@@ -214,9 +214,6 @@ public class ReaderModeViewModel: ObservableObject {
     public func isReaderModeButtonAvailable(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && content.isReaderModeAvailable && !content.isReaderModeByDefault
     }
-    public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
-        return !isReaderMode && content.isReaderModeAvailable && !content.isReaderModeByDefault
-    }
     
     public init() { }
     

@@ -75,6 +75,13 @@
                     stroke-width: 2px;
                     flex-shrink: 0;
                 }
+                .icon.finish-icon {
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
+                    stroke: currentcolor;
+                }
                 .empty-state-icon {
                     margin: auto;
                 }
@@ -162,11 +169,10 @@
                     gap: 0;
                 }
                 #nav-top-row {
-                    min-height: 40px;
+                    height: 30px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    padding: 4px 25px 0;
                     box-sizing: border-box;
                 }
                 #nav-top-row button {
@@ -178,7 +184,7 @@
                 }
                 #nav-bottom-row {
                     width: 100%;
-                    padding: 0 20px 0;
+                    padding: 0 26px;
                     box-sizing: border-box;
                     display: flex;
                     align-items: center;
@@ -700,9 +706,13 @@
                 <div id="nav-top-row">
                     <div id="completion-stack" class="button-stack">
                         <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                            <span class="button-label full">Finish Book</span>
-                            <span class="button-label short">Finish</span>
-                            <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
+                            <svg class="icon finish-icon" width="1em" height="1em" viewBox="0 0 49.328125 52.400390625" aria-hidden="true">
+                                <g fill-rule="nonzero" transform="scale(1,-1) translate(0,-52.400390625)">
+                                    <path fill="currentColor" stroke="currentColor" stroke-width="1" d="M24.6640625,5.37109375C36.115234375,5.37109375 45.482421875,14.73828125 45.482421875,26.2109375C45.482421875,37.662109375 36.115234375,47.029296875 24.6640625,47.029296875C13.212890625,47.029296875 3.845703125,37.662109375 3.845703125,26.2109375C3.845703125,14.73828125 13.212890625,5.37109375 24.6640625,5.37109375ZM24.6640625,6.423828125C13.771484375,6.423828125 4.8984375,15.296875 4.8984375,26.2109375C4.8984375,37.103515625 13.771484375,45.9765625 24.6640625,45.9765625C35.578125,45.9765625 44.4296875,37.103515625 44.4296875,26.2109375C44.4296875,15.296875 35.578125,6.423828125 24.6640625,6.423828125ZM21.78515625,15.51171875C22.0,15.51171875 22.21484375,15.576171875 22.365234375,15.833984375L34.568359375,34.654296875C34.654296875,34.783203125 34.697265625,34.93359375 34.697265625,35.0625C34.697265625,35.44921875 34.375,35.685546875 34.095703125,35.685546875C33.880859375,35.685546875 33.666015625,35.556640625 33.537109375,35.341796875L21.763671875,17.166015625L14.8671875,25.029296875C14.716796875,25.22265625 14.544921875,25.287109375 14.30859375,25.287109375C14.05078125,25.287109375 13.70703125,25.09375 13.70703125,24.685546875C13.70703125,24.4921875 13.771484375,24.298828125 13.921875,24.1484375L21.205078125,15.791015625C21.419921875,15.5546875 21.5703125,15.51171875 21.78515625,15.51171875Z" />
+                                </g>
+                            </svg>
+                            <span class="button-label full">Finish Chapter</span>
+                            <span class="button-label short">Finish Chapter</span>
                         </button>
                         <button id="btn-restart" data-button-type="restart" aria-label="Start over">
                             <span class="button-label full">Start Over</span>
