@@ -6,6 +6,7 @@ import {
 import {
     Overlayer
 } from '../foliate-js/overlayer.js'
+import { NavigationHUD } from './ebook-viewer-nav.js'
 
 window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
@@ -49,7 +50,18 @@ function forwardShadowErrors(root) {
     });
 }
 
+let pendingHideNavigationState = null;
+const applyLocalHideNavigationDueToScroll = (shouldHide) => {
+    pendingHideNavigationState = !!shouldHide;
+    if (globalThis.reader?.setHideNavigationDueToScroll) {
+        globalThis.reader.setHideNavigationDueToScroll(pendingHideNavigationState);
+        pendingHideNavigationState = null;
+    }
+};
+globalThis.manabiSetHideNavigationDueToScroll = applyLocalHideNavigationDueToScroll;
+
 const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
+    applyLocalHideNavigationDueToScroll(!!shouldHide);
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
             hideNavigationDueToScroll: !!shouldHide,
@@ -403,7 +415,15 @@ class Reader {
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
     }
+    setHideNavigationDueToScroll(shouldHide) {
+        this.navHUD?.setHideNavigationDueToScroll(shouldHide);
+    }
     constructor() {
+        this.navHUD = new NavigationHUD({
+            formatPercent: value => percentFormat.format(value),
+            getRenderer: () => this.view?.renderer,
+            onJumpRequest: descriptor => this.#goToDescriptor(descriptor),
+        });
         $('#progress-button').addEventListener('click', () => {
             this.openSideBar()
         })
@@ -430,6 +450,8 @@ class Reader {
         } = this.view
         this.bookDir = book.dir || 'ltr';
         this.isRTL = this.bookDir === 'rtl';
+        this.navHUD?.setIsRTL(this.isRTL);
+        this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         //        this.view.renderer.next()
         
@@ -829,6 +851,14 @@ class Reader {
                 iconPath.setAttribute('stroke', 'none');
             }
         }
+        this.navHUD?.setNavContext({
+            atSectionStart,
+            atSectionEnd,
+            hasPrevSection,
+            hasNextSection,
+            showingFinish: !this.buttons.finish.hidden,
+            showingRestart: !this.buttons.restart.hidden,
+        });
     }
     #setForwardChevronHint(shouldShow) {
         const forwardBtn = document.getElementById(this.isRTL ? 'btn-scroll-left' : 'btn-scroll-right');
@@ -964,6 +994,7 @@ class Reader {
         }
         
         await this.updateNavButtons();
+        await this.navHUD?.handleRelocate(detail);
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
@@ -973,6 +1004,17 @@ class Reader {
             percentInput.value = pct;
             this.lastPercentValue = pct;
             percentButton.disabled = true;
+        }
+    }
+    
+    async #goToDescriptor(descriptor) {
+        if (!descriptor) return;
+        if (descriptor.cfi) {
+            await this.view.goTo(descriptor.cfi);
+            return;
+        }
+        if (typeof descriptor.fraction === 'number') {
+            await this.view.goToFraction(descriptor.fraction);
         }
     }
     
@@ -1136,6 +1178,10 @@ window.loadEBook = ({
 }) => {
     let reader = new Reader()
     globalThis.reader = reader
+    if (pendingHideNavigationState !== null) {
+        reader.setHideNavigationDueToScroll(pendingHideNavigationState);
+        pendingHideNavigationState = null;
+    }
     
     window.cacheWarmer = new CacheWarmer()
     

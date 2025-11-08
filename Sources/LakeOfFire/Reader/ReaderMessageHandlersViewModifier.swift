@@ -588,5 +588,24 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     lastAppendedHandlerKeys = handlerKeys
                 }
             }
+            .task(id: hideNavigationDueToScroll.wrappedValue) {
+                await pushHideNavigationStateToWebView()
+            }
+            .task(id: readerContent.pageURL) {
+                await pushHideNavigationStateToWebView()
+            }
+    }
+}
+
+extension ReaderMessageHandlersViewModifier {
+    @MainActor
+    private func pushHideNavigationStateToWebView() async {
+        guard readerContent.pageURL.isEBookURL else { return }
+        let boolLiteral = hideNavigationDueToScroll.wrappedValue ? "true" : "false"
+        do {
+            try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral));")
+        } catch {
+            debugPrint("# HIDENAV sync error \(error.localizedDescription)")
+        }
     }
 }
