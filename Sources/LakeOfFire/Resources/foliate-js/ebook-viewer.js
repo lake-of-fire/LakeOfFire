@@ -414,7 +414,6 @@ class Reader {
     }
     async open(file) {
         this.setLoadingIndicator(true);
-        
         this.hasLoadedLastPosition = false
         this.view = await getView(file, false)
         // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...

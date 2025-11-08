@@ -4,7 +4,7 @@ const CSS_DEFAULTS = {
     gapPct: 5,
     minGapPx: 36,
     topMarginPx: 4,
-    bottomMarginPx: 32,
+    bottomMarginPx: 62,
     sideMarginPx: 32,
     maxInlineSizePx: 720,
     maxBlockSizePx: 1440,
@@ -368,6 +368,7 @@ class View {
         await this.#awaitDirection();
         const vertical = this.#vertical
         const doc = this.document
+        const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
@@ -397,7 +398,7 @@ class View {
             '-webkit-line-box-contain': 'block glyphs replaced',
 
             // columnize parity
-            '--paginator-margin': '30px',
+            '--paginator-margin': `${bottomMarginPx}px`,
         })
         // columnize parity
         setStylesImportant(doc.body, {
@@ -448,7 +449,8 @@ class View {
             // fix glyph clipping in WebKit
             '-webkit-line-box-contain': 'block glyphs replaced',
         })
-        doc.documentElement.style.setProperty('--paginator-margin', `30px`)
+        const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
+        doc.documentElement.style.setProperty('--paginator-margin', `${bottomMarginPx}px`)
         setStylesImportant(doc.body, {
             'max-height': 'none',
             'max-width': 'none',

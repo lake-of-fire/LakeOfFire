@@ -239,7 +239,6 @@ public struct Reader: View {
             buildMenu: buildMenu
         )
 #if os(iOS)
-        .ignoresSafeArea(.all, edges: .all)
         .modifier {
             if #available(iOS 26, *) {
                 $0.safeAreaBar(edge: .bottom, spacing: 0) {
@@ -250,6 +249,7 @@ public struct Reader: View {
                 }
             } else { $0 }
         }
+        .ignoresSafeArea(.all, edges: .all)
 #endif
         .background {
             GeometryReader { geometry in
