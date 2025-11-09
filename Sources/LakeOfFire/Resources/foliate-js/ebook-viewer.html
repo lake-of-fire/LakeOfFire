@@ -29,11 +29,11 @@
                 body {
                     --manabi-red: #ff4500;
                     --secondary-color: #7a7a7a;
-                    --tertiary-color: #fbfbfb;
+                    --tertiary-color: #c3c3c3;
                     --nav-primary-font-size: 0.72rem;
                     --nav-secondary-font-size: 0.86rem;
                     --nav-accent-color: #3d3d3d;
-                    --nav-horizontal-padding: 44px;
+                    --nav-horizontal-padding: 43px;
                     --nav-relocate-bg: rgba(0, 0, 0, 0.08);
                     --nav-relocate-icon-color: #2d2d2d;
                     
@@ -102,7 +102,7 @@
                     align-items: center;
                     justify-content: space-between;
                     width: 100dvw;
-                    height: 60px;
+                    height: 56px;
                     /*padding: 6px;*/
                     transition: opacity 250ms ease;
                     visibility: hidden;
@@ -118,14 +118,14 @@
                     justify-content: start;
                     min-width: 0;
                     gap: 4px;
+                    font-size: 12px;
+                    font-weight: 600;
                 }
                 .toolbar button:hover {
                     background: rgba(0, 0, 0, .1);
                     color: currentcolor;
                 }
                 .toolbar button .button-label {
-                    font-size: x-small;
-                    font-weight: 600;
                     pointer-events: none;
                     color: inherit;
                     white-space: nowrap;
@@ -146,9 +146,6 @@
                 
                 .toolbar button[data-button-type="next"]:has(.button-label:not(:empty)) {
                     color: var(--manabi-red);
-                }
-                .toolbar button[data-button-type="finish"]:has(.button-label:not(:empty)) {
-                    color: green;
                 }
                 .button-stack{
                     display: grid;          /* let children overlap yet contribute width */
@@ -182,9 +179,10 @@
                     display: flex;
                     flex-direction: column;
                     justify-content: center;
-                    gap: 2px;
-                    height: 40px;
+                    gap: 0;
+                    height: 36px;
                     box-sizing: border-box;
+                    position: relative;
                 }
                 .nav-top-line {
                     width: 100%;
@@ -201,8 +199,8 @@
                 }
                 #nav-secondary-line {
                     padding: 0 var(--nav-horizontal-padding);
-                    height: 22px;
-                    line-height: 22px;
+                    height: 20px;
+                    line-height: 20px;
                 }
                 #nav-primary-text,
                 #nav-secondary-text {
@@ -213,10 +211,11 @@
                     line-height: inherit;
                 }
                 #nav-primary-text {
-                    font-size: var(--nav-primary-font-size, 0.72rem);
+                    font-size: 13px;
+                    line-height: 13px;
                 }
                 #nav-secondary-text {
-                    font-size: var(--nav-secondary-font-size, 0.86rem);
+                    font-size: 17px;
                     letter-spacing: 0.02em;
                 }
                 .nav-secondary-center {
@@ -226,23 +225,31 @@
                     align-items: center;
                     justify-content: center;
                 }
-                .nav-secondary-side {
+                #nav-floating-controls {
                     position: absolute;
-                    top: 0;
+                    left: 0;
+                    right: 0;
                     bottom: 0;
                     display: flex;
-                    align-items: center;
+                    justify-content: space-between;
+                    padding: 0 var(--nav-horizontal-padding);
+                    pointer-events: none;
+                    min-height: 24px;
+                }
+                .nav-secondary-side {
+                    display: flex;
+                    align-items: flex-end;
                     gap: 10px;
-                    padding: 0;
+                    pointer-events: auto;
                 }
                 #nav-secondary-leading {
-                    left: var(--nav-horizontal-padding);
+                    justify-content: flex-start;
                 }
                 #nav-secondary-trailing {
-                    right: var(--nav-horizontal-padding);
+                    justify-content: flex-end;
                 }
                 .nav-section-progress {
-                    font-size: var(--nav-primary-font-size, 0.72rem);
+                    font-size: 14px;
                     font-weight: 500;
                     color: var(--secondary-color);
                     white-space: nowrap;
@@ -288,13 +295,45 @@
                     opacity: 0;
                     pointer-events: none;
                 }
+                #completion-stack {
+                    display: flex;
+                    align-items: flex-end;
+                    gap: 8px;
+                }
+                #completion-stack button {
+                    border: none;
+                    border-radius: 999px;
+                    padding: 4px 12px;
+                    min-height: 24px;
+                    font-weight: 600;
+                    cursor: pointer;
+                }
                 #completion-stack .button-label {
                     margin-left: auto !important;
                     margin-right: auto !important;
                 }
+                .toolbar button[data-button-type="finish"]:has(.button-label:not(:empty)) {
+                    --finish-button-color: #1fa352;
+                }
+                #btn-finish {
+                    background-color: var(--finish-button-color, #1fa352);
+                    color: #fff;
+                    box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                }
+                #btn-finish .icon {
+                    color: inherit;
+                }
+                #btn-restart {
+                    background-color: var(--manabi-red, #ff4500);
+                    color: #fff;
+                    box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                }
+                #btn-restart .icon {
+                    color: inherit;
+                }
                 #nav-bottom-row {
                     width: 100%;
-                    padding: 0 var(--nav-horizontal-padding);
+                    padding: 3px var(--nav-horizontal-padding) 0;
                     box-sizing: border-box;
                     display: flex;
                     align-items: center;
@@ -666,7 +705,7 @@
                  https://toughengineer.github.io/demo/slider-styler */
                 input[type=range].styled-slider {
                     height: 20px;
-                    /*-webkit-appearance: none;*/
+                    -webkit-appearance: none;
                     background: transparent;
                 }
                 input[type=range].styled-slider:focus {
@@ -674,14 +713,14 @@
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb {
                     -webkit-appearance: none;
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 16px;
+                    width: 24px;
+                    height: 14px;
+                    border-radius: 14px;
                     background: var(--theme-background-color);
                     border: 1px solid var(--secondary-color);
                     /*box-shadow: 0 0 1px CanvasText;*/
-                    box-shadow: 0 0 2px var(--secondary-color);
-                    margin-top: calc(2px * 0.5 - 16px * 0.5);
+                    box-shadow: 0 0 1px var(--secondary-color);
+                    margin-top: calc(2px * 0.5 - 14px * 0.5);
                 }
                 input[type=range].styled-slider::-webkit-slider-runnable-track {
                     height: 2px;
@@ -692,7 +731,8 @@
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb:hover,
                 input[type=range].styled-slider::-webkit-slider-thumb:active {
-                    background: CanvasText;
+                    /*background: CanvasText;*/
+                    background: var(--tertiary-color);
                     cursor: pointer;
                 }
                 input[type=range].styled-slider:hover::-webkit-slider-runnable-track,
@@ -701,16 +741,17 @@
                 }
                 input[type=range].styled-slider.slider-progress::-webkit-slider-runnable-track {
                     background: linear-gradient(to right, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                    color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
                 }
                 input[type=range].styled-slider.slider-progress:dir(rtl)::-webkit-slider-runnable-track {
                     background: linear-gradient(to left, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                    color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
                 }
                 input[type=range].styled-slider.slider-progress {
                     --range: calc(var(--max) - var(--min));
                     --ratio: calc((var(--value) - var(--min)) / var(--range));
-                    --sx: calc(0.5 * 16px + var(--ratio) * (100% - 16px));
+                    --sx: calc(0.5 * 14px + var(--ratio) * (100% - 14px));
+                    accent-color: #ffffff;
                 }
                 
                 /* Performance optimization */
@@ -800,6 +841,8 @@
                         <div class="nav-secondary-center">
                             <div id="nav-secondary-text" aria-live="polite"></div>
                         </div>
+                    </div>
+                    <div id="nav-floating-controls">
                         <div class="nav-secondary-side" id="nav-secondary-leading">
                             <button id="nav-relocate-back" class="nav-relocate-button" aria-label="Jump back to previous position" disabled>
                                 <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">

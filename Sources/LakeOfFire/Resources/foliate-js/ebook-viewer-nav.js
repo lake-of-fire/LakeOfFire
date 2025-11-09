@@ -152,32 +152,42 @@ export class NavigationHUD {
         } = detail ?? {};
         const pageIndex = this.#resolvePageIndex(pageItem);
         const hasTotal = this.totalPageCount > 0;
+        const approxIndex = pageIndex != null ? pageIndex : this.#pageIndexFromFraction(fraction);
+        const currentPageNumber = approxIndex != null ? approxIndex + 1 : null;
         let primary = '';
         if (this.hideNavigationDueToScroll) {
-            if (pageIndex != null) {
-                primary = `Page ${pageIndex + 1}`;
+            if (currentPageNumber != null) {
+                primary = String(currentPageNumber);
             } else if (pageItem?.label) {
-                primary = `Page ${pageItem.label}`;
+                primary = pageItem.label;
             }
-        } else if (hasTotal && pageIndex != null) {
-            primary = `${pageIndex + 1} of ${this.totalPageCount}`;
+        } else if (hasTotal && currentPageNumber != null) {
+            primary = `${currentPageNumber} of ${this.totalPageCount}`;
         } else if (hasTotal && pageItem?.label) {
             primary = `${pageItem.label} of ${this.totalPageCount}`;
         }
-        if (!primary && pageItem?.label) {
-            primary = `Page ${pageItem.label}`;
+        if (!primary && currentPageNumber != null) {
+            primary = String(currentPageNumber);
         }
-        if (!primary) {
-            const approxIndex = this.#pageIndexFromFraction(fraction);
-            if (approxIndex != null && hasTotal) {
-                primary = `${approxIndex + 1} of ${this.totalPageCount}`;
+        if (!primary && pageItem?.label) {
+            primary = pageItem.label;
+        }
+        if (!primary && typeof fraction === 'number' && hasTotal) {
+            const derived = this.#pageIndexFromFraction(fraction);
+            if (derived != null) {
+                const display = derived + 1;
+                primary = this.hideNavigationDueToScroll ? String(display) : `${display} of ${this.totalPageCount}`;
             }
         }
         if (!primary && typeof fraction === 'number') {
-            primary = this.formatPercent(fraction);
+            const derived = this.#pageIndexFromFraction(fraction);
+            if (derived != null) {
+                const display = derived + 1;
+                primary = this.hideNavigationDueToScroll ? String(display) : `${display} of ${this.totalPageCount}`;
+            }
         }
-        if (!primary && location?.current != null && location?.total != null) {
-            primary = `Loc ${location.current} of ${location.total}`;
+        if (!primary && this.totalPageCount > 0) {
+            primary = `1 of ${this.totalPageCount}`;
         }
         this.navPrimaryText.textContent = primary ?? '';
     }
