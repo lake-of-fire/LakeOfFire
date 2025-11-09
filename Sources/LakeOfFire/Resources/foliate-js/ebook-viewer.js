@@ -1215,7 +1215,8 @@ class Reader {
         slider.value = fraction
         slider.style.setProperty('--value', slider.value); // keep slider progress updated
         // (removed: setting tocView currentHref here)
-        if (this.#progressScrubState) {
+        const scrubbing = !!this.#progressScrubState;
+        if (scrubbing) {
             detail.reason = 'live-scroll';
             detail.liveScrollPhase = 'dragging';
         } else if (detail.reason === 'live-scroll') {
@@ -1241,7 +1242,7 @@ class Reader {
         }
         tooltipParts.push(percent);
         slider.title = tooltipParts.filter(Boolean).join(' · ');
-        if (this.#progressScrubState?.pendingEnd) {
+        if (scrubbing && this.#progressScrubState?.pendingEnd) {
             this.#finalizeProgressScrubSession({ cancel: this.#progressScrubState.cancelRequested });
         }
         

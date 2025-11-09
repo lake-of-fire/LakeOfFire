@@ -76,7 +76,12 @@ export class NavigationHUD {
         this.lastPrimaryLabelDiagnostics = null;
         this.fallbackTotalPageCount = null;
         this.lastTotalSource = null;
-        this.pendingScrubCommit = null;
+        if (this.pendingScrubCommit) {
+            this.#logPageScrub('pending-commit-reset', {
+                reason: 'new-scrub',
+            });
+            this.pendingScrubCommit = null;
+        }
 
         this.navRelocateButtons.back?.addEventListener('click', () => this.#handleRelocateJump('back'));
         this.navRelocateButtons.forward?.addEventListener('click', () => this.#handleRelocateJump('forward'));
@@ -149,7 +154,6 @@ export class NavigationHUD {
             hasMoved: false,
             frozenLabel,
         };
-        this.pendingScrubCommit = null;
         if (frozenLabel && this.navPrimaryText) {
             this.navPrimaryText.textContent = frozenLabel;
         }
@@ -171,23 +175,31 @@ export class NavigationHUD {
         let returnedToOrigin = false;
         let deferredCommit = false;
         if (!cancel && session.originDescriptor && session.hasMoved) {
-            returnedToOrigin = !!(comparisonDescriptor && this.#isSameDescriptor(session.originDescriptor, comparisonDescriptor));
-            if (!returnedToOrigin) {
-                this.pendingScrubCommit = {
-                    origin: this.#cloneDescriptor(session.originDescriptor),
-                    targetFraction: comparisonDescriptor?.fraction ?? null,
-                    reason: 'scrub-release',
-                };
-                deferredCommit = true;
-                this.#logPageScrub('pending-commit', {
-                    originFraction: session.originFraction ?? null,
-                    targetFraction: comparisonDescriptor?.fraction ?? null,
-                });
-            } else {
-                this.pendingScrubCommit = null;
-            }
+            this.pendingScrubCommit = {
+                origin: this.#cloneDescriptor(session.originDescriptor),
+                reason: 'scrub-release',
+                releaseFraction: comparisonDescriptor?.fraction ?? null,
+                scheduledAt: Date.now(),
+                releaseDescriptor: comparisonDescriptor,
+            };
+            deferredCommit = true;
+            this.#logPageScrub('pending-commit', {
+                originFraction: session.originFraction ?? null,
+                releaseFraction: comparisonDescriptor?.fraction ?? null,
+            });
         } else {
             this.pendingScrubCommit = null;
+        }
+        if (this.pendingScrubCommit && comparisonDescriptor) {
+            const pushedNow = this.#maybeCommitPendingScrub({
+                reason: 'scrub-finalize',
+                liveScrollPhase: 'settled',
+            }, comparisonDescriptor, { updateButtons: false, ignoreReleaseMatch: true, ignoreOriginMatch: true });
+            if (pushedNow) {
+                committed = true;
+                deferredCommit = false;
+                this.#updateRelocateButtons();
+            }
         }
         this.#logPageScrub('end', {
             cancel,
@@ -217,6 +229,7 @@ export class NavigationHUD {
         await this.#refreshRendererSnapshot();
         this.lastRelocateDetail = detail;
         this.#handleRelocateHistory(detail);
+        this.#logRelocateDetail(detail);
         this.#updatePrimaryLine(detail);
         this.#toggleCompletionStack();
         await this.#updateSectionProgress({ refreshSnapshot: false });
@@ -683,6 +696,9 @@ export class NavigationHUD {
             forwardDepth: this.relocateStacks?.forward?.length ?? 0,
             scrubActive: !!this.scrubSession?.active,
             scrubOriginFraction: typeof this.scrubSession?.originFraction === 'number' ? this.scrubSession.originFraction : null,
+            pendingCommit: !!this.pendingScrubCommit,
+            pendingOriginFraction: typeof this.pendingScrubCommit?.origin?.fraction === 'number' ? Number(this.pendingScrubCommit.origin.fraction.toFixed(6)) : null,
+            pendingReleaseFraction: typeof this.pendingScrubCommit?.releaseFraction === 'number' ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6)) : null,
             backStack: this.#serializeStack(this.relocateStacks?.back),
             forwardStack: this.#serializeStack(this.relocateStacks?.forward),
             ...payload,
@@ -932,18 +948,61 @@ export class NavigationHUD {
         });
     }
 
-    #maybeCommitPendingScrub(detail, descriptor) {
-        if (!this.pendingScrubCommit) return;
-        const { origin, reason } = this.pendingScrubCommit;
+    #logRelocateDetail(detail) {
+        if (!detail) return;
+        const descriptor = this.#makeLocationDescriptor(detail);
+        const metadata = {
+            event: 'relocate-detail',
+            reason: detail.reason ?? null,
+            liveScrollPhase: detail.liveScrollPhase ?? null,
+            fraction: typeof detail.fraction === 'number' ? Number(detail.fraction.toFixed(6)) : null,
+            descriptorFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            descriptorPageKey: descriptor?.pageItemKey ?? null,
+            pendingCommit: !!this.pendingScrubCommit,
+            pendingOriginFraction: typeof this.pendingScrubCommit?.origin?.fraction === 'number' ? Number(this.pendingScrubCommit.origin.fraction.toFixed(6)) : null,
+            scrubActive: !!this.scrubSession?.active,
+        };
+        const cleaned = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined));
+        const line = `# EBOOKPAGES ${JSON.stringify(cleaned)}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {}
+        try {
+            console.log(line);
+        } catch (_error) {}
+    }
+
+    #maybeCommitPendingScrub(detail, descriptor, { updateButtons = true, ignoreReleaseMatch = false, ignoreOriginMatch = false } = {}) {
+        if (!this.pendingScrubCommit) return false;
+        const { origin, reason, scheduledAt, releaseDescriptor } = this.pendingScrubCommit;
         const phase = detail?.liveScrollPhase ?? null;
         const canCommit = !detail || detail.reason !== 'live-scroll' || phase === 'settled';
-        if (!canCommit) return;
-        if (!origin || !descriptor || this.#isSameDescriptor(origin, descriptor)) {
+        if (!canCommit) return false;
+        let effectiveDescriptor = descriptor || releaseDescriptor || null;
+        if (!origin || !effectiveDescriptor) {
             this.pendingScrubCommit = null;
             this.#logPageScrub('pending-commit-skipped', {
-                reason: reason ?? null,
+                reason: 'missing-descriptor',
+                releaseReason: reason ?? null,
             });
-            return;
+            return false;
+        }
+        if (!ignoreReleaseMatch && releaseDescriptor && descriptor && this.#isSameDescriptor(releaseDescriptor, descriptor)) {
+            this.pendingScrubCommit = null;
+            this.#logPageScrub('pending-commit-skipped', {
+                reason: 'matched-release-descriptor',
+                releaseReason: reason ?? null,
+            });
+            return false;
+        }
+        if (!ignoreOriginMatch && this.#isSameDescriptor(origin, effectiveDescriptor)) {
+            this.pendingScrubCommit = null;
+            this.#logPageScrub('pending-commit-skipped', {
+                reason: 'returned-to-origin',
+                releaseReason: reason ?? null,
+                descriptorFraction: typeof effectiveDescriptor?.fraction === 'number' ? Number(effectiveDescriptor.fraction.toFixed(6)) : null,
+            });
+            return false;
         }
         const result = this.#pushBackStack(origin);
         if (result?.entry) {
@@ -951,10 +1010,16 @@ export class NavigationHUD {
                 index: result.index,
                 fraction: result.entry?.fraction ?? null,
                 reason: reason ?? 'pending-commit',
+                commitPhase: phase ?? null,
+                elapsedMs: scheduledAt ? Date.now() - scheduledAt : null,
+                stackDepth: this.relocateStacks?.back?.length ?? null,
             });
         }
         this.pendingScrubCommit = null;
-        this.#updateRelocateButtons();
+        if (updateButtons) {
+            this.#updateRelocateButtons();
+        }
+        return !!result?.entry;
     }
     
     async #handleRelocateJump(direction) {
