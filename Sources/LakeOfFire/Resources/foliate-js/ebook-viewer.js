@@ -60,6 +60,16 @@ const applyLocalHideNavigationDueToScroll = (shouldHide) => {
 };
 globalThis.manabiSetHideNavigationDueToScroll = applyLocalHideNavigationDueToScroll;
 
+globalThis.manabiToggleReaderTableOfContents = () => {
+    try {
+        if (globalThis.reader?.toggleTableOfContents) {
+            globalThis.reader.toggleTableOfContents();
+        }
+    } catch (error) {
+        console.error('Failed to toggle table of contents', error);
+    }
+};
+
 const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
     applyLocalHideNavigationDueToScroll(!!shouldHide);
     try {
@@ -415,6 +425,15 @@ class Reader {
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
     }
+    toggleTableOfContents() {
+        const sideBar = document.getElementById('side-bar');
+        if (!sideBar) return;
+        if (sideBar.classList.contains('show')) {
+            this.closeSideBar();
+        } else {
+            this.openSideBar();
+        }
+    }
     setHideNavigationDueToScroll(shouldHide) {
         this.navHUD?.setHideNavigationDueToScroll(shouldHide);
     }
@@ -424,9 +443,6 @@ class Reader {
             getRenderer: () => this.view?.renderer,
             onJumpRequest: descriptor => this.#goToDescriptor(descriptor),
         });
-        $('#progress-button').addEventListener('click', () => {
-            this.openSideBar()
-        })
         $('#side-bar-close-button').addEventListener('click', () => {
             this.closeSideBar()
         })
@@ -975,9 +991,6 @@ class Reader {
         } = detail
         const percent = percentFormat.format(fraction)
         const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
-        const progressButton = $('#progress-button')
-        progressButton.textContent = percent
-        progressButton.style.visibility = 'visible'
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
         slider.value = fraction

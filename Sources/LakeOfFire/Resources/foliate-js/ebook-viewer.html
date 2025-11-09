@@ -306,27 +306,6 @@
                     flex: 1;
                     gap: 12px;
                 }
-                #progress-button {
-                    all: unset; /* Remove default styling */
-                    margin: 0;
-                    padding: 1px 8px;
-                    color: var(--secondary-color);
-                    border: 1px solid var(--secondary-color);
-                    cursor: pointer;
-                    background: none;
-                    font-size: x-small;
-                    font-weight: 600;
-                    -webkit-user-select: none;
-                    visibility: hidden;
-                    text-align: center;
-                    border-radius: 9999px; /* Creates a capsule shape */
-                    display: inline-block; /* Ensures proper rendering for pill shape */
-                }
-                #progress-button:hover {
-                    background: rgba(0, 0, 0, .1);
-                    color: currentcolor;
-                    border-color: currentcolor;
-                }
                 #progress-slider {
                     flex-grow: 1;
                     margin: 0;
@@ -861,7 +840,6 @@
                 </div>
                 <div id="nav-bottom-row">
                     <div id="progress-wrapper">
-                        <button id="progress-button"></button>
                         <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
                         <datalist id="tick-marks"></datalist>
                     </div>
