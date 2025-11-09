@@ -165,6 +165,7 @@ export class NavigationHUD {
             hasOrigin: !!originDescriptor,
             backDepth: this.relocateStacks.back.length,
         });
+        this.#updateRelocateButtons();
     }
 
     endProgressScrubSession(finalDescriptor, { cancel, releaseFraction } = {}) {
@@ -194,11 +195,13 @@ export class NavigationHUD {
         } else {
             this.pendingScrubCommit = null;
         }
-        if (this.pendingScrubCommit && comparisonDescriptor) {
+
+        const releaseDescriptor = this.#descriptorFromFraction(releaseValue) || comparisonDescriptor;
+        if (this.pendingScrubCommit && releaseDescriptor) {
             const pushedNow = this.#maybeCommitPendingScrub({
                 reason: 'scrub-finalize',
                 liveScrollPhase: 'settled',
-            }, comparisonDescriptor, { updateButtons: false, ignoreReleaseMatch: true });
+            }, releaseDescriptor, { updateButtons: false, ignoreReleaseMatch: true });
             if (pushedNow) {
                 committed = true;
                 deferredCommit = false;
@@ -487,7 +490,8 @@ export class NavigationHUD {
         }
         const reason = (detail?.reason || '').toLowerCase();
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
-        const isJumpReason = reason === 'live-scroll' || reason === 'scroll-to' || reason === 'navigation';
+        const isLiveScrollReason = reason === 'live-scroll';
+        const isJumpReason = isLiveScrollReason || reason === 'scroll-to' || reason === 'navigation';
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this.#isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;
@@ -503,7 +507,7 @@ export class NavigationHUD {
         if (isScrubbing) {
             this.#trackScrubMovement({ descriptor, movedFromOrigin, detailFraction });
         }
-        if (isJumpReason && descriptorChanged) {
+        if (isJumpReason && descriptorChanged && !isLiveScrollReason) {
             if (!isScrubbing && previousDescriptor) {
                 this.#pushBackStack(previousDescriptor);
             }
@@ -578,6 +582,16 @@ export class NavigationHUD {
             fraction: typeof detail.fraction === 'number' ? detail.fraction : null,
             pageItemKey: detail.pageItem ? ensurePageKey(detail.pageItem) : null,
             pageLabel: typeof detail.pageItem?.label === 'string' ? detail.pageItem.label : null,
+        };
+    }
+
+    #descriptorFromFraction(fraction) {
+        if (typeof fraction !== 'number' || !isFinite(fraction)) return null;
+        return {
+            cfi: null,
+            fraction,
+            pageItemKey: null,
+            pageLabel: null,
         };
     }
 
@@ -887,8 +901,9 @@ export class NavigationHUD {
         const forwardStack = this.relocateStacks.forward;
         const backBtn = this.navRelocateButtons?.back;
         const forwardBtn = this.navRelocateButtons?.forward;
-        const showBack = !this.hideNavigationDueToScroll && backStack.length > 0;
-        const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
+        const scrubbing = !!this.scrubSession?.active;
+        const showBack = !this.hideNavigationDueToScroll && !scrubbing && backStack.length > 0;
+        const showForward = !this.hideNavigationDueToScroll && !scrubbing && forwardStack.length > 0;
         if (backBtn) {
             backBtn.hidden = !showBack;
             backBtn.disabled = !showBack;
