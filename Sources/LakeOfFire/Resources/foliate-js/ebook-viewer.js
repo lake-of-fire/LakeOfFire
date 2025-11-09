@@ -434,6 +434,7 @@ class Reader {
             pendingEnd: false,
             cancelRequested: false,
             timeoutId: null,
+            releaseFraction: null,
         };
         this.navHUD?.beginProgressScrubSession(originDescriptor);
         this.#logScrubDiagnostic('pointer-down', {
@@ -444,6 +445,7 @@ class Reader {
     }
     #handleProgressSliderPointerUp = (event) => {
         if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
+        this.#progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
         this.#progressSlider?.releasePointerCapture?.(event.pointerId);
         this.#logScrubDiagnostic('pointer-up', {
             pointerId: event.pointerId,
@@ -453,6 +455,7 @@ class Reader {
     }
     #handleProgressSliderPointerCancel = (event) => {
         if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
+        this.#progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
         this.#progressSlider?.releasePointerCapture?.(event.pointerId);
         this.#logScrubDiagnostic('pointer-cancel', {
             pointerId: event.pointerId,
@@ -1027,7 +1030,10 @@ class Reader {
             clearTimeout(this.#progressScrubState.timeoutId);
         }
         const descriptor = cancel ? null : this.navHUD?.getCurrentDescriptor();
-        this.navHUD?.endProgressScrubSession(descriptor, { cancel });
+        this.navHUD?.endProgressScrubSession(descriptor, {
+            cancel,
+            releaseFraction: this.#progressScrubState.releaseFraction,
+        });
         this.#logScrubDiagnostic('finalize-scrub-session', {
             cancel,
         });

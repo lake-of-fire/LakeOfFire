@@ -167,25 +167,29 @@ export class NavigationHUD {
         });
     }
 
-    endProgressScrubSession(finalDescriptor, { cancel } = {}) {
+    endProgressScrubSession(finalDescriptor, { cancel, releaseFraction } = {}) {
         if (!this.scrubSession) return;
         const session = this.scrubSession;
         const comparisonDescriptor = this.#cloneDescriptor(finalDescriptor ?? this.currentLocationDescriptor);
         let committed = false;
         let returnedToOrigin = false;
         let deferredCommit = false;
-        if (!cancel && session.originDescriptor && session.hasMoved) {
+        const releaseValue = typeof releaseFraction === 'number' ? releaseFraction : (comparisonDescriptor?.fraction ?? null);
+        const releaseMoved = typeof releaseValue === 'number'
+            && typeof session.originFraction === 'number'
+            && Math.abs(releaseValue - session.originFraction) > FRACTION_EPSILON;
+        if (!cancel && session.originDescriptor && session.hasMoved && releaseMoved) {
             this.pendingScrubCommit = {
                 origin: this.#cloneDescriptor(session.originDescriptor),
                 reason: 'scrub-release',
-                releaseFraction: comparisonDescriptor?.fraction ?? null,
+                releaseFraction: releaseValue,
                 scheduledAt: Date.now(),
                 releaseDescriptor: comparisonDescriptor,
             };
             deferredCommit = true;
             this.#logPageScrub('pending-commit', {
                 originFraction: session.originFraction ?? null,
-                releaseFraction: comparisonDescriptor?.fraction ?? null,
+                releaseFraction: releaseValue,
             });
         } else {
             this.pendingScrubCommit = null;
@@ -194,7 +198,7 @@ export class NavigationHUD {
             const pushedNow = this.#maybeCommitPendingScrub({
                 reason: 'scrub-finalize',
                 liveScrollPhase: 'settled',
-            }, comparisonDescriptor, { updateButtons: false, ignoreReleaseMatch: true, ignoreOriginMatch: true });
+            }, comparisonDescriptor, { updateButtons: false, ignoreReleaseMatch: true });
             if (pushedNow) {
                 committed = true;
                 deferredCommit = false;
@@ -234,6 +238,7 @@ export class NavigationHUD {
         this.#toggleCompletionStack();
         await this.#updateSectionProgress({ refreshSnapshot: false });
         this.#updateRelocateButtons();
+        this.#pruneBackStackIfReturnedToOrigin(detail);
         this.#logPageNumberDiagnostic('relocate', {
             reason: detail?.reason ?? null,
             liveScrollPhase: detail?.liveScrollPhase ?? null,
@@ -972,9 +977,34 @@ export class NavigationHUD {
         } catch (_error) {}
     }
 
-    #maybeCommitPendingScrub(detail, descriptor, { updateButtons = true, ignoreReleaseMatch = false, ignoreOriginMatch = false } = {}) {
+    #pruneBackStackIfReturnedToOrigin(detail) {
+        if (!detail) return;
+        const descriptor = this.#makeLocationDescriptor(detail);
+        if (!descriptor) return;
+        const reason = (detail.reason || '').toLowerCase();
+        const isLiveScroll = reason === 'live-scroll';
+        const phase = detail.liveScrollPhase ?? null;
+        const canPrune = !isLiveScroll || phase === 'settled' || !phase;
+        if (!canPrune) return;
+        const backStack = this.relocateStacks.back;
+        if (!backStack?.length) return;
+        const lastEntry = backStack[backStack.length - 1];
+        if (!lastEntry) return;
+        if (!this.#isSameDescriptor(lastEntry, descriptor)) {
+            return;
+        }
+        backStack.pop();
+        this.#logPageScrub('pop', {
+            index: backStack.length,
+            reason: 'returned-to-origin-after-scrub',
+            descriptorFraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+        });
+        this.#updateRelocateButtons();
+    }
+
+    #maybeCommitPendingScrub(detail, descriptor, { updateButtons = true, ignoreReleaseMatch = false } = {}) {
         if (!this.pendingScrubCommit) return false;
-        const { origin, reason, scheduledAt, releaseDescriptor } = this.pendingScrubCommit;
+        const { origin, reason, scheduledAt, releaseDescriptor, releaseFraction } = this.pendingScrubCommit;
         const phase = detail?.liveScrollPhase ?? null;
         const canCommit = !detail || detail.reason !== 'live-scroll' || phase === 'settled';
         if (!canCommit) return false;
@@ -995,7 +1025,9 @@ export class NavigationHUD {
             });
             return false;
         }
-        if (!ignoreOriginMatch && this.#isSameDescriptor(origin, effectiveDescriptor)) {
+        const shouldSkipForOrigin = this.#isSameDescriptor(origin, effectiveDescriptor)
+            && !(typeof releaseFraction === 'number' && typeof origin.fraction === 'number' && Math.abs(releaseFraction - origin.fraction) > FRACTION_EPSILON);
+        if (shouldSkipForOrigin) {
             this.pendingScrubCommit = null;
             this.#logPageScrub('pending-commit-skipped', {
                 reason: 'returned-to-origin',
