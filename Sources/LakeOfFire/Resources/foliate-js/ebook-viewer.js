@@ -387,13 +387,28 @@ const percentFormat = new Intl.NumberFormat(locales, {
 })
 
 class Reader {
+    #logScrubDiagnostic(event, payload = {}) {
+        const metadata = JSON.stringify({
+            event,
+            ...payload,
+        });
+        const line = `# EBOOKPAGES ${metadata}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {}
+        try {
+            console.log(line);
+        } catch (_error) {}
+    }
     #show(btn, show = true) {
         if (show) {
             btn.hidden = false;
             btn.style.visibility = 'visible';
+            btn.style.display = '';
         } else {
             btn.hidden = true;
             btn.style.visibility = 'hidden';
+            btn.style.display = 'none';
         }
     }
     setLoadingIndicator(visible) {
@@ -404,9 +419,56 @@ class Reader {
         l: null,
         r: null
     }
+    #progressSlider = null
+    #progressScrubState = null
+    #handleProgressSliderPointerDown = (event) => {
+        if (!this.#progressSlider) return;
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        if (this.#progressScrubState) {
+            this.#finalizeProgressScrubSession({ cancel: true });
+        }
+        this.#progressSlider.setPointerCapture?.(event.pointerId);
+        const originDescriptor = this.navHUD?.getCurrentDescriptor();
+        this.#progressScrubState = {
+            pointerId: event.pointerId,
+            pendingEnd: false,
+            cancelRequested: false,
+            timeoutId: null,
+        };
+        this.navHUD?.beginProgressScrubSession(originDescriptor);
+        this.#logScrubDiagnostic('pointer-down', {
+            pointerId: event.pointerId,
+            pointerType: event.pointerType,
+            sliderValue: Number(this.#progressSlider?.value ?? NaN),
+        });
+    }
+    #handleProgressSliderPointerUp = (event) => {
+        if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
+        this.#progressSlider?.releasePointerCapture?.(event.pointerId);
+        this.#logScrubDiagnostic('pointer-up', {
+            pointerId: event.pointerId,
+            sliderValue: Number(this.#progressSlider?.value ?? NaN),
+        });
+        this.#requestProgressScrubEnd(false);
+    }
+    #handleProgressSliderPointerCancel = (event) => {
+        if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
+        this.#progressSlider?.releasePointerCapture?.(event.pointerId);
+        this.#logScrubDiagnostic('pointer-cancel', {
+            pointerId: event.pointerId,
+            sliderValue: Number(this.#progressSlider?.value ?? NaN),
+        });
+        this.#requestProgressScrubEnd(true);
+    }
     hasLoadedLastPosition = false
     markedAsFinished = false;
     lastPercentValue = null;
+    lastPageEstimate = null;
+    lastKnownFraction = 0;
+    jumpUnit = 'percent';
+    #jumpInput = null;
+    #jumpButton = null;
+    #jumpUnitSelect = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -466,6 +528,7 @@ class Reader {
         } = this.view
         this.bookDir = book.dir || 'ltr';
         this.isRTL = this.bookDir === 'rtl';
+        document.body.dir = this.bookDir;
         this.navHUD?.setIsRTL(this.isRTL);
         this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
@@ -618,11 +681,15 @@ class Reader {
         }
         
         const slider = $('#progress-slider')
+        this.#progressSlider = slider
         slider.dir = book.dir
         const debouncedGoToFraction = debounce(e => {
             this.view.goToFraction(parseFloat(e.target.value))
         }, 250);
         slider.addEventListener('input', debouncedGoToFraction)
+        slider.addEventListener('pointerdown', this.#handleProgressSliderPointerDown)
+        slider.addEventListener('pointerup', this.#handleProgressSliderPointerUp)
+        slider.addEventListener('pointercancel', this.#handleProgressSliderPointerCancel)
         
         // Section ticks
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
@@ -682,19 +749,48 @@ class Reader {
         // Percent jump input/button wiring
         const percentInput = document.getElementById('percent-jump-input');
         const percentButton = document.getElementById('percent-jump-button');
+        const jumpUnitSelect = document.getElementById('jump-unit-select');
+        this.#jumpInput = percentInput;
+        this.#jumpButton = percentButton;
+        this.#jumpUnitSelect = jumpUnitSelect;
+        this.jumpUnit = jumpUnitSelect?.value === 'page' ? 'page' : 'percent';
+        this.lastPageEstimate = null;
+        this.#updateJumpUnitAvailability();
+        this.#syncJumpInputWithState();
         
-        percentInput.addEventListener('input', () => {
+        const handleJumpInputChange = () => {
             const value = parseFloat(percentInput.value);
-            const valid = !isNaN(value) && value >= 0 && value <= 100 && value !== this.lastPercentValue;
-            percentButton.disabled = !valid;
+            percentButton.disabled = !this.#isJumpInputValueValid(value);
+        };
+        percentInput.addEventListener('input', handleJumpInputChange);
+        
+        jumpUnitSelect?.addEventListener('change', () => {
+            const nextUnit = jumpUnitSelect.value === 'page' ? 'page' : 'percent';
+            if (this.jumpUnit === nextUnit) return;
+            const previousUnit = this.jumpUnit;
+            const currentValue = parseFloat(percentInput.value);
+            const converted = this.#convertJumpInputValue(currentValue, previousUnit, nextUnit);
+            this.jumpUnit = nextUnit;
+            this.#syncJumpInputWithState(converted);
+            percentButton.disabled = true;
         });
         
         percentButton.addEventListener('click', () => {
             const value = parseFloat(percentInput.value);
-            if (!isNaN(value) && value >= 0 && value <= 100) {
+            if (!this.#isJumpInputValueValid(value)) return;
+            if (this.jumpUnit === 'percent') {
                 this.lastPercentValue = value;
+                this.lastKnownFraction = value / 100;
                 percentButton.disabled = true;
                 this.view.goToFraction(value / 100);
+            } else {
+                const totalPages = this.lastPageEstimate?.total;
+                const fraction = this.#fractionFromPage(value, totalPages);
+                if (fraction == null) return;
+                this.lastPercentValue = Math.round(fraction * 100);
+                this.lastKnownFraction = fraction;
+                percentButton.disabled = true;
+                this.view.goToFraction(fraction);
             }
         });
         
@@ -872,9 +968,14 @@ class Reader {
             atSectionEnd,
             hasPrevSection,
             hasNextSection,
-            showingFinish: !this.buttons.finish.hidden,
-            showingRestart: !this.buttons.restart.hidden,
+            showingFinish: this.#isButtonVisible(this.buttons.finish),
+            showingRestart: this.#isButtonVisible(this.buttons.restart),
         });
+    }
+
+    #isButtonVisible(button) {
+        if (!button) return false;
+        return !button.hidden && button.style.display !== 'none';
     }
     #setForwardChevronHint(shouldShow) {
         const forwardBtn = document.getElementById(this.isRTL ? 'btn-scroll-left' : 'btn-scroll-right');
@@ -904,6 +1005,125 @@ class Reader {
                 rightOpacity: left ? '' : '0'
             }
         }))
+    }
+    #requestProgressScrubEnd(cancelRequested) {
+        if (!this.#progressScrubState) return;
+        this.#progressScrubState.pendingEnd = true;
+        this.#progressScrubState.cancelRequested = !!cancelRequested;
+        if (this.#progressScrubState.timeoutId) {
+            clearTimeout(this.#progressScrubState.timeoutId);
+        }
+        const cancel = this.#progressScrubState.cancelRequested;
+        this.#logScrubDiagnostic('schedule-scrub-end', {
+            cancel,
+        });
+        this.#progressScrubState.timeoutId = setTimeout(() => {
+            this.#finalizeProgressScrubSession({ cancel });
+        }, 400);
+    }
+    #finalizeProgressScrubSession({ cancel } = {}) {
+        if (!this.#progressScrubState) return;
+        if (this.#progressScrubState.timeoutId) {
+            clearTimeout(this.#progressScrubState.timeoutId);
+        }
+        const descriptor = cancel ? null : this.navHUD?.getCurrentDescriptor();
+        this.navHUD?.endProgressScrubSession(descriptor, { cancel });
+        this.#logScrubDiagnostic('finalize-scrub-session', {
+            cancel,
+        });
+        this.#progressScrubState = null;
+    }
+
+    #isJumpInputValueValid(value) {
+        if (typeof value !== 'number' || isNaN(value)) return false;
+        if (this.jumpUnit === 'percent') {
+            return value >= 0 && value <= 100 && value !== this.lastPercentValue;
+        }
+        const total = this.lastPageEstimate?.total;
+        if (value < 1) return false;
+        if (typeof total === 'number' && total > 0) {
+            if (value > total) return false;
+            const currentPage = this.lastPageEstimate?.current;
+            if (typeof currentPage === 'number' && value === currentPage) return false;
+        }
+        return typeof total === 'number' && total > 0;
+    }
+
+    #fractionFromPage(pageNumber, totalPages) {
+        if (typeof pageNumber !== 'number' || isNaN(pageNumber)) return null;
+        if (typeof totalPages !== 'number' || totalPages <= 0) return null;
+        if (totalPages === 1) return 0;
+        const clamped = Math.max(1, Math.min(totalPages, Math.round(pageNumber)));
+        return (clamped - 1) / (totalPages - 1);
+    }
+
+    #convertJumpInputValue(value, fromUnit, toUnit) {
+        if (typeof value !== 'number' || isNaN(value)) return null;
+        if (fromUnit === toUnit) return value;
+        const totalPages = this.lastPageEstimate?.total;
+        if (fromUnit === 'percent' && toUnit === 'page') {
+            if (!totalPages || totalPages <= 0) return null;
+            if (totalPages === 1) return 1;
+            const fraction = value / 100;
+            if (!isFinite(fraction)) return null;
+            const page = Math.round(fraction * (totalPages - 1)) + 1;
+            return Math.max(1, Math.min(totalPages, page));
+        }
+        if (fromUnit === 'page' && toUnit === 'percent') {
+            if (!totalPages || totalPages <= 1) return null;
+            const clamped = Math.max(1, Math.min(totalPages, Math.round(value)));
+            const fraction = (clamped - 1) / (totalPages - 1);
+            return Math.max(0, Math.min(100, Math.round(fraction * 100)));
+        }
+        return null;
+    }
+
+    #syncJumpInputWithState(convertedValue = null) {
+        const input = this.#jumpInput ?? document.getElementById('percent-jump-input');
+        if (!input) return;
+        const button = this.#jumpButton ?? document.getElementById('percent-jump-button');
+        if (!this.#jumpInput) this.#jumpInput = input;
+        if (!this.#jumpButton) this.#jumpButton = button;
+        if (this.jumpUnit === 'percent') {
+            input.min = 0;
+            input.max = 100;
+            input.step = 'any';
+            if (typeof convertedValue === 'number' && !isNaN(convertedValue)) {
+                input.value = convertedValue;
+            } else if (typeof this.lastPercentValue === 'number') {
+                input.value = this.lastPercentValue;
+            }
+        } else {
+            input.min = 1;
+            input.max = this.lastPageEstimate?.total ?? '';
+            input.step = 1;
+            if (typeof convertedValue === 'number' && !isNaN(convertedValue)) {
+                input.value = convertedValue;
+            } else if (this.lastPageEstimate?.current != null) {
+                input.value = this.lastPageEstimate.current;
+            } else {
+                input.value = '';
+            }
+        }
+        if (button) {
+            button.disabled = true;
+        }
+    }
+
+    #updateJumpUnitAvailability() {
+        const select = this.#jumpUnitSelect ?? document.getElementById('jump-unit-select');
+        if (!select) return;
+        if (!this.#jumpUnitSelect) this.#jumpUnitSelect = select;
+        const pageOption = Array.from(select.options).find(option => option.value === 'page');
+        const hasPages = typeof this.lastPageEstimate?.total === 'number' && this.lastPageEstimate.total > 0;
+        if (pageOption) {
+            pageOption.disabled = !hasPages;
+        }
+        if (!hasPages && this.jumpUnit === 'page') {
+            this.jumpUnit = 'percent';
+            select.value = 'percent';
+            this.#syncJumpInputWithState();
+        }
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -990,14 +1210,18 @@ class Reader {
             reason
         } = detail
         const percent = percentFormat.format(fraction)
-        const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
         slider.value = fraction
         slider.style.setProperty('--value', slider.value); // keep slider progress updated
-        slider.title = `${percent} · ${loc}`
         // (removed: setting tocView currentHref here)
-        
+        if (this.#progressScrubState) {
+            detail.reason = 'live-scroll';
+            detail.liveScrollPhase = 'dragging';
+        } else if (detail.reason === 'live-scroll') {
+            detail.liveScrollPhase = 'settled';
+        }
+
         if (this.hasLoadedLastPosition) {
             this.#postUpdateReadingProgressMessage({
                 fraction,
@@ -1008,14 +1232,33 @@ class Reader {
         
         await this.updateNavButtons();
         await this.navHUD?.handleRelocate(detail);
+        const navLabel = this.navHUD?.getPrimaryDisplayLabel(detail);
+        const tooltipParts = [];
+        if (navLabel) {
+            tooltipParts.push(navLabel);
+        } else if (location?.current != null) {
+            tooltipParts.push(`Loc ${location.current}`);
+        }
+        tooltipParts.push(percent);
+        slider.title = tooltipParts.filter(Boolean).join(' · ');
+        if (this.#progressScrubState?.pendingEnd) {
+            this.#finalizeProgressScrubSession({ cancel: this.#progressScrubState.cancelRequested });
+        }
         
-        // Keep percent-jump input in sync with scroll
-        const percentInput = document.getElementById('percent-jump-input');
-        const percentButton = document.getElementById('percent-jump-button');
-        if (percentInput && percentButton) {
-            const pct = Math.round(fraction * 100);
-            percentInput.value = pct;
-            this.lastPercentValue = pct;
+        this.lastKnownFraction = fraction;
+        const pct = Math.round(fraction * 100);
+        this.lastPercentValue = pct;
+        const percentInput = this.#jumpInput ?? document.getElementById('percent-jump-input');
+        const percentButton = this.#jumpButton ?? document.getElementById('percent-jump-button');
+        if (!this.#jumpInput && percentInput) this.#jumpInput = percentInput;
+        if (!this.#jumpButton && percentButton) this.#jumpButton = percentButton;
+        const pageEstimate = this.navHUD?.getPageEstimate(detail);
+        if (pageEstimate) {
+            this.lastPageEstimate = pageEstimate;
+        }
+        this.#updateJumpUnitAvailability();
+        this.#syncJumpInputWithState();
+        if (percentButton) {
             percentButton.disabled = true;
         }
     }
@@ -1049,7 +1292,7 @@ class Reader {
             // Improved spinner placement for RTL/LTR
             if (btn._spinnerAfterLabel) {
                 if (icon) icon.remove();
-                // Find the last visible .button-label (full or short)
+                // Find the last visible .button-label
                 const labels = btn.querySelectorAll('.button-label');
                 let targetLabel = null;
                 for (const lbl of labels) {

@@ -26,6 +26,10 @@
                 html {
                     height: 100%;
                 }
+                html, body {
+                    overflow-x: hidden;
+                    overscroll-behavior-x: contain;
+                }
                 body {
                     --manabi-red: #ff4500;
                     --secondary-color: #7a7a7a;
@@ -33,7 +37,7 @@
                     --nav-primary-font-size: 0.72rem;
                     --nav-secondary-font-size: 0.86rem;
                     --nav-accent-color: #3d3d3d;
-                    --nav-horizontal-padding: 43px;
+                    --nav-horizontal-padding: 34px;
                     --nav-relocate-bg: rgba(0, 0, 0, 0.08);
                     --nav-relocate-icon-color: #2d2d2d;
                     
@@ -154,12 +158,9 @@
                     grid-area: 1 / 1;       /* all share same cell */
                 }
                 /* keep the hidden rule */
-                .button-stack > button[hidden] {
-                    visibility: hidden;
-                    pointer-events: none;
-                    display: block !important; /* ensure grid space is still taken */
-                    height: 0;
-                    overflow: hidden;
+                .button-stack > button[hidden],
+                .button-stack > button[aria-hidden="true"] {
+                    display: none !important;
                 }
                 #nav-bar {
                     z-index: 3;
@@ -175,78 +176,27 @@
                     gap: 0;
                 }
                 #nav-top-row {
-                    padding: 0;
-                    display: flex;
-                    flex-direction: column;
-                    justify-content: center;
-                    gap: 0;
-                    height: 36px;
-                    box-sizing: border-box;
                     position: relative;
-                }
-                .nav-top-line {
-                    width: 100%;
-                    position: relative;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
+                    display: block;
+                    padding: 0 var(--nav-horizontal-padding);
+                    height: 35px;
                     box-sizing: border-box;
                 }
-                #nav-primary-line {
-                    padding: 0 var(--nav-horizontal-padding);
-                    height: 16px;
-                    line-height: 16px;
-                }
-                #nav-secondary-line {
-                    padding: 0 var(--nav-horizontal-padding);
-                    height: 20px;
-                    line-height: 20px;
-                }
-                #nav-primary-text,
-                #nav-secondary-text {
+                #nav-primary-text {
                     font-weight: 500;
                     color: var(--secondary-color);
                     text-align: center;
-                    margin: 0 auto;
-                    line-height: inherit;
-                }
-                #nav-primary-text {
-                    font-size: 13px;
-                    line-height: 13px;
-                }
-                #nav-secondary-text {
-                    font-size: 17px;
-                    letter-spacing: 0.02em;
-                }
-                .nav-secondary-center {
-                    pointer-events: none;
-                    width: 100%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                }
-                #nav-floating-controls {
+                    font-size: 12px !important;
+                    line-height: 12px;
                     position: absolute;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    display: flex;
-                    justify-content: space-between;
-                    padding: 0 var(--nav-horizontal-padding);
+                    top: 4px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    white-space: nowrap;
+                    direction: ltr;
+                    unicode-bidi: isolate;
                     pointer-events: none;
-                    min-height: 24px;
-                }
-                .nav-secondary-side {
-                    display: flex;
-                    align-items: flex-end;
-                    gap: 10px;
-                    pointer-events: auto;
-                }
-                #nav-secondary-leading {
-                    justify-content: flex-start;
-                }
-                #nav-secondary-trailing {
-                    justify-content: flex-end;
                 }
                 .nav-section-progress {
                     font-size: 14px;
@@ -261,17 +211,21 @@
                 .nav-relocate-button {
                     display: flex;
                     align-items: center;
+                    justify-content: flex-start;
                     gap: 6px;
                     border: none;
                     background-color: var(--nav-relocate-bg);
                     color: var(--nav-accent-color, var(--secondary-color));
                     font-size: var(--nav-secondary-font-size, 0.86rem);
                     font-weight: 500;
-                    padding: 1px 10px;
-                    min-height: 22px;
+                    padding: 4px 12px;
+                    min-height: 26px;
                     border-radius: 999px;
                     cursor: pointer;
                     transition: color 0.2s ease, opacity 0.2s ease, background-color 0.2s ease;
+                    position: absolute;
+                    bottom: 4px;
+                    direction: ltr;
                 }
                 .nav-relocate-button:disabled {
                     opacity: 0.35;
@@ -279,6 +233,16 @@
                 }
                 .nav-relocate-button[hidden] {
                     display: none;
+                }
+                .nav-relocate-button[data-nav-edge='left'] {
+                    left: var(--nav-horizontal-padding);
+                    right: auto;
+                    flex-direction: row;
+                }
+                .nav-relocate-button[data-nav-edge='right'] {
+                    right: var(--nav-horizontal-padding);
+                    left: auto;
+                    flex-direction: row-reverse;
                 }
                 .nav-relocate-icon {
                     width: 19px;
@@ -289,6 +253,19 @@
                 .nav-relocate-page {
                     min-width: 1.5rem;
                     text-align: center;
+                    white-space: nowrap;
+                    direction: ltr;
+                    unicode-bidi: plaintext;
+                }
+                .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
+                    margin-left: 6px;
+                    margin-right: 0;
+                    text-align: right;
+                }
+                .nav-relocate-button[data-nav-edge='right'] .nav-relocate-page {
+                    margin-right: 6px;
+                    margin-left: 0;
+                    text-align: left;
                 }
                 #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
                 #nav-bar.nav-hidden-due-to-scroll .nav-section-progress {
@@ -297,20 +274,59 @@
                 }
                 #completion-stack {
                     display: flex;
-                    align-items: flex-end;
+                    align-items: center;
+                    justify-content: center;
                     gap: 8px;
+                    min-width: 0;
+                    width: auto;
+                    position: absolute;
+                    top: 2px;
+                    left: 50%;
+                    right: auto;
+                    transform: translateX(-50%);
+                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    direction: ltr;
+                }
+                #completion-stack[hidden] {
+                    display: none;
                 }
                 #completion-stack button {
                     border: none;
                     border-radius: 999px;
-                    padding: 4px 12px;
-                    min-height: 24px;
+                    padding: 4px 6px;
+                    min-height: 26px;
                     font-weight: 600;
+                    font-size: 14px;
                     cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    white-space: nowrap;
+                    direction: ltr;
                 }
                 #completion-stack .button-label {
-                    margin-left: auto !important;
-                    margin-right: auto !important;
+                    margin: 0 !important;
+                    font-size: 14px;
+                }
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing {
+                    position: absolute;
+                    bottom: 6px;
+                    font-size: 12px;
+                    line-height: 12px;
+                    white-space: nowrap;
+                    pointer-events: none;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                #nav-section-progress-leading {
+                    left: var(--nav-horizontal-padding);
+                    text-align: left;
+                }
+                #nav-section-progress-trailing {
+                    right: var(--nav-horizontal-padding);
+                    text-align: right;
                 }
                 .toolbar button[data-button-type="finish"]:has(.button-label:not(:empty)) {
                     --finish-button-color: #1fa352;
@@ -319,9 +335,14 @@
                     background-color: var(--finish-button-color, #1fa352);
                     color: #fff;
                     box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                    flex-direction: row;
                 }
                 #btn-finish .icon {
                     color: inherit;
+                    order: 0;
+                }
+                #btn-finish .button-label {
+                    order: 1;
                 }
                 #btn-restart {
                     background-color: var(--manabi-red, #ff4500);
@@ -344,12 +365,20 @@
                     width: 100%;
                     flex: 1;
                     gap: 12px;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
                 }
                 #progress-slider {
                     flex-grow: 1;
                     margin: 0;
                     visibility: hidden;
                     /*accent-color: GrayText;*/
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
                 }
                 #nav-hidden-buttons {
                     position: absolute;
@@ -367,29 +396,44 @@
                     left: -9999px;
                 }
                 #side-bar {
-                    visibility: hidden;
-                    box-sizing: border-box;
-                    position: absolute;
-                    z-index: 4;
+                    position: fixed;
                     top: 0;
                     left: 0;
                     height: 100dvh;
-                    width: 320px;
-                    transform: translateX(-320px);
+                    width: 0;
+                    pointer-events: none;
+                    z-index: 4;
+                    contain: layout paint style;
+                }
+                #side-bar.show {
+                    pointer-events: auto;
+                }
+                #side-bar .side-bar-panel {
+                    visibility: hidden;
+                    box-sizing: border-box;
+                    width: min(320px, calc(100vw - 40px));
+                    max-width: 360px;
+                    height: 100%;
+                    transform: translate3d(-100%, 0, 0);
                     display: flex;
                     flex-direction: column;
-                    /*background: Canvas;*/
                     background-color: rgba(0, 0, 0, .05);
                     backdrop-filter: blur(20px);
                     color: CanvasText;
                     box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
-                    transition: visibility 0s linear 300ms, transform 300ms ease;
+                    transition: transform 300ms ease, visibility 0s linear 300ms;
+                    direction: ltr;
+                    text-align: left;
                     contain: strict;
+                    position: relative;
                 }
-                #side-bar.show {
+                #side-bar.show .side-bar-panel {
                     visibility: visible;
-                    transform: translateX(0);
+                    transform: translate3d(0, 0, 0);
                     transition-delay: 0s;
+                }
+                #side-bar .side-bar-panel * {
+                    direction: ltr;
                 }
                 #side-bar-close-button {
                     all: unset;
@@ -400,6 +444,7 @@
                     font-weight: bold;
                     color: var(--secondary-color);
                     cursor: pointer;
+                    pointer-events: auto;
                 }
                 #side-bar-close-button:hover {
                     color: currentcolor;
@@ -427,11 +472,18 @@
                 #dimming-overlay {
                     background: rgba(0, 0, 0, .2);
                 }
+                #loading-indicator.show,
+                #dimming-overlay.show {
+                    visibility: visible;
+                    opacity: 1;
+                    transition-delay: 0s;
+                }
                 #side-bar-header {
                     padding: 1rem;
                     display: flex;
                     border-bottom: 1px solid rgba(0, 0, 0, .1);
                     align-items: center;
+                    position: relative;
                 }
                 #side-bar-cover {
                     height: 10vh;
@@ -458,6 +510,8 @@
                 #toc-view {
                     padding: .5rem;
                     overflow-y: scroll;
+                    direction: ltr;
+                    text-align: left;
                 }
                 #toc-view li, #toc-view ol {
                     margin: 0;
@@ -598,19 +652,6 @@
                     top: 50%;
                     left: 50%;
                     transform: translate(-50%, -50%);
-                }
-                
-                /* Short-label support for narrow viewports */
-                .toolbar button .button-label.short {
-                    display: none;
-                }
-                @media (max-width: 480px) {
-                    .toolbar button .button-label.full {
-                        display: none;
-                    }
-                    .toolbar button .button-label.short {
-                        display: inline;
-                    }
                 }
                 
                 /* Center-align prev/next labels within their buttons */
@@ -813,73 +854,63 @@
         
         <div id="dimming-overlay" aria-hidden="true"></div>
         <div id="side-bar">
-            <div id="side-bar-header">
-                <img id="side-bar-cover">
-                    <div>
-                        <h1 id="side-bar-title"></h1>
-                        <p id="side-bar-author"></p>
-                    </div>
-                    <button id="side-bar-close-button" aria-label="Close">
-                        &times;
-                    </button>
+            <div class="side-bar-panel" dir="ltr">
+                <div id="side-bar-header">
+                    <img id="side-bar-cover">
+                        <div>
+                            <h1 id="side-bar-title"></h1>
+                            <p id="side-bar-author"></p>
+                        </div>
+                        <button id="side-bar-close-button" type="button" aria-label="Close">
+                            &times;
+                        </button>
+                </div>
+                <div id="percent-jump-container" style="padding: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <label for="percent-jump-input" style="white-space: nowrap; font-size: small;">Jump to:</label>
+                    <input type="number" id="percent-jump-input" min="0" max="100" style="width: 2.2em; font-size: small;" />
+                    <select id="jump-unit-select" style="font-size: small;">
+                        <option value="percent">%</option>
+                        <option value="page">Page</option>
+                    </select>
+                    <button id="percent-jump-button" disabled style="font-size: small;">Go</button>
+                </div>
+                <div id="toc-view"></div>
             </div>
-            <div id="percent-jump-container" style="padding: 1rem; display: flex; align-items: center; gap: 0.5rem;">
-                <label for="percent-jump-input" style="white-space: nowrap; font-size: small;">Jump to:</label>
-                <input type="number" id="percent-jump-input" min="0" max="100" style="width: 4em; font-size: small;" />
-                <span style="font-size: small;">%</span>
-                <button id="percent-jump-button" disabled style="font-size: small;">Go</button>
-            </div>
-            <div id="toc-view"></div>
         </div>
         <div id="nav-bar" class="toolbar">
             <div id="nav-content">
                 <div id="nav-top-row">
-                    <div id="nav-primary-line" class="nav-top-line">
-                        <div id="nav-primary-text" aria-live="polite"></div>
+                    <div id="nav-primary-text" aria-live="polite"></div>
+                    <div id="completion-stack" class="button-stack" hidden>
+                        <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
+                            <svg class="icon finish-icon" width="1em" height="1em" viewBox="0 0 49.328125 52.400390625" aria-hidden="true">
+                                <g fill-rule="nonzero" transform="scale(1,-1) translate(0,-52.400390625)">
+                                    <path fill="currentColor" stroke="currentColor" stroke-width="3" d="M24.6640625,5.37109375C36.115234375,5.37109375 45.482421875,14.73828125 45.482421875,26.2109375C45.482421875,37.662109375 36.115234375,47.029296875 24.6640625,47.029296875C13.212890625,47.029296875 3.845703125,37.662109375 3.845703125,26.2109375C3.845703125,14.73828125 13.212890625,5.37109375 24.6640625,5.37109375ZM24.6640625,6.423828125C13.771484375,6.423828125 4.8984375,15.296875 4.8984375,26.2109375C4.8984375,37.103515625 13.771484375,45.9765625 24.6640625,45.9765625C35.578125,45.9765625 44.4296875,37.103515625 44.4296875,26.2109375C44.4296875,15.296875 35.578125,6.423828125 24.6640625,6.423828125ZM21.78515625,15.51171875C22.0,15.51171875 22.21484375,15.576171875 22.365234375,15.833984375L34.568359375,34.654296875C34.654296875,34.783203125 34.697265625,34.93359375 34.697265625,35.0625C34.697265625,35.44921875 34.375,35.685546875 34.095703125,35.685546875C33.880859375,35.685546875 33.666015625,35.556640625 33.537109375,35.341796875L21.763671875,17.166015625L14.8671875,25.029296875C14.716796875,25.22265625 14.544921875,25.287109375 14.30859375,25.287109375C14.05078125,25.287109375 13.70703125,25.09375 13.70703125,24.685546875C13.70703125,24.4921875 13.771484375,24.298828125 13.921875,24.1484375L21.205078125,15.791015625C21.419921875,15.5546875 21.5703125,15.51171875 21.78515625,15.51171875Z" />
+                                </g>
+                            </svg>
+                            <span class="button-label">Finish Chapter</span>
+                        </button>
+                        <button id="btn-restart" data-button-type="restart" aria-label="Start over">
+                            <span class="button-label">Start Over</span>
+                            <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
+                                <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
+                            </svg>
+                        </button>
                     </div>
-                    <div id="nav-secondary-line" class="nav-top-line">
-                        <div class="nav-secondary-center">
-                            <div id="nav-secondary-text" aria-live="polite"></div>
-                        </div>
-                    </div>
-                    <div id="nav-floating-controls">
-                        <div class="nav-secondary-side" id="nav-secondary-leading">
-                            <button id="nav-relocate-back" class="nav-relocate-button" aria-label="Jump back to previous position" disabled>
-                                <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                                    <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
-                                </svg>
-                                <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
-                            </button>
-                            <div id="nav-section-progress-leading" class="nav-section-progress" aria-live="polite"></div>
-                        </div>
-                        <div class="nav-secondary-side" id="nav-secondary-trailing">
-                            <div id="nav-section-progress-trailing" class="nav-section-progress" aria-live="polite"></div>
-                            <div id="completion-stack" class="button-stack">
-                                <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                                    <svg class="icon finish-icon" width="1em" height="1em" viewBox="0 0 49.328125 52.400390625" aria-hidden="true">
-                                        <g fill-rule="nonzero" transform="scale(1,-1) translate(0,-52.400390625)">
-                                            <path fill="currentColor" stroke="currentColor" stroke-width="1" d="M24.6640625,5.37109375C36.115234375,5.37109375 45.482421875,14.73828125 45.482421875,26.2109375C45.482421875,37.662109375 36.115234375,47.029296875 24.6640625,47.029296875C13.212890625,47.029296875 3.845703125,37.662109375 3.845703125,26.2109375C3.845703125,14.73828125 13.212890625,5.37109375 24.6640625,5.37109375ZM24.6640625,6.423828125C13.771484375,6.423828125 4.8984375,15.296875 4.8984375,26.2109375C4.8984375,37.103515625 13.771484375,45.9765625 24.6640625,45.9765625C35.578125,45.9765625 44.4296875,37.103515625 44.4296875,26.2109375C44.4296875,15.296875 35.578125,6.423828125 24.6640625,6.423828125ZM21.78515625,15.51171875C22.0,15.51171875 22.21484375,15.576171875 22.365234375,15.833984375L34.568359375,34.654296875C34.654296875,34.783203125 34.697265625,34.93359375 34.697265625,35.0625C34.697265625,35.44921875 34.375,35.685546875 34.095703125,35.685546875C33.880859375,35.685546875 33.666015625,35.556640625 33.537109375,35.341796875L21.763671875,17.166015625L14.8671875,25.029296875C14.716796875,25.22265625 14.544921875,25.287109375 14.30859375,25.287109375C14.05078125,25.287109375 13.70703125,25.09375 13.70703125,24.685546875C13.70703125,24.4921875 13.771484375,24.298828125 13.921875,24.1484375L21.205078125,15.791015625C21.419921875,15.5546875 21.5703125,15.51171875 21.78515625,15.51171875Z" />
-                                        </g>
-                                    </svg>
-                                    <span class="button-label full">Finish Chapter</span>
-                                    <span class="button-label short">Finish Chapter</span>
-                                </button>
-                                <button id="btn-restart" data-button-type="restart" aria-label="Start over">
-                                    <span class="button-label full">Start Over</span>
-                                    <span class="button-label short">Restart</span>
-                                    <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
-                                        <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
-                                    </svg>
-                                </button>
-                            </div>
-                            <button id="nav-relocate-forward" class="nav-relocate-button" aria-label="Jump forward to newer position" disabled>
-                                <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
-                                <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
-                                    <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
+                    <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled>
+                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
+                        </svg>
+                        <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
+                    </button>
+                    <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled>
+                        <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
+                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
+                        </svg>
+                    </button>
+                    <div id="nav-section-progress-leading" class="nav-section-progress" aria-live="polite"></div>
+                    <div id="nav-section-progress-trailing" class="nav-section-progress" aria-live="polite"></div>
                 </div>
                 <div id="nav-bottom-row">
                     <div id="progress-wrapper">
@@ -891,12 +922,10 @@
             <div id="nav-hidden-buttons" aria-hidden="true">
                 <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter" tabindex="-1">
                     <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                    <span class="button-label full">Previous</span>
-                    <span class="button-label short">Prev</span>
+                    <span class="button-label">Previous</span>
                 </button>
                 <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter" tabindex="-1">
-                    <span class="button-label full">Next</span>
-                    <span class="button-label short">Next</span>
+                    <span class="button-label">Next</span>
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
             </div>

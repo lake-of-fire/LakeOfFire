@@ -1205,30 +1205,32 @@ export class Paginator extends HTMLElement {
     }
     async viewSize() {
         if (this.#isCacheWarmer) return 0
-        if (/*true ||*/ this.#view.cachedViewSize === null) {
+        const view = this.#view
+        if (!view || !view.element) return 0
+        if (typeof view.cachedViewSize === 'undefined') {
+            view.cachedViewSize = null
+        }
+        if (/*true ||*/ view.cachedViewSize === null) {
             return new Promise(resolve => {
                 requestAnimationFrame(async () => {
-                    //                    const r = this.#view.element.getBoundingClientRect()
-                    //                    this.#view.cachedViewSize = {
-                    //                        width: r.width,
-                    //                        height: r.height,
-                    //                    }
-                    //                    resolve(this.#view.cachedViewSize[await this.sideProp()])
-                    //                    return ;
-                    const v = this.#view.element
-                    this.#view.cachedViewSize = {
-                        width: v.clientWidth,
-                        height: v.clientHeight,
+                    const element = view.element
+                    if (!element) {
+                        view.cachedViewSize = {
+                            width: 0,
+                            height: 0,
+                        }
+                        resolve(0)
+                        return
                     }
-                    //                                        console.log("viewSize() the rect we chose:", this.#view.cachedViewSize)
-                    //                                        console.log("viewSize() the rect magnitude we chose:", this.#view.cachedViewSize[await this.sideProp()])
-                    //                                        console.log('viewSize() prev slow but correct implementation rect:', this.#view.element.getBoundingClientRect())
-                    //                                        console.log('viewSize() prev slow but correct implementation chosen magnitude:', this.#view.element.getBoundingClientRect()[await this.sideProp()])
-                    resolve(this.#view.cachedViewSize[await this.sideProp()])
+                    view.cachedViewSize = {
+                        width: element.clientWidth,
+                        height: element.clientHeight,
+                    }
+                    resolve(view.cachedViewSize[await this.sideProp()])
                 })
             })
         }
-        return this.#view.cachedViewSize[await this.sideProp()]
+        return view.cachedViewSize[await this.sideProp()]
     }
     async start() {
         if (this.#cachedStart === null) {

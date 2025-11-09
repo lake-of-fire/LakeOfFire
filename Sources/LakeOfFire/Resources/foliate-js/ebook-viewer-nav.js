@@ -1,4 +1,5 @@
 const MAX_RELOCATE_STACK = 50;
+const FRACTION_EPSILON = 0.000001;
 
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
@@ -37,7 +38,6 @@ export class NavigationHUD {
         
         this.navBar = document.getElementById('nav-bar');
         this.navPrimaryText = document.getElementById('nav-primary-text');
-        this.navSecondaryText = document.getElementById('nav-secondary-text');
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
@@ -49,10 +49,6 @@ export class NavigationHUD {
         this.navRelocateLabels = {
             back: document.getElementById('nav-relocate-label-back'),
             forward: document.getElementById('nav-relocate-label-forward'),
-        };
-        this.secondarySides = {
-            leading: document.getElementById('nav-secondary-leading'),
-            trailing: document.getElementById('nav-secondary-trailing'),
         };
         this.completionStack = document.getElementById('completion-stack');
         
@@ -69,16 +65,28 @@ export class NavigationHUD {
             back: [],
             forward: [],
         };
-        
+        this.scrubSession = null;
+        this.primaryLineRequestToken = 0;
+        this.rendererPageSnapshot = null;
+        this.latestPrimaryLabel = '';
+        this.previousRelocateVisibility = {
+            back: null,
+            forward: null,
+        };
+        this.lastPrimaryLabelDiagnostics = null;
+        this.fallbackTotalPageCount = null;
+        this.lastTotalSource = null;
+        this.pendingScrubCommit = null;
+
         this.navRelocateButtons.back?.addEventListener('click', () => this.#handleRelocateJump('back'));
         this.navRelocateButtons.forward?.addEventListener('click', () => this.#handleRelocateJump('forward'));
-        this.#positionCompletionStack();
         this.#updateRelocateButtons();
+        this.#applyRelocateButtonEdges();
     }
-    
+
     setIsRTL(isRTL) {
         this.isRTL = !!isRTL;
-        this.#positionCompletionStack();
+        this.#applyRelocateButtonEdges();
         this.#updateSectionProgress();
     }
     
@@ -92,6 +100,12 @@ export class NavigationHUD {
             }
         });
         this.totalPageCount = this.pageTargets.length;
+        if (this.totalPageCount > 0) {
+            this.fallbackTotalPageCount = this.totalPageCount;
+        }
+        this.#logPageNumberDiagnostic('set-page-targets', {
+            pageTargetCount: this.totalPageCount,
+        });
         if (this.lastRelocateDetail) {
             this.#updatePrimaryLine(this.lastRelocateDetail);
         }
@@ -99,6 +113,7 @@ export class NavigationHUD {
     
     setNavContext(context) {
         this.navContext = context ?? null;
+        this.#toggleCompletionStack();
         this.#updateSectionProgress();
         this.#updateRelocateButtons();
     }
@@ -111,126 +126,338 @@ export class NavigationHUD {
         }
         this.#updateRelocateButtons();
     }
+
+    getCurrentDescriptor() {
+        return this.#cloneDescriptor(this.currentLocationDescriptor);
+    }
+
+    beginProgressScrubSession(originDescriptor) {
+        const baselineDescriptor = this.#cloneDescriptor(originDescriptor)
+            || this.#cloneDescriptor(this.currentLocationDescriptor)
+            || null;
+        const originFraction = typeof baselineDescriptor?.fraction === 'number'
+            ? baselineDescriptor.fraction
+            : null;
+        const frozenLabel = this.getPrimaryDisplayLabel(baselineDescriptor)
+            || this.navPrimaryText?.textContent
+            || this.latestPrimaryLabel
+            || '';
+        this.scrubSession = {
+            active: true,
+            originDescriptor: baselineDescriptor,
+            originFraction,
+            hasMoved: false,
+            frozenLabel,
+        };
+        this.pendingScrubCommit = null;
+        if (frozenLabel && this.navPrimaryText) {
+            this.navPrimaryText.textContent = frozenLabel;
+        }
+        this.#logPageScrub('begin', {
+            originFraction,
+            hasDescriptor: !!baselineDescriptor,
+        });
+        this.#logJumpDiagnostic('scrub-begin', {
+            hasOrigin: !!originDescriptor,
+            backDepth: this.relocateStacks.back.length,
+        });
+    }
+
+    endProgressScrubSession(finalDescriptor, { cancel } = {}) {
+        if (!this.scrubSession) return;
+        const session = this.scrubSession;
+        const comparisonDescriptor = this.#cloneDescriptor(finalDescriptor ?? this.currentLocationDescriptor);
+        let committed = false;
+        let returnedToOrigin = false;
+        let deferredCommit = false;
+        if (!cancel && session.originDescriptor && session.hasMoved) {
+            returnedToOrigin = !!(comparisonDescriptor && this.#isSameDescriptor(session.originDescriptor, comparisonDescriptor));
+            if (!returnedToOrigin) {
+                this.pendingScrubCommit = {
+                    origin: this.#cloneDescriptor(session.originDescriptor),
+                    targetFraction: comparisonDescriptor?.fraction ?? null,
+                    reason: 'scrub-release',
+                };
+                deferredCommit = true;
+                this.#logPageScrub('pending-commit', {
+                    originFraction: session.originFraction ?? null,
+                    targetFraction: comparisonDescriptor?.fraction ?? null,
+                });
+            } else {
+                this.pendingScrubCommit = null;
+            }
+        } else {
+            this.pendingScrubCommit = null;
+        }
+        this.#logPageScrub('end', {
+            cancel,
+            committed,
+            returnedToOrigin,
+            deferredCommit,
+        });
+        this.scrubSession = null;
+        this.#updateRelocateButtons();
+        if (comparisonDescriptor || this.currentLocationDescriptor) {
+            this.#updatePrimaryLine(comparisonDescriptor || this.currentLocationDescriptor);
+        }
+        this.#logJumpDiagnostic('scrub-end', {
+            cancel,
+            committed,
+            returnedToOrigin,
+            hadMovement: session.hasMoved,
+            originFraction: session.originFraction ?? null,
+            finalFraction: comparisonDescriptor?.fraction ?? null,
+            backDepth: this.relocateStacks.back.length,
+            forwardDepth: this.relocateStacks.forward.length,
+        });
+    }
     
     async handleRelocate(detail) {
         if (!detail) return;
+        await this.#refreshRendererSnapshot();
         this.lastRelocateDetail = detail;
-        this.#updatePrimaryLine(detail);
-        await this.#updateSecondaryLine(detail);
         this.#handleRelocateHistory(detail);
+        this.#updatePrimaryLine(detail);
+        this.#toggleCompletionStack();
+        await this.#updateSectionProgress({ refreshSnapshot: false });
         this.#updateRelocateButtons();
-    }
-    
-    #positionCompletionStack() {
-        if (!this.completionStack) return;
-        const sideKey = this.isRTL ? 'leading' : 'trailing';
-        const container = this.secondarySides?.[sideKey];
-        if (!container || container.contains(this.completionStack)) return;
-        if (sideKey === 'leading') {
-            const reference = this.navSectionProgress?.leading;
-            if (reference) {
-                reference.after(this.completionStack);
-            } else {
-                container.appendChild(this.completionStack);
-            }
-        } else {
-            const forwardButton = this.navRelocateButtons?.forward;
-            if (forwardButton && forwardButton.parentElement === container) {
-                container.insertBefore(this.completionStack, forwardButton);
-            } else {
-                container.appendChild(this.completionStack);
-            }
-        }
+        this.#logPageNumberDiagnostic('relocate', {
+            reason: detail?.reason ?? null,
+            liveScrollPhase: detail?.liveScrollPhase ?? null,
+            fraction: typeof detail?.fraction === 'number' ? detail.fraction : null,
+            label: this.latestPrimaryLabel ?? '',
+            ...(this.lastPrimaryLabelDiagnostics ?? {}),
+        });
     }
     
     #updatePrimaryLine(detail) {
         if (!this.navPrimaryText) return;
-        const {
-            pageItem,
-            fraction,
-            location
-        } = detail ?? {};
+        if (this.scrubSession?.active && this.scrubSession.frozenLabel != null) {
+            this.navPrimaryText.textContent = this.scrubSession.frozenLabel;
+            return;
+        }
+        const label = this.formatPrimaryLabel(detail);
+        if (label) {
+            this.navPrimaryText.textContent = label;
+            this.latestPrimaryLabel = label;
+            return;
+        }
+        this.navPrimaryText.textContent = '';
+        this.#requestRendererPrimaryLine();
+    }
+
+    #applyRelocateButtonEdges() {
+        const backEdge = this.isRTL ? 'right' : 'left';
+        const forwardEdge = this.isRTL ? 'left' : 'right';
+        this.#setButtonEdge(this.navRelocateButtons?.back, backEdge);
+        this.#setButtonEdge(this.navRelocateButtons?.forward, forwardEdge);
+    }
+
+    #setButtonEdge(button, edge) {
+        if (!button || (edge !== 'left' && edge !== 'right')) return;
+        if (button.dataset.navEdge !== edge) {
+            button.dataset.navEdge = edge;
+        }
+        const icon = button.querySelector('.nav-relocate-icon');
+        const label = button.querySelector('.nav-relocate-page');
+        if (!icon || !label) return;
+        if (edge === 'left') {
+            if (icon.nextElementSibling !== label) {
+                button.insertBefore(icon, label);
+            }
+        } else {
+            if (label.nextElementSibling !== icon) {
+                button.insertBefore(label, icon);
+            }
+        }
+    }
+
+    #descriptorForRelocateLabel(direction) {
+        const stack = this.relocateStacks?.[direction];
+        if (direction === 'back' && this.scrubSession?.active) {
+            if (this.scrubSession.originDescriptor) {
+                return this.scrubSession.originDescriptor;
+            }
+        }
+        if (!stack?.length) {
+            return null;
+        }
+        return stack[stack.length - 1];
+    }
+
+    formatPrimaryLabel(detail, { allowRendererFallback = true } = {}) {
+        const derived = this.#derivePrimaryLabel(detail);
+        if (derived) {
+            this.latestPrimaryLabel = derived;
+            return derived;
+        }
+        if (allowRendererFallback && this.rendererPageSnapshot) {
+            const fallback = this.#formatRendererPageLabel(this.rendererPageSnapshot);
+            if (fallback) {
+                this.latestPrimaryLabel = fallback;
+                return fallback;
+            }
+        }
+        return '';
+    }
+
+    getPrimaryDisplayLabel(detail) {
+        const label = this.formatPrimaryLabel(detail, { allowRendererFallback: true });
+        if (label) return label;
+        return this.navPrimaryText?.textContent || this.latestPrimaryLabel || '';
+    }
+
+    getPageEstimate(detail) {
+        const metrics = this.#computePageMetrics(detail);
+        if (!metrics) return null;
+        return {
+            current: metrics.currentPageNumber ?? null,
+            total: metrics.totalPages ?? null,
+        };
+    }
+
+    #derivePrimaryLabel(detail) {
+        if (!detail) {
+            this.lastPrimaryLabelDiagnostics = {
+                source: 'no-detail',
+                label: '',
+                totalPageCount: this.totalPageCount,
+            };
+            return '';
+        }
+        const metrics = this.#computePageMetrics(detail);
+        if (!metrics) {
+            this.lastPrimaryLabelDiagnostics = {
+                source: 'pending-renderer',
+                label: '',
+                totalPageCount: this.totalPageCount,
+            };
+            return '';
+        }
+        const { currentPageNumber, totalPages, pageItemLabel, diag } = metrics;
+        const commit = (label, source) => {
+            this.lastPrimaryLabelDiagnostics = {
+                ...diag,
+                label: label ?? '',
+                source,
+            };
+            return label ?? '';
+        };
+        if (this.hideNavigationDueToScroll && currentPageNumber != null) {
+            return commit(String(currentPageNumber), 'hide-nav-current');
+        }
+        if (typeof totalPages === 'number' && totalPages > 0 && currentPageNumber != null) {
+            const source = diag.pageIndexFromItem != null ? 'page-target-index'
+                : (diag.locationCurrent != null ? 'location-estimate' : 'fraction-estimate');
+            return commit(`${currentPageNumber} of ${totalPages}`, source);
+        }
+        if (currentPageNumber != null) {
+            const source = diag.pageIndexFromItem != null ? 'page-target-index-no-total'
+                : (diag.locationCurrent != null ? 'location-no-total' : 'fraction-no-total');
+            return commit(String(currentPageNumber), source);
+        }
+        if (pageItemLabel) {
+            return commit(this.#sanitizePageLabel(pageItemLabel), 'page-item-label');
+        }
+        this.lastPrimaryLabelDiagnostics = {
+            ...diag,
+            label: '',
+            source: 'pending-renderer',
+        };
+        return '';
+    }
+
+    #computePageMetrics(detail) {
+        if (!detail) return null;
+        const fraction = typeof detail.fraction === 'number' ? detail.fraction : null;
+        const pageItem = detail.pageItem ?? null;
+        const pageItemLabel = typeof pageItem?.label === 'string' ? pageItem.label : null;
+        const pageItemKey = pageItem ? ensurePageKey(pageItem) : null;
         const pageIndex = this.#resolvePageIndex(pageItem);
-        const hasTotal = this.totalPageCount > 0;
-        const approxIndex = pageIndex != null ? pageIndex : this.#pageIndexFromFraction(fraction);
-        const currentPageNumber = approxIndex != null ? approxIndex + 1 : null;
-        let primary = '';
-        if (this.hideNavigationDueToScroll) {
-            if (currentPageNumber != null) {
-                primary = String(currentPageNumber);
-            } else if (pageItem?.label) {
-                primary = pageItem.label;
-            }
-        } else if (hasTotal && currentPageNumber != null) {
-            primary = `${currentPageNumber} of ${this.totalPageCount}`;
-        } else if (hasTotal && pageItem?.label) {
-            primary = `${pageItem.label} of ${this.totalPageCount}`;
-        }
-        if (!primary && currentPageNumber != null) {
-            primary = String(currentPageNumber);
-        }
-        if (!primary && pageItem?.label) {
-            primary = pageItem.label;
-        }
-        if (!primary && typeof fraction === 'number' && hasTotal) {
-            const derived = this.#pageIndexFromFraction(fraction);
-            if (derived != null) {
-                const display = derived + 1;
-                primary = this.hideNavigationDueToScroll ? String(display) : `${display} of ${this.totalPageCount}`;
-            }
-        }
-        if (!primary && typeof fraction === 'number') {
-            const derived = this.#pageIndexFromFraction(fraction);
-            if (derived != null) {
-                const display = derived + 1;
-                primary = this.hideNavigationDueToScroll ? String(display) : `${display} of ${this.totalPageCount}`;
-            }
-        }
-        if (!primary && this.totalPageCount > 0) {
-            primary = `1 of ${this.totalPageCount}`;
-        }
-        this.navPrimaryText.textContent = primary ?? '';
+        const locationCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
+        const locationTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
+        const totalPages = this.#currentTotalPages(detail);
+        const approxIndexFromFraction = this.#pageIndexFromFraction(fraction, totalPages);
+        const locationIndex = locationCurrent != null ? locationCurrent : null;
+        const rendererIndex = this.#rendererSnapshotIndex();
+        const candidateIndex = [pageIndex, approxIndexFromFraction, locationIndex, rendererIndex]
+            .find(index => typeof index === 'number' && index >= 0);
+        const currentPageNumber = candidateIndex != null ? candidateIndex + 1 : null;
+        const diag = {
+            fraction,
+            pageItemKey,
+            pageItemLabel,
+            pageIndexFromItem: pageIndex,
+            approxIndexFromFraction,
+            locationCurrent,
+            locationTotal,
+            candidateIndex,
+            totalPageCount: this.totalPageCount,
+            fallbackTotalPageCount: this.fallbackTotalPageCount,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+            rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
+            effectiveTotalPages: totalPages ?? null,
+            totalSource: this.lastTotalSource ?? null,
+        };
+        return {
+            currentPageNumber,
+            totalPages,
+            pageItemLabel,
+            diag,
+        };
     }
     
-    async #updateSecondaryLine(detail) {
-        if (this.navSecondaryText) {
-            this.navSecondaryText.textContent = '';
+    #toggleCompletionStack(forceShow) {
+        const shouldShow = typeof forceShow === 'boolean'
+            ? forceShow
+            : !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
+        if (this.completionStack) {
+            this.completionStack.hidden = !shouldShow;
+            this.completionStack.style.display = shouldShow ? '' : 'none';
         }
-        await this.#updateSectionProgress();
+        if (this.navPrimaryText) {
+            this.navPrimaryText.hidden = shouldShow;
+            if (shouldShow) {
+                this.navPrimaryText.setAttribute('aria-hidden', 'true');
+            } else {
+                this.navPrimaryText.removeAttribute('aria-hidden');
+            }
+        }
     }
-    
-    async #updateSectionProgress() {
+
+    async #updateSectionProgress({ refreshSnapshot = true } = {}) {
         const leading = this.navSectionProgress?.leading;
         const trailing = this.navSectionProgress?.trailing;
         if (leading) leading.hidden = true;
         if (trailing) trailing.hidden = true;
         try {
+            const pagesLeft = await this.#calculatePagesLeftInSection({ refreshSnapshot });
             const showingCompletion = this.navContext?.showingFinish || this.navContext?.showingRestart;
             if (this.hideNavigationDueToScroll || showingCompletion) return;
             const targetKey = this.isRTL ? 'leading' : 'trailing';
-            const relocateDirection = targetKey === 'leading' ? 'back' : 'forward';
+            const labelEdge = targetKey === 'leading' ? 'left' : 'right';
+            const forwardEdge = this.isRTL ? 'left' : 'right';
+            const relocateDirection = labelEdge === forwardEdge ? 'forward' : 'back';
             if (this.#isRelocateButtonVisible(relocateDirection)) return;
-            const pagesLeft = await this.#calculatePagesLeftInSection();
             if (!pagesLeft || pagesLeft <= 0) return;
             const target = this.navSectionProgress?.[targetKey];
             if (!target) return;
-            const label = pagesLeft === 1 ? '1 page left in chapter' : `${pagesLeft} pages left in chapter`;
+            const label = pagesLeft === 1 ? '1 page left' : `${pagesLeft} pages left`;
             target.textContent = label;
             target.hidden = false;
         } catch (error) {
             console.error('Failed to update section progress', error);
         }
     }
+
     
-    async #calculatePagesLeftInSection() {
-        const renderer = this.getRenderer?.();
-        if (!renderer || typeof renderer.pages !== 'function' || typeof renderer.page !== 'function') return null;
-        const totalPages = await renderer.pages();
-        if (!totalPages || totalPages <= 2) return null;
-        const currentRaw = await renderer.page();
-        const totalTextPages = Math.max(0, totalPages - 2);
-        const currentTextPage = Math.max(1, Math.min(totalTextPages, currentRaw ?? 1));
-        return Math.max(0, totalTextPages - currentTextPage);
+    async #calculatePagesLeftInSection({ refreshSnapshot = true } = {}) {
+        if (refreshSnapshot) {
+            await this.#refreshRendererSnapshot();
+        }
+        if (!this.rendererPageSnapshot || !this.rendererPageSnapshot.total || this.rendererPageSnapshot.total <= 0) return null;
+        return Math.max(0, this.rendererPageSnapshot.total - this.rendererPageSnapshot.current);
     }
     
     #handleRelocateHistory(detail) {
@@ -241,16 +468,89 @@ export class NavigationHUD {
             return;
         }
         const reason = (detail?.reason || '').toLowerCase();
-        const isJumpReason = reason === 'live-scroll' || reason === 'scroll-to';
-        if (isJumpReason && this.currentLocationDescriptor && !this.#isSameDescriptor(this.currentLocationDescriptor, descriptor)) {
-            const backStack = this.relocateStacks.back;
-            backStack.push(this.currentLocationDescriptor);
-            if (backStack.length > MAX_RELOCATE_STACK) {
-                backStack.shift();
+        const liveScrollPhase = detail?.liveScrollPhase ?? null;
+        const isJumpReason = reason === 'live-scroll' || reason === 'scroll-to' || reason === 'navigation';
+        const previousDescriptor = this.currentLocationDescriptor;
+        let descriptorChanged = previousDescriptor && !this.#isSameDescriptor(previousDescriptor, descriptor);
+        const isScrubbing = !!this.scrubSession?.active;
+        const originDescriptor = this.scrubSession?.originDescriptor;
+        const originFraction = typeof this.scrubSession?.originFraction === 'number' ? this.scrubSession.originFraction : null;
+        const detailFraction = typeof detail?.fraction === 'number' ? detail.fraction : null;
+        const fractionMoved = originFraction != null && detailFraction != null && Math.abs(detailFraction - originFraction) > FRACTION_EPSILON;
+        const descriptorDiffersFromOrigin = !!(isScrubbing && originDescriptor && descriptor && !this.#isSameDescriptor(originDescriptor, descriptor));
+        const movedFromOrigin = isScrubbing && (fractionMoved || descriptorDiffersFromOrigin);
+        if (!descriptorChanged && movedFromOrigin && previousDescriptor && descriptor) {
+            descriptorChanged = true;
+        }
+        if (isScrubbing) {
+            this.#trackScrubMovement({ descriptor, movedFromOrigin, detailFraction });
+        }
+        if (isJumpReason && descriptorChanged) {
+            if (!isScrubbing && previousDescriptor) {
+                this.#pushBackStack(previousDescriptor);
             }
+        } else if (!isScrubbing && descriptorChanged) {
             this.relocateStacks.forward.length = 0;
         }
+        this.#logJumpDiagnostic('relocate-history', {
+            reason,
+            isJumpReason,
+            descriptorChanged,
+            backDepth: this.relocateStacks.back.length,
+            forwardDepth: this.relocateStacks.forward.length,
+            scrubbing: isScrubbing,
+            movedFromOrigin,
+            hiddenDueToScroll: this.hideNavigationDueToScroll,
+            liveScrollPhase,
+        });
         this.currentLocationDescriptor = descriptor;
+        this.#maybeCommitPendingScrub(detail, descriptor);
+    }
+
+    #trackScrubMovement({ descriptor, movedFromOrigin, detailFraction }) {
+        const session = this.scrubSession;
+        if (!session || !session.active) return;
+        if (!session.originDescriptor && descriptor) {
+            session.originDescriptor = this.#cloneDescriptor(descriptor);
+            if (session.originFraction == null && typeof descriptor?.fraction === 'number') {
+                session.originFraction = descriptor.fraction;
+            }
+        }
+        const fractionFromDescriptor = typeof descriptor?.fraction === 'number' ? descriptor.fraction : null;
+        const previewFraction = fractionFromDescriptor ?? detailFraction ?? null;
+        if (movedFromOrigin) {
+            session.hasMoved = true;
+            this.#logPageScrub('update', {
+                fraction: previewFraction,
+                originFraction: session.originFraction ?? null,
+                movedFromOrigin,
+            });
+        }
+    }
+
+    #pushBackStack(descriptor) {
+        if (!descriptor) return null;
+        const entry = this.#cloneDescriptor(descriptor);
+        if (!entry) return null;
+        const backStack = this.relocateStacks.back;
+        backStack.push(entry);
+        const index = backStack.length - 1;
+        if (backStack.length > MAX_RELOCATE_STACK) {
+            backStack.shift();
+            this.#logPageScrub('pop', { index: 0, reason: 'truncate' });
+        }
+        this.relocateStacks.forward.length = 0;
+        this.#logPageScrub('stack', {
+            action: 'push',
+            index,
+            fraction: entry.fraction ?? null,
+        });
+        this.#logJumpDiagnostic('relocate-stack-push', {
+            backDepth: backStack.length,
+            forwardDepth: this.relocateStacks.forward.length,
+            hiddenDueToScroll: this.hideNavigationDueToScroll,
+        });
+        return { entry, index };
     }
     
     #makeLocationDescriptor(detail) {
@@ -259,14 +559,180 @@ export class NavigationHUD {
             cfi: detail.cfi ?? null,
             fraction: typeof detail.fraction === 'number' ? detail.fraction : null,
             pageItemKey: detail.pageItem ? ensurePageKey(detail.pageItem) : null,
+            pageLabel: typeof detail.pageItem?.label === 'string' ? detail.pageItem.label : null,
         };
+    }
+
+    #cloneDescriptor(descriptor) {
+        if (!descriptor) return null;
+        return {
+            cfi: descriptor.cfi ?? null,
+            fraction: typeof descriptor.fraction === 'number' ? descriptor.fraction : null,
+            pageItemKey: descriptor.pageItemKey ?? null,
+            pageLabel: descriptor.pageLabel ?? null,
+        };
+    }
+    
+    #requestRendererPrimaryLine() {
+        const renderer = this.getRenderer?.();
+        if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
+            return;
+        }
+        const token = ++this.primaryLineRequestToken;
+        Promise.allSettled([renderer.page(), renderer.pages()]).then(results => {
+            if (token !== this.primaryLineRequestToken) return;
+            const [pageResult, pagesResult] = results;
+            if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
+                return;
+            }
+            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value);
+            if (!normalized) {
+                return;
+            }
+            this.rendererPageSnapshot = normalized;
+            const label = this.#formatRendererPageLabel(normalized);
+            if (label) {
+                this.navPrimaryText.textContent = label;
+                this.latestPrimaryLabel = label;
+                this.lastPrimaryLabelDiagnostics = {
+                    label,
+                    source: 'renderer-primary-line',
+                    rendererSnapshotCurrent: normalized.current,
+                    rendererSnapshotTotal: normalized.total,
+                    totalPageCount: this.totalPageCount,
+                };
+                this.#logPageNumberDiagnostic('renderer-primary-line', this.lastPrimaryLabelDiagnostics);
+            }
+        }).catch(() => {});
+    }
+    
+    #normalizeRendererPageInfo(rawPage, rawTotal) {
+        if (rawPage == null && rawTotal == null) return null;
+        const numericPage = Number(rawPage);
+        const numericTotal = Number(rawTotal);
+        let total = Number.isFinite(numericTotal) ? Math.max(0, Math.round(numericTotal - 2)) : null;
+        if (!total || total <= 0) {
+            total = Number.isFinite(numericTotal) ? Math.max(1, Math.round(numericTotal)) : null;
+        }
+        const currentBase = Number.isFinite(numericPage) ? Math.max(1, Math.round(numericPage)) : 1;
+        const current = total ? Math.max(1, Math.min(total, currentBase)) : currentBase;
+        if (!Number.isFinite(current)) return null;
+        return {
+            current,
+            total,
+        };
+    }
+    
+    #formatRendererPageLabel(info) {
+        if (!info) return '';
+        if (info.total && info.total > 0) {
+            return `${info.current} of ${info.total}`;
+        }
+        return '';
+    }
+
+    async #refreshRendererSnapshot() {
+        const renderer = this.getRenderer?.();
+        if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
+            return null;
+        }
+        try {
+            const [pageResult, pagesResult] = await Promise.allSettled([renderer.page(), renderer.pages()]);
+            if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
+                return null;
+            }
+            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value);
+            if (!normalized) return null;
+            this.rendererPageSnapshot = normalized;
+            this.#updateFallbackTotalPages(normalized.total);
+            this.#logPageNumberDiagnostic('renderer-snapshot', {
+                rendererCurrent: normalized.current,
+                rendererTotal: normalized.total,
+            });
+            return normalized;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    #logPageNumberDiagnostic(event, payload = {}) {
+        const base = {
+            event,
+            totalPageCount: this.totalPageCount,
+            ...payload,
+        };
+        const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
+        const metadata = JSON.stringify(cleaned);
+        const line = `# PAGENUMBERS ${metadata}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (error) {
+            // optional handler
+        }
+        try {
+            console.log(line);
+        } catch (error) {
+            // optional console
+        }
+    }
+
+    #logPageScrub(event, payload = {}) {
+        const context = {
+            event,
+            backDepth: this.relocateStacks?.back?.length ?? 0,
+            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
+            scrubActive: !!this.scrubSession?.active,
+            scrubOriginFraction: typeof this.scrubSession?.originFraction === 'number' ? this.scrubSession.originFraction : null,
+            backStack: this.#serializeStack(this.relocateStacks?.back),
+            forwardStack: this.#serializeStack(this.relocateStacks?.forward),
+            ...payload,
+        };
+        const cleaned = Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined));
+        const metadata = JSON.stringify(cleaned);
+        const line = `# EBOOKPAGES ${metadata}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {}
+        try {
+            console.log(line);
+        } catch (_error) {}
+    }
+
+    #logJumpDiagnostic(event, payload = {}) {
+        const context = {
+            windowURL: this.#safeTopURL(),
+            pageURL: document?.location?.href ?? null,
+            timestamp: Date.now(),
+            ...payload,
+        };
+        const cleanedEntries = Object.entries(context).filter(([, value]) => value !== undefined && value !== null);
+        const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
+        const line = metadata ? `# EBOOKJUMP ${event} ${metadata}` : `# EBOOKJUMP ${event}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (error) {
+            // optional handler
+        }
+        try {
+            console.log(line);
+        } catch (error) {
+            // optional console
+        }
+    }
+
+    #safeTopURL() {
+        try {
+            return window.top?.location?.href ?? null;
+        } catch (_error) {
+            return null;
+        }
     }
     
     #isSameDescriptor(a, b) {
         if (!a || !b) return false;
         if (a.cfi && b.cfi) return a.cfi === b.cfi;
         if (typeof a.fraction === 'number' && typeof b.fraction === 'number') {
-            return Math.abs(a.fraction - b.fraction) < 0.0001;
+            return Math.abs(a.fraction - b.fraction) < FRACTION_EPSILON;
         }
         return false;
     }
@@ -278,20 +744,113 @@ export class NavigationHUD {
         return this.pageTargetIndexByKey.get(key) ?? null;
     }
     
-    #pageIndexFromFraction(fraction) {
-        if (typeof fraction !== 'number' || !this.totalPageCount) return null;
-        const approx = Math.round(fraction * (this.totalPageCount - 1));
-        return Math.max(0, Math.min(this.totalPageCount - 1, approx));
+    #pageIndexFromFraction(fraction, totalOverride) {
+        const total = typeof totalOverride === 'number' && totalOverride > 0
+            ? totalOverride
+            : (this.totalPageCount > 0 ? this.totalPageCount : null);
+        if (typeof fraction !== 'number' || !total) return null;
+        const approx = Math.floor(fraction * total);
+        return Math.max(0, Math.min(total - 1, approx));
     }
-    
+
+    #sanitizePageLabel(label) {
+        if (typeof label !== 'string') return '';
+        const trimmed = label.trim();
+        if (!trimmed) return '';
+        if (trimmed.toLowerCase().startsWith('page ')) {
+            const remainder = trimmed.slice(5).trim();
+            if (remainder) return remainder;
+        }
+        return trimmed;
+    }
+
+    #pageNumberFromLabel(label) {
+        if (typeof label !== 'string') return '';
+        const match = label.match(/(\d+)/);
+        if (!match) return '';
+        const normalized = match[1]?.replace(/^0+/, '') ?? '';
+        return normalized || '0';
+    }
+
+    #rendererSnapshotIndex() {
+        const current = this.rendererPageSnapshot?.current;
+        if (typeof current !== 'number') return null;
+        return Math.max(0, current - 1);
+    }
+
+    #currentTotalPages(detail) {
+        const candidates = [];
+        if (this.totalPageCount > 0) {
+            candidates.push({ source: 'page-targets', total: this.totalPageCount });
+        }
+        if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
+            candidates.push({ source: 'fallback', total: this.fallbackTotalPageCount });
+        }
+        const rendererTotal = typeof this.rendererPageSnapshot?.total === 'number' ? this.rendererPageSnapshot.total : null;
+        if (rendererTotal && rendererTotal > 0) {
+            candidates.push({ source: 'renderer', total: rendererTotal });
+        }
+        const locationTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        if (locationTotal && locationTotal > 0) {
+            candidates.push({ source: 'location', total: locationTotal });
+        }
+        if (!candidates.length) {
+            this.lastTotalSource = null;
+            return null;
+        }
+        const precedence = {
+            'page-targets': 4,
+            'renderer': 3,
+            'fallback': 2,
+            'location': 1,
+        };
+        const best = candidates.reduce((winner, candidate) => {
+            if (!winner) return candidate;
+            if (candidate.total > winner.total) return candidate;
+            if (candidate.total === winner.total) {
+                const winnerScore = precedence[winner.source] ?? 0;
+                const candidateScore = precedence[candidate.source] ?? 0;
+                return candidateScore >= winnerScore ? candidate : winner;
+            }
+            return winner;
+        }, null);
+        this.lastTotalSource = best?.source ?? null;
+        if (best?.total && best.source !== 'page-targets') {
+            this.#updateFallbackTotalPages(best.total);
+        }
+        return best?.total ?? null;
+    }
+
+    #updateFallbackTotalPages(total) {
+        if (typeof total !== 'number' || total <= 0) return;
+        if (!this.fallbackTotalPageCount || total > this.fallbackTotalPageCount) {
+            this.fallbackTotalPageCount = total;
+        }
+    }
+
     #labelForDescriptor(descriptor) {
         if (!descriptor) return '';
         if (descriptor.pageItemKey && this.pageTargetIndexByKey?.has(descriptor.pageItemKey)) {
             return String((this.pageTargetIndexByKey.get(descriptor.pageItemKey) ?? 0) + 1);
         }
-        const indexFromFraction = this.#pageIndexFromFraction(descriptor.fraction);
+        const inferredTotal = this.totalPageCount
+            || this.fallbackTotalPageCount
+            || this.rendererPageSnapshot?.total
+            || null;
+        const indexFromFraction = this.#pageIndexFromFraction(descriptor.fraction, inferredTotal);
         if (indexFromFraction != null) {
             return String(indexFromFraction + 1);
+        }
+        if (typeof descriptor.fraction === 'number' && this.rendererPageSnapshot?.total) {
+            const total = this.rendererPageSnapshot.total;
+            const position = Math.max(1, Math.min(total, Math.round(descriptor.fraction * (total - 1)) + 1));
+            return String(position);
+        }
+        if (descriptor.pageLabel) {
+            const number = this.#pageNumberFromLabel(descriptor.pageLabel);
+            if (number) return number;
+            const sanitized = this.#sanitizePageLabel(descriptor.pageLabel);
+            if (sanitized) return sanitized;
         }
         return '';
     }
@@ -327,33 +886,115 @@ export class NavigationHUD {
                 forwardBtn.removeAttribute('aria-hidden');
             }
         }
+        const backLabelDescriptor = this.#descriptorForRelocateLabel('back');
+        const forwardLabelDescriptor = this.#descriptorForRelocateLabel('forward');
         if (this.navRelocateLabels?.back) {
-            this.navRelocateLabels.back.textContent = showBack ? this.#labelForDescriptor(backStack[backStack.length - 1] ?? null) : '';
+            this.navRelocateLabels.back.textContent = showBack ? this.#labelForDescriptor(backLabelDescriptor) : '';
         }
         if (this.navRelocateLabels?.forward) {
-            this.navRelocateLabels.forward.textContent = showForward ? this.#labelForDescriptor(forwardStack[forwardStack.length - 1] ?? null) : '';
+            this.navRelocateLabels.forward.textContent = showForward ? this.#labelForDescriptor(forwardLabelDescriptor) : '';
         }
         this.#updateSectionProgress();
+        if (this.previousRelocateVisibility.back !== showBack) {
+            this.previousRelocateVisibility.back = showBack;
+            this.#logJumpDiagnostic('relocate-visibility', {
+                direction: 'back',
+                visible: showBack,
+                backDepth: backStack.length,
+                hiddenDueToScroll: this.hideNavigationDueToScroll,
+            });
+        }
+        if (this.previousRelocateVisibility.forward !== showForward) {
+            this.previousRelocateVisibility.forward = showForward;
+            this.#logJumpDiagnostic('relocate-visibility', {
+                direction: 'forward',
+                visible: showForward,
+                forwardDepth: forwardStack.length,
+                hiddenDueToScroll: this.hideNavigationDueToScroll,
+            });
+        }
+    }
+    
+    #serializeStack(stack) {
+        if (!Array.isArray(stack) || !stack.length) {
+            return [];
+        }
+        const LIMIT = 5;
+        const total = stack.length;
+        const tail = stack.slice(-LIMIT);
+        return tail.map((entry, offset) => {
+            const index = total - tail.length + offset;
+            return {
+                index,
+                fraction: typeof entry?.fraction === 'number' ? Number(entry.fraction.toFixed(6)) : null,
+                pageKey: entry?.pageItemKey ?? null,
+            };
+        });
+    }
+
+    #maybeCommitPendingScrub(detail, descriptor) {
+        if (!this.pendingScrubCommit) return;
+        const { origin, reason } = this.pendingScrubCommit;
+        const phase = detail?.liveScrollPhase ?? null;
+        const canCommit = !detail || detail.reason !== 'live-scroll' || phase === 'settled';
+        if (!canCommit) return;
+        if (!origin || !descriptor || this.#isSameDescriptor(origin, descriptor)) {
+            this.pendingScrubCommit = null;
+            this.#logPageScrub('pending-commit-skipped', {
+                reason: reason ?? null,
+            });
+            return;
+        }
+        const result = this.#pushBackStack(origin);
+        if (result?.entry) {
+            this.#logPageScrub('push', {
+                index: result.index,
+                fraction: result.entry?.fraction ?? null,
+                reason: reason ?? 'pending-commit',
+            });
+        }
+        this.pendingScrubCommit = null;
+        this.#updateRelocateButtons();
     }
     
     async #handleRelocateJump(direction) {
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length || this.hideNavigationDueToScroll) return;
+        this.#logJumpDiagnostic('relocate-button', {
+            direction,
+            stackDepth: stack.length,
+            hiddenDueToScroll: this.hideNavigationDueToScroll,
+        });
         const descriptor = stack.pop();
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];
+        let insertedDescriptor = null;
         if (oppositeStack && this.currentLocationDescriptor) {
-            oppositeStack.push(this.currentLocationDescriptor);
-            if (oppositeStack.length > MAX_RELOCATE_STACK) {
-                oppositeStack.shift();
+            insertedDescriptor = this.#cloneDescriptor(this.currentLocationDescriptor);
+            if (insertedDescriptor) {
+                oppositeStack.push(insertedDescriptor);
+                if (oppositeStack.length > MAX_RELOCATE_STACK) {
+                    oppositeStack.shift();
+                }
             }
         }
+        this.#updateRelocateButtons();
         if (!descriptor) return;
         this.isProcessingRelocateJump = true;
         try {
             await this.onJumpRequest?.(descriptor);
         } catch (error) {
             console.error('Failed to navigate to saved location', error);
+            if (descriptor) {
+                stack.push(descriptor);
+            }
+            if (insertedDescriptor && Array.isArray(this.relocateStacks?.[opposite])) {
+                const oppStack = this.relocateStacks[opposite];
+                const idx = oppStack.lastIndexOf(insertedDescriptor);
+                if (idx >= 0) {
+                    oppStack.splice(idx, 1);
+                }
+            }
         } finally {
             this.isProcessingRelocateJump = false;
             this.#updateRelocateButtons();
