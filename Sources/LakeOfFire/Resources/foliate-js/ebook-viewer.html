@@ -43,7 +43,7 @@
                     --scrubber-track-rest-color: color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
                     --nav-relocate-icon-color: var(--scrubber-progress-color);
                     --nav-relocate-baseline-offset: 4px;
-                    --nav-section-progress-font-size: 14px;
+                    --nav-section-progress-font-size: 16px;
                     
                     margin: 0 auto;
                     height: 100%;
@@ -219,8 +219,8 @@
                     gap: 4px;
                     border: none;
                     background-color: var(--nav-relocate-bg);
-                    color: var(--nav-accent-color, var(--secondary-color));
-                    font-size: var(--nav-section-progress-font-size, 14px);
+                    color: var(--nav-relocate-icon-color, var(--nav-accent-color, var(--secondary-color)));
+                    font-size: var(--nav-section-progress-font-size, 16px);
                     font-weight: 500;
                     padding: 4px 12px;
                     min-height: 26px;
@@ -248,10 +248,10 @@
                     left: auto;
                 }
                 .nav-relocate-icon {
-                    width: 0.8em;
-                    height: 0.8em;
-                    min-width: 0.8em;
-                    min-height: 0.8em;
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
                     color: var(--nav-relocate-icon-color, currentColor);
                     fill: currentColor;
                     flex-shrink: 0;
@@ -260,6 +260,7 @@
                     min-width: 0;
                     margin: 0;
                     text-align: inherit;
+                    font-size: var(--nav-section-progress-font-size, 16px);
                     white-space: nowrap;
                     direction: ltr;
                     unicode-bidi: plaintext;
