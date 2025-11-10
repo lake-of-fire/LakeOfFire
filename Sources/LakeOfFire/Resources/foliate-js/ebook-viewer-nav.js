@@ -137,6 +137,27 @@ export class NavigationHUD {
     }
 
     beginProgressScrubSession(originDescriptor) {
+        if (this.pendingScrubCommit) {
+            const fallbackDescriptor = this.#cloneDescriptor(this.currentLocationDescriptor);
+            if (fallbackDescriptor) {
+                const flushed = this.#maybeCommitPendingScrub({
+                    reason: 'scrub-begin-flush',
+                    liveScrollPhase: 'settled',
+                }, fallbackDescriptor);
+                if (!flushed && this.pendingScrubCommit) {
+                    this.#logPageScrub('pending-commit-awaiting-detail', {
+                        reason: 'scrub-begin',
+                        pendingOriginFraction: typeof this.pendingScrubCommit?.origin?.fraction === 'number'
+                            ? Number(this.pendingScrubCommit.origin.fraction.toFixed(6))
+                            : null,
+                    });
+                }
+            } else if (this.pendingScrubCommit) {
+                this.#logPageScrub('pending-commit-awaiting-detail', {
+                    reason: 'scrub-begin-no-descriptor',
+                });
+            }
+        }
         const baselineDescriptor = this.#cloneDescriptor(originDescriptor)
             || this.#cloneDescriptor(this.currentLocationDescriptor)
             || null;
@@ -194,19 +215,25 @@ export class NavigationHUD {
             });
         } else {
             this.pendingScrubCommit = null;
+            if (!cancel) {
+                returnedToOrigin = !session.hasMoved || !releaseMoved;
+            }
         }
-
         const releaseDescriptor = this.#descriptorFromFraction(releaseValue) || comparisonDescriptor;
         if (this.pendingScrubCommit && releaseDescriptor) {
             const pushedNow = this.#maybeCommitPendingScrub({
                 reason: 'scrub-finalize',
                 liveScrollPhase: 'settled',
-            }, releaseDescriptor, { updateButtons: false, ignoreReleaseMatch: true });
+            }, releaseDescriptor, { updateButtons: false });
             if (pushedNow) {
                 committed = true;
                 deferredCommit = false;
                 this.#updateRelocateButtons();
+            } else {
+                deferredCommit = !!this.pendingScrubCommit;
             }
+        } else {
+            deferredCommit = !!this.pendingScrubCommit;
         }
         this.#logPageScrub('end', {
             cancel,
@@ -295,15 +322,13 @@ export class NavigationHUD {
 
     #descriptorForRelocateLabel(direction) {
         const stack = this.relocateStacks?.[direction];
-        if (direction === 'back' && this.scrubSession?.active) {
-            if (this.scrubSession.originDescriptor) {
-                return this.scrubSession.originDescriptor;
-            }
+        if (stack?.length) {
+            return stack[stack.length - 1];
         }
-        if (!stack?.length) {
-            return null;
+        if (direction === 'back' && this.scrubSession?.active && this.scrubSession.originDescriptor) {
+            return this.scrubSession.originDescriptor;
         }
-        return stack[stack.length - 1];
+        return null;
     }
 
     formatPrimaryLabel(detail, { allowRendererFallback = true } = {}) {
@@ -513,6 +538,7 @@ export class NavigationHUD {
             }
         } else if (!isScrubbing && descriptorChanged) {
             this.relocateStacks.forward.length = 0;
+            this.#logStackSnapshot('forward-clear');
         }
         this.#logJumpDiagnostic('relocate-history', {
             reason,
@@ -572,6 +598,7 @@ export class NavigationHUD {
             forwardDepth: this.relocateStacks.forward.length,
             hiddenDueToScroll: this.hideNavigationDueToScroll,
         });
+        this.#logStackSnapshot('push');
         return { entry, index };
     }
     
@@ -902,11 +929,19 @@ export class NavigationHUD {
         const backBtn = this.navRelocateButtons?.back;
         const forwardBtn = this.navRelocateButtons?.forward;
         const scrubbing = !!this.scrubSession?.active;
-        const showBack = !this.hideNavigationDueToScroll && !scrubbing && backStack.length > 0;
-        const showForward = !this.hideNavigationDueToScroll && !scrubbing && forwardStack.length > 0;
+        const busy = !!this.isProcessingRelocateJump;
+        const showBack = !this.hideNavigationDueToScroll && backStack.length > 0;
+        const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
+        const disableBack = scrubbing || busy || !showBack;
+        const disableForward = scrubbing || busy || !showForward;
         if (backBtn) {
             backBtn.hidden = !showBack;
-            backBtn.disabled = !showBack;
+            backBtn.disabled = disableBack;
+            if (disableBack) {
+                backBtn.setAttribute('aria-disabled', 'true');
+            } else {
+                backBtn.removeAttribute('aria-disabled');
+            }
             if (!showBack) {
                 backBtn.setAttribute('aria-hidden', 'true');
             } else {
@@ -915,7 +950,12 @@ export class NavigationHUD {
         }
         if (forwardBtn) {
             forwardBtn.hidden = !showForward;
-            forwardBtn.disabled = !showForward;
+            forwardBtn.disabled = disableForward;
+            if (disableForward) {
+                forwardBtn.setAttribute('aria-disabled', 'true');
+            } else {
+                forwardBtn.removeAttribute('aria-disabled');
+            }
             if (!showForward) {
                 forwardBtn.setAttribute('aria-hidden', 'true');
             } else {
@@ -968,6 +1008,19 @@ export class NavigationHUD {
         });
     }
 
+    #logStackSnapshot(reason, extra = {}) {
+        this.#logJumpDiagnostic('relocate-stack-snapshot', {
+            reason,
+            backDepth: this.relocateStacks?.back?.length ?? 0,
+            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
+            backStack: this.#serializeStack(this.relocateStacks?.back),
+            forwardStack: this.#serializeStack(this.relocateStacks?.forward),
+            scrubActive: !!this.scrubSession?.active,
+            pendingCommit: !!this.pendingScrubCommit,
+            ...extra,
+        });
+    }
+
     #logRelocateDetail(detail) {
         if (!detail) return;
         const descriptor = this.#makeLocationDescriptor(detail);
@@ -1014,10 +1067,11 @@ export class NavigationHUD {
             reason: 'returned-to-origin-after-scrub',
             descriptorFraction: typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
         });
+        this.#logStackSnapshot('returned-to-origin');
         this.#updateRelocateButtons();
     }
 
-    #maybeCommitPendingScrub(detail, descriptor, { updateButtons = true, ignoreReleaseMatch = false } = {}) {
+    #maybeCommitPendingScrub(detail, descriptor, { updateButtons = true } = {}) {
         if (!this.pendingScrubCommit) return false;
         const { origin, reason, scheduledAt, releaseDescriptor, releaseFraction } = this.pendingScrubCommit;
         const phase = detail?.liveScrollPhase ?? null;
@@ -1028,14 +1082,6 @@ export class NavigationHUD {
             this.pendingScrubCommit = null;
             this.#logPageScrub('pending-commit-skipped', {
                 reason: 'missing-descriptor',
-                releaseReason: reason ?? null,
-            });
-            return false;
-        }
-        if (!ignoreReleaseMatch && releaseDescriptor && descriptor && this.#isSameDescriptor(releaseDescriptor, descriptor)) {
-            this.pendingScrubCommit = null;
-            this.#logPageScrub('pending-commit-skipped', {
-                reason: 'matched-release-descriptor',
                 releaseReason: reason ?? null,
             });
             return false;
@@ -1061,6 +1107,9 @@ export class NavigationHUD {
                 elapsedMs: scheduledAt ? Date.now() - scheduledAt : null,
                 stackDepth: this.relocateStacks?.back?.length ?? null,
             });
+            this.#logStackSnapshot('pending-commit', {
+                commitReason: reason ?? 'pending-commit',
+            });
         }
         this.pendingScrubCommit = null;
         if (updateButtons) {
@@ -1072,44 +1121,46 @@ export class NavigationHUD {
     async #handleRelocateJump(direction) {
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length || this.hideNavigationDueToScroll) return;
+        const descriptor = stack[stack.length - 1];
+        if (!descriptor) return;
+        const opposite = direction === 'back' ? 'forward' : 'back';
+        const oppositeStack = this.relocateStacks?.[opposite];
+        const currentSnapshot = this.#cloneDescriptor(this.currentLocationDescriptor);
+        this.isProcessingRelocateJump = true;
+        this.#updateRelocateButtons();
         this.#logJumpDiagnostic('relocate-button', {
             direction,
             stackDepth: stack.length,
             hiddenDueToScroll: this.hideNavigationDueToScroll,
+            targetFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            oppositeDepth: oppositeStack?.length ?? 0,
         });
-        const descriptor = stack.pop();
-        const opposite = direction === 'back' ? 'forward' : 'back';
-        const oppositeStack = this.relocateStacks?.[opposite];
+        this.#logStackSnapshot('button-prejump', {
+            direction,
+            targetFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+        });
         let insertedDescriptor = null;
-        if (oppositeStack && this.currentLocationDescriptor) {
-            insertedDescriptor = this.#cloneDescriptor(this.currentLocationDescriptor);
-            if (insertedDescriptor) {
+        try {
+            await this.onJumpRequest?.(descriptor);
+            stack.pop();
+            if (oppositeStack && currentSnapshot) {
+                insertedDescriptor = currentSnapshot;
                 oppositeStack.push(insertedDescriptor);
                 if (oppositeStack.length > MAX_RELOCATE_STACK) {
                     oppositeStack.shift();
                 }
             }
-        }
-        this.#updateRelocateButtons();
-        if (!descriptor) return;
-        this.isProcessingRelocateJump = true;
-        try {
-            await this.onJumpRequest?.(descriptor);
+            this.#logStackSnapshot('button-commit', {
+                direction,
+                targetFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            });
         } catch (error) {
             console.error('Failed to navigate to saved location', error);
-            if (descriptor) {
-                stack.push(descriptor);
-            }
-            if (insertedDescriptor && Array.isArray(this.relocateStacks?.[opposite])) {
-                const oppStack = this.relocateStacks[opposite];
-                const idx = oppStack.lastIndexOf(insertedDescriptor);
-                if (idx >= 0) {
-                    oppStack.splice(idx, 1);
-                }
-            }
+            this.#logStackSnapshot('button-error', { direction });
         } finally {
             this.isProcessingRelocateJump = false;
             this.#updateRelocateButtons();
+            this.#logStackSnapshot('button-postjump', { direction });
         }
     }
 }
