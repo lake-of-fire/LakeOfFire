@@ -66,6 +66,7 @@ export class NavigationHUD {
             forward: [],
         };
         this.scrubSession = null;
+        this.pendingRelocateJump = null;
         this.primaryLineRequestToken = 0;
         this.rendererPageSnapshot = null;
         this.latestPrimaryLabel = '';
@@ -489,7 +490,9 @@ export class NavigationHUD {
             if (!pagesLeft || pagesLeft <= 0) return;
             const target = this.navSectionProgress?.[targetKey];
             if (!target) return;
-            const label = pagesLeft === 1 ? '1 page left' : `${pagesLeft} pages left`;
+            const label = pagesLeft === 1
+                ? '1 page left in chapter'
+                : `${pagesLeft} pages left in chapter`;
             target.textContent = label;
             target.hidden = false;
         } catch (error) {
@@ -511,7 +514,11 @@ export class NavigationHUD {
         if (!descriptor) return;
         if (this.isProcessingRelocateJump) {
             this.currentLocationDescriptor = descriptor;
-            return;
+            this.#finalizePendingRelocateJump(descriptor);
+            if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
+                return;
+            }
+            // fall through to normal handling to capture subsequent movement if needed
         }
         const reason = (detail?.reason || '').toLowerCase();
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
@@ -738,30 +745,7 @@ export class NavigationHUD {
         }
     }
 
-    #logPageScrub(event, payload = {}) {
-        const context = {
-            event,
-            backDepth: this.relocateStacks?.back?.length ?? 0,
-            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
-            scrubActive: !!this.scrubSession?.active,
-            scrubOriginFraction: typeof this.scrubSession?.originFraction === 'number' ? this.scrubSession.originFraction : null,
-            pendingCommit: !!this.pendingScrubCommit,
-            pendingOriginFraction: typeof this.pendingScrubCommit?.origin?.fraction === 'number' ? Number(this.pendingScrubCommit.origin.fraction.toFixed(6)) : null,
-            pendingReleaseFraction: typeof this.pendingScrubCommit?.releaseFraction === 'number' ? Number(this.pendingScrubCommit.releaseFraction.toFixed(6)) : null,
-            backStack: this.#serializeStack(this.relocateStacks?.back),
-            forwardStack: this.#serializeStack(this.relocateStacks?.forward),
-            ...payload,
-        };
-        const cleaned = Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined));
-        const metadata = JSON.stringify(cleaned);
-        const line = `# EBOOKPAGES ${metadata}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {}
-        try {
-            console.log(line);
-        } catch (_error) {}
-    }
+    #logPageScrub(_event, _payload = {}) {}
 
     #logJumpDiagnostic(event, payload = {}) {
         const context = {
@@ -935,8 +919,8 @@ export class NavigationHUD {
         const busy = !!this.isProcessingRelocateJump;
         const showBack = !this.hideNavigationDueToScroll && backStack.length > 0;
         const showForward = !this.hideNavigationDueToScroll && forwardStack.length > 0;
-        const disableBack = scrubbing || busy || !showBack;
-        const disableForward = scrubbing || busy || !showForward;
+        const disableBack = busy || !showBack;
+        const disableForward = busy || !showForward;
         if (backBtn) {
             backBtn.hidden = !showBack;
             backBtn.disabled = disableBack;
@@ -1024,29 +1008,7 @@ export class NavigationHUD {
         });
     }
 
-    #logRelocateDetail(detail) {
-        if (!detail) return;
-        const descriptor = this.#makeLocationDescriptor(detail);
-        const metadata = {
-            event: 'relocate-detail',
-            reason: detail.reason ?? null,
-            liveScrollPhase: detail.liveScrollPhase ?? null,
-            fraction: typeof detail.fraction === 'number' ? Number(detail.fraction.toFixed(6)) : null,
-            descriptorFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
-            descriptorPageKey: descriptor?.pageItemKey ?? null,
-            pendingCommit: !!this.pendingScrubCommit,
-            pendingOriginFraction: typeof this.pendingScrubCommit?.origin?.fraction === 'number' ? Number(this.pendingScrubCommit.origin.fraction.toFixed(6)) : null,
-            scrubActive: !!this.scrubSession?.active,
-        };
-        const cleaned = Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined));
-        const line = `# EBOOKPAGES ${JSON.stringify(cleaned)}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {}
-        try {
-            console.log(line);
-        } catch (_error) {}
-    }
+    #logRelocateDetail(_detail) {}
 
     #pruneBackStackIfReturnedToOrigin(detail) {
         if (!detail) return;
@@ -1121,48 +1083,87 @@ export class NavigationHUD {
         return !!result?.entry;
     }
     
+    #finalizePendingRelocateJump(descriptor) {
+        const pending = this.pendingRelocateJump;
+        if (!pending) {
+            this.isProcessingRelocateJump = false;
+            return;
+        }
+        const direction = pending.direction;
+        if (!direction) {
+            this.pendingRelocateJump = null;
+            this.isProcessingRelocateJump = false;
+            return;
+        }
+        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
+        const stack = this.relocateStacks?.[direction];
+        if (stack?.length) {
+            stack.pop();
+        }
+        const opposite = direction === 'back' ? 'forward' : 'back';
+        if (pending.preJumpDescriptor) {
+            const entry = this.#cloneDescriptor(pending.preJumpDescriptor);
+            if (entry) {
+                entry.cfi = null;
+                const oppStack = this.relocateStacks?.[opposite];
+                if (oppStack) {
+                    oppStack.push(entry);
+                    if (oppStack.length > MAX_RELOCATE_STACK) {
+                        oppStack.shift();
+                    }
+                }
+            }
+        }
+        this.pendingRelocateJump = null;
+        this.isProcessingRelocateJump = false;
+        this.#logStackSnapshot('jump-finalized', {
+            direction,
+            targetFraction,
+            backDepth: this.relocateStacks?.back?.length ?? 0,
+            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
+        });
+        this.#updateRelocateButtons();
+    }
+    
     async #handleRelocateJump(direction) {
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length || this.hideNavigationDueToScroll) return;
-        const descriptor = stack[stack.length - 1];
+        if (this.pendingRelocateJump) return;
+        const descriptor = this.#cloneDescriptor(stack[stack.length - 1]);
         if (!descriptor) return;
+        const preJumpDescriptor = this.lastRelocateDetail
+            ? this.#makeLocationDescriptor(this.lastRelocateDetail)
+            : this.#cloneDescriptor(this.currentLocationDescriptor);
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];
-        const currentSnapshot = this.#cloneDescriptor(this.currentLocationDescriptor);
+        this.pendingRelocateJump = {
+            direction,
+            targetDescriptor: descriptor,
+            preJumpDescriptor,
+        };
         this.isProcessingRelocateJump = true;
         this.#updateRelocateButtons();
+        const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
         this.#logJumpDiagnostic('relocate-button', {
             direction,
             stackDepth: stack.length,
             hiddenDueToScroll: this.hideNavigationDueToScroll,
-            targetFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            targetFraction,
             oppositeDepth: oppositeStack?.length ?? 0,
         });
         this.#logStackSnapshot('button-prejump', {
             direction,
-            targetFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+            targetFraction,
         });
-        let insertedDescriptor = null;
         try {
             await this.onJumpRequest?.(descriptor);
-            stack.pop();
-            if (oppositeStack && currentSnapshot) {
-                insertedDescriptor = currentSnapshot;
-                oppositeStack.push(insertedDescriptor);
-                if (oppositeStack.length > MAX_RELOCATE_STACK) {
-                    oppositeStack.shift();
-                }
-            }
-            this.#logStackSnapshot('button-commit', {
-                direction,
-                targetFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
-            });
         } catch (error) {
             console.error('Failed to navigate to saved location', error);
-            this.#logStackSnapshot('button-error', { direction });
-        } finally {
+            this.pendingRelocateJump = null;
             this.isProcessingRelocateJump = false;
+            this.#logStackSnapshot('button-error', { direction });
             this.#updateRelocateButtons();
+        } finally {
             this.#logStackSnapshot('button-postjump', { direction });
         }
     }

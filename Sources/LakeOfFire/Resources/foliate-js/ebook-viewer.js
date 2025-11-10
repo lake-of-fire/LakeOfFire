@@ -8,6 +8,8 @@ import {
 } from '../foliate-js/overlayer.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 
+const DEFAULT_RUBY_FONT_STACK = `'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui`;
+
 window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: msg,
@@ -340,8 +342,17 @@ const getCSSForBookContent = ({
     body * {
         background: inherit !important;
         color: inherit !important;
+    }
+
+    body *:not(rt) {
         font-family: inherit !important;
         font-weight: inherit !important;
+    }
+
+    rt {
+        font-family: var(--manabi-ruby-font, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui) !important;
+        font-weight: 200 !important;
+        letter-spacing: var(--manabi-rt-letter-spacing, -0.1em);
     }
 
     body *:not(.manabi-tracking-container *):not(manabi-segment *):not(ruby *) {
@@ -387,19 +398,7 @@ const percentFormat = new Intl.NumberFormat(locales, {
 })
 
 class Reader {
-    #logScrubDiagnostic(event, payload = {}) {
-        const metadata = JSON.stringify({
-            event,
-            ...payload,
-        });
-        const line = `# EBOOKPAGES ${metadata}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {}
-        try {
-            console.log(line);
-        } catch (_error) {}
-    }
+    #logScrubDiagnostic(_event, _payload = {}) {}
     #show(btn, show = true) {
         if (show) {
             btn.hidden = false;
@@ -1170,10 +1169,63 @@ class Reader {
         }
     }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
+        this.#ensureRubyFontOverride(doc)
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
+        this.#reportRubyFontDiagnostics(doc)
+    }
+
+    #ensureRubyFontOverride(doc) {
+        try {
+            const hostVar = document.documentElement?.style?.getPropertyValue('--manabi-ruby-font')?.trim();
+            const stack = hostVar && hostVar.length > 0 ? hostVar : DEFAULT_RUBY_FONT_STACK;
+            doc.documentElement?.style?.setProperty('--manabi-ruby-font', stack);
+            const styleId = 'manabi-ruby-font-override';
+            if (!doc.getElementById(styleId)) {
+                const style = doc.createElement('style');
+                style.id = styleId;
+                style.textContent = `
+                    rt {
+                        font-family: var(--manabi-ruby-font, ${DEFAULT_RUBY_FONT_STACK}) !important;
+                        font-weight: 200 !important;
+                        letter-spacing: var(--manabi-rt-letter-spacing, -0.1em);
+                    }
+                `;
+                doc.head?.appendChild(style);
+            }
+        } catch (error) {
+            window.webkit?.messageHandlers?.print?.postMessage?.({
+                message: 'RUBY_FONT_OVERRIDE_ERROR',
+                error: String(error),
+                pageURL: doc.location?.href ?? null
+            });
+        }
+    }
+    
+    #reportRubyFontDiagnostics(doc) {
+        try {
+            const rt = doc.querySelector('rt');
+            const body = doc.body;
+            const computedRT = rt ? doc.defaultView?.getComputedStyle?.(rt) : null;
+            const rubyFont = computedRT?.getPropertyValue('font-family') ?? null;
+            const rubyWeight = computedRT?.getPropertyValue('font-weight') ?? null;
+            const computedVar = doc.defaultView?.getComputedStyle?.(doc.documentElement).getPropertyValue('--manabi-ruby-font') ?? null;
+            window.webkit?.messageHandlers?.print?.postMessage?.({
+                message: 'RUBY_FONT_DIAGNOSTIC',
+                pageURL: doc.location?.href ?? null,
+                hasRT: !!rt,
+                rubyFont,
+                rubyWeight,
+                computedVar
+            });
+        } catch (error) {
+            window.webkit?.messageHandlers?.print?.postMessage?.({
+                message: 'RUBY_FONT_DIAGNOSTIC_ERROR',
+                error: String(error)
+            });
+        }
     }
     
     #resetSideNavChevrons() {

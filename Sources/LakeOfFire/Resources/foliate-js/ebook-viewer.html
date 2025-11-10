@@ -35,11 +35,11 @@
                     --secondary-color: #7a7a7a;
                     --tertiary-color: #c3c3c3;
                     --nav-primary-font-size: 0.72rem;
-                    --nav-secondary-font-size: 0.86rem;
+                    --nav-secondary-font-size: calc(0.86rem + 2px);
                     --nav-accent-color: #3d3d3d;
                     --nav-horizontal-padding: 34px;
                     --nav-relocate-bg: rgba(0, 0, 0, 0.08);
-                    --nav-relocate-icon-color: #2d2d2d;
+                    --nav-relocate-icon-color: var(--secondary-color);
                     
                     margin: 0 auto;
                     height: 100%;
@@ -53,7 +53,7 @@
                         --tertiary-color: #1e1e1e;
                         --nav-accent-color: #d0d0d0;
                         --nav-relocate-bg: rgba(255, 255, 255, 0.14);
-                        --nav-relocate-icon-color: #f3f3f3;
+                        --nav-relocate-icon-color: var(--secondary-color);
                     }
                 }
                 
@@ -179,14 +179,14 @@
                     position: relative;
                     display: block;
                     padding: 0 var(--nav-horizontal-padding);
-                    height: 35px;
+                    height: 33px;
                     box-sizing: border-box;
                 }
                 #nav-primary-text {
                     font-weight: 500;
                     color: var(--secondary-color);
                     text-align: center;
-                    font-size: 12px !important;
+                    font-size: 11px !important;
                     line-height: 12px;
                     position: absolute;
                     top: 4px;
@@ -199,7 +199,7 @@
                     pointer-events: none;
                 }
                 .nav-section-progress {
-                    font-size: 14px;
+                    font-size: 16px;
                     font-weight: 500;
                     color: var(--secondary-color);
                     white-space: nowrap;
@@ -210,22 +210,24 @@
                 }
                 .nav-relocate-button {
                     display: flex;
-                    align-items: center;
+                    align-items: baseline;
                     justify-content: flex-start;
-                    gap: 6px;
+                    flex-direction: row;
+                    gap: 4px;
                     border: none;
                     background-color: var(--nav-relocate-bg);
                     color: var(--nav-accent-color, var(--secondary-color));
-                    font-size: var(--nav-secondary-font-size, 0.86rem);
+                    font-size: var(--nav-secondary-font-size, calc(0.86rem + 2px));
                     font-weight: 500;
-                    padding: 4px 12px;
+                    padding: 4px 12px 0;
                     min-height: 26px;
                     border-radius: 999px;
                     cursor: pointer;
                     transition: color 0.2s ease, opacity 0.2s ease, background-color 0.2s ease;
                     position: absolute;
-                    bottom: 4px;
+                    bottom: 0;
                     direction: ltr;
+                    line-height: 1.1;
                 }
                 .nav-relocate-button:disabled {
                     opacity: 0.35;
@@ -237,35 +239,41 @@
                 .nav-relocate-button[data-nav-edge='left'] {
                     left: var(--nav-horizontal-padding);
                     right: auto;
-                    flex-direction: row;
                 }
                 .nav-relocate-button[data-nav-edge='right'] {
                     right: var(--nav-horizontal-padding);
                     left: auto;
-                    flex-direction: row-reverse;
                 }
                 .nav-relocate-icon {
-                    width: 19px;
-                    height: 19px;
-                    fill: var(--nav-relocate-icon-color, currentColor);
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
+                    color: var(--nav-relocate-icon-color, currentColor);
+                    fill: currentColor;
                     flex-shrink: 0;
                 }
+                @supports (height: 1cap) {
+                    .nav-relocate-icon {
+                        width: 1cap;
+                        height: 1cap;
+                        min-width: 1cap;
+                        min-height: 1cap;
+                    }
+                }
                 .nav-relocate-page {
-                    min-width: 1.5rem;
-                    text-align: center;
+                    min-width: 0;
+                    margin: 0;
+                    text-align: inherit;
                     white-space: nowrap;
                     direction: ltr;
                     unicode-bidi: plaintext;
                 }
                 .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
-                    margin-left: 6px;
-                    margin-right: 0;
-                    text-align: right;
+                    text-align: left;
                 }
                 .nav-relocate-button[data-nav-edge='right'] .nav-relocate-page {
-                    margin-right: 6px;
-                    margin-left: 0;
-                    text-align: left;
+                    text-align: right;
                 }
                 #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
                 #nav-bar.nav-hidden-due-to-scroll .nav-section-progress {
@@ -312,9 +320,9 @@
                 #nav-section-progress-leading,
                 #nav-section-progress-trailing {
                     position: absolute;
-                    bottom: 6px;
-                    font-size: 12px;
-                    line-height: 12px;
+                    bottom: 0;
+                    font-size: 14px;
+                    line-height: 14px;
                     white-space: nowrap;
                     pointer-events: none;
                     direction: ltr;
@@ -354,7 +362,7 @@
                 }
                 #nav-bottom-row {
                     width: 100%;
-                    padding: 3px var(--nav-horizontal-padding) 0;
+                    padding: 5px var(--nav-horizontal-padding) 0;
                     box-sizing: border-box;
                     display: flex;
                     align-items: center;

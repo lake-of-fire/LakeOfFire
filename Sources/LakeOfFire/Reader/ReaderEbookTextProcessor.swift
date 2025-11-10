@@ -3,6 +3,22 @@ import SwiftSoup
 import LRUCache
 import LakeKit
 
+private let defaultRubyFontCSSStack = "'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui'"
+
+private func ensureRubyFontCustomProperty(in doc: SwiftSoup.Document) {
+    do {
+        if let head = doc.head() {
+            let styleID = "manabi-ruby-font-vars"
+            if try head.getElementById(styleID) == nil {
+                let css = ":root{--manabi-ruby-font:\(defaultRubyFontCSSStack);}"
+                try head.append("<style type=\"text/css\" id=\"\(styleID)\">\(css)</style>")
+            }
+        }
+    } catch {
+        print("Failed to append ruby font style: \(error)")
+    }
+}
+
 // Precomputed punctuation set for splitting
 private let splitPunctuation = ParsingStrings([
     "、","。","．","，","？","！","：","；","…","‥","ー","－",
@@ -198,6 +214,8 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
+        
+        ensureRubyFontCustomProperty(in: doc)
         
         var html = try doc.outerHtml()
         
