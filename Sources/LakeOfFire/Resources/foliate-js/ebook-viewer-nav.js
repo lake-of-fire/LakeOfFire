@@ -576,10 +576,13 @@ export class NavigationHUD {
         }
     }
 
-    #pushBackStack(descriptor) {
+    #pushBackStack(descriptor, { stripCFI = false } = {}) {
         if (!descriptor) return null;
         const entry = this.#cloneDescriptor(descriptor);
         if (!entry) return null;
+        if (stripCFI) {
+            entry.cfi = null;
+        }
         const backStack = this.relocateStacks.back;
         backStack.push(entry);
         const index = backStack.length - 1;
@@ -1097,7 +1100,7 @@ export class NavigationHUD {
             });
             return false;
         }
-        const result = this.#pushBackStack(origin);
+        const result = this.#pushBackStack(origin, { stripCFI: true });
         if (result?.entry) {
             this.#logPageScrub('push', {
                 index: result.index,
