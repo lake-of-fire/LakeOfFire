@@ -1174,7 +1174,6 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
-        this.#reportRubyFontDiagnostics(doc)
     }
 
     #ensureRubyFontOverride(doc) {
@@ -1200,30 +1199,6 @@ class Reader {
                 message: 'RUBY_FONT_OVERRIDE_ERROR',
                 error: String(error),
                 pageURL: doc.location?.href ?? null
-            });
-        }
-    }
-    
-    #reportRubyFontDiagnostics(doc) {
-        try {
-            const rt = doc.querySelector('rt');
-            const body = doc.body;
-            const computedRT = rt ? doc.defaultView?.getComputedStyle?.(rt) : null;
-            const rubyFont = computedRT?.getPropertyValue('font-family') ?? null;
-            const rubyWeight = computedRT?.getPropertyValue('font-weight') ?? null;
-            const computedVar = doc.defaultView?.getComputedStyle?.(doc.documentElement).getPropertyValue('--manabi-ruby-font') ?? null;
-            window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: 'RUBY_FONT_DIAGNOSTIC',
-                pageURL: doc.location?.href ?? null,
-                hasRT: !!rt,
-                rubyFont,
-                rubyWeight,
-                computedVar
-            });
-        } catch (error) {
-            window.webkit?.messageHandlers?.print?.postMessage?.({
-                message: 'RUBY_FONT_DIAGNOSTIC_ERROR',
-                error: String(error)
             });
         }
     }

@@ -39,7 +39,11 @@
                     --nav-accent-color: #3d3d3d;
                     --nav-horizontal-padding: 34px;
                     --nav-relocate-bg: rgba(0, 0, 0, 0.08);
-                    --nav-relocate-icon-color: var(--secondary-color);
+                    --scrubber-progress-color: color-mix(in srgb, var(--secondary-color) 70%, white 30%);
+                    --scrubber-track-rest-color: color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
+                    --nav-relocate-icon-color: var(--scrubber-progress-color);
+                    --nav-relocate-baseline-offset: 4px;
+                    --nav-section-progress-font-size: 14px;
                     
                     margin: 0 auto;
                     height: 100%;
@@ -53,7 +57,6 @@
                         --tertiary-color: #1e1e1e;
                         --nav-accent-color: #d0d0d0;
                         --nav-relocate-bg: rgba(255, 255, 255, 0.14);
-                        --nav-relocate-icon-color: var(--secondary-color);
                     }
                 }
                 
@@ -199,7 +202,7 @@
                     pointer-events: none;
                 }
                 .nav-section-progress {
-                    font-size: 16px;
+                    font-size: var(--nav-section-progress-font-size, 14px);
                     font-weight: 500;
                     color: var(--secondary-color);
                     white-space: nowrap;
@@ -210,24 +213,24 @@
                 }
                 .nav-relocate-button {
                     display: flex;
-                    align-items: baseline;
+                    align-items: flex-end;
                     justify-content: flex-start;
                     flex-direction: row;
                     gap: 4px;
                     border: none;
                     background-color: var(--nav-relocate-bg);
                     color: var(--nav-accent-color, var(--secondary-color));
-                    font-size: var(--nav-secondary-font-size, calc(0.86rem + 2px));
+                    font-size: var(--nav-section-progress-font-size, 14px);
                     font-weight: 500;
-                    padding: 4px 12px 0;
+                    padding: 4px 12px;
                     min-height: 26px;
                     border-radius: 999px;
                     cursor: pointer;
                     transition: color 0.2s ease, opacity 0.2s ease, background-color 0.2s ease;
                     position: absolute;
-                    bottom: 0;
+                    bottom: calc(-1 * var(--nav-relocate-baseline-offset));
                     direction: ltr;
-                    line-height: 1.1;
+                    line-height: 1.2;
                 }
                 .nav-relocate-button:disabled {
                     opacity: 0.35;
@@ -245,21 +248,13 @@
                     left: auto;
                 }
                 .nav-relocate-icon {
-                    width: 1em;
-                    height: 1em;
-                    min-width: 1em;
-                    min-height: 1em;
+                    width: 0.8em;
+                    height: 0.8em;
+                    min-width: 0.8em;
+                    min-height: 0.8em;
                     color: var(--nav-relocate-icon-color, currentColor);
                     fill: currentColor;
                     flex-shrink: 0;
-                }
-                @supports (height: 1cap) {
-                    .nav-relocate-icon {
-                        width: 1cap;
-                        height: 1cap;
-                        min-width: 1cap;
-                        min-height: 1cap;
-                    }
                 }
                 .nav-relocate-page {
                     min-width: 0;
@@ -321,8 +316,8 @@
                 #nav-section-progress-trailing {
                     position: absolute;
                     bottom: 0;
-                    font-size: 14px;
-                    line-height: 14px;
+                    font-size: var(--nav-section-progress-font-size, 14px);
+                    line-height: var(--nav-section-progress-font-size, 14px);
                     white-space: nowrap;
                     pointer-events: none;
                     direction: ltr;
@@ -789,12 +784,12 @@
                     cursor: pointer;
                 }
                 input[type=range].styled-slider.slider-progress::-webkit-slider-runnable-track {
-                    background: linear-gradient(to right, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
+                    background: linear-gradient(to right, var(--scrubber-progress-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    var(--scrubber-track-rest-color);
                 }
                 input[type=range].styled-slider.slider-progress:dir(rtl)::-webkit-slider-runnable-track {
-                    background: linear-gradient(to left, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
+                    background: linear-gradient(to left, var(--scrubber-progress-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    var(--scrubber-track-rest-color);
                 }
                 input[type=range].styled-slider.slider-progress {
                     --range: calc(var(--max) - var(--min));
