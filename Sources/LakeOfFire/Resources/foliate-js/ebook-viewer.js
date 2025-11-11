@@ -349,12 +349,6 @@ const getCSSForBookContent = ({
         font-weight: inherit !important;
     }
 
-    rt {
-        font-family: var(--manabi-ruby-font, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui) !important;
-        font-weight: 200 !important;
-        letter-spacing: var(--manabi-rt-letter-spacing, -0.1em);
-    }
-
     body *:not(.manabi-tracking-container *):not(manabi-segment *):not(ruby *) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
@@ -1181,19 +1175,6 @@ class Reader {
             const hostVar = document.documentElement?.style?.getPropertyValue('--manabi-ruby-font')?.trim();
             const stack = hostVar && hostVar.length > 0 ? hostVar : DEFAULT_RUBY_FONT_STACK;
             doc.documentElement?.style?.setProperty('--manabi-ruby-font', stack);
-            const styleId = 'manabi-ruby-font-override';
-            if (!doc.getElementById(styleId)) {
-                const style = doc.createElement('style');
-                style.id = styleId;
-                style.textContent = `
-                    rt {
-                        font-family: var(--manabi-ruby-font, ${DEFAULT_RUBY_FONT_STACK}) !important;
-                        font-weight: 200 !important;
-                        letter-spacing: var(--manabi-rt-letter-spacing, -0.1em);
-                    }
-                `;
-                doc.head?.appendChild(style);
-            }
         } catch (error) {
             window.webkit?.messageHandlers?.print?.postMessage?.({
                 message: 'RUBY_FONT_OVERRIDE_ERROR',

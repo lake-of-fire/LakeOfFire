@@ -80,7 +80,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var navigator: WebViewNavigator
     var hideNavigationDueToScroll: Binding<Bool>
     var updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
-    
+    private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
+
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
             ("readerConsoleLog", { [weak self] message in
@@ -123,6 +124,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 self.setHideNavigationDueToScroll(
                     shouldHide,
                     reason: nil,
+                    source: source,
+                    direction: direction
+                )
+                self.lastNavigationVisibilityEvent = .init(
+                    timestamp: Date(),
+                    shouldHide: shouldHide,
                     source: source,
                     direction: direction
                 )
@@ -452,6 +459,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         let normalizedReason = result.reason.lowercased()
         debugPrint("# HIDENAV handler updateReadingProgress reason=\(result.reason) normalized=\(normalizedReason)")
         if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
+            if normalizedReason == "navigation",
+               let event = lastNavigationVisibilityEvent,
+               event.shouldHide,
+               event.direction == "forward",
+               Date().timeIntervalSince(event.timestamp) < 0.8 {
+                debugPrint(
+                    "# HIDENAV handler updateReadingProgress navigation skipped due to recent forward hide event delta=\(String(format: "%.3f", Date().timeIntervalSince(event.timestamp))) source=\(event.source ?? "<nil>")"
+                )
+                return
+            }
             setHideNavigationDueToScroll(
                 false,
                 reason: normalizedReason,
@@ -459,6 +476,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 direction: nil
             )
         }
+    }
+
+    private struct NavigationVisibilityEvent {
+        let timestamp: Date
+        let shouldHide: Bool
+        let source: String?
+        let direction: String?
     }
     
     private func readerDatasetSummary(stage: String, frameInfo: WKFrameInfo?) async -> String? {
