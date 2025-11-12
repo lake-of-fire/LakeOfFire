@@ -10,6 +10,7 @@ import WebKit
 public class ReaderMediaPlayerViewModel: ObservableObject {
     @Published public var isMediaPlayerPresented = false
     @Published public var audioURLs = [URL]()
+    @Published public var isPlaying = false
     
     public init() { }
     

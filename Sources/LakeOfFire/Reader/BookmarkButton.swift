@@ -128,6 +128,7 @@ private struct BookmarkToggleStyle: ToggleStyle {
         }
         .controlSize(.small)
         .buttonStyle(.clearBordered)
+        .dynamicTypeSize(.medium)
     }
 }
 

@@ -1,19 +1,32 @@
 import SwiftUI
 import LakeKit
 
-public enum ReaderToastShadowStyle {
-    case enabled
-    case disabled
+public enum ReaderToastBarStyle {
+    case bordered
+    case borderless
 }
 
-private struct ReaderToastShadowStyleKey: EnvironmentKey {
-    static let defaultValue: ReaderToastShadowStyle = .enabled
+public enum ReaderToastLayoutMode {
+    case standard
+    case inline
+}
+
+private struct ReaderToastBarStyleKey: EnvironmentKey {
+    static let defaultValue: ReaderToastBarStyle = .bordered
+}
+
+private struct ReaderToastLayoutModeKey: EnvironmentKey {
+    static let defaultValue: ReaderToastLayoutMode = .standard
 }
 
 public extension EnvironmentValues {
-    var readerToastShadowStyle: ReaderToastShadowStyle {
-        get { self[ReaderToastShadowStyleKey.self] }
-        set { self[ReaderToastShadowStyleKey.self] = newValue }
+    var readerToastBarStyle: ReaderToastBarStyle {
+        get { self[ReaderToastBarStyleKey.self] }
+        set { self[ReaderToastBarStyleKey.self] = newValue }
+    }
+    var readerToastLayoutMode: ReaderToastLayoutMode {
+        get { self[ReaderToastLayoutModeKey.self] }
+        set { self[ReaderToastLayoutModeKey.self] = newValue }
     }
 }
 
@@ -32,7 +45,8 @@ public struct ReaderToastBar<Content: View>: View {
     private let content: Content
     private let trailingAccessory: AnyView?
     
-    @Environment(\.readerToastShadowStyle) private var shadowStyle
+    @Environment(\.readerToastBarStyle) private var toastStyle
+    @Environment(\.readerToastLayoutMode) private var layoutMode
 
     public init(
         isPresented: Binding<Bool>,
@@ -65,45 +79,81 @@ public struct ReaderToastBar<Content: View>: View {
     
     public var body: some View {
         if isPresented {
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                HStack(spacing: 0) {
-                    content
-                        .padding(.leading, ReaderToastBarMetrics.horizontalContentPadding)
-                        .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
-                    
-                    if let trailingAccessory {
-                        Spacer(minLength: 0)
-                        trailingAccessory
-                    } else if onDismiss != nil {
-                        Spacer(minLength: 0)
-                        DismissButton(.xMark, fill: true) {
-                            withAnimation {
-                                isPresented = false
-                                onDismiss?()
-                            }
-                        }
-                        .modifier { view in
-                            if #available(iOS 15, macOS 12, *) {
-                                view.foregroundStyle(.secondary)
-                            } else {
-                                view.foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                }
-                .padding(2)
-                .background(.regularMaterial)
-                .clipShape(Capsule())
-                .shadow(radius: shadowStyle == .enabled ? 2 : 0)
-                Spacer(minLength: 0)
+            if layoutMode == .inline {
+                inlineBody
+            } else {
+                standardBody
             }
-#if os(iOS)
-            .padding(.horizontal, 4)
-#else
-            .padding(.horizontal, 4)
-#endif
-            .padding(.vertical, 4)
+        }
+    }
+}
+
+private extension ReaderToastBar {
+    @ViewBuilder
+    var standardBody: some View {
+        let horizontalPadding: CGFloat = toastStyle == .bordered ? 4 : 0
+        let verticalPadding: CGFloat = toastStyle == .bordered ? 4 : 0
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                content
+                    .padding(.leading, ReaderToastBarMetrics.horizontalContentPadding)
+                    .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
+                
+                if let trailingAccessory {
+                    Spacer(minLength: 0)
+                    trailingAccessory
+                } else if onDismiss != nil {
+                    Spacer(minLength: 0)
+                    dismissButton
+                }
+            }
+            .padding(.vertical, toastStyle == .bordered ? 2 : 0)
+            .background(backgroundView)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
+    }
+
+    @ViewBuilder
+    var inlineBody: some View {
+        HStack(spacing: 8) {
+            content
+            if let trailingAccessory {
+                trailingAccessory
+            } else if onDismiss != nil {
+                dismissButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    var backgroundView: some View {
+        switch toastStyle {
+        case .bordered:
+            Capsule()
+                .fill(.regularMaterial)
+                .shadow(radius: 2)
+        case .borderless:
+            Color.clear
+        }
+    }
+    
+    @ViewBuilder
+    var dismissButton: some View {
+        DismissButton(.xMark, fill: true) {
+            withAnimation {
+                isPresented = false
+                onDismiss?()
+            }
+        }
+        .modifier { view in
+            if #available(iOS 15, macOS 12, *) {
+                view.foregroundStyle(.secondary)
+            } else {
+                view.foregroundColor(.secondary)
+            }
         }
     }
 }

@@ -223,6 +223,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     }
     @Persisted public var voiceFrameUrl: URL?
     @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
+    @Persisted public var audioSubtitlesURL: URL?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     
@@ -335,9 +336,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         bookmark.voiceFrameUrl = voiceFrameUrl
         bookmark.voiceAudioURLs.removeAll()
         bookmark.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+        bookmark.audioSubtitlesURL = audioSubtitlesURL
         bookmark.redditTranslationsUrl = redditTranslationsUrl
         bookmark.redditTranslationsTitle = redditTranslationsTitle
-        
+
         bookmark.isReaderModeByDefault = isReaderModeByDefault
     }
 }
@@ -576,6 +578,10 @@ public extension Feed {
                     .filter { $0.attributes?.rel == "voice-audio" }
                     .compactMap { $0.attributes?.href }
                     .compactMap { URL(string: $0) }
+                let audioSubtitlesURL: URL? = (item.links ?? [])
+                    .first { $0.attributes?.rel == "voice-audio-subtitles" }
+                    .flatMap { $0.attributes?.href }
+                    .flatMap { URL(string: $0) }
                 
                 // TODO: Refactor into community commentary links
                 var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
@@ -615,6 +621,7 @@ public extension Feed {
                 feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+                feedEntry.audioSubtitlesURL = audioSubtitlesURL
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
                 feedEntry.redditTranslationsTitle = redditTranslationsTitle
                 feedEntry.updateCompoundKey()
@@ -839,6 +846,7 @@ fileprivate struct FeedEntryPayload {
     let content: Data?
     let voiceFrameUrl: URL?
     let voiceAudioURLs: [URL]
+    let audioSubtitlesURL: URL?
     let redditTranslationsUrl: URL?
     let redditTranslationsTitle: String?
     let createdAt: Date
@@ -855,6 +863,7 @@ fileprivate struct FeedEntryPayload {
         content = entry.content
         voiceFrameUrl = entry.voiceFrameUrl
         voiceAudioURLs = Array(entry.voiceAudioURLs)
+        audioSubtitlesURL = entry.audioSubtitlesURL
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
         createdAt = existing?.createdAt ?? entry.createdAt
@@ -890,6 +899,10 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
     }
     if content.voiceFrameUrl != payload.voiceFrameUrl {
         content.voiceFrameUrl = payload.voiceFrameUrl
+        didChange = true
+    }
+    if content.audioSubtitlesURL != payload.audioSubtitlesURL {
+        content.audioSubtitlesURL = payload.audioSubtitlesURL
         didChange = true
     }
     let existingVoiceAudio = Array(content.voiceAudioURLs)
