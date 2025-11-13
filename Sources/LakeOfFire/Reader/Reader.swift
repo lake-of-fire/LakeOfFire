@@ -86,8 +86,9 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
                 if state.isProvisionallyNavigating {
                     shouldSyncProvisionalFlag = true
                 } else {
-                    shouldSyncProvisionalFlag = readerContent.pageURL.matchesReaderURL(state.pageURL)
-                    || state.pageURL.isNativeReaderView
+                    let urlsMatch = readerContent.pageURL.matchesReaderURL(state.pageURL)
+                    || state.pageURL.matchesReaderURL(readerContent.pageURL)
+                    shouldSyncProvisionalFlag = urlsMatch || state.pageURL.isNativeReaderView
                 }
 
                 if shouldSyncProvisionalFlag,
@@ -158,14 +159,19 @@ public extension WebViewNavigator {
                 let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
-                    let isLoading = trackingContent.isReaderModeByDefault
                     let trackingURL = trackingContent.url
-                    if isLoading {
+                    let shouldTriggerReaderMode = trackingContent.isReaderModeByDefault
+                        && !trackingURL.isSnippetURL
+                    if shouldTriggerReaderMode {
                         readerModeViewModel.beginReaderModeLoad(for: trackingURL)
                     } else {
                         readerModeViewModel.cancelReaderModeLoad(for: trackingURL)
                     }
-                    debugPrint("# FLASH WebViewNavigator.load readerModeLoading", isLoading, url)
+                    debugPrint(
+                        "# FLASH WebViewNavigator.load readerModeLoading",
+                        shouldTriggerReaderMode,
+                        url
+                    )
                 }
             }
             load(URLRequest(url: url))

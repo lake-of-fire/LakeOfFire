@@ -58,20 +58,15 @@ public class FeedViewModel: ObservableObject {
         let lastFetchTime = FeedViewModel.lastFetchTimes[feedID]
         let isoFormatter = ISO8601DateFormatter()
         let lastFetchDescription = lastFetchTime.map { isoFormatter.string(from: $0) } ?? "never"
-        debugPrint("# FeedViewModel.fetchIfNeeded start feedID=\(feedID.uuidString) title=\(feedTitle) force=\(force) lastFetch=\(lastFetchDescription)")
         
         if force || lastFetchTime == nil || now.timeIntervalSince(lastFetchTime!) > 30 * 60 {
-            debugPrint("# FeedViewModel.fetchIfNeeded executing feedID=\(feedID.uuidString)")
             do {
                 try await feed.fetch()
                 FeedViewModel.lastFetchTimes[feedID] = now
-                debugPrint("# FeedViewModel.fetchIfNeeded finished feedID=\(feedID.uuidString) nextEligible=\(isoFormatter.string(from: now))")
             } catch {
-                debugPrint("# FeedViewModel.fetchIfNeeded failed feedID=\(feedID.uuidString) \(error)")
                 throw error
             }
         } else {
-            debugPrint("# FeedViewModel.fetchIfNeeded skipped feedID=\(feedID.uuidString)")
         }
     }
 }

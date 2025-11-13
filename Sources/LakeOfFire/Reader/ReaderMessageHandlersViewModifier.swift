@@ -167,7 +167,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let content = try? await ReaderViewModel.getContent(forURL: url) else {
                     return
                 }
-                debugPrint("# READERMODEBUTTON readabilityParsed message url=\(url.absoluteString) isReaderMode=\(readerModeViewModel.isReaderMode) isLoading=\(readerModeViewModel.isReaderModeLoading) contentAvailable=\(content.isReaderModeAvailable) default=\(content.isReaderModeByDefault)")
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
@@ -228,9 +227,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     result.outputHTML.contains("id=\"reader-content\"")
 
                 let hasProcessedReadability = readerModeViewModel.readabilityContent != nil
-                debugPrint("# READERMODEBUTTON readabilityParsed shortCircuitCheck url=\(url.absoluteString) readerMode=\(readerModeViewModel.isReaderMode) outputLooksLikeReader=\(outputLooksLikeReader) hasProcessedReadability=\(hasProcessedReadability)")
                 if (readerModeViewModel.isReaderMode || outputLooksLikeReader) && hasProcessedReadability {
-                    debugPrint("# READERMODEBUTTON readabilityParsed shortCircuit url=\(url.absoluteString) readerMode=\(readerModeViewModel.isReaderMode) loading=\(readerModeViewModel.isReaderModeLoading) outputLooksLikeReader=\(outputLooksLikeReader)")
                     await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: url, frameInfo: message.frameInfo)
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
@@ -250,7 +247,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                     if !readerModeViewModel.isReaderMode {
                         readerModeViewModel.isReaderMode = true
-                        debugPrint("# READERMODEBUTTON readabilityParsed toggled viewModel.isReaderMode true url=\(url.absoluteString)")
                     }
                     if readerModeViewModel.isReaderModeLoadPending(for: url) {
                         readerModeViewModel.markReaderModeLoadComplete(for: url)
@@ -260,7 +256,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
 
                 readerModeViewModel.readabilityContent = result.outputHTML
-                debugPrint("# READERMODEBUTTON readabilityParsed storedContent url=\(url.absoluteString) bytes=\(result.outputHTML.utf8.count)")
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
@@ -503,28 +498,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 fallbackRaw = try? await scriptCaller.evaluateJavaScript("return window.manabiDatasetDebugSummary ?? null")
             }
             if let summary = datasetSummaryString(from: fallbackRaw) {
-                debugPrint("# READERMODEBUTTON datasetProbeFallback stage=\(stage) urlSummary=\(summary)")
                 return summary
             }
-            if let rawResult {
-                debugPrint(
-                    "# READERMODEBUTTON datasetProbeUnexpected stage=\(stage)",
-                    "type=\(type(of: rawResult))",
-                    "value=\(String(describing: rawResult))"
-                )
-            }
         } catch {
-            debugPrint("# READERMODEBUTTON datasetProbeError stage=\(stage) error=\(error.localizedDescription)")
+            debugPrint("# FLASH ReaderMessageHandlers.readerDatasetSummary error", error.localizedDescription)
         }
         return nil
     }
     
     private func logReaderDatasetState(stage: String, url: URL, frameInfo: WKFrameInfo?) async {
-        if let summary = await readerDatasetSummary(stage: stage, frameInfo: frameInfo) {
-            debugPrint("# READERMODEBUTTON dataset stage=\(stage) url=\(url.absoluteString) state=\(summary)")
-        } else {
-            debugPrint("# READERMODEBUTTON dataset stage=\(stage) url=\(url.absoluteString) state=<nil>")
-        }
+        _ = await readerDatasetSummary(stage: stage, frameInfo: frameInfo)
+        _ = (stage, url)
     }
     
     init(

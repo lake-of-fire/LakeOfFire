@@ -66,28 +66,6 @@ fileprivate class ReaderWebViewHandler {
             readerModeViewModel.cancelReaderModeLoad(for: cancelURL)
         }
 
-        if state.pageURL.isSnippetURL {
-            if readerModeViewModel.isReaderModeHandlingURL(state.pageURL) {
-                debugPrint("# FLASH ReaderWebViewHandler.redirectSnippetToLoaderHandledByReaderMode", state.pageURL)
-            } else if !readerModeViewModel.isReaderMode,
-                      !readerModeViewModel.isReaderModeLoading,
-                      let loaderURL = ReaderContentLoader.readerLoaderURL(for: state.pageURL),
-                      !loaderURL.matchesReaderURL(state.pageURL) {
-                if let navigator = readerViewModel.navigator {
-                    debugPrint("# FLASH ReaderWebViewHandler.redirectSnippetToLoader", state.pageURL, "->", loaderURL)
-                    if let content = readerContent.content, content.isReaderModeByDefault {
-                        readerModeViewModel.beginReaderModeLoad(for: content.url)
-                    }
-                    navigator.load(URLRequest(url: loaderURL))
-                    return
-                } else {
-                    debugPrint("# FLASH ReaderWebViewHandler.redirectSnippetToLoaderMissingNavigator", state.pageURL)
-                }
-            } else {
-                debugPrint("# FLASH ReaderWebViewHandler.redirectSnippetToLoaderUnavailable", state.pageURL)
-            }
-        }
-
         if let lastHandledURL, lastHandledURL.matchesReaderURL(state.pageURL), lastHandledIsProvisionallyNavigating == state.isProvisionallyNavigating, lastHandledIsLoading == state.isLoading {
             debugPrint("# FLASH ReaderWebViewHandler.handleNewURL skipping duplicate", state.pageURL)
             return

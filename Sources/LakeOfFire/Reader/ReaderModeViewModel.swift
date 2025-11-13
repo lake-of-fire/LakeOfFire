@@ -80,15 +80,11 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func expectSyntheticReaderLoaderCommit(for baseURL: URL?) {
-        guard let baseURL, baseURL.isReaderURLLoaderURL else {
-            if expectedSyntheticReaderLoaderURL != nil {
-                debugPrint("# READERTRACE readerMode.expectSyntheticReaderLoaderCommit cleared")
-            }
+        guard let baseURL else {
             expectedSyntheticReaderLoaderURL = nil
             return
         }
         expectedSyntheticReaderLoaderURL = baseURL
-        debugPrint("# READERTRACE readerMode.expectSyntheticReaderLoaderCommit url=\(baseURL.absoluteString)")
     }
 
     @discardableResult
@@ -103,7 +99,6 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if matchesLoaderURL(expectedSyntheticReaderLoaderURL, url) {
-            debugPrint("# READERTRACE readerMode.syntheticReaderLoaderCommitDetected url=\(url.absoluteString)")
             self.expectedSyntheticReaderLoaderURL = nil
             return true
         }
@@ -122,34 +117,17 @@ public class ReaderModeViewModel: ObservableObject {
         details: String? = nil
     ) {
         let now = Date()
-        var components: [String] = []
-        if let url {
-            let key = traceKey(for: url)
-            if captureStart || loadTraceRecords[key] == nil {
-                loadTraceRecords[key] = ReaderModeLoadTraceRecord(startedAt: now, lastEventAt: now)
-            }
-            if var record = loadTraceRecords[key] {
-                let elapsed = now.timeIntervalSince(record.startedAt)
-                let delta = now.timeIntervalSince(record.lastEventAt)
-                components.append("t+\(formattedInterval(elapsed))")
-                components.append("Δ\(formattedInterval(delta))")
-                record.lastEventAt = now
-                loadTraceRecords[key] = record
-            }
-            if let detail = details, !detail.isEmpty {
-                components.append(detail)
-            }
-            let message = components.joined(separator: " | ")
-            debugPrint("# READERTRACE", stage.rawValue, message, url.absoluteString)
-            if stage.isTerminal {
-                loadTraceRecords.removeValue(forKey: key)
-            }
-        } else {
-            if let detail = details, !detail.isEmpty {
-                components.append(detail)
-            }
-            let message = components.joined(separator: " | ")
-            debugPrint("# READERTRACE", stage.rawValue, message)
+        guard let url else { return }
+        _ = details
+        let key = traceKey(for: url)
+        if captureStart || loadTraceRecords[key] == nil {
+            loadTraceRecords[key] = ReaderModeLoadTraceRecord(startedAt: now, lastEventAt: now)
+        } else if var record = loadTraceRecords[key] {
+            record.lastEventAt = now
+            loadTraceRecords[key] = record
+        }
+        if stage.isTerminal {
+            loadTraceRecords.removeValue(forKey: key)
         }
     }
     
@@ -222,12 +200,10 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
         guard let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) else {
-            debugPrint("# READERMODEBUTTON readerModeLoadCompleteSkipped url=\(url.absoluteString) pending=\(self.pendingReaderModeURL?.absoluteString ?? "nil")")
             return
         }
         let traceURL = pendingReaderModeURL
         self.pendingReaderModeURL = nil
-        debugPrint("# READERMODEBUTTON readerModeLoadComplete url=\(traceURL.absoluteString)")
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         readerModeLoading(false)
         readerModeLoadCompletionHandler?(traceURL)
@@ -272,18 +248,23 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# FLASH ReaderModeViewModel.showReaderView invoked", readerContent.pageURL)
-        debugPrint("# READERMODEBUTTON showReaderView start url=\(readerContent.pageURL.absoluteString) isReaderMode=\(isReaderMode) isLoading=\(isReaderModeLoading) pending=\(pendingReaderModeURL?.absoluteString ?? "nil")")
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
         logTrace(.readabilityTaskScheduled, url: readerContent.pageURL, details: "readabilityBytes=\(readabilityBytes)")
+        let contentURL = readerContent.pageURL
+        if contentURL.isSnippetURL {
+            cancelReaderModeLoad(for: contentURL)
+            readabilityContent = nil
+            readabilityContainerSelector = nil
+            readabilityContainerFrameInfo = nil
+            return
+        }
         guard let readabilityContent else {
             // FIME: WHY THIS CALLED WHEN LOAD??
             debugPrint("# FLASH ReaderModeViewModel.showReaderView missing readabilityContent", readerContent.pageURL)
             cancelReaderModeLoad(for: readerContent.pageURL)
             return
         }
-        let contentURL = readerContent.pageURL
         beginReaderModeLoad(for: contentURL)
-        debugPrint("# READERMODEBUTTON showReaderView beginLoad url=\(contentURL.absoluteString)")
         Task { @MainActor in
             guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
                 debugPrint("# FLASH ReaderModeViewModel.showReaderView contentURL mismatch", contentURL, readerContent.pageURL)
@@ -316,46 +297,40 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async throws {
         guard let content = try await readerContent.getContent() else {
-            debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent missing content")
             print("No content set to show in reader mode")
             cancelReaderModeLoad(for: readerContent.pageURL)
             return
         }
         let url = content.url
-        let renderBaseURL = ReaderContentLoader.readerLoaderURL(for: url) ?? readerContent.pageURL
-        debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent start", url, "renderTo", renderToSelector ?? "<root>")
+        let renderBaseURL: URL
+        if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            renderBaseURL = url
+        } else if let loaderURL = ReaderContentLoader.readerLoaderURL(for: url) {
+            renderBaseURL = loaderURL
+        } else {
+            renderBaseURL = readerContent.pageURL
+        }
         let renderTarget = renderToSelector ?? "<root>"
         logTrace(.readabilityProcessingStart, url: url, details: "renderTo=\(renderTarget) | frameIsMain=\(frameInfo?.isMainFrame ?? true)")
 
-        if let lastRenderedReadabilityURL {
-            debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent duplicate check", lastRenderedReadabilityURL.absoluteString, "candidate", url.absoluteString)
-            if lastRenderedReadabilityURL.matchesReaderURL(url) {
-                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent skipping duplicate render", url)
-                markReaderModeLoadComplete(for: url)
-                return
-            }
+        if let lastRenderedReadabilityURL, lastRenderedReadabilityURL.matchesReaderURL(url) {
+            markReaderModeLoadComplete(for: url)
+            return
         }
 
-        if let lastFallbackLoaderURL {
-            debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent clearing lastFallbackLoaderURL", lastFallbackLoaderURL.absoluteString)
+        if lastFallbackLoaderURL != nil {
             self.lastFallbackLoaderURL = nil
         }
         
         Task {
-            let jsStart = Date()
-            debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSStart", url.absoluteString)
             do {
                 try await scriptCaller.evaluateJavaScript("""
                 if (document.body) {
                     document.body.dataset.isNextLoadInReaderMode = 'true';
                 }
                 """)
-                debugPrint("# READERMODEBUTTON dataset set isNextLoadInReaderMode=true url=\(url.absoluteString)")
-                let duration = formattedInterval(Date().timeIntervalSince(jsStart))
-                debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSFinish", "duration=\(duration)", url.absoluteString)
             } catch {
-                let duration = formattedInterval(Date().timeIntervalSince(jsStart))
-                debugPrint("# READERTRACE", "readerMode.prepareNextLoadJSFailure", "duration=\(duration) | error=\(error.localizedDescription)", url.absoluteString)
+                debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent dataset flag failed", error.localizedDescription)
             }
         }
         
@@ -379,7 +354,6 @@ public class ReaderModeViewModel: ObservableObject {
 
         if !isReaderMode {
             isReaderMode = true
-            debugPrint("# READERMODEBUTTON isReaderMode toggled true url=\(url.absoluteString)")
         }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
@@ -393,7 +367,6 @@ public class ReaderModeViewModel: ObservableObject {
             var doc: SwiftSoup.Document?
 
             if let processReadabilityContent {
-                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent processReadabilityContent", url)
                 doc = await processReadabilityContent(
                     readabilityContent,
                     url,
@@ -413,7 +386,6 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                 )
             } else {
-                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent direct parse", url)
                 let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
                 let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
                 doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
@@ -425,7 +397,6 @@ public class ReaderModeViewModel: ObservableObject {
             }
             
             guard let doc else {
-                debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent doc missing", url)
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
@@ -476,13 +447,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent injecting into frame", frameInfo)
-                    let injectionStartedAt = Date()
-                    debugPrint(
-                        "# READERTRACE",
-                        "readerMode.jsInjectionStart",
-                        "target=frame | selector=\(renderToSelector ?? "<root>")",
-                        url.absoluteString
-                    )
                     try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
@@ -518,13 +482,6 @@ public class ReaderModeViewModel: ObservableObject {
                             "html": transformedContent,
                             "css": Readability.shared.css,
                         ], in: frameInfo)
-                    let injectionDuration = formattedInterval(Date().timeIntervalSince(injectionStartedAt))
-                    debugPrint(
-                        "# READERTRACE",
-                        "readerMode.jsInjectionFinish",
-                        "target=frame | duration=\(injectionDuration)",
-                        url.absoluteString
-                    )
                     logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
                     markReaderModeLoadComplete(for: url)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
@@ -541,12 +498,6 @@ public class ReaderModeViewModel: ObservableObject {
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
-                    )
-                    debugPrint(
-                        "# READERTRACE",
-                        "readerMode.navigatorDispatch",
-                        "bytes=\(transformedContent.utf8.count)",
-                        url.absoluteString
                     )
                 } else {
                     print("ReaderModeViewModel: readability HTML data missing for", url.absoluteString)
@@ -604,25 +555,15 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
 
-        if newState.pageURL.isReaderURLLoaderURL {
-            let syntheticCommit = consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL)
-            if syntheticCommit {
-                debugPrint(
-                    "# READERTRACE readerMode.onNavigationCommitted syntheticLoaderCommit url=\(newState.pageURL.absoluteString)",
-                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
-                )
-                if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(committedURL) {
-                    markReaderModeLoadComplete(for: committedURL)
-                }
-                return
-            } else {
-                debugPrint(
-                    "# READERTRACE readerMode.onNavigationCommitted loaderCommitUnexpected url=\(newState.pageURL.absoluteString)",
-                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                    "expectedSynthetic=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                    "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
-                )
+        if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
+            if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(committedURL) {
+                markReaderModeLoadComplete(for: committedURL)
             }
+            return
+        }
+
+        if newState.pageURL.isReaderURLLoaderURL {
+            // No-op: previously logged loader commit details for debugging
         }
 
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
@@ -780,7 +721,6 @@ public class ReaderModeViewModel: ObservableObject {
             }
             do {
                 let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false
-                debugPrint("# READERMODEBUTTON navFinished datasetNext=\(isNextReaderMode) url=\(newState.pageURL.absoluteString)")
                 if !isNextReaderMode {
                     if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(newState.pageURL) {
                         // Keep the spinner alive until the reader-mode initialization finishes.

@@ -104,9 +104,11 @@ private extension ReaderToastBar {
                 if let trailingAccessory, shouldShowTrailingAccessory {
                     Spacer(minLength: 0)
                     trailingAccessory
+                        .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
                 } else if onDismiss != nil {
                     Spacer(minLength: 0)
                     dismissButton
+                        .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
                 }
             }
             .padding(.vertical, toastStyle == .bordered ? 2 : 0)
