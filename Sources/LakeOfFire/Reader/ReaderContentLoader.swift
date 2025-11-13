@@ -77,6 +77,9 @@ public struct ReaderContentLoader {
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
             return contentURL
         }
+        if pageURL.isSnippetURL {
+            debugPrint("# FLASH ReaderContentLoader.getContentURL snippetLoaderURLMissing", pageURL.absoluteString)
+        }
         return nil
     }
     
@@ -179,7 +182,19 @@ public struct ReaderContentLoader {
             return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
-        return try await contentRef?.resolveOnMainActor()
+        if let resolved = try await contentRef?.resolveOnMainActor() {
+            debugPrint(
+                "# FLASH ReaderContentLoader.load directResult",
+                resolved.url.absoluteString,
+                "isSnippet=", resolved.url.isSnippetURL,
+                "hasHTML=", resolved.hasHTML,
+                "rssContainsFullContent=", resolved.rssContainsFullContent,
+                "isReaderModeByDefault=", resolved.isReaderModeByDefault,
+                "isFromClipboard=", resolved.isFromClipboard
+            )
+            return resolved
+        }
+        return nil
     }
     
     @MainActor
@@ -244,23 +259,85 @@ public struct ReaderContentLoader {
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
         let contentURL = content.url
+        debugPrint(
+            "# FLASH ReaderContentLoader.load invoked",
+            contentURL.absoluteString,
+            "isSnippet=", contentURL.isSnippetURL,
+            "hasHTML=", content.hasHTML,
+            "isReaderModeByDefault=", content.isReaderModeByDefault
+        )
         if ["http", "https"].contains(contentURL.scheme?.lowercased()) || contentURL.isSnippetURL {
             let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
                 let allContents = try await loadAll(url: contentURL)
+                if contentURL.isSnippetURL {
+                    debugPrint("# FLASH ReaderContentLoader.load snippetCandidates", contentURL.absoluteString, "count=", allContents.count)
+                }
                 for candidateContent in allContents {
                     guard candidateContent.isReaderModeByDefault else {
-                        break
+                        if contentURL.isSnippetURL {
+                            debugPrint(
+                                "# FLASH ReaderContentLoader.load skipCandidate",
+                                candidateContent.url.absoluteString,
+                                "readerModeByDefault=false"
+                            )
+                        }
+                        continue
                     }
                     if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
-                        guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
+                        if contentURL.isSnippetURL {
+                            debugPrint(
+                                "# FLASH ReaderContentLoader.load snippetReaderLoader",
+                                candidateContent.url.absoluteString,
+                                "hasHTML=true"
+                            )
+                        }
+                        guard let historyURL = readerLoaderURL(for: candidateContent.url) else {
+                            if contentURL.isSnippetURL {
+                                debugPrint("# FLASH ReaderContentLoader.load snippetReaderLoaderEncodingFailed", candidateContent.url.absoluteString)
+                            }
+                            return nil
+                        }
+                        if contentURL.isSnippetURL {
+                            debugPrint("# FLASH ReaderContentLoader.load snippetReaderLoaderResolved", historyURL.absoluteString)
+                        }
                         //                                debugPrint("!! load(content isREaderModebydefault", historyURL)
                         return historyURL
                     }
+                    if contentURL.isSnippetURL {
+                        debugPrint(
+                            "# FLASH ReaderContentLoader.load skipCandidate",
+                            candidateContent.url.absoluteString,
+                            "hasHTML=",
+                            candidateContent.hasHTML,
+                            "isReaderFileURL=",
+                            candidateContent.url.isReaderFileURL
+                        )
+                    }
+                }
+                if contentURL.isSnippetURL {
+                    debugPrint("# FLASH ReaderContentLoader.load snippetNoReaderLoaderMatch", contentURL.absoluteString)
                 }
                 return nil
             }.value
+
+            if let matchingURL {
+                return matchingURL
+            }
             
-            return matchingURL ?? content.url
+            if contentURL.isSnippetURL {
+                if !content.hasHTML {
+                    debugPrint("# FLASH ReaderContentLoader.load snippetFallbackNoHTML", contentURL.absoluteString)
+                    return content.url
+                }
+                if let fallbackURL = readerLoaderURL(for: contentURL) {
+                    debugPrint("# FLASH ReaderContentLoader.load snippetFallbackLoaderResolved", fallbackURL.absoluteString)
+                    return fallbackURL
+                } else {
+                    debugPrint("# FLASH ReaderContentLoader.load snippetFallbackLoaderEncodingFailed", contentURL.absoluteString)
+                }
+            }
+
+            return content.url
         }
         
         return content.url
@@ -281,6 +358,13 @@ public struct ReaderContentLoader {
     
     public static func snippetURL(key: String) -> URL? {
         return URL(string: "internal://local/snippet?key=\(key)")
+    }
+
+    public static func readerLoaderURL(for contentURL: URL) -> URL? {
+        guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            return nil
+        }
+        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
     }
     
     @MainActor

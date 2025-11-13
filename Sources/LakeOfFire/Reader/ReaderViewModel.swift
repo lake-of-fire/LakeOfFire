@@ -119,9 +119,22 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
         debugPrint("# FLASH ReaderViewModel.getContent start", pageURL)
-        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
+        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) {
+            debugPrint("# FLASH ReaderViewModel.getContent loaderRedirect", pageURL.absoluteString, "->", contentURL.absoluteString)
+            if let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
+                try Task.checkCancellation()
+                debugPrint("# FLASH ReaderViewModel.getContent resolved via loader", contentURL)
+                return content
+            } else {
+                debugPrint("# FLASH ReaderViewModel.getContent loaderRedirectFailed", contentURL.absoluteString)
+            }
+        }
+        if pageURL.isSnippetURL {
+            debugPrint("# FLASH ReaderViewModel.getContent snippetNoLoader", pageURL.absoluteString)
+        }
+        if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
-            debugPrint("# FLASH ReaderViewModel.getContent resolved via loader", contentURL)
+            debugPrint("# FLASH ReaderViewModel.getContent resolved direct", pageURL)
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
@@ -158,9 +171,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }()
         for contentRef in contentRefs {
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
-            if !newTitle.isEmpty, content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != title || content.author != author ?? "" {
+            let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
+            let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
+            if !finalTitle.isEmpty,
+               content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != finalTitle
+                || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
-                    content.title = newTitle
+                    content.title = finalTitle
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }

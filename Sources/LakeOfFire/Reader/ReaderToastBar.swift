@@ -47,6 +47,7 @@ public struct ReaderToastBar<Content: View>: View {
     
     @Environment(\.readerToastBarStyle) private var toastStyle
     @Environment(\.readerToastLayoutMode) private var layoutMode
+    @Environment(\.controlSize) private var controlSize
 
     public init(
         isPresented: Binding<Bool>,
@@ -100,7 +101,7 @@ private extension ReaderToastBar {
                     .padding(.leading, ReaderToastBarMetrics.horizontalContentPadding)
                     .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
                 
-                if let trailingAccessory {
+                if let trailingAccessory, shouldShowTrailingAccessory {
                     Spacer(minLength: 0)
                     trailingAccessory
                 } else if onDismiss != nil {
@@ -120,7 +121,7 @@ private extension ReaderToastBar {
     var inlineBody: some View {
         HStack(spacing: 8) {
             content
-            if let trailingAccessory {
+            if let trailingAccessory, shouldShowTrailingAccessory {
                 trailingAccessory
             } else if onDismiss != nil {
                 dismissButton
@@ -155,5 +156,9 @@ private extension ReaderToastBar {
                 view.foregroundColor(.secondary)
             }
         }
+    }
+    
+    private var shouldShowTrailingAccessory: Bool {
+        !(controlSize == .small || controlSize == .mini)
     }
 }

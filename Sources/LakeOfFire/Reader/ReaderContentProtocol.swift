@@ -5,6 +5,19 @@ import SwiftUtilities
 import RealmSwiftGaps
 import BigSyncKit
 
+public let clipboardIndicatorPrefixPattern = #"^(?:📎\s*)+"#
+
+public extension String {
+    func removingClipboardIndicatorPrefix() -> String {
+        replacingOccurrences(of: clipboardIndicatorPrefixPattern, with: "", options: [.regularExpression])
+    }
+    
+    func removingClipboardIndicatorIfNeeded(_ shouldRemove: Bool) -> String {
+        guard shouldRemove else { return self }
+        return removingClipboardIndicatorPrefix()
+    }
+}
+
 @globalActor
 public actor ReaderContentReadingProgressLoader {
     public static var shared = ReaderContentReadingProgressLoader()
@@ -264,7 +277,7 @@ public extension ReaderContentProtocol {
     }
     
     var hasHTML: Bool {
-        if rssContainsFullContent || isFromClipboard {
+        if rssContainsFullContent || isFromClipboard || url.isSnippetURL {
             if htmlContent != nil {
                 return true
             }
@@ -275,16 +288,21 @@ public extension ReaderContentProtocol {
         return false
     }
     
+    var needsClipboardIndicator: Bool {
+        isFromClipboard || url.isSnippetURL
+    }
+    
     var titleForDisplay: String {
         get {
-            var title = title.removingHTMLTags() ?? title
-            if title.isEmpty {
-                title = "Untitled"
+            var displayTitle = title.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
+            displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+            if displayTitle.isEmpty {
+                displayTitle = "Untitled"
             }
-            if isFromClipboard {
-                return "📎 " + title
+            if needsClipboardIndicator {
+                return "📎 " + displayTitle
             }
-            return title
+            return displayTitle
         }
     }
     
@@ -417,10 +435,12 @@ public extension ReaderContentProtocol {
             }()
         }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+        let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(isFromClipboard || pageURL.isSnippetURL)
+
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL)) {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
-                record.title = title
+                record.title = sanitizedTitle
                 record.imageUrl = imageURL
                 record.sourceIconURL = sourceIconURL
                 record.isFromClipboard = isFromClipboard
@@ -428,6 +448,8 @@ public extension ReaderContentProtocol {
                 if rssContainsFullContent {
                     record.content = content
                 }
+                record.isReaderModeByDefault = isReaderModeByDefault
+                record.isReaderModeAvailable = isReaderModeAvailable
                 record.voiceFrameUrl = voiceFrameUrl
                 record.audioSubtitlesURL = audioSubtitlesURL
                 for audioURL in voiceAudioURLs {
@@ -450,7 +472,7 @@ public extension ReaderContentProtocol {
         } else {
             let record = HistoryRecord()
             record.url = pageURL
-            record.title = title
+            record.title = sanitizedTitle
             record.imageUrl = imageURL
             record.sourceIconURL = sourceIconURL
             record.rssContainsFullContent = rssContainsFullContent

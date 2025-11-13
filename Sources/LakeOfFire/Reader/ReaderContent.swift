@@ -64,6 +64,15 @@ public class ReaderContent: ObservableObject {
                 return nil
             }
             self?.content = content
+            let contentSummary = [
+                "url=\(content.url.absoluteString)",
+                "isSnippet=\(content.url.isSnippetURL)",
+                "hasHTML=\(content.hasHTML)",
+                "isReaderModeByDefault=\(content.isReaderModeByDefault)",
+                "rssContainsFullContent=\(content.rssContainsFullContent)",
+                "isFromClipboard=\(content.isFromClipboard)"
+            ].joined(separator: " | ")
+            debugPrint("# FLASH ReaderContent.load contentAssigned", contentSummary)
             debugPrint("# FLASH ReaderContent.load task set content", content.url)
             return content
         }

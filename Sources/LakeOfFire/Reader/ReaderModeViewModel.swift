@@ -23,11 +23,14 @@ public class ReaderModeViewModel: ObservableObject {
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     private var lastFallbackLoaderURL: URL?
     private var lastRenderedReadabilityURL: URL?
+    private var expectedSyntheticReaderLoaderURL: URL?
     private var pendingReaderModeURL: URL?
     private var loadTraceRecords: [String: ReaderModeLoadTraceRecord] = [:]
     
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
+    
+    
     @Published var readabilityContent: String? = nil
     @Published var readabilityContainerSelector: String? = nil
     @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil
@@ -74,6 +77,38 @@ public class ReaderModeViewModel: ObservableObject {
 
     private func formattedInterval(_ interval: TimeInterval) -> String {
         String(format: "%.3fs", interval)
+    }
+
+    private func expectSyntheticReaderLoaderCommit(for baseURL: URL?) {
+        guard let baseURL, baseURL.isReaderURLLoaderURL else {
+            if expectedSyntheticReaderLoaderURL != nil {
+                debugPrint("# READERTRACE readerMode.expectSyntheticReaderLoaderCommit cleared")
+            }
+            expectedSyntheticReaderLoaderURL = nil
+            return
+        }
+        expectedSyntheticReaderLoaderURL = baseURL
+        debugPrint("# READERTRACE readerMode.expectSyntheticReaderLoaderCommit url=\(baseURL.absoluteString)")
+    }
+
+    @discardableResult
+    private func consumeSyntheticReaderLoaderExpectationIfNeeded(for url: URL) -> Bool {
+        guard let expectedSyntheticReaderLoaderURL else { return false }
+
+        func matchesLoaderURL(_ lhs: URL, _ rhs: URL) -> Bool {
+            if lhs.matchesReaderURL(rhs) || rhs.matchesReaderURL(lhs) {
+                return true
+            }
+            return urlsMatchWithoutHash(lhs, rhs)
+        }
+
+        if matchesLoaderURL(expectedSyntheticReaderLoaderURL, url) {
+            debugPrint("# READERTRACE readerMode.syntheticReaderLoaderCommitDetected url=\(url.absoluteString)")
+            self.expectedSyntheticReaderLoaderURL = nil
+            return true
+        }
+
+        return false
     }
 
     private func traceKey(for url: URL) -> String {
@@ -203,6 +238,16 @@ public class ReaderModeViewModel: ObservableObject {
         guard let pendingReaderModeURL else { return false }
         return pendingReaderModeURL.matchesReaderURL(url)
     }
+    
+    func isReaderModeHandlingURL(_ url: URL) -> Bool {
+        if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) {
+            return true
+        }
+        if let lastRenderedReadabilityURL, lastRenderedReadabilityURL.matchesReaderURL(url) {
+            return true
+        }
+        return false
+    }
 
 //    @MainActor
 //    public func invalidateLastRenderedReadabilityURL() {
@@ -277,6 +322,7 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let url = content.url
+        let renderBaseURL = ReaderContentLoader.readerLoaderURL(for: url) ?? readerContent.pageURL
         debugPrint("# READERTRACE ReaderModeViewModel.showReadabilityContent start", url, "renderTo", renderToSelector ?? "<root>")
         let renderTarget = renderToSelector ?? "<root>"
         logTrace(.readabilityProcessingStart, url: url, details: "renderTo=\(renderTarget) | frameIsMain=\(frameInfo?.isMainFrame ?? true)")
@@ -489,11 +535,12 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     debugPrint("# FLASH ReaderModeViewModel.showReadabilityContent navigator.load htmlData", url)
                     logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedContent.utf8.count)")
+                    expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     navigator.load(
                         htmlData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
-                        baseURL: url
+                        baseURL: renderBaseURL
                     )
                     debugPrint(
                         "# READERTRACE",
@@ -536,8 +583,18 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         try Task.checkCancellation()
-        
         let committedURL = content.url
+        if committedURL.isSnippetURL {
+            debugPrint(
+                "# FLASH ReaderModeViewModel.onNavigationCommitted snippetState",
+                "url=\(committedURL.absoluteString)",
+                "hasHTML=\(content.hasHTML)",
+                "isReaderModeByDefault=\(content.isReaderModeByDefault)",
+                "rssContainsFullContent=\(content.rssContainsFullContent)",
+                "contentDataExists=\(content.content != nil)"
+            )
+        }
+
         guard committedURL.matchesReaderURL(newState.pageURL) else {
             debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted URL mismatch", committedURL, newState.pageURL)
             print("URL mismatch in ReaderModeViewModel onNavigationCommitted", committedURL, newState.pageURL)
@@ -547,10 +604,44 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
 
+        if newState.pageURL.isReaderURLLoaderURL {
+            let syntheticCommit = consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL)
+            if syntheticCommit {
+                debugPrint(
+                    "# READERTRACE readerMode.onNavigationCommitted syntheticLoaderCommit url=\(newState.pageURL.absoluteString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+                )
+                if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(committedURL) {
+                    markReaderModeLoadComplete(for: committedURL)
+                }
+                return
+            } else {
+                debugPrint(
+                    "# READERTRACE readerMode.onNavigationCommitted loaderCommitUnexpected url=\(newState.pageURL.absoluteString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "expectedSynthetic=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                    "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+                )
+            }
+        }
+
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
         let isReaderModeVerified = content.isReaderModeByDefault
         try Task.checkCancellation()
-        
+
+        if newState.pageURL.isReaderURLLoaderURL,
+           pendingReaderModeURL == nil,
+           let lastRenderedReadabilityURL,
+           lastRenderedReadabilityURL.matchesReaderURL(committedURL) {
+            debugPrint(
+                "# FLASH ReaderModeViewModel.onNavigationCommitted skipping redundant reader loader navigation",
+                newState.pageURL,
+                "for",
+                committedURL
+            )
+            return
+        }
+
         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
             withAnimation {
                 if isReaderModeVerified {
@@ -587,20 +678,29 @@ public class ReaderModeViewModel: ObservableObject {
                     }
 
                     let hasReadabilityMarkup = html.range(of: #"<body.*?class=['"].*?readability-mode.*?['"]>"#, options: .regularExpression) != nil || html.range(of: #"<body.*?data-is-next-load-in-reader-mode=['"]true['"]>"#, options: .regularExpression) != nil
-                    let shouldUseReadability = committedURL.isSnippetURL || hasReadabilityMarkup
+                    let isSnippetURL = committedURL.isSnippetURL
+                    let shouldUseReadability = hasReadabilityMarkup || isSnippetURL
+                    debugPrint(
+                        "# FLASH ReaderModeViewModel.onNavigationCommitted readabilityDecision",
+                        committedURL,
+                        "hasReadabilityMarkup=",
+                        hasReadabilityMarkup,
+                        "isSnippetURL=",
+                        isSnippetURL,
+                        "shouldUseReadability=",
+                        shouldUseReadability
+                    )
 
                     if shouldUseReadability {
                         readabilityContent = html
-                        logTrace(
-                            .readabilityContentReady,
-                            url: committedURL,
-                            details: "hasReadabilityMarkup=\(hasReadabilityMarkup) | isSnippet=\(committedURL.isSnippetURL)"
-                        )
-                        if committedURL.isSnippetURL {
-                            debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted snippet readabilityContent captured", committedURL)
+                        let details: String
+                        if hasReadabilityMarkup {
+                            details = "hasReadabilityMarkup=true | snippet=\(isSnippetURL)"
                         } else {
-                            debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted readabilityContent captured", committedURL)
+                            details = "reason=snippetBootstrap"
                         }
+                        logTrace(.readabilityContentReady, url: committedURL, details: details)
+                        debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted readabilityContent captured", committedURL)
                         showReaderView(
                             readerContent: readerContent,
                             scriptCaller: scriptCaller
@@ -616,6 +716,7 @@ public class ReaderModeViewModel: ObservableObject {
                         if let htmlData = html.data(using: .utf8) {
                             debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted navigator.load fallback html", committedURL)
                             Task { @MainActor in
+                                expectSyntheticReaderLoaderCommit(for: committedURL)
                                 navigator?.load(
                                     htmlData,
                                     mimeType: "text/html",
@@ -636,6 +737,7 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted navigator.load fallback request", committedURL)
                     logTrace(.navigatorLoad, url: committedURL, details: "mode=fallback-request")
+                    expectSyntheticReaderLoaderCommit(for: nil)
                     navigator.load(URLRequest(url: committedURL))
                 }
             } else {
@@ -646,6 +748,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted navigator.load fallback request", committedURL)
                 logTrace(.navigatorLoad, url: committedURL, details: "mode=fallback-request")
+                expectSyntheticReaderLoaderCommit(for: nil)
                 navigator.load(URLRequest(url: committedURL))
             }
 //        } else {

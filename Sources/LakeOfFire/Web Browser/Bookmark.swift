@@ -159,10 +159,12 @@ public extension Bookmark {
     ) async throws -> Bookmark {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let pk = Bookmark.makePrimaryKey(url: url)
+        let shouldStripClipboardIndicator = isFromClipboard || (url?.isSnippetURL ?? false)
+        let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
         if let bookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: pk) {
             //            await realm.asyncRefresh()
             try await realm.asyncWrite {
-                bookmark.title = title
+                bookmark.title = sanitizedTitle
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
                 if let html = html {
@@ -193,7 +195,7 @@ public extension Bookmark {
                 bookmark.updateCompoundKey()
                 bookmark.url = ReaderContentLoader.snippetURL(key: bookmark.compoundKey) ?? bookmark.url
             }
-            bookmark.title = title
+            bookmark.title = sanitizedTitle
             bookmark.imageUrl = imageUrl
             bookmark.sourceIconURL = sourceIconURL
             bookmark.publicationDate = publicationDate
