@@ -603,22 +603,6 @@ public class ReaderModeViewModel: ObservableObject {
                         } else if (root) {
                             root.outerHTML = serialized
                         }
-                        try {
-                            const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
-                            if (handler) {
-                                handler.postMessage({
-                                    message: "# READER snippetLoader.injected",
-                                    context: "frame",
-                                    targetSelector: renderToSelector || "<root>",
-                                    htmlBytes: insertBytes,
-                                    windowURL: window.location.href,
-                                    pageURL: document.location.href
-                                })
-                            }
-                        } catch (error) {
-                            try { console.log("snippetLoader.injected log error", error) } catch (_) {}
-                        }
-                        
                         let style = document.createElement('style')
                         style.textContent = css
                         document.head.appendChild(style)
@@ -640,19 +624,6 @@ public class ReaderModeViewModel: ObservableObject {
                         return
                     }
                     let transformedBytes = transformedContent.utf8.count
-                    let transformedPreview = snippetPreview(transformedContent, maxLength: 240)
-                    debugPrint(
-                        "# READER readability.navigatorLoad",
-                        "url=\(url.absoluteString)",
-                        "base=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedBytes)"
-                    )
-                    debugPrint(
-                        "# READER readability.navigatorLoad.preview",
-                        "url=\(url.absoluteString)",
-                        "bytes=\(transformedBytes)",
-                        "preview=\(transformedPreview)"
-                    )
                     logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedBytes)")
                     expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     navigator.load(
@@ -661,23 +632,6 @@ public class ReaderModeViewModel: ObservableObject {
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
                     )
-                    debugPrint(
-                        "# READER readability.navigatorLoad.dispatched",
-                        "url=\(url.absoluteString)",
-                        "base=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedBytes)"
-                    )
-                    if url.isSnippetURL {
-                        let preview = snippetPreview(transformedContent, maxLength: 240) ?? "<empty>"
-                        debugPrint(
-                            "# READER snippetLoader.navigatorLoad",
-                            "contentURL=\(url.absoluteString)",
-                            "base=\(renderBaseURL.absoluteString)",
-                            "bytes=\(transformedContent.utf8.count)",
-                            "preview=\(preview)"
-                        )
-                        injectSnippetLoaderProbe(scriptCaller: scriptCaller, baseURL: renderBaseURL)
-                    }
                 } else {
                     print("ReaderModeViewModel: readability HTML data missing for", url.absoluteString)
                     debugPrint("# READER readability.navigatorLoad missingData", "url=\(url.absoluteString)")
@@ -726,115 +680,6 @@ public class ReaderModeViewModel: ObservableObject {
         if trimmed.count <= maxLength { return trimmed }
         let idx = trimmed.index(trimmed.startIndex, offsetBy: maxLength)
         return String(trimmed[..<idx]) + "…"
-    }
-
-    private func logDomSnapshot(
-        pageURL: URL,
-        scriptCaller: WebViewScriptCaller,
-        reason: String
-    ) {
-        Task { @MainActor [weak scriptCaller] in
-            guard let scriptCaller else { return }
-            do {
-                if let jsonString = try await scriptCaller.evaluateJavaScript(
-                    """
-                    (function () {
-                        const body = document.body;
-                        const readerContent = document.getElementById("reader-content");
-                        const bodyHTMLBytes = body && typeof body.innerHTML === "string" ? body.innerHTML.length : 0;
-                        const bodyTextBytes = body && typeof body.textContent === "string" ? body.textContent.length : 0;
-                        const readerContentHTMLBytes = readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0;
-                        const readerContentTextBytes = readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0;
-                        const payload = {
-                            hasBody: !!body,
-                            bodyHTMLBytes,
-                            bodyTextBytes,
-                            hasReaderContent: !!readerContent,
-                            readerContentHTMLBytes,
-                            readerContentTextBytes,
-                            readyState: document.readyState,
-                            windowURL: window.location.href,
-                            bodyPreview: body && typeof body.innerHTML === "string" ? body.innerHTML.slice(0, 240) : null,
-                            readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null
-                        };
-                        return JSON.stringify(payload);
-                    })();
-                    """
-                ) as? String,
-                   let data = jsonString.data(using: .utf8) {
-                    do {
-                        let domInfo = try JSONSerialization.jsonObject(with: data)
-                        debugPrint("# READER readerMode.domSnapshot", "reason=\(reason)", "pageURL=\(pageURL.absoluteString)", "info=\(domInfo)")
-                    } catch {
-                        let preview = String(jsonString.prefix(240))
-                        debugPrint(
-                            "# READER readerMode.domSnapshot",
-                            "reason=\(reason)",
-                            "pageURL=\(pageURL.absoluteString)",
-                            "info=<invalid json>",
-                            "rawPreview=\(preview)"
-                        )
-                    }
-                } else {
-                    debugPrint("# READER readerMode.domSnapshot", "reason=\(reason)", "pageURL=\(pageURL.absoluteString)", "info=<serialization failed>")
-                }
-            } catch {
-                debugPrint("# FLASH ReaderModeViewModel.domSnapshot failed", reason, error.localizedDescription)
-            }
-        }
-    }
-    
-    @MainActor
-    private func injectSnippetLoaderProbe(
-        scriptCaller: WebViewScriptCaller,
-        baseURL: URL
-    ) {
-        Task { @MainActor [weak scriptCaller] in
-            guard let scriptCaller else { return }
-            do {
-                debugPrint("# READER snippetLoader.injectProbe.injecting", "baseURL=\(baseURL.absoluteString)")
-                try await scriptCaller.evaluateJavaScript(
-                    """
-                    (function () {
-                        const logState = () => {
-                            try {
-                                const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
-                                if (!handler || typeof handler.postMessage !== "function") {
-                                    return
-                                }
-                                const readerContent = document.getElementById("reader-content")
-                                const body = document.body
-                                const bodyHTMLBytes = body && typeof body.innerHTML === "string" ? body.innerHTML.length : 0
-                                const bodyTextBytes = body && typeof body.textContent === "string" ? body.textContent.length : 0
-                                const readerContentHTMLBytes = readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0
-                                const readerContentTextBytes = readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0
-                                handler.postMessage({
-                                    message: "# READER snippetLoader.injectProbe",
-                                    stage: document.readyState,
-                                    hasBody: !!body,
-                                    bodyHTMLBytes,
-                                    bodyTextBytes,
-                                    hasReaderContent: !!readerContent,
-                                    readerContentHTMLBytes,
-                                    readerContentTextBytes,
-                                    bodyPreview: body && typeof body.innerHTML === "string" ? body.innerHTML.slice(0, 240) : null,
-                                    readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null,
-                                    windowURL: window.location.href,
-                                    pageURL: document.location.href
-                                })
-                            } catch (error) {
-                                try { console.log("snippetLoader.injectProbe error", error) } catch (_) {}
-                            }
-                        }
-                        logState()
-                        document.addEventListener("readystatechange", logState)
-                    })();
-                    """
-                )
-            } catch {
-                debugPrint("# FLASH ReaderModeViewModel.injectSnippetProbe error", error.localizedDescription)
-            }
-        }
     }
 
     @MainActor
@@ -1105,12 +950,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
             }
         }
-        logDomSnapshot(pageURL: newState.pageURL, scriptCaller: scriptCaller, reason: isLoaderURL ? "loader-navFinished" : "navFinished")
-        Task { [weak scriptCaller] in
-            try await Task.sleep(nanoseconds: 300_000_000)
-            guard let scriptCaller else { return }
-            logDomSnapshot(pageURL: newState.pageURL, scriptCaller: scriptCaller, reason: isLoaderURL ? "loader-navFinished+300ms" : "navFinished+300ms")
-        }
     }
 
     @MainActor
@@ -1125,12 +964,6 @@ public class ReaderModeViewModel: ObservableObject {
         error: Error,
         isProvisional: Bool
     ) {
-        debugPrint(
-            "# READER readerMode.navigationError",
-            "pageURL=\(pageURL.absoluteString)",
-            "provisional=\(isProvisional)",
-            "error=\(error.localizedDescription)"
-        )
         cancelReaderModeLoad(for: pageURL)
     }
 }

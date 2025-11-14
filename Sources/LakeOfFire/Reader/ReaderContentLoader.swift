@@ -213,21 +213,7 @@ public struct ReaderContentLoader {
             let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
             
-            let htmlPreview = snippetDebugPreview(html)
-            debugPrint(
-                "# READER snippetCreate.html",
-                "length=\(html.utf8.count)",
-                "preview=\(htmlPreview)"
-            )
-
             let data = html.readerContentData
-            let htmlBytes = html.utf8.count
-            let compressedBytes = data?.count ?? 0
-            debugPrint(
-                "# READER snippetCreate.compress",
-                "htmlBytes=\(htmlBytes)",
-                "compressedBytes=\(compressedBytes)"
-            )
             
             let bookmark = bookmarkRealm.objects(Bookmark.self)
                 .sorted(by: \.createdAt, ascending: false)
@@ -245,13 +231,6 @@ public struct ReaderContentLoader {
             let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
             
             if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
-                debugPrint(
-                    "# READER snippetCreate.reuse",
-                    "url=\(match.url.absoluteString)",
-                    "htmlBytes=\(htmlBytes)",
-                    "compressedBytes=\(compressedBytes)",
-                    "preview=\(htmlPreview)"
-                )
                 return ReaderContentLoader.ContentReference(content: match)
             }
             
@@ -268,14 +247,6 @@ public struct ReaderContentLoader {
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
-            debugPrint(
-                "# READER snippetCreate.persisted",
-                "key=\(historyRecord.compoundKey)",
-                "url=\(historyRecord.url.absoluteString)",
-                "htmlBytes=\(htmlBytes)",
-                "compressedBytes=\(compressedBytes)",
-                "preview=\(htmlPreview)"
-            )
             
             return ReaderContentLoader.ContentReference(content: historyRecord)
         }()
@@ -291,34 +262,10 @@ public struct ReaderContentLoader {
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
         let contentURL = content.url
-        debugPrint(
-            "# FLASH ReaderContentLoader.load invoked",
-            contentURL.absoluteString,
-            "isSnippet=", contentURL.isSnippetURL,
-            "hasHTML=", content.hasHTML,
-            "isReaderModeByDefault=", content.isReaderModeByDefault
-        )
         if contentURL.isSnippetURL {
-            debugPrint(
-                "# READER snippet.loaderRequest",
-                "contentURL=\(contentURL.absoluteString)",
-                "hasHTML=\(content.hasHTML)",
-                "pendingPageURL=\(content.url.absoluteString)"
-            )
             if let loaderURL = readerLoaderURL(for: contentURL) {
-                debugPrint(
-                    "# READER snippetLoader.redirect",
-                    "snippetURL=\(contentURL.absoluteString)",
-                    "loaderURL=\(loaderURL.absoluteString)",
-                    "hasHTML=\(content.hasHTML)"
-                )
                 return loaderURL
             } else {
-                debugPrint(
-                    "# READER snippetLoader.fallback",
-                    "snippetURL=\(contentURL.absoluteString)",
-                    "hasHTML=\(content.hasHTML)"
-                )
                 return content.url
             }
         }
