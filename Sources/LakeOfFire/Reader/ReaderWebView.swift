@@ -60,6 +60,18 @@ fileprivate class ReaderWebViewHandler {
     func handleNewURL(state: WebViewState) async throws {
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating)
 
+        if state.pageURL.isReaderURLLoaderURL,
+           let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: state.pageURL),
+           contentURL.isSnippetURL {
+            debugPrint(
+                "# READER snippet.loaderNavigation",
+                "loaderURL=\(state.pageURL.absoluteString)",
+                "contentURL=\(contentURL.absoluteString)",
+                "provisional=\(state.isProvisionallyNavigating)",
+                "loading=\(state.isLoading)"
+            )
+        }
+
         if state.pageURL.absoluteString == "about:blank" {
             debugPrint("# FLASH ReaderWebViewHandler.handleNewURL native reader view", state.pageURL)
             let cancelURL = readerContent.content?.url ?? readerContent.pageURL
@@ -154,6 +166,13 @@ fileprivate class ReaderWebViewHandler {
         }
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed event", state.pageURL)
         navigationTaskManager.startOnNavigationFailed { @MainActor in
+            if let error = state.error {
+                self.readerModeViewModel.onNavigationError(
+                    pageURL: state.pageURL,
+                    error: error,
+                    isProvisional: state.isProvisionallyNavigating
+                )
+            }
             self.readerModeViewModel.onNavigationFailed(newState: state)
             // no external callback here
         }

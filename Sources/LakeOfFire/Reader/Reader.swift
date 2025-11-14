@@ -119,7 +119,7 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .modifier(ReaderLoadingProgressOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading))
+        .modifier(ReaderLoadingProgressOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading, context: "ReaderWebView"))
     }
 }
 
@@ -161,7 +161,6 @@ public extension WebViewNavigator {
                     let trackingContent = (previouslyLoadedContent ?? content)
                     let trackingURL = trackingContent.url
                     let shouldTriggerReaderMode = trackingContent.isReaderModeByDefault
-                        && !trackingURL.isSnippetURL
                     if shouldTriggerReaderMode {
                         readerModeViewModel.beginReaderModeLoad(for: trackingURL)
                     } else {

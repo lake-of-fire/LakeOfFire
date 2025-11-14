@@ -15,6 +15,11 @@ private let readerModeDatasetProbeScript = """
         return JSON.stringify(summary);
     }
     const ds = document.body.dataset ?? {};
+    const bodyHTMLBytes = typeof document.body.innerHTML === "string" ? document.body.innerHTML.length : 0;
+    const bodyTextBytes = typeof document.body.textContent === "string" ? document.body.textContent.length : 0;
+    const readerContentNode = document.getElementById("reader-content");
+    const readerContentHTMLBytes = readerContentNode && typeof readerContentNode.innerHTML === "string" ? readerContentNode.innerHTML.length : 0;
+    const readerContentTextBytes = readerContentNode && typeof readerContentNode.textContent === "string" ? readerContentNode.textContent.length : 0;
     const dataset = {};
     [
         "manabiReaderModeAvailable",
@@ -40,7 +45,11 @@ private let readerModeDatasetProbeScript = """
     const statsObject = (typeof window.manabi_latestContentStats === "object" && window.manabi_latestContentStats) ? window.manabi_latestContentStats : null;
     summary.hasReadabilityClass = document.body.classList.contains("readability-mode");
     summary.readerHeaderPresent = !!document.getElementById("reader-header");
-    summary.readerContentPresent = !!document.getElementById("reader-content");
+    summary.readerContentPresent = !!readerContentNode;
+    summary.bodyHTMLBytes = bodyHTMLBytes;
+    summary.bodyTextBytes = bodyTextBytes;
+    summary.readerContentHTMLBytes = readerContentHTMLBytes;
+    summary.readerContentTextBytes = readerContentTextBytes;
     summary.dataset = dataset;
     summary.swiftuiFrameUUID = ds.swiftuiwebviewFrameUuid ?? null;
     summary.trackedWordCount = trackedWordCount;
@@ -100,6 +109,34 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
                     "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
                 )
+            }),
+            ("print", { message in
+                guard let payload = message.body as? [String: Any] else {
+                    debugPrint("# READER readabilityInit.swiftLog", "body=\(String(describing: message.body))")
+                    return
+                }
+                let logMessage = payload["message"] as? String ?? "# READER SwiftReadability.print"
+                var components: [String] = []
+                if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
+                    components.append("windowURL=\(windowURL)")
+                }
+                if let pageURL = payload["pageURL"] as? String, !pageURL.isEmpty {
+                    components.append("pageURL=\(pageURL)")
+                }
+                for (key, value) in payload where key != "message" && key != "windowURL" && key != "pageURL" {
+                    let printable: String
+                    if value is NSNull {
+                        printable = "null"
+                    } else {
+                        printable = String(describing: value)
+                    }
+                    components.append("\(key)=\(printable)")
+                }
+                if components.isEmpty {
+                    debugPrint(logMessage)
+                } else {
+                    debugPrint(logMessage, components.joined(separator: " "))
+                }
             }),
             ("readerOnError", { [weak self] message in
                 guard let self else { return }
@@ -167,12 +204,31 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let content = try? await ReaderViewModel.getContent(forURL: url) else {
                     return
                 }
+                let isSnippetURL = url.isSnippetURL
+                if isSnippetURL {
+                    debugPrint(
+                        "# READER snippet.readabilityParsed",
+                        "pageURL=\(url.absoluteString)",
+                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                    )
+                }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
                 }
                 guard !url.isReaderURLLoaderURL else { return }
-                
+
+                if isSnippetURL, readerModeViewModel.readabilityContent != nil {
+                    debugPrint(
+                        "# READER readability.snippetReset",
+                        "url=\(url.absoluteString)",
+                        "reason=existingReadabilityState"
+                    )
+                    readerModeViewModel.readabilityContent = nil
+                    readerModeViewModel.readabilityContainerSelector = nil
+                    readerModeViewModel.readabilityContainerFrameInfo = nil
+                }
+
                 try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.isNextLoadInReaderMode = 'false';
@@ -204,60 +260,128 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
-                guard let url = result.windowURL,
-                      urlsMatchWithoutHash(url, readerViewModel.state.pageURL),
-                      let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                guard let windowURL = result.windowURL,
+                      urlsMatchWithoutHash(windowURL, readerViewModel.state.pageURL),
+                      let content = try? await ReaderViewModel.getContent(forURL: windowURL) else {
                     return
                 }
-                if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
+                let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: windowURL) ?? windowURL
+                let isSnippetURL = resolvedURL.isSnippetURL
+                if isSnippetURL {
+                    debugPrint(
+                        "# READER snippet.readabilityParsed",
+                        "windowURL=\(windowURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                    )
+                    debugPrint(
+                        "# READER snippet.readabilityHTML",
+                        "windowURL=\(windowURL.absoluteString)",
+                        "bytes=\(result.outputHTML.utf8.count)",
+                        "html=\(result.outputHTML)"
+                    )
+                    let hasReaderContent = result.outputHTML.contains("id=\"reader-content\"")
+                    debugPrint(
+                        "# READER readability.snippetOutput",
+                        "windowURL=\(windowURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "hasReaderContent=\(hasReaderContent)"
+                    )
+                }
+                if let bodySummary = summarizeBodyMarkup(from: result.outputHTML) {
+                    debugPrint(
+                        "# READER readability.parsedBody",
+                        "windowURL=\(windowURL.absoluteString)",
+                        "contentBytes=\(result.outputHTML.utf8.count)",
+                        "body=\(bodySummary)"
+                    )
+                }
+                if !message.frameInfo.isMainFrame,
+                   readerModeViewModel.readabilityContent != nil,
+                   readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
                 }
                 guard !result.outputHTML.isEmpty else {
+                    if isSnippetURL {
+                        debugPrint(
+                            "# READER readability.empty",
+                            "windowURL=\(windowURL.absoluteString)",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "snippet=true"
+                        )
+                    }
                     try? await content.asyncWrite { _, content in
                         content.isReaderModeAvailable = false
                         content.refreshChangeMetadata(explicitlyModified: true)
                     }
                     return
                 }
-                
-                guard !url.isNativeReaderView else { return }
+
+                guard !resolvedURL.isNativeReaderView else { return }
 
                 let outputLooksLikeReader = result.outputHTML.contains("class=\"readability-mode\"") &&
                     result.outputHTML.contains("id=\"reader-content\"")
 
                 let hasProcessedReadability = readerModeViewModel.readabilityContent != nil
-                if (readerModeViewModel.isReaderMode || outputLooksLikeReader) && hasProcessedReadability {
-                    await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: url, frameInfo: message.frameInfo)
-                    try? await scriptCaller.evaluateJavaScript("""
-                        if (document.body) {
-                            document.body.dataset.manabiReaderModeAvailable = 'false';
-                            document.body.dataset.manabiReaderModeAvailableFor = '';
-                            document.body.dataset.isNextLoadInReaderMode = 'false';
-                            if (!document.body.classList.contains('readability-mode')) {
-                                document.body.classList.add('readability-mode');
+                let shouldShortCircuit = (readerModeViewModel.isReaderMode || outputLooksLikeReader) && hasProcessedReadability
+                if shouldShortCircuit {
+                    let shortCircuitReason = readerModeViewModel.isReaderMode ? "readerModeActive" : "readerMarkupDetected"
+                    if isSnippetURL {
+                        debugPrint(
+                            "# READER readability.shortCircuitSkipped",
+                            "windowURL=\(windowURL.absoluteString)",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "reason=\(shortCircuitReason)",
+                            "snippet=true"
+                        )
+                    } else {
+                        debugPrint(
+                            "# READER readability.shortCircuit",
+                            "windowURL=\(windowURL.absoluteString)",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "reason=\(shortCircuitReason)",
+                            "snippet=false"
+                        )
+                        await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: windowURL, frameInfo: message.frameInfo)
+                        try? await scriptCaller.evaluateJavaScript("""
+                            if (document.body) {
+                                document.body.dataset.manabiReaderModeAvailable = 'false';
+                                document.body.dataset.manabiReaderModeAvailableFor = '';
+                                document.body.dataset.isNextLoadInReaderMode = 'false';
+                                if (!document.body.classList.contains('readability-mode')) {
+                                    document.body.classList.add('readability-mode');
+                                }
+                            }
+                            """)
+                        try? await content.asyncWrite { _, content in
+                            if content.isReaderModeAvailable {
+                                content.isReaderModeAvailable = false
+                                content.refreshChangeMetadata(explicitlyModified: true)
                             }
                         }
-                        """)
-                    try? await content.asyncWrite { _, content in
-                        if content.isReaderModeAvailable {
-                            content.isReaderModeAvailable = false
-                            content.refreshChangeMetadata(explicitlyModified: true)
+                        if !readerModeViewModel.isReaderMode {
+                            readerModeViewModel.isReaderMode = true
                         }
+                        if readerModeViewModel.isReaderModeLoadPending(for: resolvedURL) {
+                            readerModeViewModel.markReaderModeLoadComplete(for: resolvedURL)
+                        }
+                        await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.postUpdate", url: windowURL, frameInfo: message.frameInfo)
+                        return
                     }
-                    if !readerModeViewModel.isReaderMode {
-                        readerModeViewModel.isReaderMode = true
-                    }
-                    if readerModeViewModel.isReaderModeLoadPending(for: url) {
-                        readerModeViewModel.markReaderModeLoadComplete(for: url)
-                    }
-                    await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.postUpdate", url: url, frameInfo: message.frameInfo)
-                    return
                 }
 
                 readerModeViewModel.readabilityContent = result.outputHTML
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
+                if isSnippetURL {
+                    debugPrint(
+                        "# READER snippet.readabilityDispatch",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "outputBytes=\(result.outputHTML.utf8.count)",
+                        "willRenderImmediately=\(content.isReaderModeByDefault || forceReaderModeWhenAvailable)"
+                    )
+                }
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                     readerModeViewModel.showReaderView(
                         readerContent: readerContent,
@@ -288,7 +412,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     
                     try await { @RealmBackgroundActor in
                         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                        if let historyRecord = HistoryRecord.get(forURL: url, realm: historyRealm) {
+                        if let historyRecord = HistoryRecord.get(forURL: resolvedURL, realm: historyRealm) {
                             try await historyRecord.refreshDemotedStatus()
                         }
                     }()
@@ -432,6 +556,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             return trimmedDatasetSummary(string)
         }
         return nil
+    }
+
+    private func summarizeBodyMarkup(from html: String, maxLength: Int = 360) -> String? {
+        guard let bodyRange = html.range(of: "<body", options: [.caseInsensitive]) else {
+            return nil
+        }
+        let start = bodyRange.lowerBound
+        guard let openTagEnd = html[start...].firstIndex(of: ">") else { return nil }
+        let afterOpen = html.index(after: openTagEnd)
+        let searchRange = afterOpen..<html.endIndex
+        let closingRange = html.range(of: "</body", options: [.caseInsensitive], range: searchRange)
+        let end: String.Index
+        if let closingRange,
+           let closingGT = html[closingRange.lowerBound...].firstIndex(of: ">") {
+            end = html.index(after: closingGT)
+        } else {
+            end = html.endIndex
+        }
+        var snippet = String(html[start..<end])
+        snippet = snippet.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        snippet = snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        if snippet.count > maxLength {
+            let idx = snippet.index(snippet.startIndex, offsetBy: maxLength)
+            snippet = String(snippet[..<idx]) + "…"
+        }
+        return snippet.isEmpty ? nil : snippet
     }
     
     private func setHideNavigationDueToScroll(

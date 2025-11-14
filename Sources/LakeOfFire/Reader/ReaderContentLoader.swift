@@ -74,11 +74,14 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
-        if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
-            return contentURL
-        }
         if pageURL.isSnippetURL {
-            debugPrint("# FLASH ReaderContentLoader.getContentURL snippetLoaderURLMissing", pageURL.absoluteString)
+            return pageURL
+        }
+        if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="),
+           let range = pageURL.absoluteString.range(of: "?reader-url=", options: []),
+           let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding,
+           let contentURL = URL(string: rawURL) {
+            return contentURL
         }
         return nil
     }
@@ -210,7 +213,21 @@ public struct ReaderContentLoader {
             let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
             
+            let htmlPreview = snippetDebugPreview(html)
+            debugPrint(
+                "# READER snippetCreate.html",
+                "length=\(html.utf8.count)",
+                "preview=\(htmlPreview)"
+            )
+
             let data = html.readerContentData
+            let htmlBytes = html.utf8.count
+            let compressedBytes = data?.count ?? 0
+            debugPrint(
+                "# READER snippetCreate.compress",
+                "htmlBytes=\(htmlBytes)",
+                "compressedBytes=\(compressedBytes)"
+            )
             
             let bookmark = bookmarkRealm.objects(Bookmark.self)
                 .sorted(by: \.createdAt, ascending: false)
@@ -228,6 +245,13 @@ public struct ReaderContentLoader {
             let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
             
             if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
+                debugPrint(
+                    "# READER snippetCreate.reuse",
+                    "url=\(match.url.absoluteString)",
+                    "htmlBytes=\(htmlBytes)",
+                    "compressedBytes=\(compressedBytes)",
+                    "preview=\(htmlPreview)"
+                )
                 return ReaderContentLoader.ContentReference(content: match)
             }
             
@@ -244,6 +268,14 @@ public struct ReaderContentLoader {
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
+            debugPrint(
+                "# READER snippetCreate.persisted",
+                "key=\(historyRecord.compoundKey)",
+                "url=\(historyRecord.url.absoluteString)",
+                "htmlBytes=\(htmlBytes)",
+                "compressedBytes=\(compressedBytes)",
+                "preview=\(htmlPreview)"
+            )
             
             return ReaderContentLoader.ContentReference(content: historyRecord)
         }()
@@ -268,12 +300,27 @@ public struct ReaderContentLoader {
         )
         if contentURL.isSnippetURL {
             debugPrint(
-                "# FLASH ReaderContentLoader.load snippetDirect",
-                contentURL.absoluteString,
-                "hasHTML=",
-                content.hasHTML
+                "# READER snippet.loaderRequest",
+                "contentURL=\(contentURL.absoluteString)",
+                "hasHTML=\(content.hasHTML)",
+                "pendingPageURL=\(content.url.absoluteString)"
             )
-            return content.url
+            if let loaderURL = readerLoaderURL(for: contentURL) {
+                debugPrint(
+                    "# READER snippetLoader.redirect",
+                    "snippetURL=\(contentURL.absoluteString)",
+                    "loaderURL=\(loaderURL.absoluteString)",
+                    "hasHTML=\(content.hasHTML)"
+                )
+                return loaderURL
+            } else {
+                debugPrint(
+                    "# READER snippetLoader.fallback",
+                    "snippetURL=\(contentURL.absoluteString)",
+                    "hasHTML=\(content.hasHTML)"
+                )
+                return content.url
+            }
         }
 
         if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
@@ -320,8 +367,14 @@ public struct ReaderContentLoader {
         return URL(string: "internal://local/snippet?key=\(key)")
     }
 
+    public static func extractHTML(from content: any ReaderContentProtocol) -> String? {
+        guard let data = content.content else { return nil }
+        let nsData = data as NSData
+        guard let decompressed = try? nsData.decompressed(using: .lzfse) as Data else { return nil }
+        return String(decoding: decompressed, as: UTF8.self)
+    }
+
     public static func readerLoaderURL(for contentURL: URL) -> URL? {
-        guard !contentURL.isSnippetURL else { return nil }
         guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
             return nil
         }
@@ -419,6 +472,15 @@ public struct ReaderContentLoader {
 
         try await _ = Bookmark.add(url: resolvedURL, title: title ?? "", html: html, isFromClipboard: isFromClipboard, rssContainsFullContent: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, realmConfiguration: bookmarkRealmConfiguration)
     }
+}
+
+@inline(__always)
+private func snippetDebugPreview(_ html: String, maxLength: Int = 360) -> String {
+    if html.count <= maxLength {
+        return html
+    }
+    let idx = html.index(html.startIndex, offsetBy: maxLength)
+    return String(html[..<idx]) + "…"
 }
 
 /// Forked from: https://github.com/objecthub/swift-markdownkit/issues/6

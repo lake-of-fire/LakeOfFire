@@ -5,16 +5,18 @@ public struct ReaderLoadingProgressOverlayViewModifier: ViewModifier {
     // For some reason it doesn't always redraw if simply let isLoading: Bool
     let isLoading: Bool
     let statusMessage: String?
+    let context: String
 
-    public init(isLoading: Bool, statusMessage: String? = nil) {
+    public init(isLoading: Bool, statusMessage: String? = nil, context: String = "ReaderOverlay") {
         self.isLoading = isLoading
         self.statusMessage = statusMessage
+        self.context = context
     }
 
     public func body(content: Content) -> some View {
         content
             .overlay {
-                ReaderLoadingOverlay(isLoading: isLoading, statusMessage: statusMessage)
+                ReaderLoadingOverlay(isLoading: isLoading, statusMessage: statusMessage, context: context)
             }
     }
 }
@@ -22,6 +24,7 @@ public struct ReaderLoadingProgressOverlayViewModifier: ViewModifier {
 private struct ReaderLoadingOverlay: View {
     let isLoading: Bool
     let statusMessage: String?
+    let context: String
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -29,6 +32,7 @@ private struct ReaderLoadingOverlay: View {
     @State private var isShowingStatus = false
     @State private var showWorkItem: DispatchWorkItem?
     @State private var hideWorkItem: DispatchWorkItem?
+    @State private var heartbeatTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -58,7 +62,18 @@ private struct ReaderLoadingOverlay: View {
         .opacity(isLoading ? 1 : 0)
         .allowsHitTesting(isLoading)
         .animation(.easeInOut(duration: 0.2), value: isShowingStatus)
-        .onChange(of: isLoading) { _ in
+        .onChange(of: isLoading) { newValue in
+            debugPrint(
+                "# READER overlay.loading",
+                "context=\(context)",
+                "isLoading=\(newValue)",
+                "currentMessage=\(statusMessage ?? "nil")"
+            )
+            if newValue {
+                startHeartbeat()
+            } else {
+                stopHeartbeat()
+            }
             syncStatusDisplay()
         }
         .onChange(of: statusMessage) { _ in
@@ -71,6 +86,7 @@ private struct ReaderLoadingOverlay: View {
             cancelAllWork()
             displayedMessage = nil
             isShowingStatus = false
+            stopHeartbeat()
         }
     }
 
@@ -93,12 +109,28 @@ private struct ReaderLoadingOverlay: View {
                 return
             }
 
+            debugPrint(
+                "# READER overlay.status",
+                "context=\(context)",
+                "action=show",
+                "message=\(message)",
+                "isLoading=\(isLoading)"
+            )
             let workItem = DispatchWorkItem {
                 isShowingStatus = true
             }
             showWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
         } else {
+            if displayedMessage != nil {
+                debugPrint(
+                    "# READER overlay.status",
+                    "context=\(context)",
+                    "action=hide",
+                    "message=\(displayedMessage ?? "")",
+                    "isLoading=\(isLoading)"
+                )
+            }
             scheduleHide()
         }
     }
@@ -112,6 +144,12 @@ private struct ReaderLoadingOverlay: View {
         let workItem = DispatchWorkItem {
             isShowingStatus = false
             displayedMessage = nil
+            debugPrint(
+                "# READER overlay.complete",
+                "context=\(context)",
+                "messageCleared",
+                "isLoading=\(isLoading)"
+            )
         }
         hideWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
@@ -133,5 +171,30 @@ private struct ReaderLoadingOverlay: View {
     private func cancelAllWork() {
         cancelShowWork()
         cancelHideWork()
+    }
+
+    @MainActor
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { break }
+                let activeMessage = displayedMessage ?? statusMessage ?? "<none>"
+                debugPrint(
+                    "# READER overlay.heartbeat",
+                    "context=\(context)",
+                    "isLoading=\(isLoading)",
+                    "isShowingStatus=\(isShowingStatus)",
+                    "message=\(activeMessage)"
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func stopHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
     }
 }

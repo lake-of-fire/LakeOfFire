@@ -209,6 +209,16 @@ public extension ReaderContentProtocol {
         if rssContainsFullContent || isFromClipboard {
             let html = self.html
             try Task.checkCancellation()
+            if url.isSnippetURL {
+                let bytes = html?.utf8.count ?? 0
+                let preview = html.flatMap { snippetPreview($0, maxLength: 240) } ?? "<nil>"
+                debugPrint(
+                    "# READER snippetContent.rawHTML",
+                    "url=\(url.absoluteString)",
+                    "bytes=\(bytes)",
+                    "preview=\(preview)"
+                )
+            }
             return html
         } else if url.isReaderFileURL {
             guard let data = try? await readerFileManager.read(fileURL: url) else {
@@ -276,6 +286,14 @@ public extension ReaderContentProtocol {
     func updateCompoundKey() {
         compoundKey = makeReaderContentCompoundKey(url: url, existingKey: compoundKey) ?? compoundKey
     }
+}
+
+private func snippetPreview(_ html: String, maxLength: Int = 240) -> String {
+    let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "<empty>" }
+    guard trimmed.count > maxLength else { return trimmed }
+    let idx = trimmed.index(trimmed.startIndex, offsetBy: maxLength)
+    return String(trimmed[..<idx]) + "…"
 }
 
 public extension ReaderContentProtocol {
@@ -470,7 +488,7 @@ public extension ReaderContentProtocol {
 
 public func makeReaderContentCompoundKey(url: URL?, existingKey: String? = nil) -> String? {
     if let url = url {
-        if let snippetKey = extractSnippetKey(from: url) {
+        if let snippetKey = url.snippetKey {
             return snippetKey
         }
 
@@ -483,26 +501,6 @@ public func makeReaderContentCompoundKey(url: URL?, existingKey: String? = nil) 
 
     return existingKey.nonEmpty ?? UUID().uuidString
 }
-
-private func extractSnippetKey(from url: URL) -> String? {
-    let absolute = url.absoluteString
-
-    if absolute.hasPrefix("internal://local/snippet") || absolute.hasPrefix("about:snippet") {
-        if let components = URLComponents(string: absolute),
-           let key = components.queryItems?.first(where: { $0.name == "key" })?.value,
-           !key.isEmpty {
-            return key
-        }
-
-        if let range = absolute.range(of: "key=") {
-            let key = String(absolute[range.upperBound...])
-            return key.isEmpty ? nil : key
-        }
-    }
-
-    return nil
-}
-
 private extension Optional where Wrapped == String {
     var nonEmpty: String? {
         guard let value = self, !value.isEmpty else { return nil }
