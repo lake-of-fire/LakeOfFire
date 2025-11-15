@@ -39,6 +39,33 @@
         return true
     }
     
+    function readerLog(event, extra) {
+        try {
+            const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
+            if (!handler || typeof handler.postMessage !== "function") {
+                return
+            }
+            const payload = {
+                message: "# READER readabilityInit." + event,
+                windowURL: getOriginURL(),
+                pageURL: window.location.href,
+            }
+            if (extra && typeof extra === "object") {
+                Object.keys(extra).forEach(key => {
+                    const value = extra[key]
+                    if (value !== undefined) {
+                        payload[key] = value
+                    }
+                })
+            }
+            handler.postMessage(payload)
+        } catch (error) {
+            try {
+                console.log("readabilityInit log error", error)
+            } catch (_) {}
+        }
+    }
+    
     function previewText(text, limit) {
         if (typeof text !== "string") {
             return null
@@ -48,6 +75,48 @@
             return text
         }
         return text.slice(0, max) + `...(truncated ${text.length - max} chars)`
+    }
+    
+    function captureBodyMetrics() {
+        const body = document.body
+        const readerContent = document.getElementById("reader-content")
+        return {
+            hasBody: !!body,
+            bodyHTMLBytes: body && typeof body.innerHTML === "string" ? body.innerHTML.length : 0,
+            bodyTextBytes: body && typeof body.textContent === "string" ? body.textContent.length : 0,
+            hasReaderContent: !!readerContent,
+            readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
+            readerContentTextBytes: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0,
+        }
+    }
+    
+    let lastBodyMetrics = null
+    function maybeLogBodyMetrics(event, extra) {
+        const current = captureBodyMetrics()
+        const previous = lastBodyMetrics
+        const previousBodyHTML = previous ? previous.bodyHTMLBytes : 0
+        const previousReaderHTML = previous ? previous.readerContentHTMLBytes : 0
+        const deltaBodyHTML = previous ? current.bodyHTMLBytes - previousBodyHTML : 0
+        const deltaReaderHTML = previous ? current.readerContentHTMLBytes - previousReaderHTML : 0
+        const shouldLog =
+            !previous ||
+            (current.bodyHTMLBytes === 0 && previousBodyHTML > 0) ||
+            (previous && Math.abs(deltaBodyHTML) >= 512) ||
+            (current.readerContentHTMLBytes === 0 && previousReaderHTML > 0) ||
+            (previous && Math.abs(deltaReaderHTML) >= 256)
+        if (!shouldLog) {
+            return
+        }
+        lastBodyMetrics = current
+        const payload = {
+            ...current,
+            deltaBodyHTMLBytes: previous ? deltaBodyHTML : null,
+            deltaReaderContentHTMLBytes: previous ? deltaReaderHTML : null,
+        }
+        if (extra && typeof extra === "object") {
+            Object.assign(payload, extra)
+        }
+        readerLog("bodyState." + event, payload)
     }
     
     function getOriginURL() {
@@ -146,6 +215,16 @@
                     })
                     return
                 }
+                
+                maybeLogBodyMetrics("beforeClone", { context: "manabi_readability" })
+                const liveBody = document.body
+                readerLog("bootstrapBodyContent", {
+                    readyState: document.readyState || "unknown",
+                    hasBody: !!liveBody,
+                    bodyHTMLBytes: liveBody && typeof liveBody.innerHTML === "string" ? liveBody.innerHTML.length : 0,
+                    bodyTextBytes: liveBody && typeof liveBody.textContent === "string" ? liveBody.textContent.length : 0,
+                    bodyPreview: previewText(liveBody && typeof liveBody.innerHTML === "string" ? liveBody.innerHTML : null, 512),
+                })
                 var documentClone = document.cloneNode(true);
                 let inputHTML = documentClone.documentElement.outerHTML
                 const bodyElement = documentClone.body
@@ -153,17 +232,54 @@
                 const bodyHTMLLength = bodyElement && typeof bodyElement.innerHTML === "string" ? bodyElement.innerHTML.length : 0
                 const readerContentElement = documentClone.getElementById("reader-content")
                 const readerContentLength = readerContentElement && typeof readerContentElement.textContent === "string" ? readerContentElement.textContent.length : 0
+                readerLog("inputCaptured", {
+                    readyState: document.readyState || "unknown",
+                    hasBody: !!document.body,
+                    bodyHTMLBytes: bodyHTMLLength,
+                    bodyTextBytes: bodyTextLength,
+                    hasReaderContent: !!readerContentElement,
+                    readerContentBytes: readerContentLength,
+                    inputBytes: inputHTML ? inputHTML.length : 0,
+                    inputPreview: previewText(inputHTML, 1024),
+                })
                 var article = new Readability(uri, documentClone, {
                     // https://github.com/mozilla/gecko-dev/blob/246928d59c6c11e1c3b3b0a6b00534bfc075e3c4/toolkit/components/reader/ReaderMode.jsm#L21-L31
                 classesToPreserve: [
                     "caption", "emoji", "hidden", "invisible", "sr-only", "visually-hidden", "visuallyhidden", "wp-caption", "wp-caption-text", "wp-smiley"
                 ],
                     charThreshold: ##CHAR_THRESHOLD##}).parse();
+                readerLog("articleContent", {
+                    hasArticle: !!article,
+                    bodyHTMLBytes: bodyHTMLLength,
+                    bodyTextBytes: bodyTextLength,
+                    readerContentBytes: readerContentLength,
+                    hasReaderContent: !!readerContentElement,
+                    titleBytes: article && typeof article.title === "string" ? article.title.length : 0,
+                    bylineBytes: article && typeof article.byline === "string" ? article.byline.length : 0,
+                    contentBytes: article && typeof article.content === "string" ? article.content.length : 0,
+                    hasMarkup: !!(article && typeof article.content === "string" && article.content.indexOf("<body") !== -1),
+                    contentPreview: previewText(article && typeof article.content === "string" ? article.content : null, 512),
+                })
+                
                 const rawTitle = article && typeof article.title === "string" ? article.title : ""
                 const rawByline = article && typeof article.byline === "string" ? article.byline : ""
                 const rawContent = article && typeof article.content === "string" ? article.content : ""
+                readerLog("rawContent", {
+                    titleBytes: rawTitle.length,
+                    bylineBytes: rawByline.length,
+                    contentBytes: rawContent.length,
+                    preview: previewText(rawContent, 512),
+                })
                 
                 if (article === null) {
+                    readerLog("articleParseFailed", {
+                        readyState: document.readyState || "unknown",
+                        bodyHTMLBytes: bodyHTMLLength,
+                        bodyTextBytes: bodyTextLength,
+                        readerContentBytes: readerContentLength,
+                        hasReaderContent: !!readerContentElement,
+                        inputBytes: inputHTML ? inputHTML.length : 0,
+                    })
                     if (document.body) {
                         document.body.dataset.manabiReaderModeAvailable = 'false';
                         document.body.dataset.isNextLoadInReaderMode = 'false';
@@ -178,6 +294,11 @@
                     let byline = DOMPurify.sanitize(rawByline)
                     var content = DOMPurify.sanitize(rawContent)
                     const sanitizedContentBytes = content && typeof content === "string" ? content.length : 0
+                    readerLog("sanitizedContent", {
+                        contentBytes: sanitizedContentBytes,
+                        hasMarkup: !!(content && typeof content === "string" && content.indexOf("<body") !== -1),
+                        preview: previewText(content, 512),
+                    })
                     let viewOriginal = contentIsInternal ? '' : `<a class="reader-view-original">View Original</a>`
                     
                     /*
@@ -224,10 +345,53 @@
         <script>
             ##SCRIPT##
         </script>
+        <script>
+            (function () {
+                function logDocumentState(reason) {
+                    try {
+                        const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
+                        if (!handler || typeof handler.postMessage !== "function") {
+                            return
+                        }
+                        const readerContent = document.getElementById("reader-content")
+                        const payload = {
+                            message: "# READER snippetLoader.documentReady",
+                            reason: reason,
+                            bodyHTMLBytes: document.body && typeof document.body.innerHTML === "string" ? document.body.innerHTML.length : 0,
+                            bodyTextBytes: document.body && typeof document.body.textContent === "string" ? document.body.textContent.length : 0,
+                            hasReaderContent: !!readerContent,
+                            readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
+                            readerContentTextBytes: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0,
+                            readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null,
+                            windowURL: window.location.href,
+                            pageURL: document.location.href
+                        }
+                        handler.postMessage(payload)
+                    } catch (error) {
+                        try {
+                            console.log("snippetLoader.documentReady log error", error)
+                        } catch (_) {}
+                    }
+                }
+                if (document.readyState === "complete" || document.readyState === "interactive") {
+                    logDocumentState("immediate")
+                } else {
+                    document.addEventListener("DOMContentLoaded", function () {
+                        logDocumentState("domcontentloaded")
+                    }, { once: true })
+                }
+            })();
+        </script>
     </body>
 </html>
 `
                     const htmlBytes = typeof html === "string" ? html.length : 0
+                    readerLog("htmlTemplatePrepared", {
+                        outputBytes: htmlBytes,
+                        contentBytes: sanitizedContentBytes,
+                        hasReaderBody: typeof html === "string" ? html.indexOf("class=\"readability-mode\"") !== -1 : false,
+                        readerContentPreview: previewText(content, 512),
+                    })
 
                     // 0 is innermost.
                     // Currently only supports optional [shadowRoot][shadowRoot][iframe] nesting
@@ -241,6 +405,18 @@
                         if (content) {
                             document.body.dataset.manabiReaderModeAvailable = 'true';
                             document.body.dataset.manabiReaderModeAvailableFor = loc.href;
+                            readerLog("outputPrepared", {
+                                contentBytes: content.length,
+                                outputBytes: html.length,
+                                hasReaderBody: html.indexOf("class=\"readability-mode\"") !== -1,
+                                contentPreview: previewText(content, 512),
+                            })
+                            readerLog("readabilityParsedPayload", {
+                                contentBytes: content.length,
+                                outputBytes: html.length,
+                                windowURL: windowURL,
+                                pageURL: loc.href,
+                            })
                             
                             window.webkit.messageHandlers.readabilityParsed.postMessage({
                                 pageURL: loc.href,
@@ -296,6 +472,28 @@
                 if (mutation.type === 'attributes' && mutation.attributeName.startsWith('data-manabi-')) {
                     return
                 }
+                try {
+                    const body = document.body
+                    const readerContent = document.getElementById("reader-content")
+                    readerLog("mutationSummary", {
+                        mutationType: mutation.type,
+                        attributeName: mutation.attributeName || null,
+                        targetTag: mutation.target && mutation.target.tagName ? mutation.target.tagName : null,
+                        addedNodes: mutation.addedNodes ? mutation.addedNodes.length : 0,
+                        removedNodes: mutation.removedNodes ? mutation.removedNodes.length : 0,
+                        bodyHTMLBytes: body && typeof body.innerHTML === "string" ? body.innerHTML.length : 0,
+                        readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
+                    })
+                } catch (error) {
+                    try { console.log("mutationSummary log error", error) } catch (_) {}
+                }
+                maybeLogBodyMetrics("mutation", {
+                    mutationType: mutation.type,
+                    attributeName: mutation.attributeName || null,
+                    targetTag: mutation.target && mutation.target.tagName ? mutation.target.tagName : null,
+                    addedNodes: mutation.addedNodes ? mutation.addedNodes.length : 0,
+                    removedNodes: mutation.removedNodes ? mutation.removedNodes.length : 0,
+                })
                 if ((mutation.target.textContent?.length || 0) > 1) {
                     manabi_debouncedReadability()
                 }
