@@ -489,6 +489,18 @@ public extension Feed {
                     imageUrl = URL(string: rawImageURL)
                 }
                 let content = item.content?.contentEncoded ?? item.description
+
+                let audioSubtitlesURL: URL? = {
+                    guard let rawValue = item.media?.mediaSubTitle?.attributes?.href?
+                        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
+                          !rawValue.isEmpty else { return nil }
+                    if let direct = URL(string: rawValue) {
+                        return direct
+                    }
+                    return rawValue
+                        .addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                        .flatMap { URL(string: $0) }
+                }()
                 
                 var title = item.title
                 do {
@@ -517,6 +529,7 @@ public extension Feed {
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = iconUrl
                 feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                feedEntry.audioSubtitlesURL = audioSubtitlesURL
                 feedEntry.updateCompoundKey()
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry

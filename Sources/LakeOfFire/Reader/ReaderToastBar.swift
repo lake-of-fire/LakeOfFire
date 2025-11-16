@@ -105,7 +105,7 @@ private extension ReaderToastBar {
                     Spacer(minLength: 0)
                     trailingAccessory
                         .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
-                } else if onDismiss != nil {
+                } else if shouldShowDismissButton {
                     Spacer(minLength: 0)
                     dismissButton
                         .padding(.trailing, ReaderToastBarMetrics.horizontalContentPadding)
@@ -125,7 +125,7 @@ private extension ReaderToastBar {
             content
             if let trailingAccessory, shouldShowTrailingAccessory {
                 trailingAccessory
-            } else if onDismiss != nil {
+            } else if shouldShowDismissButton {
                 dismissButton
             }
         }
@@ -162,5 +162,9 @@ private extension ReaderToastBar {
     
     private var shouldShowTrailingAccessory: Bool {
         !(controlSize == .small || controlSize == .mini)
+    }
+
+    private var shouldShowDismissButton: Bool {
+        onDismiss != nil && !(controlSize == .small || controlSize == .mini)
     }
 }
