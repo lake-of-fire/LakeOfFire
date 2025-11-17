@@ -200,6 +200,7 @@ public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var bounces = true
+    var additionalBottomSafeAreaInset: CGFloat? = nil
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -225,6 +226,7 @@ public struct ReaderWebView: View {
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         bounces: Bool = true,
+        additionalBottomSafeAreaInset: CGFloat? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -237,6 +239,7 @@ public struct ReaderWebView: View {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.bounces = bounces
+        self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -255,6 +258,7 @@ public struct ReaderWebView: View {
                     persistentWebViewID: persistentWebViewID,
                     obscuredInsets: obscuredInsets,
                     bounces: bounces,
+                    additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
                     schemeHandlers: schemeHandlers,
                     hideNavigationDueToScroll: $hideNavigationDueToScroll,
                     textSelection: $textSelection,
@@ -311,6 +315,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var bounces = true
+    var additionalBottomSafeAreaInset: CGFloat? = nil
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
@@ -349,7 +354,14 @@ fileprivate struct ReaderWebViewInternal: View {
             state: $state,
             scriptCaller: scriptCaller,
             blockedHosts: blockedHosts,
-            obscuredInsets: totalObscuredInsets(),
+            obscuredInsets: totalObscuredInsets(
+                additionalInsets: EdgeInsets(
+                    top: 0,
+                    leading: 0,
+                    bottom: max(0, additionalBottomSafeAreaInset ?? 0),
+                    trailing: 0
+                )
+            ),
             bounces: bounces,
             persistentWebViewID: persistentWebViewID,
             schemeHandlers: [

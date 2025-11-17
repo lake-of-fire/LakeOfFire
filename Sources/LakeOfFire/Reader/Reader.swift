@@ -230,13 +230,14 @@ public struct Reader: View {
     
     public var body: some View {
         //            VStack(spacing: 0) {
-        ReaderWebView(
-            persistentWebViewID: persistentWebViewID,
-            obscuredInsets: obscuredInsets,
-            bounces: bounces,
-            schemeHandlers: schemeHandlers,
-            onNavigationCommitted: onNavigationCommitted,
-            onNavigationFinished: onNavigationFinished,
+            ReaderWebView(
+                persistentWebViewID: persistentWebViewID,
+                obscuredInsets: obscuredInsets,
+                bounces: bounces,
+                additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+                schemeHandlers: schemeHandlers,
+                onNavigationCommitted: onNavigationCommitted,
+                onNavigationFinished: onNavigationFinished,
             onNavigationFailed: onNavigationFailed,
             onURLChanged: onURLChanged,
             hideNavigationDueToScroll: $hideNavigationDueToScroll,
@@ -244,6 +245,24 @@ public struct Reader: View {
             buildMenu: buildMenu
         )
 #if os(iOS)
+//            .modifier {
+//                if #available(iOS 26, *) {
+//                    $0.safeAreaBar(edge: .bottom, spacing: 0) {
+//                        if let additionalBottomSafeAreaInset {
+//                            Color.white.opacity(0.0000000001)
+//                                .frame(height: additionalBottomSafeAreaInset)
+//                        }
+//                    }
+//                } else { $0 }
+//            }
+//        .overlay(alignment: .bottom) {
+//            if #available(iOS 26, *), let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
+//                Color.white.opacity(0.0000000001)
+//                    .frame(height: additionalBottomSafeAreaInset)
+//                    .allowsHitTesting(false)
+//            }
+//        }
+        .ignoresSafeArea(.all, edges: .all)
         .modifier {
             if #available(iOS 26, *) {
                 $0.safeAreaBar(edge: .bottom, spacing: 0) {
@@ -254,7 +273,6 @@ public struct Reader: View {
                 }
             } else { $0 }
         }
-        .ignoresSafeArea(.all, edges: .all)
 #endif
         .background {
             GeometryReader { geometry in
