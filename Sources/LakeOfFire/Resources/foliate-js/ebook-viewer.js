@@ -344,6 +344,14 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
+    body:not(.manabi-tracking-section-geometries-baked) .manabi-tracking-section {
+        display: none !important;
+    }
+
+    .manabi-tracking-section {
+        contain: strict !important;
+    }
+
     body *:not(rt) {
         font-family: inherit !important;
         font-weight: inherit !important;
