@@ -168,7 +168,13 @@ extension String {
 fileprivate let humanReadableAbsoluteDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = .autoupdatingCurrent
-    formatter.setLocalizedDateFormatFromTemplate("MMM d yyyy")
+    let locale = formatter.locale
+    let template = DateFormatter.dateFormat(
+        fromTemplate: "MMM d yyyy",
+        options: 0,
+        locale: locale
+    ) ?? "MMM d yyyy"
+    formatter.dateFormat = template
     formatter.timeStyle = .none
     return formatter
 }()

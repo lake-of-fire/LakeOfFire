@@ -167,9 +167,13 @@ public extension WebViewNavigator {
                         readerModeViewModel.cancelReaderModeLoad(for: trackingURL)
                     }
                     debugPrint(
-                        "# FLASH WebViewNavigator.load readerModeLoading",
-                        shouldTriggerReaderMode,
-                        url
+                        "# READER readerMode.prefetchDecision",
+                        "trackingURL=\(trackingURL.absoluteString)",
+                        "shouldTrigger=\(shouldTriggerReaderMode)",
+                        "hasHTML=\(trackingContent.hasHTML)",
+                        "rssFull=\(trackingContent.rssContainsFullContent)",
+                        "compressedBytes=\(trackingContent.content?.count ?? 0)",
+                        "requestURL=\(url.absoluteString)"
                     )
                 }
             }

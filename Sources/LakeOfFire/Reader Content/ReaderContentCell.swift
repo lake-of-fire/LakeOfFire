@@ -24,6 +24,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var isFullArticleFinished: Bool? = nil
     @Published var forceShowBookmark = false
     @Published var title = ""
+    @Published var author: String?
     @Published var humanReadablePublicationDate: String?
     @Published var imageURL: URL?
     @Published var sourceIconURL: URL?
@@ -51,6 +52,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 try Task.checkCancellation()
                 let title = item.titleForDisplay
                 let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
+                let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
                 let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
                 try Task.checkCancellation()
@@ -88,6 +90,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.title = title
                     self.imageURL = imageURL
                     self.humanReadablePublicationDate = humanReadablePublicationDate
+                    self.author = author.isEmpty ? nil : author
                     self.sourceIconURL = sourceIconURLChoice
                     self.sourceTitle = sourceTitleChoice
                     if let (progress, finished) = progressResult {
@@ -237,6 +240,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return 26
     }
     
+    private let progressBarWidth: CGFloat = 31
+    
     private var thumbnailEdgeLength: CGFloat {
         let base = appearance.thumbnailDimension ?? appearance.maxCellHeight
         return max(1, base)
@@ -301,6 +306,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             return host
         }
         return item.url.absoluteString
+    }
+
+    private var bookAuthorText: String? {
+        let normalized: (String) -> String = { value in
+            value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let viewModelAuthor = viewModel.author {
+            let trimmed = normalized(viewModelAuthor)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        let trimmedItemAuthor = normalized(item.author)
+        return trimmedItemAuthor.isEmpty ? nil : trimmedItemAuthor
     }
 
     private var fallbackInitial: String {
@@ -419,6 +436,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                         .foregroundStyle(.secondary)
                                 }
                             }
+                        } else if appearance.isEbookStyle, let authorText = bookAuthorText {
+                            Text(authorText)
+                                .lineLimit(1)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         
                         Text(viewModel.title)
@@ -439,7 +461,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 ProgressView(value: min(1, readingProgressFloat))
                                     .progressViewStyle(LinearProgressViewStyle())
                                     .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                                    .frame(width: 44)
+                                    .frame(width: progressBarWidth)
                                 
                                 if let metadataText {
                                     Text(metadataText)

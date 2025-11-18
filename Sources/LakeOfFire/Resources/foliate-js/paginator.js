@@ -947,6 +947,7 @@ export class Paginator extends HTMLElement {
     #trackingGeometryBakeQueuedRestoreLocation = false
     #trackingGeometryBakeQueuedReason = null
     #trackingGeometryRetryBudget = 2
+    #trackingGeometryInitialDelayDone = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
 
@@ -958,6 +959,10 @@ export class Paginator extends HTMLElement {
 
     #resetTrackingGeometryRetryBudget() {
         this.#trackingGeometryRetryBudget = 2
+    }
+
+    #resetTrackingGeometryInitialDelay() {
+        this.#trackingGeometryInitialDelayDone = false
     }
 
     constructor() {
@@ -1186,6 +1191,7 @@ export class Paginator extends HTMLElement {
     #createView() {
         this.#cancelTrackingGeometryBakeSchedule()
         this.#resetTrackingGeometryRetryBudget()
+        this.#resetTrackingGeometryInitialDelay()
         if (this.#view) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
@@ -1269,6 +1275,16 @@ export class Paginator extends HTMLElement {
 
         const run = async () => {
             setDebugAttr(this, 'tracking-geometry-status', 'running')
+            if (!this.#trackingGeometryInitialDelayDone && reason === 'initial-load') {
+                await nextFrame()
+                await nextFrame()
+                await wait(20)
+                this.#trackingGeometryInitialDelayDone = true
+                logEBook('tracking-geometry:initial-delay-applied', {
+                    reason,
+                    delayMs: 20
+                })
+            }
             const result = await bakeTrackingSectionGeometries(doc, { reason })
             if (anchor) {
                 try {

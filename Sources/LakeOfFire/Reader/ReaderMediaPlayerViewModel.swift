@@ -11,11 +11,19 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
     @Published public var isMediaPlayerPresented = false
     @Published public var audioURLs = [URL]()
     @Published public var isPlaying = false
+    @Published public private(set) var hasStartedPlaybackForCurrentContent = false
+    
+    private var currentContentKey: String?
     
     public init() { }
     
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
+        let incomingContentKey = content.compoundKey
+        if currentContentKey != incomingContentKey {
+            currentContentKey = incomingContentKey
+            hasStartedPlaybackForCurrentContent = false
+        }
         let voiceAudioURLs = Array(content.voiceAudioURLs)
 #if DEBUG
         debugPrint(
@@ -56,6 +64,17 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
                     audioURLs.removeAll()
                 }
             }
+        }
+    }
+    
+    @MainActor
+    public func registerPlaybackStart(contentKey: String?) {
+        guard let key = contentKey else { return }
+        if currentContentKey != key {
+            currentContentKey = key
+        }
+        if !hasStartedPlaybackForCurrentContent {
+            hasStartedPlaybackForCurrentContent = true
         }
     }
 }

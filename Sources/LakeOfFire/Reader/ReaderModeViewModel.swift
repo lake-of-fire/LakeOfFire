@@ -947,7 +947,15 @@ public class ReaderModeViewModel: ObservableObject {
                         "# READER readability.htmlFetched.emptyBody",
                         "url=\(committedURL.absoluteString)",
                         "bytes=\(htmlByteCount)",
-                        "preview=\(preview)"
+                        "preview=\(preview)",
+                        "rssFull=\(content.rssContainsFullContent)",
+                        "readerDefault=\(content.isReaderModeByDefault)",
+                        "compressedBytes=\(content.content?.count ?? 0)"
+                    )
+                    await invalidateReaderModeCache(
+                        for: content,
+                        url: committedURL,
+                        reason: "emptyBodyAfterDecompress"
                     )
                     htmlResult = nil
                 }
@@ -1181,6 +1189,40 @@ fileprivate func bodyInnerHTML(from html: String) -> String? {
         return nil
     }
     return String(html[range])
+}
+
+@MainActor
+fileprivate func invalidateReaderModeCache(
+    for content: any ReaderContentProtocol,
+    url: URL,
+    reason: String
+) async {
+    let compressedBytes = content.content?.count ?? 0
+    debugPrint(
+        "# READER readability.cache.invalidate",
+        "url=\(url.absoluteString)",
+        "compressedBytes=\(compressedBytes)",
+        "reason=\(reason)",
+        "readerDefault=\(content.isReaderModeByDefault)",
+        "rssFull=\(content.rssContainsFullContent)"
+    )
+    do {
+        try await content.asyncWrite { _, record in
+            record.content = nil
+            if !url.isSnippetURL {
+                record.rssContainsFullContent = false
+                record.isReaderModeByDefault = false
+                record.isReaderModeAvailable = false
+            }
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+    } catch {
+        debugPrint(
+            "# FLASH ReaderModeViewModel.invalidateReaderModeCache failed",
+            url.absoluteString,
+            error.localizedDescription
+        )
+    }
 }
 
 fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {

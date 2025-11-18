@@ -344,6 +344,15 @@ public struct ReaderContentLoader {
             if let matchingURL {
                 return matchingURL
             }
+            if content.isReaderModeByDefault {
+                debugPrint(
+                    "# READER readerLoader.matchingURL.missing",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "hasHTML=\(content.hasHTML)",
+                    "rssFull=\(content.rssContainsFullContent)",
+                    "compressedBytes=\(content.content?.count ?? 0)"
+                )
+            }
             return content.url
         }
         

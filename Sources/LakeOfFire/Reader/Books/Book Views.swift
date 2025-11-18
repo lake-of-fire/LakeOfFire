@@ -15,25 +15,30 @@ struct BookThumbnail: View { //, Equatable {
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
     var body: some View {
-        ZStack {
-            Color.clear
-                .frame(
-                    width: scaledImageWidth,
-                    height: cellHeight
-                )
+        GeometryReader { geometry in
+            let targetWidth = geometry.size.width
+            let targetHeight = geometry.size.height
+            let constrainedWidth = limitWidth ? targetWidth : nil
+            let constrainedHeight = limitWidth ? targetHeight : nil
             ReaderImage(
                 imageURL,
                 contentMode: .fit,
-                maxWidth: limitWidth ? scaledImageWidth : nil,
-                maxHeight: cellHeight,
+                maxWidth: constrainedWidth,
+                maxHeight: constrainedHeight,
                 cornerRadius: scaledImageWidth / 28
             )
+            .aspectRatio(contentMode: .fit)
             .frame(
-                maxWidth: limitWidth ? scaledImageWidth : .infinity,
-                maxHeight: cellHeight,
+                width: targetWidth,
+                height: targetHeight,
                 alignment: .center
             )
         }
+        .frame(
+            width: scaledImageWidth,
+            height: cellHeight,
+            alignment: .center
+        )
     }
 }
 
