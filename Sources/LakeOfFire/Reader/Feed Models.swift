@@ -490,10 +490,10 @@ public extension Feed {
                 }
                 let content = item.content?.contentEncoded ?? item.description
 
+                let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
+                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 let audioSubtitlesURL: URL? = {
-                    guard let rawValue = item.media?.mediaSubTitle?.attributes?.href?
-                        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines),
-                          !rawValue.isEmpty else { return nil }
+                    guard let rawValue = rawSubtitleHref, !rawValue.isEmpty else { return nil }
                     if let direct = URL(string: rawValue) {
                         return direct
                     }
@@ -501,6 +501,13 @@ public extension Feed {
                         .addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
                         .flatMap { URL(string: $0) }
                 }()
+                debugPrint(
+                    "# AUDIO-VTT rss.subtitle.parse",
+                    "url=\(url)",
+                    "raw=\(rawSubtitleHref ?? "nil")",
+                    "normalized=\(audioSubtitlesURL?.absoluteString ?? "nil")",
+                    "hasMediaSubTitle=\(item.media?.mediaSubTitle != nil)"
+                )
                 
                 var title = item.title
                 do {
@@ -514,7 +521,7 @@ public extension Feed {
                 } catch { }
                 title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
 //                
-//                if let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url, html: content)) {
+//                if let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url)) {
 //                    if existingEntry.feedID == feedID && existingEntry.html == content && existingEntry.url == url && existingEntry.title == title ?? "" && existingEntry.author == item.author ?? "" && existingEntry.imageUrl == imageUrl && existingEntry.publicationDate == item.pubDate ?? item.dublinCore?.dcDate {
 //                        return exi
 //                    }
@@ -529,8 +536,18 @@ public extension Feed {
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = iconUrl
                 feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
+                let existingSubtitle = existingEntry?.audioSubtitlesURL
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
                 feedEntry.updateCompoundKey()
+                debugPrint(
+                    "# AUDIO-VTT feedEntry.persist.rss",
+                    "url=\(url)",
+                    "rssSubtitle=\(audioSubtitlesURL?.absoluteString ?? "nil")",
+                    "existingSubtitle=\(existingSubtitle?.absoluteString ?? "nil")",
+                    "existingFeedID=\(existingEntry?.feedID?.uuidString ?? "nil")",
+                    "feedID=\(feedID.uuidString)"
+                )
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
@@ -591,10 +608,17 @@ public extension Feed {
                     .filter { $0.attributes?.rel == "voice-audio" }
                     .compactMap { $0.attributes?.href }
                     .compactMap { URL(string: $0) }
-                let audioSubtitlesURL: URL? = (item.links ?? [])
+                let rawAtomSubtitleHref = (item.links ?? [])
                     .first { $0.attributes?.rel == "voice-audio-subtitles" }
                     .flatMap { $0.attributes?.href }
+                let audioSubtitlesURL: URL? = rawAtomSubtitleHref
                     .flatMap { URL(string: $0) }
+                debugPrint(
+                    "# AUDIO-VTT atom.subtitle.parse",
+                    "url=\(url)",
+                    "raw=\(rawAtomSubtitleHref ?? "nil")",
+                    "normalized=\(audioSubtitlesURL?.absoluteString ?? "nil")"
+                )
                 
                 // TODO: Refactor into community commentary links
                 var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
@@ -634,10 +658,22 @@ public extension Feed {
                 feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+                let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
+                let existingSubtitle = existingEntry?.audioSubtitlesURL
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
                 feedEntry.redditTranslationsTitle = redditTranslationsTitle
                 feedEntry.updateCompoundKey()
+                let subtitlesDescription = audioSubtitlesURL?.absoluteString ?? "nil"
+                let voiceCount = voiceAudioURLs.count
+                debugPrint(
+                    "# AUDIO-VTT feedEntry.persist.atom",
+                    "url=\(url)",
+                    "rssSubtitle=\(subtitlesDescription)",
+                    "existingSubtitle=\(existingSubtitle?.absoluteString ?? "nil")",
+                    "existingFeedID=\(existingEntry?.feedID?.uuidString ?? "nil")",
+                    "voiceCount=\(voiceCount)"
+                )
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
             }
@@ -828,6 +864,15 @@ fileprivate func upsertFeedEntries(
 
         for payload in payloads {
             if let existing = realm.object(ofType: FeedEntry.self, forPrimaryKey: payload.compoundKey) {
+                let existingSubtitle = existing.audioSubtitlesURL?.absoluteString ?? "nil"
+                let payloadSubtitle = payload.audioSubtitlesURL?.absoluteString ?? "nil"
+                debugPrint(
+                    "# AUDIO-VTT feedEntry.refresh",
+                    "url=\(payload.url)",
+                    "existingSubtitle=\(existingSubtitle)",
+                    "payloadSubtitle=\(payloadSubtitle)",
+                    "willUpdate=\(existingSubtitle != payloadSubtitle)"
+                )
                 if applyPayload(payload, to: existing) {
                     existing.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -837,6 +882,11 @@ fileprivate func upsertFeedEntries(
                 newEntry.feedID = payload.feedID
                 newEntry.url = payload.url
                 newEntry.createdAt = payload.createdAt
+                debugPrint(
+                    "# AUDIO-VTT feedEntry.create",
+                    "url=\(payload.url)",
+                    "subtitle=\(payload.audioSubtitlesURL?.absoluteString ?? "nil")"
+                )
                 applyPayload(payload, to: newEntry)
                 realm.add(newEntry, update: .error)
                 newEntry.refreshChangeMetadata(explicitlyModified: true)
@@ -914,9 +964,26 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
         content.voiceFrameUrl = payload.voiceFrameUrl
         didChange = true
     }
+    let targetType = String(describing: type(of: content))
     if content.audioSubtitlesURL != payload.audioSubtitlesURL {
+        let oldValue = content.audioSubtitlesURL?.absoluteString ?? "nil"
+        let newValue = payload.audioSubtitlesURL?.absoluteString ?? "nil"
+        debugPrint(
+            "# AUDIO-VTT readerContent.updateSubtitle",
+            "url=\(content.url)",
+            "old=\(oldValue)",
+            "new=\(newValue)",
+            "target=\(targetType)"
+        )
         content.audioSubtitlesURL = payload.audioSubtitlesURL
         didChange = true
+    } else {
+        debugPrint(
+            "# AUDIO-VTT readerContent.updateSubtitle.skip",
+            "url=\(content.url)",
+            "value=\(content.audioSubtitlesURL?.absoluteString ?? "nil")",
+            "target=\(targetType)"
+        )
     }
     let existingVoiceAudio = Array(content.voiceAudioURLs)
     if existingVoiceAudio != payload.voiceAudioURLs {
@@ -938,14 +1005,32 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
 @RealmBackgroundActor
 fileprivate func syncRelatedReaderContent(with payload: FeedEntryPayload) async throws {
     let mirrors = try await ReaderContentLoader.loadAll(url: payload.url, skipFeedEntries: true)
+    debugPrint(
+        "# AUDIO-VTT readerContent.sync.start",
+        "url=\(payload.url)",
+        "mirrorCount=\(mirrors.count)"
+    )
     for case let object as (Object & ReaderContentProtocol) in mirrors {
-        guard let realm = object.realm else { continue }
+        guard let realm = object.realm else {
+            debugPrint(
+                "# AUDIO-VTT readerContent.sync.skip",
+                "url=\(payload.url)",
+                "reason=objectHasNoRealm",
+                "type=\(String(describing: type(of: object)))"
+            )
+            continue
+        }
         try await realm.asyncWrite {
             if applyPayload(payload, to: object) {
                 object.refreshChangeMetadata(explicitlyModified: true)
             }
         }
     }
+    debugPrint(
+        "# AUDIO-VTT readerContent.sync.complete",
+        "url=\(payload.url)",
+        "mirrorCount=\(mirrors.count)"
+    )
 }
 
 fileprivate func cleanRssData(_ rssData: Data) -> Data {

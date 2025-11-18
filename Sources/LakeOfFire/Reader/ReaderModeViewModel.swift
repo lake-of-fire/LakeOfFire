@@ -932,11 +932,39 @@ public class ReaderModeViewModel: ObservableObject {
             if let readerFileManager {
                 logTrace(.htmlFetchStart, url: committedURL, details: "readerFileManager available")
                 let htmlFetchStartedAt = Date()
-                let htmlResult = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+                var htmlResult = try await content.htmlToDisplay(readerFileManager: readerFileManager)
                 let fetchDuration = formattedInterval(Date().timeIntervalSince(htmlFetchStartedAt))
+                let htmlByteCount = htmlResult?.utf8.count ?? 0
+                var htmlBodyIsEmpty = false
+                if
+                    let html = htmlResult,
+                    let bodyInnerHTML = bodyInnerHTML(from: html)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    bodyInnerHTML.isEmpty
+                {
+                    htmlBodyIsEmpty = true
+                    let preview = snippetPreview(html, maxLength: 160)
+                    debugPrint(
+                        "# READER readability.htmlFetched.emptyBody",
+                        "url=\(committedURL.absoluteString)",
+                        "bytes=\(htmlByteCount)",
+                        "preview=\(preview)"
+                    )
+                    htmlResult = nil
+                }
+                let traceDetails = [
+                    "bytes=\(htmlByteCount)",
+                    "duration=\(fetchDuration)",
+                    "emptyBody=\(htmlBodyIsEmpty)"
+                ].joined(separator: " | ")
+                logTrace(.htmlFetchEnd, url: committedURL, details: traceDetails)
                 if var html = htmlResult {
-                    debugPrint("# READER readability.htmlFetched", "url=\(committedURL.absoluteString)", "bytes=\(html.utf8.count)")
-                    logTrace(.htmlFetchEnd, url: committedURL, details: "bytes=\(html.utf8.count) | duration=\(fetchDuration)")
+                    if !htmlBodyIsEmpty {
+                        debugPrint(
+                            "# READER readability.htmlFetched",
+                            "url=\(committedURL.absoluteString)",
+                            "bytes=\(html.utf8.count)"
+                        )
+                    }
                     try Task.checkCancellation()
 
                     let currentURL = readerContent.pageURL
@@ -1140,6 +1168,20 @@ fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: rea
 
 fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
 fileprivate let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
+
+fileprivate let bodyInnerHTMLRegex = try! NSRegularExpression(pattern: #"(?is)<body[^>]*>(.*?)</body>"#)
+
+fileprivate func bodyInnerHTML(from html: String) -> String? {
+    let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
+    guard
+        let match = bodyInnerHTMLRegex.firstMatch(in: html, options: [], range: nsRange),
+        match.numberOfRanges > 1,
+        let range = Range(match.range(at: 1), in: html)
+    else {
+        return nil
+    }
+    return String(html[range])
+}
 
 fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
     // Convert the UTF8 bytes to a String.

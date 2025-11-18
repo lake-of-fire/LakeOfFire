@@ -349,7 +349,7 @@ const getCSSForBookContent = ({
     }
 
     .manabi-tracking-section {
-        contain: strict !important;
+        contain: initial !important;
     }
 
     body *:not(rt) {

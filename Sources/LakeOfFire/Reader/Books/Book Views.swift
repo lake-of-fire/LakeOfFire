@@ -7,6 +7,7 @@ import SwiftUtilities
 
 struct BookThumbnail: View { //, Equatable {
     let imageURL: URL
+    var limitWidth: Bool = true
     
     @ScaledMetric(relativeTo: .headline) var scaledImageWidth: CGFloat = 100
     @ScaledMetric(relativeTo: .headline) var cellHeight: CGFloat = 140
@@ -14,14 +15,25 @@ struct BookThumbnail: View { //, Equatable {
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-//            LakeImage(imageURL, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight)
-            ReaderImage(imageURL, contentMode: .fit, maxWidth: scaledImageWidth, maxHeight: cellHeight, cornerRadius: scaledImageWidth / 28)
-            //                        .frame(maxWidth: scaledImageWidth)
+        ZStack {
+            Color.clear
+                .frame(
+                    width: scaledImageWidth,
+                    height: cellHeight
+                )
+            ReaderImage(
+                imageURL,
+                contentMode: .fit,
+                maxWidth: limitWidth ? scaledImageWidth : nil,
+                maxHeight: cellHeight,
+                cornerRadius: scaledImageWidth / 28
+            )
+            .frame(
+                maxWidth: limitWidth ? scaledImageWidth : .infinity,
+                maxHeight: cellHeight,
+                alignment: .center
+            )
         }
-//        .frame(idealHeight: cellHeight)
-//                .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
     }
 }
 
@@ -59,4 +71,3 @@ struct HorizontalBooks: View {
         }
     }
 }
-

@@ -60,12 +60,25 @@ const MANABI_TRACKING_GEOMETRY_BAKED_CLASS = 'manabi-tracking-section-geometries
 const MANABI_TRACKING_GEOMETRY_LOADING_CLASS = 'manabi-tracking-geometry-loading'
 const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
+const MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT = 5
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
     try {
         if (payload && Object.keys(payload).length > 0) {
-            metadata = ` ${JSON.stringify(payload)}`
+            const entries = Object.entries(payload)
+            const normalized = {}
+            for (const [key, value] of entries) {
+                if (value === undefined) continue
+                try {
+                    JSON.stringify(value)
+                    normalized[key] = value
+                } catch (_error) {
+                    normalized[key] = String(value)
+                }
+            }
+            const serialized = JSON.stringify(normalized)
+            metadata = ` ${serialized}`
         }
     } catch (error) {
         metadata = ''
@@ -91,6 +104,7 @@ const geometryLoadingIndicator = (() => {
             MANABI_TRACKING_GEOMETRY_LOADING_CLASS,
             active
         )
+        setDebugAttr(globalThis.document?.body, 'geometry-spinner', active ? 'active' : 'idle')
     }
     return {
         async run(fn) {
@@ -123,22 +137,36 @@ const restoreInlineStyleProperty = (element, property, snapshot) => {
     else element.style.removeProperty(property)
 }
 
+const setDebugAttr = (element, key, value) => {
+    if (!element) return
+    const attr = `data-debug-${key}`
+    if (value === undefined || value === null) element.removeAttribute(attr)
+    else element.setAttribute(attr, String(value))
+}
+
 const formatPx = value => {
     if (!Number.isFinite(value)) return '0px'
     const rounded = Math.max(0, Math.round(value * 1000) / 1000)
     return `${rounded}px`
 }
 
-const measureTrackingSection = element => {
-    if (!(element instanceof HTMLElement)) return
+const measureTrackingSection = (element, { index } = {}) => {
+    if (!(element && element.nodeType === Node.ELEMENT_NODE && element.style)) return null
+    const style = element.style
     const previousDisplay = snapshotInlineStyleProperty(element, 'display')
-    element.style.removeProperty('width')
-    element.style.removeProperty('height')
-    element.style.setProperty('display', 'block', 'important')
+    const previousContain = snapshotInlineStyleProperty(element, 'contain')
+    style.removeProperty('width')
+    style.removeProperty('height')
+    style.setProperty('display', 'block', 'important')
+    style.setProperty('contain', 'none', 'important')
     const rect = element.getBoundingClientRect()
-    element.style.setProperty('width', formatPx(rect.width))
-    element.style.setProperty('height', formatPx(rect.height))
+    setDebugAttr(element, 'tracking-geometry-size', `${rect.width.toFixed(3)}x${rect.height.toFixed(3)}`)
+    setDebugAttr(element, 'tracking-geometry-index', index ?? '')
+    setDebugAttr(element, 'tracking-geometry-measured-at', Date.now())
+    setDebugAttr(element, 'tracking-geometry-contain', 'none')
     restoreInlineStyleProperty(element, 'display', previousDisplay)
+    restoreInlineStyleProperty(element, 'contain', previousContain)
+    return rect
 }
 
 const bakeTrackingSectionGeometries = async (doc, {
@@ -150,18 +178,22 @@ const bakeTrackingSectionGeometries = async (doc, {
             reason,
             cause: 'no-body'
         })
+        setDebugAttr(doc?.documentElement, 'tracking-geometry-state', 'skipped-no-body')
         return {
             sections: 0,
             success: false,
             skipped: 'no-body'
         }
     }
+    setDebugAttr(body, 'tracking-geometry-state', 'pending')
+    setDebugAttr(body, 'tracking-geometry-reason', reason)
     if (body.dataset?.isCacheWarmer === 'true') {
         body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
         logEBook('tracking-geometry:skip', {
             reason,
             cause: 'cache-warmer'
         })
+        setDebugAttr(body, 'tracking-geometry-state', 'skipped-cache-warmer')
         return {
             sections: 0,
             success: false,
@@ -169,40 +201,84 @@ const bakeTrackingSectionGeometries = async (doc, {
         }
     }
     const sections = Array.from(body.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
-        .filter(el => el instanceof HTMLElement)
-    if (sections.length === 0) {
+    const stylableSections = sections.filter(el => el && el.nodeType === Node.ELEMENT_NODE && el.style)
+    setDebugAttr(body, 'tracking-geometry-total-sections', sections.length)
+    setDebugAttr(body, 'tracking-geometry-stylable-sections', stylableSections.length)
+    if (stylableSections.length === 0) {
+        const cause = sections.length === 0 ? 'no-sections' : 'no-stylable-sections'
         body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
         logEBook('tracking-geometry:skip', {
             reason,
-            cause: 'no-sections'
+            cause,
+            totalSections: sections.length,
+            stylableSections: stylableSections.length
         })
+        setDebugAttr(body, 'tracking-geometry-state', `skipped-${cause}`)
         return {
             sections: 0,
             success: false,
-            skipped: 'no-sections'
+            skipped: cause
         }
     }
 
+    logEBook('tracking-geometry:start', {
+        reason,
+        totalSections: sections.length,
+        stylableSections: stylableSections.length
+    })
+
     const startedAt = performance?.now?.() ?? Date.now()
     let success = false
+    let zeroSized = 0
+    let firstSample = null
+    let lastSample = null
     try {
         await geometryLoadingIndicator.run(async () => {
             body.classList.remove(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
-            for (let index = 0; index < sections.length; index++) {
-                const section = sections[index]
+            for (let index = 0; index < stylableSections.length; index++) {
+                const section = stylableSections[index]
                 try {
-                    measureTrackingSection(section)
+                    const rect = measureTrackingSection(section, { index })
+                    if (!rect || rect.width <= 0 || rect.height <= 0) {
+                        zeroSized++
+                        if (zeroSized <= MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT) {
+                            logEBook('tracking-geometry:zero-sized', {
+                                reason,
+                                index,
+                                sectionId: section.id ?? null
+                            })
+                        }
+                    } else {
+                        const sample = {
+                            index,
+                            width: Number(rect.width.toFixed(3)),
+                            height: Number(rect.height.toFixed(3))
+                        }
+                        if (!firstSample) firstSample = sample
+                        lastSample = sample
+                        if (index < MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT) {
+                            logEBook('tracking-geometry:sample', {
+                                reason,
+                                index,
+                                width: sample.width,
+                                height: sample.height,
+                                sectionId: section.id ?? null
+                            })
+                        }
+                    }
                 } catch (error) {
                     logEBook('tracking-geometry:section-error', {
                         reason,
                         index,
                         message: error?.message ?? String(error)
                     })
+                    setDebugAttr(section, 'tracking-geometry-error', error?.message ?? 'unknown')
                 }
                 if ((index + 1) % MANABI_TRACKING_GEOMETRY_BATCH_SIZE === 0) {
                     await nextFrame()
                 }
             }
+            setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
         })
         success = true
     } catch (error) {
@@ -210,6 +286,7 @@ const bakeTrackingSectionGeometries = async (doc, {
             reason,
             message: error?.message ?? String(error)
         })
+        setDebugAttr(body, 'tracking-geometry-last-error', error?.message ?? String(error))
     } finally {
         body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
     }
@@ -217,13 +294,45 @@ const bakeTrackingSectionGeometries = async (doc, {
     const durationMs = Math.round((performance?.now?.() ?? Date.now()) - startedAt)
     logEBook(success ? 'tracking-geometry:finish' : 'tracking-geometry:finish-with-errors', {
         reason,
-        count: sections.length,
-        durationMs
-    })
-    return {
-        sections: sections.length,
+        count: stylableSections.length,
         durationMs,
-        success
+        zeroSized,
+        firstSample,
+        lastSample
+    })
+    setDebugAttr(body, 'tracking-geometry-duration-ms', durationMs)
+    setDebugAttr(body, 'tracking-geometry-count', stylableSections.length)
+    setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
+    setDebugAttr(body, 'tracking-geometry-first-sample', firstSample ? `${firstSample.index}:${firstSample.width}x${firstSample.height}` : null)
+    setDebugAttr(body, 'tracking-geometry-last-sample', lastSample ? `${lastSample.index}:${lastSample.width}x${lastSample.height}` : null)
+    setDebugAttr(body, 'tracking-geometry-state', success ? 'baked' : 'error')
+    const needsRetry = stylableSections.length > 0 && zeroSized === stylableSections.length
+    if (needsRetry) {
+        logEBook('tracking-geometry:needs-retry', {
+            reason,
+            stylableCount: stylableSections.length,
+            zeroSized
+        })
+    }
+    if (firstSample || lastSample) {
+        logEBook('tracking-geometry:samples', {
+            reason,
+            first: firstSample,
+            last: lastSample,
+            count: stylableSections.length,
+            zeroSized
+        })
+    }
+    return {
+        sections: stylableSections.length,
+        durationMs,
+        success,
+        zeroSized,
+        stylableCount: stylableSections.length,
+        needsRetry,
+        reason,
+        firstSample,
+        lastSample
     }
 }
 
@@ -837,6 +946,7 @@ export class Paginator extends HTMLElement {
     #trackingGeometryBakeNeedsRerun = false
     #trackingGeometryBakeQueuedRestoreLocation = false
     #trackingGeometryBakeQueuedReason = null
+    #trackingGeometryRetryBudget = 2
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
 
@@ -845,6 +955,10 @@ export class Paginator extends HTMLElement {
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
+
+    #resetTrackingGeometryRetryBudget() {
+        this.#trackingGeometryRetryBudget = 2
+    }
 
     constructor() {
         super()
@@ -1071,6 +1185,7 @@ export class Paginator extends HTMLElement {
     }
     #createView() {
         this.#cancelTrackingGeometryBakeSchedule()
+        this.#resetTrackingGeometryRetryBudget()
         if (this.#view) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
@@ -1101,6 +1216,8 @@ export class Paginator extends HTMLElement {
     } = {}) {
         if (this.#isCacheWarmer) return
         if (!this.#view?.document?.body) return
+        setDebugAttr(this, 'tracking-geometry-last-request', reason)
+        setDebugAttr(this, 'tracking-geometry-will-restore', restoreLocation ? 'true' : 'false')
         if (immediate) {
             this.#performTrackingSectionGeometryBake({ reason, restoreLocation })
             return
@@ -1114,6 +1231,7 @@ export class Paginator extends HTMLElement {
             const finalRestore = this.#trackingGeometryPendingRestoreLocation
             this.#trackingGeometryPendingReason = null
             this.#trackingGeometryPendingRestoreLocation = false
+            setDebugAttr(this, 'tracking-geometry-pending', finalReason)
             this.#performTrackingSectionGeometryBake({
                 reason: finalReason,
                 restoreLocation: finalRestore,
@@ -1137,17 +1255,20 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) return
         const doc = this.#view?.document
         if (!doc?.body) return
+        setDebugAttr(this, 'tracking-geometry-pending', null)
 
         if (this.#trackingGeometryBakeInFlight) {
             this.#trackingGeometryBakeNeedsRerun = true
             if (restoreLocation) this.#trackingGeometryBakeQueuedRestoreLocation = true
             this.#trackingGeometryBakeQueuedReason = reason
+            setDebugAttr(this, 'tracking-geometry-status', 'queued')
             return this.#trackingGeometryBakeInFlight
         }
 
         const anchor = restoreLocation ? await this.#safeCaptureVisibleRange() : null
 
         const run = async () => {
+            setDebugAttr(this, 'tracking-geometry-status', 'running')
             const result = await bakeTrackingSectionGeometries(doc, { reason })
             if (anchor) {
                 try {
@@ -1156,24 +1277,57 @@ export class Paginator extends HTMLElement {
                         reason,
                         restored: true
                     })
+                    setDebugAttr(doc.body, 'tracking-geometry-restored', 'true')
                 } catch (error) {
                     logEBook('tracking-geometry:relocate-error', {
                         reason,
                         message: error?.message ?? String(error)
                     })
+                    setDebugAttr(doc.body, 'tracking-geometry-restored', 'error')
                 }
+            }
+            if (result?.needsRetry && result?.stylableCount > 0) {
+                if (this.#trackingGeometryRetryBudget > 0) {
+                    const retryReason = `${reason}-retry`
+                    this.#trackingGeometryRetryBudget -= 1
+                    logEBook('tracking-geometry:retry-queued', {
+                        reason,
+                        retryReason,
+                        remainingBudget: this.#trackingGeometryRetryBudget,
+                        stylableCount: result.stylableCount,
+                        zeroSized: result.zeroSized
+                    })
+                    setTimeout(() => {
+                        this.requestTrackingSectionGeometryBake({
+                            reason: retryReason,
+                            restoreLocation,
+                            immediate: true,
+                        })
+                    }, 50)
+                } else {
+                    logEBook('tracking-geometry:retry-exhausted', {
+                        reason,
+                        stylableCount: result.stylableCount,
+                        zeroSized: result.zeroSized
+                    })
+                    this.#resetTrackingGeometryRetryBudget()
+                }
+            } else {
+                this.#resetTrackingGeometryRetryBudget()
             }
             return result
         }
 
         this.#trackingGeometryBakeInFlight = run().finally(() => {
             this.#trackingGeometryBakeInFlight = null
+            setDebugAttr(this, 'tracking-geometry-status', 'idle')
             if (this.#trackingGeometryBakeNeedsRerun) {
                 const rerunReason = this.#trackingGeometryBakeQueuedReason ?? 'geometry-bake-rerun'
                 const rerunRestore = this.#trackingGeometryBakeQueuedRestoreLocation
                 this.#trackingGeometryBakeNeedsRerun = false
                 this.#trackingGeometryBakeQueuedRestoreLocation = false
                 this.#trackingGeometryBakeQueuedReason = null
+                setDebugAttr(this, 'tracking-geometry-status', 'rerun')
                 this.#performTrackingSectionGeometryBake({
                     reason: rerunReason,
                     restoreLocation: rerunRestore,

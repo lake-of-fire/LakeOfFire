@@ -371,7 +371,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     switch thumbnailChoice {
                     case .image(let imageUrl):
                         if appearance.isEbookStyle {
-                            BookThumbnail(imageURL: imageUrl, scaledImageWidth: thumbnailEdgeLength, cellHeight: appearance.maxCellHeight)
+                            BookThumbnail(
+                                imageURL: imageUrl,
+                                limitWidth: false,
+                                scaledImageWidth: thumbnailEdgeLength,
+                                cellHeight: thumbnailEdgeLength
+                            )
+                            .frame(width: thumbnailEdgeLength, height: thumbnailEdgeLength, alignment: .center)
                         } else {
                             ReaderImage(
                                 imageUrl,

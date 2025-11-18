@@ -748,7 +748,9 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                 if showEmptyState {
                     if #available(iOS 16, *) {
                         emptyStateView()
+                            .padding(.top, 8)
                             .frame(maxHeight: .infinity, alignment: .top)
+                            .readerContentListRowStyle()
                             .listRowBackground(Color.clear)
                             .stackListStyle(.grouped)
                     }
