@@ -2832,6 +2832,7 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display...awaited promise")
         this.#index = index
+        const shouldBakeInitialGeometry = Boolean(src && !this.#isCacheWarmer)
         if (src) {
             const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
@@ -2851,10 +2852,6 @@ export class Paginator extends HTMLElement {
                         doc,
                         location: doc.location.href,
                         index,
-                    })
-                    await this.#performTrackingSectionGeometryBake({
-                        reason: 'initial-load',
-                        restoreLocation: false,
                     })
                     //                    console.log("#display... awaited onLoad")
                 }
@@ -2895,6 +2892,12 @@ export class Paginator extends HTMLElement {
 
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
+        if (shouldBakeInitialGeometry) {
+            await this.#performTrackingSectionGeometryBake({
+                reason: 'initial-load',
+                restoreLocation: false,
+            })
+        }
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
