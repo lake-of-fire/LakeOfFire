@@ -51,7 +51,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
                 try Task.checkCancellation()
                 let title = item.titleForDisplay
-                let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
+                let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
+                let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
                 let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
                 let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
@@ -108,6 +109,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
         }()
     }
 }
+
+private let ebookAbsoluteDateFormatter: DateFormatter = {
+    ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
+}()
 
 public struct ReaderContentCellAppearance {
     public var maxCellHeight: CGFloat
@@ -308,16 +313,40 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return item.url.absoluteString
     }
 
+    private func normalizedAuthor(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func isSameAsTitle(_ value: String) -> Bool {
+        let comparisonTitle = fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == comparisonTitle
+    }
+
     private var bookAuthorText: String? {
-        let normalized: (String) -> String = { value in
-            value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let normalizedVM = normalizedAuthor(viewModel.author), !isSameAsTitle(normalizedVM) {
+            return normalizedVM
         }
-        if let viewModelAuthor = viewModel.author {
-            let trimmed = normalized(viewModelAuthor)
-            if !trimmed.isEmpty { return trimmed }
+        if let normalizedItemAuthor = normalizedAuthor(item.author), !isSameAsTitle(normalizedItemAuthor) {
+            return normalizedItemAuthor
         }
-        let trimmedItemAuthor = normalized(item.author)
-        return trimmedItemAuthor.isEmpty ? nil : trimmedItemAuthor
+        return nil
+    }
+
+    private var publicationDateText: String? {
+        if let formatted = viewModel.humanReadablePublicationDate, !formatted.isEmpty {
+            return formatted
+        }
+        if appearance.isEbookStyle {
+            if let fallback = item.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+                return fallback
+            }
+            if let date = item.publicationDate {
+                return ReaderDateFormatter.absoluteString(from: date, dateFormatter: ebookAbsoluteDateFormatter)
+            }
+        }
+        return nil
     }
 
     private var fallbackInitial: String {
@@ -388,13 +417,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     switch thumbnailChoice {
                     case .image(let imageUrl):
                         if appearance.isEbookStyle {
-                            BookThumbnail(
-                                imageURL: imageUrl,
-                                limitWidth: false,
-                                scaledImageWidth: thumbnailEdgeLength,
-                                cellHeight: thumbnailEdgeLength
-                            )
-                            .frame(width: thumbnailEdgeLength, height: thumbnailEdgeLength, alignment: .center)
+                            ebookThumbnailView(for: imageUrl)
                         } else {
                             ReaderImage(
                                 imageUrl,
@@ -420,7 +443,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 }
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading) {
-                        if appearance.includeSource {
+                        if appearance.isEbookStyle, let authorText = bookAuthorText {
+                            Text(authorText)
+                                .lineLimit(1)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if appearance.includeSource {
                             HStack(alignment: .center) {
                                 if let sourceIconURL = inlineSourceIconURL {
                                     ReaderContentSourceIconImage(
@@ -436,11 +464,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                        } else if appearance.isEbookStyle, let authorText = bookAuthorText {
-                            Text(authorText)
-                                .lineLimit(1)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                         
                         Text(viewModel.title)
@@ -476,7 +499,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         
                         HStack(alignment: .center, spacing: 6) {
                             HStack(spacing: 6) {
-                                if let publicationDate = viewModel.humanReadablePublicationDate {
+                                if let publicationDate = publicationDateText {
                                     Text("\(publicationDate)")
                                         .lineLimit(1)
                                         .allowsTightening(true)
@@ -568,6 +591,25 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             }
         }
         // No provider-based onReceive; lists refresh via Realm publishers.
+    }
+
+    @ViewBuilder
+    private func ebookThumbnailView(for imageUrl: URL) -> some View {
+        Color.clear
+            .frame(width: thumbnailEdgeLength, height: thumbnailEdgeLength)
+            .overlay {
+                ReaderImage(
+                    imageUrl,
+                    contentMode: .fit,
+                    cornerRadius: thumbnailEdgeLength / 28
+                )
+                .aspectRatio(contentMode: .fit)
+                .frame(
+                    maxWidth: thumbnailEdgeLength,
+                    maxHeight: thumbnailEdgeLength,
+                    alignment: .center
+                )
+            }
     }
 }
 

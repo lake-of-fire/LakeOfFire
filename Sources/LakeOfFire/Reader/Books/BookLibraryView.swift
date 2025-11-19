@@ -155,7 +155,7 @@ public struct BookLibraryView: View {
             viewModel: readerContentListViewModel,
             entrySelection: contentSelection,
             includeSource: false,
-            alwaysShowThumbnails: false,
+            alwaysShowThumbnails: true
         )
         .listRowSeparatorIfAvailable(.hidden)
     }

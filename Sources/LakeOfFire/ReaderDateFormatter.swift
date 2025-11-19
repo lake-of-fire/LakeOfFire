@@ -102,17 +102,21 @@ public enum ReaderDateFormatter {
 
     public static func shortDurationString(from duration: TimeInterval) -> String? {
         guard duration > 0 else { return nil }
-        let formatter = DateComponentsFormatter()
-        formatter.unitsStyle = .abbreviated
-        formatter.maximumUnitCount = 2
-        if duration < 60 {
-            formatter.allowedUnits = [.second]
-        } else if duration < 3600 {
-            formatter.allowedUnits = [.minute]
+
+        let minute: TimeInterval = 60
+        let hour: TimeInterval = 3600
+        let day: TimeInterval = 86_400
+
+        if duration < hour {
+            let roundedMinutes = max(1, Int(round(duration / minute)))
+            return "\(roundedMinutes)m"
+        } else if duration < day {
+            let roundedHours = max(1, Int(round(duration / hour)))
+            return "\(roundedHours)h"
         } else {
-            formatter.allowedUnits = [.hour, .minute]
+            let roundedDays = max(1, Int(round(duration / day)))
+            return "\(roundedDays)d"
         }
-        return formatter.string(from: duration)
     }
 
     public static func absoluteString(

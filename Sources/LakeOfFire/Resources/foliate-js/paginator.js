@@ -153,7 +153,67 @@ const formatPx = value => {
     return `${rounded}px`
 }
 
+const roundMetric = value => {
+    if (!Number.isFinite(value)) return null
+    return Math.round(value * 1000) / 1000
+}
+
+const describeRect = rect => {
+    if (!rect) return null
+    return {
+        width: roundMetric(rect.width),
+        height: roundMetric(rect.height),
+        top: roundMetric((rect.top ?? rect.y)),
+        left: roundMetric((rect.left ?? rect.x)),
+    }
+}
+
+const snapshotRect = element => {
+    try {
+        return element?.getBoundingClientRect?.() ?? null
+    } catch (_error) {
+        return null
+    }
+}
+
+const rectFromGeometry = geometry => {
+    if (!geometry) return null
+    return {
+        width: geometry.width,
+        height: geometry.height,
+        top: geometry.top ?? null,
+        left: geometry.left ?? null,
+    }
+}
+
+const geometriesRoughlyMatch = (rect, geometry) => {
+    if (!rect || !geometry) return false
+    const widthDiff = Math.abs(rect.width - geometry.width)
+    const heightDiff = Math.abs(rect.height - geometry.height)
+    const widthTolerance = Math.max(2, Math.abs(rect.width) * 0.05)
+    const heightTolerance = Math.max(2, Math.abs(rect.height) * 0.05)
+    return widthDiff <= widthTolerance && heightDiff <= heightTolerance
+}
+
 const trackingSectionGeometryCache = new Map()
+const TRACKING_GEOMETRY_INLINE_PROPERTIES = [
+    'display',
+    'width',
+    'min-width',
+    'max-width',
+    'height',
+    'min-height',
+    'max-height',
+    'overflow',
+    'contain',
+]
+
+const clearGeometryFromSection = element => {
+    if (!element?.style) return
+    for (const property of TRACKING_GEOMETRY_INLINE_PROPERTIES) {
+        element.style.removeProperty(property)
+    }
+}
 
 const getSectionCacheKey = (element, viewportKey) => {
     if (!element) return null
@@ -166,8 +226,17 @@ const applyGeometryToSection = (element, geometry, { source = 'measurement' } = 
     if (!element?.style || !geometry) return
     const { width, height } = geometry
     if (!Number.isFinite(width) || !Number.isFinite(height)) return
-    element.style.setProperty('width', formatPx(width), 'important')
-    element.style.setProperty('height', formatPx(height), 'important')
+    const widthPx = formatPx(width)
+    const heightPx = formatPx(height)
+    element.style.setProperty('display', 'block', 'important')
+    element.style.setProperty('width', widthPx, 'important')
+    element.style.setProperty('min-width', widthPx, 'important')
+    element.style.setProperty('max-width', widthPx, 'important')
+    element.style.setProperty('height', heightPx, 'important')
+    element.style.setProperty('min-height', heightPx, 'important')
+    element.style.setProperty('max-height', heightPx, 'important')
+    element.style.setProperty('overflow', 'hidden', 'important')
+    element.style.setProperty('contain', 'strict', 'important')
     setDebugAttr(element, 'tracking-geometry-size', `${width.toFixed(3)}x${height.toFixed(3)}`)
     setDebugAttr(element, 'tracking-geometry-source', source)
 }
@@ -176,10 +245,13 @@ const logGeometryComparison = ({
     reason,
     index,
     sectionId,
-    baseline,
-    baked,
+    baselineRect,
+    bakedRect,
+    geometry,
     source,
 }) => {
+    const baseline = describeRect(baselineRect)
+    const baked = describeRect(bakedRect)
     logEBook('tracking-geometry:compare', {
         reason,
         index,
@@ -187,9 +259,33 @@ const logGeometryComparison = ({
         source,
         baselineWidth: baseline?.width ?? null,
         baselineHeight: baseline?.height ?? null,
+        baselineTop: baseline?.top ?? null,
+        baselineLeft: baseline?.left ?? null,
         bakedWidth: baked?.width ?? null,
         bakedHeight: baked?.height ?? null,
+        bakedTop: baked?.top ?? null,
+        bakedLeft: baked?.left ?? null,
+        targetWidth: roundMetric(geometry?.width),
+        targetHeight: roundMetric(geometry?.height),
     })
+}
+
+const logPostLayoutComparisons = async entries => {
+    if (!entries?.length) return
+    await nextFrame()
+    for (const entry of entries) {
+        const actualRect = snapshotRect(entry.section)
+        const targetRect = rectFromGeometry(entry.geometry)
+        logGeometryComparison({
+            reason: `${entry.reason}-post`,
+            index: entry.index,
+            sectionId: entry.sectionId,
+            baselineRect: targetRect,
+            bakedRect: actualRect,
+            geometry: entry.geometry,
+            source: `${entry.source}-post`
+        })
+    }
 }
 
 const measureTrackingSection = (element, { index } = {}) => {
@@ -197,10 +293,22 @@ const measureTrackingSection = (element, { index } = {}) => {
     const style = element.style
     const previousDisplay = snapshotInlineStyleProperty(element, 'display')
     const previousContain = snapshotInlineStyleProperty(element, 'contain')
-    style.removeProperty('width')
-    style.removeProperty('height')
+    const previousOverflow = snapshotInlineStyleProperty(element, 'overflow')
+    const previousWidth = snapshotInlineStyleProperty(element, 'width')
+    const previousMinWidth = snapshotInlineStyleProperty(element, 'min-width')
+    const previousMaxWidth = snapshotInlineStyleProperty(element, 'max-width')
+    const previousHeight = snapshotInlineStyleProperty(element, 'height')
+    const previousMinHeight = snapshotInlineStyleProperty(element, 'min-height')
+    const previousMaxHeight = snapshotInlineStyleProperty(element, 'max-height')
     style.setProperty('display', 'block', 'important')
     style.setProperty('contain', 'none', 'important')
+    style.setProperty('overflow', 'visible', 'important')
+    style.setProperty('width', 'auto', 'important')
+    style.setProperty('min-width', '0px', 'important')
+    style.setProperty('max-width', 'none', 'important')
+    style.setProperty('height', 'auto', 'important')
+    style.setProperty('min-height', '0px', 'important')
+    style.setProperty('max-height', 'none', 'important')
     const rect = element.getBoundingClientRect()
     setDebugAttr(element, 'tracking-geometry-size', `${rect.width.toFixed(3)}x${rect.height.toFixed(3)}`)
     setDebugAttr(element, 'tracking-geometry-index', index ?? '')
@@ -208,15 +316,23 @@ const measureTrackingSection = (element, { index } = {}) => {
     setDebugAttr(element, 'tracking-geometry-contain', 'none')
     restoreInlineStyleProperty(element, 'display', previousDisplay)
     restoreInlineStyleProperty(element, 'contain', previousContain)
+    restoreInlineStyleProperty(element, 'overflow', previousOverflow)
+    restoreInlineStyleProperty(element, 'width', previousWidth)
+    restoreInlineStyleProperty(element, 'min-width', previousMinWidth)
+    restoreInlineStyleProperty(element, 'max-width', previousMaxWidth)
+    restoreInlineStyleProperty(element, 'height', previousHeight)
+    restoreInlineStyleProperty(element, 'min-height', previousMinHeight)
+    restoreInlineStyleProperty(element, 'max-height', previousMaxHeight)
     return rect
 }
 
 const waitForGeometryExpansion = (elements, {
     timeoutMs = MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
-    maxObserved = 10,
+    maxObserved = Infinity,
 } = {}) => {
     if (!elements?.length) return Promise.resolve(false)
-    const targets = elements.slice(0, maxObserved).filter(el => el && el.nodeType === Node.ELEMENT_NODE)
+    const limit = Number.isFinite(maxObserved) ? maxObserved : elements.length
+    const targets = elements.slice(0, limit).filter(el => el && el.nodeType === Node.ELEMENT_NODE)
     if (!targets.length) return Promise.resolve(false)
     const hasSizedTarget = () => targets.some(el => {
         const rect = el.getBoundingClientRect()
@@ -317,6 +433,7 @@ const bakeTrackingSectionGeometries = async (doc, {
     let lastSample = null
     let sampleEntries = []
     let zeroEntries = []
+    let postLayoutEntries = []
     try {
         await geometryLoadingIndicator.run(async () => {
             body.classList.remove(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
@@ -340,18 +457,37 @@ const bakeTrackingSectionGeometries = async (doc, {
                 let localLast = null
                 const localSamples = []
                 const localZeros = []
+                const postLayoutEntries = []
                 for (let index = 0; index < stylableSections.length; index++) {
                     const section = stylableSections[index]
                     try {
-                        const baselineRect = section.getBoundingClientRect()
+                        const baselineRect = snapshotRect(section)
                         const cacheKey = getSectionCacheKey(section, viewportKey)
-                        const cachedGeometry = cacheKey ? trackingSectionGeometryCache.get(cacheKey) : null
+                        let cachedGeometry = cacheKey ? trackingSectionGeometryCache.get(cacheKey) : null
+                        const hasValidBaseline = (baselineRect?.width ?? 0) > 0 && (baselineRect?.height ?? 0) > 0
+                        if (cachedGeometry && hasValidBaseline && !geometriesRoughlyMatch(baselineRect, cachedGeometry)) {
+                            logEBook('tracking-geometry:cache-invalidated', {
+                                reason,
+                                index,
+                                sectionId: section.id ?? null,
+                                baselineWidth: baselineRect?.width ?? null,
+                                baselineHeight: baselineRect?.height ?? null,
+                                cachedWidth: cachedGeometry?.width ?? null,
+                                cachedHeight: cachedGeometry?.height ?? null
+                            })
+                            trackingSectionGeometryCache.delete(cacheKey)
+                            cachedGeometry = null
+                        }
                         if (cachedGeometry) {
                             applyGeometryToSection(section, cachedGeometry, { source: 'cache' })
+                            const bakedRect = snapshotRect(section)
+                            const bakedMetrics = describeRect(bakedRect)
                             const sample = {
                                 index,
-                                width: Number(cachedGeometry.width.toFixed(3)),
-                                height: Number(cachedGeometry.height.toFixed(3)),
+                                width: bakedMetrics?.width ?? roundMetric(cachedGeometry.width),
+                                height: bakedMetrics?.height ?? roundMetric(cachedGeometry.height),
+                                top: bakedMetrics?.top ?? null,
+                                left: bakedMetrics?.left ?? null,
                                 sectionId: section.id ?? null,
                                 source: 'cache'
                             }
@@ -359,8 +495,9 @@ const bakeTrackingSectionGeometries = async (doc, {
                                 reason,
                                 index,
                                 sectionId: section.id ?? null,
-                                baseline: baselineRect,
-                                baked: sample,
+                                baselineRect,
+                                bakedRect,
+                                geometry: cachedGeometry,
                                 source: 'cache'
                             })
                             if (!localFirst) localFirst = {
@@ -374,8 +511,17 @@ const bakeTrackingSectionGeometries = async (doc, {
                                 height: sample.height
                             }
                             localSamples.push(sample)
+                            postLayoutEntries.push({
+                                section,
+                                index,
+                                sectionId: section.id ?? null,
+                                geometry: cachedGeometry,
+                                source: 'cache',
+                                reason
+                            })
                             continue
                         }
+                        clearGeometryFromSection(section)
                         const rect = measureTrackingSection(section, { index })
                         if (!rect || rect.width <= 0 || rect.height <= 0) {
                             localZero++
@@ -385,10 +531,14 @@ const bakeTrackingSectionGeometries = async (doc, {
                             })
                         } else {
                             applyGeometryToSection(section, rect, { source: 'measurement' })
+                            const bakedRect = snapshotRect(section)
+                            const bakedMetrics = describeRect(bakedRect)
                             const sample = {
                                 index,
-                                width: Number(rect.width.toFixed(3)),
-                                height: Number(rect.height.toFixed(3)),
+                                width: bakedMetrics?.width ?? roundMetric(rect.width),
+                                height: bakedMetrics?.height ?? roundMetric(rect.height),
+                                top: bakedMetrics?.top ?? null,
+                                left: bakedMetrics?.left ?? null,
                                 sectionId: section.id ?? null,
                                 source: 'measurement'
                             }
@@ -396,8 +546,9 @@ const bakeTrackingSectionGeometries = async (doc, {
                                 reason,
                                 index,
                                 sectionId: section.id ?? null,
-                                baseline: baselineRect,
-                                baked: sample,
+                                baselineRect,
+                                bakedRect,
+                                geometry: rect,
                                 source: 'measurement'
                             })
                             if (!localFirst) localFirst = {
@@ -411,6 +562,14 @@ const bakeTrackingSectionGeometries = async (doc, {
                                 height: sample.height
                             }
                             localSamples.push(sample)
+                            postLayoutEntries.push({
+                                section,
+                                index,
+                                sectionId: section.id ?? null,
+                                geometry: rect,
+                                source: 'measurement',
+                                reason
+                            })
                             if (cacheKey) {
                                 trackingSectionGeometryCache.set(cacheKey, {
                                     width: rect.width,
@@ -436,6 +595,7 @@ const bakeTrackingSectionGeometries = async (doc, {
                     lastSample: localLast,
                     samples: localSamples,
                     zeroEntries: localZeros,
+                    postLayoutEntries,
                 }
             }
 
@@ -443,7 +603,8 @@ const bakeTrackingSectionGeometries = async (doc, {
             const shouldObserveGeometry = reason === 'initial-load'
                 if (shouldObserveGeometry) {
                     const resolved = await waitForGeometryExpansion(stylableSections, {
-                        timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS
+                        timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
+                        maxObserved: stylableSections.length
                     })
                     logEBook('tracking-geometry:resizeobserver-wait', {
                         reason,
@@ -479,11 +640,13 @@ const bakeTrackingSectionGeometries = async (doc, {
                 lastSample = measurement.lastSample
                 sampleEntries = measurement.samples
                 zeroEntries = measurement.zeroEntries
+                postLayoutEntries = measurement.postLayoutEntries ?? []
                 setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
             } finally {
                 disableMeasuringClass()
             }
         })
+        await logPostLayoutComparisons(postLayoutEntries)
         success = true
     } catch (error) {
         logEBook('tracking-geometry:error', {
@@ -503,6 +666,8 @@ const bakeTrackingSectionGeometries = async (doc, {
                 index: entry.index,
                 width: entry.width,
                 height: entry.height,
+                top: entry.top ?? null,
+                left: entry.left ?? null,
                 sectionId: entry.sectionId
             })
         }

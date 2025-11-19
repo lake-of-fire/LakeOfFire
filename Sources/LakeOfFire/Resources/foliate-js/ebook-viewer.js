@@ -1448,31 +1448,31 @@ const manabiEbookAudioBridge = {
     pendingNavigation: null,
     requestNavigation(payload) {
         if (!payload) { return; }
-        const fraction = this.#fractionForPayload(payload);
+        const fraction = this.fractionForPayload(payload);
         if (!Number.isFinite(fraction)) { return; }
         if (this.pendingNavigation && Math.abs((this.pendingNavigation.fraction ?? fraction) - fraction) < 0.0001) {
             return;
         }
         this.pendingNavigation = Object.assign({}, payload, { fraction });
-        this.#pauseNativeAudio('section-navigation');
+        this.pauseNativeAudio('section-navigation');
         globalThis.reader?.view?.goToFraction(fraction).catch(error => {
             console.error('ebook audio navigation failed', error);
-            this.#resumeNativeAudio('navigation-error');
+            this.resumeNativeAudio('navigation-error');
         });
     },
     sectionReady(metadata) {
         if (metadata?.sectionURL) {
             this.pendingNavigation = null;
         }
-        this.#resumeNativeAudio('section-ready');
+        this.resumeNativeAudio('section-ready');
     },
     cancel(reason = 'cancelled') {
         this.pendingNavigation = null;
         if (this.pausedForLoading) {
-            this.#resumeNativeAudio(reason);
+            this.resumeNativeAudio(reason);
         }
     },
-    #fractionForPayload(payload) {
+    fractionForPayload(payload) {
         if (Number.isFinite(payload?.fraction)) {
             return Math.max(0, Math.min(1, payload.fraction));
         }
@@ -1481,7 +1481,7 @@ const manabiEbookAudioBridge = {
         }
         return null;
     },
-    #pauseNativeAudio(reason) {
+    pauseNativeAudio(reason) {
         if (this.pausedForLoading) { return; }
         this.pausedForLoading = true;
         try {
@@ -1490,7 +1490,7 @@ const manabiEbookAudioBridge = {
             // ignore
         }
     },
-    #resumeNativeAudio(reason) {
+    resumeNativeAudio(reason) {
         if (!this.pausedForLoading) { return; }
         this.pausedForLoading = false;
         try {

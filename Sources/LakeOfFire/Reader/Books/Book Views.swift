@@ -15,35 +15,17 @@ struct BookThumbnail: View { //, Equatable {
     //    @StateObject private var viewModel = ReaderContentCellViewModel<C>()
     
     var body: some View {
-        GeometryReader { geometry in
-            let targetWidth = geometry.size.width
-            let targetHeight = geometry.size.height
-            let constrainedWidth = limitWidth ? targetWidth : nil
-            let constrainedHeight = limitWidth ? targetHeight : nil
-
-            Color.clear
-                .frame(width: targetWidth, height: targetHeight)
-                .overlay {
-                    ReaderImage(
-                        imageURL,
-                        contentMode: .fit,
-                        maxWidth: constrainedWidth,
-                        maxHeight: constrainedHeight,
-                        cornerRadius: scaledImageWidth / 28
-                    )
-                    .aspectRatio(contentMode: .fit)
-                    .frame(
-                        maxWidth: targetWidth,
-                        maxHeight: targetHeight,
-                        alignment: .center
-                    )
-                }
+        let resolvedMaxWidth = limitWidth ? scaledImageWidth : nil
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            ReaderImage(
+                imageURL,
+                contentMode: .fit,
+                maxWidth: resolvedMaxWidth,
+                maxHeight: cellHeight,
+                cornerRadius: scaledImageWidth / 28
+            )
         }
-        .frame(
-            width: scaledImageWidth,
-            height: cellHeight,
-            alignment: .center
-        )
     }
 }
 

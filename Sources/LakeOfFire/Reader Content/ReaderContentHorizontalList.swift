@@ -82,7 +82,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                             appearance: ReaderContentCellAppearance(
                                 maxCellHeight: maxCellHeight,
                                 alwaysShowThumbnails: true,
-                                isEbookStyle: false,
+                                isEbookStyle: content.isPhysicalMedia,
                                 includeSource: includeSource,
                                 thumbnailDimension: maxCellHeight
                             ),
@@ -93,7 +93,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                             appearance: ReaderContentCellAppearance(
                                 maxCellHeight: maxCellHeight,
                                 alwaysShowThumbnails: true,
-                                isEbookStyle: false,
+                                isEbookStyle: content.isPhysicalMedia,
                                 includeSource: includeSource,
                                 thumbnailDimension: maxCellHeight
                             )

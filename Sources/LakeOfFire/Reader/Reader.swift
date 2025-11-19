@@ -21,6 +21,15 @@ fileprivate struct ThemeModifier: ViewModifier {
         }
     }
     
+    private func applyFontSize(_ size: Double, reason: String) async {
+        do {
+            try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(size)px';", duplicateInMultiTargetFrames: true)
+            await requestGeometryBake(reason: reason)
+        } catch {
+            print("Font size update failed: \(error)")
+        }
+    }
+    
     func body(content: Content) -> some View {
         content
             .onChange(of: lightModeTheme) { newValue in
@@ -43,13 +52,14 @@ fileprivate struct ThemeModifier: ViewModifier {
                     await requestGeometryBake(reason: "dark-theme-change")
                 }
             }
-            .task(id: readerFontSize) { @MainActor in
+            .task { @MainActor in
                 guard let readerFontSize else { return }
-                do {
-                    try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
-                    await requestGeometryBake(reason: "font-size-change")
-                } catch {
-                    print("\(error)")
+                await applyFontSize(readerFontSize, reason: "font-size-initial")
+            }
+            .onChange(of: readerFontSize) { newValue in
+                guard let newValue else { return }
+                Task { @MainActor in
+                    await applyFontSize(newValue, reason: "font-size-change")
                 }
             }
     }
