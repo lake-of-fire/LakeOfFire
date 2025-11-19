@@ -319,16 +319,28 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func isSameAsTitle(_ value: String) -> Bool {
-        let comparisonTitle = fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == comparisonTitle
+    private var comparisonTitles: [String] {
+        var titles: [String] = []
+        let candidates = [viewModel.title, item.title]
+        for candidate in candidates {
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                titles.append(trimmed)
+            }
+        }
+        return titles
+    }
+
+    private func isSameAsAnyTitle(_ value: String) -> Bool {
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return comparisonTitles.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedValue }
     }
 
     private var bookAuthorText: String? {
-        if let normalizedVM = normalizedAuthor(viewModel.author), !isSameAsTitle(normalizedVM) {
+        if let normalizedVM = normalizedAuthor(viewModel.author), !isSameAsAnyTitle(normalizedVM) {
             return normalizedVM
         }
-        if let normalizedItemAuthor = normalizedAuthor(item.author), !isSameAsTitle(normalizedItemAuthor) {
+        if let normalizedItemAuthor = normalizedAuthor(item.author), !isSameAsAnyTitle(normalizedItemAuthor) {
             return normalizedItemAuthor
         }
         return nil

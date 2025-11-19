@@ -64,6 +64,7 @@ const MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT = 5
 const MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS = 80
 const MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS = 60
 const MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS = 120
+const MANABI_TRACKING_GEOMETRY_INITIAL_OBSERVED_SECTIONS = 12
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
@@ -326,6 +327,68 @@ const measureTrackingSection = (element, { index } = {}) => {
     return rect
 }
 
+const disableDocumentColumnization = doc => {
+    const root = doc?.documentElement
+    if (!root) return () => {}
+    const body = doc?.body ?? null
+    const rootProps = [
+        'column-width',
+        'column-count',
+        'column-gap',
+        'column-fill',
+        '--paginator-column-gap',
+        '--paginator-margin',
+        'width',
+        'height',
+        'max-width',
+        'max-height',
+        'min-width',
+        'min-height',
+        'padding',
+        'overflow',
+    ]
+    const bodyProps = [
+        'max-width',
+        'max-height',
+        'margin',
+    ]
+    const snapshotEntries = (element, props) => {
+        if (!element) return new Map()
+        return new Map(props.map(prop => [prop, snapshotInlineStyleProperty(element, prop)]))
+    }
+    const rootSnapshots = snapshotEntries(root, rootProps)
+    const bodySnapshots = snapshotEntries(body, bodyProps)
+    const setImportant = (element, property, value) => {
+        if (!element) return
+        element.style?.setProperty(property, value, 'important')
+    }
+    setImportant(root, 'column-width', 'auto')
+    setImportant(root, 'column-count', 'auto')
+    setImportant(root, 'column-gap', '0px')
+    setImportant(root, 'column-fill', 'balance')
+    setImportant(root, '--paginator-column-gap', '0px')
+    setImportant(root, '--paginator-margin', '0px')
+    setImportant(root, 'width', 'auto')
+    setImportant(root, 'height', 'auto')
+    setImportant(root, 'max-width', 'none')
+    setImportant(root, 'max-height', 'none')
+    setImportant(root, 'min-width', '0px')
+    setImportant(root, 'min-height', '0px')
+    setImportant(root, 'padding', '0px')
+    setImportant(root, 'overflow', 'visible')
+    setImportant(body, 'max-width', 'none')
+    setImportant(body, 'max-height', 'none')
+    setImportant(body, 'margin', '0px')
+    return () => {
+        for (const [prop, snapshot] of rootSnapshots.entries()) {
+            restoreInlineStyleProperty(root, prop, snapshot)
+        }
+        for (const [prop, snapshot] of bodySnapshots.entries()) {
+            restoreInlineStyleProperty(body, prop, snapshot)
+        }
+    }
+}
+
 const waitForGeometryExpansion = (elements, {
     timeoutMs = MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
     maxObserved = Infinity,
@@ -372,6 +435,7 @@ const bakeTrackingSectionGeometries = async (doc, {
     viewportKey = null,
 } = {}) => {
     const body = doc?.body
+    const root = doc?.documentElement
     if (!body) {
         logEBook('tracking-geometry:skip', {
             reason,
@@ -438,14 +502,22 @@ const bakeTrackingSectionGeometries = async (doc, {
         await geometryLoadingIndicator.run(async () => {
             body.classList.remove(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
             let measuringClassApplied = false
+            let restoreColumnization = null
             const enableMeasuringClass = () => {
                 if (measuringClassApplied) return
                 body.classList.add('manabi-tracking-section-measuring')
+                root?.classList?.add?.('manabi-tracking-section-measuring')
+                restoreColumnization = disableDocumentColumnization(doc)
                 measuringClassApplied = true
             }
             const disableMeasuringClass = () => {
                 if (!measuringClassApplied) return
                 body.classList.remove('manabi-tracking-section-measuring')
+                root?.classList?.remove?.('manabi-tracking-section-measuring')
+                if (restoreColumnization) {
+                    restoreColumnization()
+                    restoreColumnization = null
+                }
                 measuringClassApplied = false
             }
 
@@ -600,21 +672,30 @@ const bakeTrackingSectionGeometries = async (doc, {
             }
 
             try {
-            const shouldObserveGeometry = reason === 'initial-load'
+                enableMeasuringClass()
+                const isInitialLoadReason = typeof reason === 'string' && reason.startsWith('initial-load')
+                const shouldObserveGeometry = isInitialLoadReason
                 if (shouldObserveGeometry) {
                     const resolved = await waitForGeometryExpansion(stylableSections, {
                         timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
-                        maxObserved: stylableSections.length
+                        maxObserved: Math.min(
+                            stylableSections.length,
+                            MANABI_TRACKING_GEOMETRY_INITIAL_OBSERVED_SECTIONS
+                        )
                     })
                     logEBook('tracking-geometry:resizeobserver-wait', {
                         reason,
                         resolved,
                         timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
-                        sections: stylableSections.length
+                        sections: stylableSections.length,
+                        observed: Math.min(
+                            stylableSections.length,
+                            MANABI_TRACKING_GEOMETRY_INITIAL_OBSERVED_SECTIONS
+                        )
                     })
                 }
 
-                const shouldInlineDelay = reason === 'initial-load' && stylableSections.length > 0
+                const shouldInlineDelay = isInitialLoadReason && stylableSections.length > 0
                 let measurement = await measureAllSections()
                 if (shouldInlineDelay && measurement.zeroSized === stylableSections.length) {
                     logEBook('tracking-geometry:inline-delay-retry', {

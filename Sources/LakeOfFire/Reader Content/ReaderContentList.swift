@@ -876,6 +876,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
+        .readerContentListRowStyle()
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,

@@ -344,13 +344,18 @@ const getCSSForBookContent = ({
         color: inherit !important;
     }
 
-    body:not(.manabi-tracking-section-geometries-baked) .manabi-tracking-section {
+    body:not(.manabi-tracking-section-geometries-baked):not(.manabi-tracking-section-measuring) .manabi-tracking-section {
         display: none !important;
     }
 
     body.manabi-tracking-section-measuring .manabi-tracking-section {
         display: block !important;
         visibility: hidden !important;
+    }
+
+    body.manabi-tracking-section-measuring manabi-container,
+    body.manabi-tracking-section-measuring manabi-segment {
+        content-visibility: visible !important;
     }
 
     .manabi-tracking-section {
