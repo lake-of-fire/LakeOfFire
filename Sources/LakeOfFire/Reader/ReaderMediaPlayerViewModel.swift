@@ -12,6 +12,7 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
     @Published public var audioURLs = [URL]()
     @Published public var isPlaying = false
     @Published public private(set) var hasStartedPlaybackForCurrentContent = false
+    @Published public var isTemporarilySuspendedForLoading = false
     
     private var currentContentKey: String?
     
@@ -23,6 +24,7 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
         if currentContentKey != incomingContentKey {
             currentContentKey = incomingContentKey
             hasStartedPlaybackForCurrentContent = false
+            isTemporarilySuspendedForLoading = false
         }
         let voiceAudioURLs = Array(content.voiceAudioURLs)
 #if DEBUG

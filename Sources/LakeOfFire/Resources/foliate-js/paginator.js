@@ -61,6 +61,9 @@ const MANABI_TRACKING_GEOMETRY_LOADING_CLASS = 'manabi-tracking-geometry-loading
 const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT = 5
+const MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS = 80
+const MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS = 60
+const MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS = 120
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
@@ -150,6 +153,45 @@ const formatPx = value => {
     return `${rounded}px`
 }
 
+const trackingSectionGeometryCache = new Map()
+
+const getSectionCacheKey = (element, viewportKey) => {
+    if (!element) return null
+    const id = element.id || element.getAttribute('data-manabi-tracking-section-id')
+    if (!id) return null
+    return viewportKey ? `${viewportKey}::${id}` : id
+}
+
+const applyGeometryToSection = (element, geometry, { source = 'measurement' } = {}) => {
+    if (!element?.style || !geometry) return
+    const { width, height } = geometry
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return
+    element.style.setProperty('width', formatPx(width), 'important')
+    element.style.setProperty('height', formatPx(height), 'important')
+    setDebugAttr(element, 'tracking-geometry-size', `${width.toFixed(3)}x${height.toFixed(3)}`)
+    setDebugAttr(element, 'tracking-geometry-source', source)
+}
+
+const logGeometryComparison = ({
+    reason,
+    index,
+    sectionId,
+    baseline,
+    baked,
+    source,
+}) => {
+    logEBook('tracking-geometry:compare', {
+        reason,
+        index,
+        sectionId,
+        source,
+        baselineWidth: baseline?.width ?? null,
+        baselineHeight: baseline?.height ?? null,
+        bakedWidth: baked?.width ?? null,
+        bakedHeight: baked?.height ?? null,
+    })
+}
+
 const measureTrackingSection = (element, { index } = {}) => {
     if (!(element && element.nodeType === Node.ELEMENT_NODE && element.style)) return null
     const style = element.style
@@ -169,8 +211,49 @@ const measureTrackingSection = (element, { index } = {}) => {
     return rect
 }
 
+const waitForGeometryExpansion = (elements, {
+    timeoutMs = MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
+    maxObserved = 10,
+} = {}) => {
+    if (!elements?.length) return Promise.resolve(false)
+    const targets = elements.slice(0, maxObserved).filter(el => el && el.nodeType === Node.ELEMENT_NODE)
+    if (!targets.length) return Promise.resolve(false)
+    const hasSizedTarget = () => targets.some(el => {
+        const rect = el.getBoundingClientRect()
+        return rect?.width > 0 && rect?.height > 0
+    })
+    if (hasSizedTarget()) return Promise.resolve(false)
+
+    return new Promise(resolve => {
+        let resolved = false
+        const ro = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                if (entry?.contentRect?.width > 0 && entry?.contentRect?.height > 0) {
+                    resolved = true
+                    ro.disconnect()
+                    resolve(true)
+                    return
+                }
+            }
+        })
+        targets.forEach(el => {
+            try {
+                ro.observe(el)
+            } catch (_error) {
+                // ignore
+            }
+        })
+        setTimeout(() => {
+            if (resolved) return
+            ro.disconnect()
+            resolve(false)
+        }, timeoutMs)
+    })
+}
+
 const bakeTrackingSectionGeometries = async (doc, {
-    reason = 'unknown'
+    reason = 'unknown',
+    viewportKey = null,
 } = {}) => {
     const body = doc?.body
     if (!body) {
@@ -232,53 +315,174 @@ const bakeTrackingSectionGeometries = async (doc, {
     let zeroSized = 0
     let firstSample = null
     let lastSample = null
+    let sampleEntries = []
+    let zeroEntries = []
     try {
         await geometryLoadingIndicator.run(async () => {
             body.classList.remove(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
-            for (let index = 0; index < stylableSections.length; index++) {
-                const section = stylableSections[index]
-                try {
-                    const rect = measureTrackingSection(section, { index })
-                    if (!rect || rect.width <= 0 || rect.height <= 0) {
-                        zeroSized++
-                        if (zeroSized <= MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT) {
-                            logEBook('tracking-geometry:zero-sized', {
+            let measuringClassApplied = false
+            const enableMeasuringClass = () => {
+                if (measuringClassApplied) return
+                body.classList.add('manabi-tracking-section-measuring')
+                measuringClassApplied = true
+            }
+            const disableMeasuringClass = () => {
+                if (!measuringClassApplied) return
+                body.classList.remove('manabi-tracking-section-measuring')
+                measuringClassApplied = false
+            }
+
+            const measureAllSections = async () => {
+                enableMeasuringClass()
+                await nextFrame()
+                let localZero = 0
+                let localFirst = null
+                let localLast = null
+                const localSamples = []
+                const localZeros = []
+                for (let index = 0; index < stylableSections.length; index++) {
+                    const section = stylableSections[index]
+                    try {
+                        const baselineRect = section.getBoundingClientRect()
+                        const cacheKey = getSectionCacheKey(section, viewportKey)
+                        const cachedGeometry = cacheKey ? trackingSectionGeometryCache.get(cacheKey) : null
+                        if (cachedGeometry) {
+                            applyGeometryToSection(section, cachedGeometry, { source: 'cache' })
+                            const sample = {
+                                index,
+                                width: Number(cachedGeometry.width.toFixed(3)),
+                                height: Number(cachedGeometry.height.toFixed(3)),
+                                sectionId: section.id ?? null,
+                                source: 'cache'
+                            }
+                            logGeometryComparison({
                                 reason,
                                 index,
-                                sectionId: section.id ?? null
+                                sectionId: section.id ?? null,
+                                baseline: baselineRect,
+                                baked: sample,
+                                source: 'cache'
                             })
-                        }
-                    } else {
-                        const sample = {
-                            index,
-                            width: Number(rect.width.toFixed(3)),
-                            height: Number(rect.height.toFixed(3))
-                        }
-                        if (!firstSample) firstSample = sample
-                        lastSample = sample
-                        if (index < MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT) {
-                            logEBook('tracking-geometry:sample', {
-                                reason,
-                                index,
+                            if (!localFirst) localFirst = {
+                                index: sample.index,
                                 width: sample.width,
-                                height: sample.height,
+                                height: sample.height
+                            }
+                            localLast = {
+                                index: sample.index,
+                                width: sample.width,
+                                height: sample.height
+                            }
+                            localSamples.push(sample)
+                            continue
+                        }
+                        const rect = measureTrackingSection(section, { index })
+                        if (!rect || rect.width <= 0 || rect.height <= 0) {
+                            localZero++
+                            localZeros.push({
+                                index,
                                 sectionId: section.id ?? null
                             })
+                        } else {
+                            applyGeometryToSection(section, rect, { source: 'measurement' })
+                            const sample = {
+                                index,
+                                width: Number(rect.width.toFixed(3)),
+                                height: Number(rect.height.toFixed(3)),
+                                sectionId: section.id ?? null,
+                                source: 'measurement'
+                            }
+                            logGeometryComparison({
+                                reason,
+                                index,
+                                sectionId: section.id ?? null,
+                                baseline: baselineRect,
+                                baked: sample,
+                                source: 'measurement'
+                            })
+                            if (!localFirst) localFirst = {
+                                index: sample.index,
+                                width: sample.width,
+                                height: sample.height
+                            }
+                            localLast = {
+                                index: sample.index,
+                                width: sample.width,
+                                height: sample.height
+                            }
+                            localSamples.push(sample)
+                            if (cacheKey) {
+                                trackingSectionGeometryCache.set(cacheKey, {
+                                    width: rect.width,
+                                    height: rect.height
+                                })
+                            }
                         }
+                    } catch (error) {
+                        logEBook('tracking-geometry:section-error', {
+                            reason,
+                            index,
+                            message: error?.message ?? String(error)
+                        })
+                        setDebugAttr(section, 'tracking-geometry-error', error?.message ?? 'unknown')
                     }
-                } catch (error) {
-                    logEBook('tracking-geometry:section-error', {
-                        reason,
-                        index,
-                        message: error?.message ?? String(error)
-                    })
-                    setDebugAttr(section, 'tracking-geometry-error', error?.message ?? 'unknown')
+                    if ((index + 1) % MANABI_TRACKING_GEOMETRY_BATCH_SIZE === 0) {
+                        await nextFrame()
+                    }
                 }
-                if ((index + 1) % MANABI_TRACKING_GEOMETRY_BATCH_SIZE === 0) {
-                    await nextFrame()
+                return {
+                    zeroSized: localZero,
+                    firstSample: localFirst,
+                    lastSample: localLast,
+                    samples: localSamples,
+                    zeroEntries: localZeros,
                 }
             }
-            setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
+
+            try {
+            const shouldObserveGeometry = reason === 'initial-load'
+                if (shouldObserveGeometry) {
+                    const resolved = await waitForGeometryExpansion(stylableSections, {
+                        timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS
+                    })
+                    logEBook('tracking-geometry:resizeobserver-wait', {
+                        reason,
+                        resolved,
+                        timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
+                        sections: stylableSections.length
+                    })
+                }
+
+                const shouldInlineDelay = reason === 'initial-load' && stylableSections.length > 0
+                let measurement = await measureAllSections()
+                if (shouldInlineDelay && measurement.zeroSized === stylableSections.length) {
+                    logEBook('tracking-geometry:inline-delay-retry', {
+                        reason,
+                        delayMs: MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS,
+                        sections: stylableSections.length
+                    })
+                    await nextFrame()
+                    await wait(MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS)
+                    measurement = await measureAllSections()
+                    const improved = measurement.zeroSized < stylableSections.length
+                    logEBook('tracking-geometry:inline-delay-result', {
+                        reason,
+                        delayMs: MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS,
+                        zeroSized: measurement.zeroSized,
+                        sections: stylableSections.length,
+                        improved
+                    })
+                }
+
+                zeroSized = measurement.zeroSized
+                firstSample = measurement.firstSample
+                lastSample = measurement.lastSample
+                sampleEntries = measurement.samples
+                zeroEntries = measurement.zeroEntries
+                setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
+            } finally {
+                disableMeasuringClass()
+            }
         })
         success = true
     } catch (error) {
@@ -290,6 +494,33 @@ const bakeTrackingSectionGeometries = async (doc, {
     } finally {
         body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
     }
+
+    const logSampleEntries = () => {
+        if (!sampleEntries.length) return
+        for (const entry of sampleEntries.slice(0, MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT)) {
+            logEBook('tracking-geometry:sample', {
+                reason,
+                index: entry.index,
+                width: entry.width,
+                height: entry.height,
+                sectionId: entry.sectionId
+            })
+        }
+    }
+
+    const logZeroEntries = () => {
+        if (!zeroEntries.length) return
+        for (const entry of zeroEntries.slice(0, MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT)) {
+            logEBook('tracking-geometry:zero-sized', {
+                reason,
+                index: entry.index,
+                sectionId: entry.sectionId
+            })
+        }
+    }
+
+    logSampleEntries()
+    logZeroEntries()
 
     const durationMs = Math.round((performance?.now?.() ?? Date.now()) - startedAt)
     logEBook(success ? 'tracking-geometry:finish' : 'tracking-geometry:finish-with-errors', {
@@ -965,6 +1196,14 @@ export class Paginator extends HTMLElement {
         this.#trackingGeometryInitialDelayDone = false
     }
 
+    #geometryViewportKey(doc) {
+        const win = doc?.defaultView
+        const width = Math.round(win?.innerWidth ?? this.#container?.clientWidth ?? 0)
+        const height = Math.round(win?.innerHeight ?? this.#container?.clientHeight ?? 0)
+        const flow = this.getAttribute('flow') ?? ''
+        return `${width}x${height}:${flow}`
+    }
+
     constructor() {
         super()
         // narrowing gap + margin broke images, rendered too tall & scroll mode drifted (worse than usual...)
@@ -1278,14 +1517,17 @@ export class Paginator extends HTMLElement {
             if (!this.#trackingGeometryInitialDelayDone && reason === 'initial-load') {
                 await nextFrame()
                 await nextFrame()
-                await wait(20)
+                await wait(MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS)
                 this.#trackingGeometryInitialDelayDone = true
                 logEBook('tracking-geometry:initial-delay-applied', {
                     reason,
-                    delayMs: 20
+                    delayMs: MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS
                 })
             }
-            const result = await bakeTrackingSectionGeometries(doc, { reason })
+            const result = await bakeTrackingSectionGeometries(doc, {
+                reason,
+                viewportKey: this.#geometryViewportKey(doc)
+            })
             if (anchor) {
                 try {
                     await this.#scrollToAnchor(anchor, 'geometry-bake')

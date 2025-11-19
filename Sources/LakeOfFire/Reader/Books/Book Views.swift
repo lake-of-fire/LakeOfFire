@@ -20,19 +20,24 @@ struct BookThumbnail: View { //, Equatable {
             let targetHeight = geometry.size.height
             let constrainedWidth = limitWidth ? targetWidth : nil
             let constrainedHeight = limitWidth ? targetHeight : nil
-            ReaderImage(
-                imageURL,
-                contentMode: .fit,
-                maxWidth: constrainedWidth,
-                maxHeight: constrainedHeight,
-                cornerRadius: scaledImageWidth / 28
-            )
-            .aspectRatio(contentMode: .fit)
-            .frame(
-                width: targetWidth,
-                height: targetHeight,
-                alignment: .center
-            )
+
+            Color.clear
+                .frame(width: targetWidth, height: targetHeight)
+                .overlay {
+                    ReaderImage(
+                        imageURL,
+                        contentMode: .fit,
+                        maxWidth: constrainedWidth,
+                        maxHeight: constrainedHeight,
+                        cornerRadius: scaledImageWidth / 28
+                    )
+                    .aspectRatio(contentMode: .fit)
+                    .frame(
+                        maxWidth: targetWidth,
+                        maxHeight: targetHeight,
+                        alignment: .center
+                    )
+                }
         }
         .frame(
             width: scaledImageWidth,

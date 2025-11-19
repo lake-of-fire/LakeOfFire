@@ -12,6 +12,14 @@ fileprivate struct ThemeModifier: ViewModifier {
     @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
+
+    private func requestGeometryBake(reason: String) async {
+        do {
+            try await scriptCaller.evaluateJavaScript("window.reader?.view?.renderer?.requestTrackingSectionGeometryBake?.({ reason: '\(reason)', restoreLocation: true, immediate: true });", duplicateInMultiTargetFrames: true)
+        } catch {
+            print("Geometry bake request failed: \(error)")
+        }
+    }
     
     func body(content: Content) -> some View {
         content
@@ -22,6 +30,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                             document.body?.setAttribute('data-manabi-light-theme', '\(newValue)');
                         }
                         """, duplicateInMultiTargetFrames: true)
+                    await requestGeometryBake(reason: "light-theme-change")
                 }
             }
             .onChange(of: darkModeTheme) { newValue in
@@ -31,12 +40,14 @@ fileprivate struct ThemeModifier: ViewModifier {
                             document.body?.setAttribute('data-manabi-dark-theme', '\(newValue)');
                         }
                         """, duplicateInMultiTargetFrames: true)
+                    await requestGeometryBake(reason: "dark-theme-change")
                 }
             }
             .task(id: readerFontSize) { @MainActor in
                 guard let readerFontSize else { return }
                 do {
                     try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
+                    await requestGeometryBake(reason: "font-size-change")
                 } catch {
                     print("\(error)")
                 }
@@ -159,8 +170,9 @@ public extension WebViewNavigator {
                 let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
-                    let trackingURL = trackingContent.url
-                    let shouldTriggerReaderMode = trackingContent.isReaderModeByDefault
+                    let loaderBaseURL = url.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: url) : nil
+                    let trackingURL = loaderBaseURL ?? trackingContent.url
+                    let shouldTriggerReaderMode = trackingContent.isReaderModeByDefault || loaderBaseURL != nil
                     if shouldTriggerReaderMode {
                         readerModeViewModel.beginReaderModeLoad(for: trackingURL)
                     } else {
@@ -170,6 +182,7 @@ public extension WebViewNavigator {
                         "# READER readerMode.prefetchDecision",
                         "trackingURL=\(trackingURL.absoluteString)",
                         "shouldTrigger=\(shouldTriggerReaderMode)",
+                        "forcedByLoader=\(loaderBaseURL != nil)",
                         "hasHTML=\(trackingContent.hasHTML)",
                         "rssFull=\(trackingContent.rssContainsFullContent)",
                         "compressedBytes=\(trackingContent.content?.count ?? 0)",

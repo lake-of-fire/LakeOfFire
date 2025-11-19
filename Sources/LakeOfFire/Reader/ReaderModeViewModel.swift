@@ -471,16 +471,23 @@ public class ReaderModeViewModel: ObservableObject {
             content.refreshChangeMetadata(explicitlyModified: true)
         }
         logTrace(.contentWriteEnd, url: url, details: "duration=\(formattedInterval(Date().timeIntervalSince(asyncWriteStartedAt)))")
-
-        if !isReaderMode {
-            isReaderMode = true
-        }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
+        
+        await propagateReaderModeDefaults(
+            for: url,
+            primaryRecord: content,
+            readabilityHTML: readabilityContent,
+            fallbackTitle: titleForDisplay
+        )
+
+        if !isReaderMode {
+            isReaderMode = true
+        }
         
         try await { @ReaderViewModelActor [weak self] in
             let parseStartedAt = Date()
@@ -1223,6 +1230,54 @@ fileprivate func invalidateReaderModeCache(
             error.localizedDescription
         )
     }
+}
+
+@MainActor
+private func propagateReaderModeDefaults(
+    for url: URL,
+    primaryRecord: any ReaderContentProtocol,
+    readabilityHTML: String,
+    fallbackTitle: String?
+) async {
+    let primaryKey = primaryRecord.compoundKey
+    let derivedTitle = titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
+    _ = await Task { @RealmBackgroundActor in
+        do {
+            let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
+            for record in relatedRecords {
+                guard record.compoundKey != primaryKey, let realm = record.realm else { continue }
+                try await realm.asyncWrite {
+                    record.isReaderModeByDefault = true
+                    record.isReaderModeAvailable = false
+                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                        if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
+                            record.html = readabilityHTML
+                        }
+                        if let derivedTitle,
+                           record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            record.title = derivedTitle
+                        }
+                        record.rssContainsFullContent = true
+                    }
+                    record.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        } catch {
+            debugPrint(
+                "# FLASH ReaderModeViewModel.propagateReaderDefaults failed",
+                url.absoluteString,
+                error.localizedDescription
+            )
+        }
+    }.value
+}
+
+fileprivate func titleFromReadabilityHTML(_ html: String) -> String? {
+    let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !stripped.isEmpty else { return nil }
+    let candidate = stripped.components(separatedBy: "\n").first ?? stripped
+    let truncated = candidate.truncate(36)
+    return truncated.isEmpty ? nil : truncated
 }
 
 fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {

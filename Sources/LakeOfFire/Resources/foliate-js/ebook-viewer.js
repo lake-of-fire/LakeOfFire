@@ -348,6 +348,11 @@ const getCSSForBookContent = ({
         display: none !important;
     }
 
+    body.manabi-tracking-section-measuring .manabi-tracking-section {
+        display: block !important;
+        visibility: hidden !important;
+    }
+
     .manabi-tracking-section {
         contain: initial !important;
     }
@@ -1437,6 +1442,69 @@ class CacheWarmer {
 //    .catch(e => console.error(e))
 //else dropTarget.style.visibility = 'visible'
 
+
+const manabiEbookAudioBridge = {
+    pausedForLoading: false,
+    pendingNavigation: null,
+    requestNavigation(payload) {
+        if (!payload) { return; }
+        const fraction = this.#fractionForPayload(payload);
+        if (!Number.isFinite(fraction)) { return; }
+        if (this.pendingNavigation && Math.abs((this.pendingNavigation.fraction ?? fraction) - fraction) < 0.0001) {
+            return;
+        }
+        this.pendingNavigation = Object.assign({}, payload, { fraction });
+        this.#pauseNativeAudio('section-navigation');
+        globalThis.reader?.view?.goToFraction(fraction).catch(error => {
+            console.error('ebook audio navigation failed', error);
+            this.#resumeNativeAudio('navigation-error');
+        });
+    },
+    sectionReady(metadata) {
+        if (metadata?.sectionURL) {
+            this.pendingNavigation = null;
+        }
+        this.#resumeNativeAudio('section-ready');
+    },
+    cancel(reason = 'cancelled') {
+        this.pendingNavigation = null;
+        if (this.pausedForLoading) {
+            this.#resumeNativeAudio(reason);
+        }
+    },
+    #fractionForPayload(payload) {
+        if (Number.isFinite(payload?.fraction)) {
+            return Math.max(0, Math.min(1, payload.fraction));
+        }
+        if (Number.isFinite(payload?.wordIndex) && Number.isFinite(payload?.totalWordCount) && payload.totalWordCount > 0) {
+            return Math.max(0, Math.min(1, payload.wordIndex / payload.totalWordCount));
+        }
+        return null;
+    },
+    #pauseNativeAudio(reason) {
+        if (this.pausedForLoading) { return; }
+        this.pausedForLoading = true;
+        try {
+            window.webkit?.messageHandlers?.ebookAudioLoadingState?.postMessage?.({ action: 'pause', reason, timestamp: Date.now() });
+        } catch (_error) {
+            // ignore
+        }
+    },
+    #resumeNativeAudio(reason) {
+        if (!this.pausedForLoading) { return; }
+        this.pausedForLoading = false;
+        try {
+            window.webkit?.messageHandlers?.ebookAudioLoadingState?.postMessage?.({ action: 'resume', reason, timestamp: Date.now() });
+        } catch (_error) {
+            // ignore
+        }
+    }
+};
+window.manabiEbookAudioBridge = manabiEbookAudioBridge;
+
+window.cancelEbookAudioNavigation = (reason) => {
+    window.manabiEbookAudioBridge?.cancel?.(reason || 'cancelled');
+};
 
 window.setEbookViewerLayout = (layoutMode) => {
     // TODO: Add scrolled mode back...
