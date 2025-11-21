@@ -523,7 +523,7 @@ export class NavigationHUD {
         const reason = (detail?.reason || '').toLowerCase();
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
-        const isJumpReason = isLiveScrollReason || reason === 'scroll-to' || reason === 'navigation';
+        const isJumpReason = isLiveScrollReason || reason === 'navigation';
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this.#isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;

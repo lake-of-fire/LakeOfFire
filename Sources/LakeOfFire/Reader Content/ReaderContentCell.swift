@@ -429,7 +429,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     switch thumbnailChoice {
                     case .image(let imageUrl):
                         if appearance.isEbookStyle {
-                            ebookThumbnailView(for: imageUrl)
+                            BookCoverImageView(
+                                imageURL: imageUrl,
+                                dimension: thumbnailEdgeLength
+                            )
                         } else {
                             ReaderImage(
                                 imageUrl,
@@ -605,20 +608,25 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         // No provider-based onReceive; lists refresh via Realm publishers.
     }
 
-    @ViewBuilder
-    private func ebookThumbnailView(for imageUrl: URL) -> some View {
+}
+
+struct BookCoverImageView: View {
+    let imageURL: URL
+    let dimension: CGFloat
+
+    var body: some View {
         Color.clear
-            .frame(width: thumbnailEdgeLength, height: thumbnailEdgeLength)
+            .frame(width: dimension, height: dimension)
             .overlay {
                 ReaderImage(
-                    imageUrl,
+                    imageURL,
                     contentMode: .fit,
-                    cornerRadius: thumbnailEdgeLength / 28
+                    cornerRadius: dimension / 28
                 )
                 .aspectRatio(contentMode: .fit)
                 .frame(
-                    maxWidth: thumbnailEdgeLength,
-                    maxHeight: thumbnailEdgeLength,
+                    maxWidth: dimension,
+                    maxHeight: dimension,
                     alignment: .center
                 )
             }

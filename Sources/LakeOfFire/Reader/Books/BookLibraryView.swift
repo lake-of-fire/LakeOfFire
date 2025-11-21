@@ -73,9 +73,7 @@ public extension View {
 }
 
 fileprivate struct EditorsPicksView: View {
-    @StateObject var viewModel = BookLibraryViewModel()
-    
-    @ObservedObject private var downloadController = DownloadController.shared
+    @ObservedObject var viewModel: BookLibraryViewModel
     
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
@@ -90,15 +88,15 @@ fileprivate struct EditorsPicksView: View {
     }
     
     @ViewBuilder private var editorsPicksView: some View {
-        HorizontalBooks(
-            publications: viewModel.editorsPicks,
-            isDownloadable: true) {
-                selectedPublication,
-                wasAlreadyDownloaded in
-                if wasAlreadyDownloaded {
+        if viewModel.editorsPicks.isEmpty {
+            EmptyView()
+        } else {
+            ForEach(viewModel.editorsPicks) { publication in
+                BookListRow(publication: publication) { wasAlreadyDownloaded in
+                    guard wasAlreadyDownloaded else { return }
                     Task { @MainActor in
                         try await viewModel.open(
-                            publication: selectedPublication,
+                            publication: publication,
                             readerFileManager: ReaderFileManager.shared,
                             readerPageURL: readerContent.pageURL,
                             navigator: navigator,
@@ -107,6 +105,7 @@ fileprivate struct EditorsPicksView: View {
                     }
                 }
             }
+        }
     }
     
     @ViewBuilder private func errorView(errorMessage: String) -> some View {
@@ -136,28 +135,54 @@ public struct BookLibraryView: View {
     @StateObject private var readerContentListViewModel = ReaderContentListViewModel<ContentFile>()
     @State private var isEditorsPicksExpanded = true
     @State private var isMyBooksExpanded = true
+
+    private var isMyBooksEmpty: Bool {
+        readerContentListViewModel.hasLoadedBefore
+        && readerContentListViewModel.filteredContents.isEmpty
+    }
+
+    @ViewBuilder
+    private var addEpubButton: some View {
+        Button {
+            bookLibraryModalsModel.isImportingBookFile.toggle()
+        } label: {
+            Label("Add \(viewModel.mediaFileTypeTitle)", systemImage: "plus.circle")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .font(.footnote)
+        .fontWeight(.semibold)
+    }
     
     @ViewBuilder private var myBooksHeader: some View {
-        VStack(alignment: .leading) {
+        HStack(alignment: .firstTextBaseline) {
             Text("My \(viewModel.mediaTypeTitle)")
-            Button {
-                bookLibraryModalsModel.isImportingBookFile.toggle()
-            } label: {
-                Label("Add \(viewModel.mediaFileTypeTitle)", systemImage: "plus.circle")
-                    .foregroundStyle(.primary)
+            Spacer()
+            if !isMyBooksEmpty {
+                addEpubButton
             }
-            .buttonStyle(.bordered)
         }
     }
     
     @ViewBuilder private var myBooksSection: some View {
-        ReaderContentListItems(
-            viewModel: readerContentListViewModel,
-            entrySelection: contentSelection,
-            includeSource: false,
-            alwaysShowThumbnails: true
-        )
-        .listRowSeparatorIfAvailable(.hidden)
+        if isMyBooksEmpty {
+            EmptyStateBoxView(
+                title: Text("Discover and add books"),
+                text: Text("Find books to add in the Editor's Picks section. Add your own books as long as you have the EPUB editions."),
+                systemImageName: "books.vertical"
+            ) {
+                addEpubButton
+            }
+            .listRowSeparatorIfAvailable(.hidden)
+        } else {
+            ReaderContentListItems(
+                viewModel: readerContentListViewModel,
+                entrySelection: contentSelection,
+                includeSource: false,
+                alwaysShowThumbnails: true
+            )
+            .listRowSeparatorIfAvailable(.hidden)
+        }
     }
 
     @ViewBuilder var list: some View {
@@ -243,6 +268,8 @@ public struct BookLibraryView: View {
 
 @MainActor
 public class BookLibraryViewModel: ObservableObject {
+    public static let defaultOPDSURL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
+    
     let mediaTypeTitle: String
     let mediaFileTypeTitle: String
     let opdsURL: URL
@@ -254,7 +281,7 @@ public class BookLibraryViewModel: ObservableObject {
     public init(
         mediaTypeTitle: String = "Books",
         mediaFileTypeTitle: String = "EPUB",
-        opdsURL: URL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!,
+        opdsURL: URL = BookLibraryViewModel.defaultOPDSURL,
         fileTypes: [UTType] = [.epub, .epubZip],
         fileFilter: ((ContentFile) throws -> Bool)? = nil,
         loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)? = nil
@@ -277,23 +304,45 @@ public class BookLibraryViewModel: ObservableObject {
     
     func fetchEditorsPicks() {
         Task {
-            await fetchOPDSFeed(from: opdsURL)
+            let (publications, errorMessage) = await Self.fetchPublications(from: opdsURL)
+            await MainActor.run {
+                self.editorsPicks = publications
+                self.errorMessage = errorMessage
+            }
         }
     }
     
-    private func fetchOPDSFeed(from url: URL) async {
+    @MainActor
+    public static func refreshDownloadedEditorsPicks(readerFileManager: ReaderFileManager = .shared) async {
+        let (publications, _) = await Self.fetchPublications(from: Self.defaultOPDSURL)
+        guard !publications.isEmpty else { return }
+
+        var downloads = Set<Downloadable>()
+        for publication in publications {
+            guard
+                let downloadURL = publication.downloadURL,
+                let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
+                await downloadable.existsLocally()
+            else { continue }
+            downloads.insert(downloadable)
+        }
+        guard !downloads.isEmpty else { return }
+
+        await DownloadController.shared.ensureDownloaded(downloads)
+        try? await readerFileManager.refreshAllFilesMetadata()
+    }
+    
+    static func fetchPublications(from url: URL) async -> ([Publication], String?) {
         await withCheckedContinuation { continuation in
             OPDSParser.parseURL(url: url) { parseData, error in
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
+                Task { @MainActor in
                     if let error = error {
-                        self.errorMessage = "Failed to fetch data: \(error.localizedDescription)"
-                        continuation.resume()
+                        continuation.resume(returning: ([], "Failed to fetch data: \(error.localizedDescription)"))
                         return
                     }
                     
                     if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                        self.editorsPicks = publications.map {
+                        let mapped = publications.map {
                             let coverLink = $0.images.first(withRel: .cover) ?? $0.images.first(withRel: .opdsImage) ?? $0.images.first(withRel: .opdsImageThumbnail)
                             return Publication(
                                 title: $0.metadata.title,
@@ -302,21 +351,25 @@ public class BookLibraryViewModel: ObservableObject {
                                 coverURL: coverLink?.url(relativeTo: url.domainURL),
                                 downloadURL: $0.links.first(withRel: .opdsAcquisition)?.url(relativeTo: url.domainURL))
                         }
-                        continuation.resume()
-                    } else if let navigationLinks = parseData?.feed?.navigation, let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
-                        guard let allBooksURL = URL(string: allBooksLink.href) else {
-                            self.errorMessage = "Invalid 'All Books' URL"
-                            continuation.resume()
+                        continuation.resume(returning: (mapped, nil))
+                        return
+                    }
+                    
+                    if let navigationLinks = parseData?.feed?.navigation,
+                       let allBooksLink = navigationLinks.first(where: { $0.title?.hasPrefix("All Books") == true }) {
+                        guard let allBooksURL = allBooksLink.url(relativeTo: url.domainURL) ?? URL(string: allBooksLink.href) else {
+                            continuation.resume(returning: ([], "Invalid 'All Books' URL"))
                             return
                         }
                         
-                        // Fetch the "All Books" feed recursively
-                        await fetchOPDSFeed(from: allBooksURL)
-                        continuation.resume()
-                    } else {
-                        self.errorMessage = "No publications or navigable links found"
-                        continuation.resume()
+                        Task {
+                            let result = await Self.fetchPublications(from: allBooksURL)
+                            continuation.resume(returning: result)
+                        }
+                        return
                     }
+                    
+                    continuation.resume(returning: ([], "No publications or navigable links found"))
                 }
             }
         }

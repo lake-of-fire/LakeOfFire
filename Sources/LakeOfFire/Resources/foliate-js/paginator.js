@@ -56,33 +56,16 @@ const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve))
 
 const MANABI_TRACKING_SECTION_CLASS = 'manabi-tracking-section'
 const MANABI_TRACKING_SECTION_SELECTOR = `.${MANABI_TRACKING_SECTION_CLASS}`
-const MANABI_TRACKING_GEOMETRY_BAKED_CLASS = 'manabi-tracking-section-geometries-baked'
+// Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
 const MANABI_TRACKING_GEOMETRY_LOADING_CLASS = 'manabi-tracking-geometry-loading'
 const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
-const MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT = 5
-const MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS = 80
-const MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS = 60
-const MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS = 120
-const MANABI_TRACKING_GEOMETRY_INITIAL_OBSERVED_SECTIONS = 12
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
     try {
         if (payload && Object.keys(payload).length > 0) {
-            const entries = Object.entries(payload)
-            const normalized = {}
-            for (const [key, value] of entries) {
-                if (value === undefined) continue
-                try {
-                    JSON.stringify(value)
-                    normalized[key] = value
-                } catch (_error) {
-                    normalized[key] = String(value)
-                }
-            }
-            const serialized = JSON.stringify(normalized)
-            metadata = ` ${serialized}`
+            metadata = ` ${JSON.stringify(payload)}`
         }
     } catch (error) {
         metadata = ''
@@ -100,29 +83,12 @@ const logEBook = (event, payload = {}) => {
     }
 }
 
-const geometryLoadingIndicator = (() => {
-    let counter = 0
-    const toggle = active => {
-        if (!globalThis.document?.body) return
-        globalThis.document.body.classList.toggle(
-            MANABI_TRACKING_GEOMETRY_LOADING_CLASS,
-            active
-        )
-        setDebugAttr(globalThis.document?.body, 'geometry-spinner', active ? 'active' : 'idle')
+// Geometry bake disabled: indicator is a no-op wrapper.
+const geometryLoadingIndicator = {
+    async run(fn) {
+        return await fn()
     }
-    return {
-        async run(fn) {
-            counter++
-            if (counter === 1) toggle(true)
-            try {
-                return await fn()
-            } finally {
-                counter = Math.max(0, counter - 1)
-                if (counter === 0) toggle(false)
-            }
-        }
-    }
-})()
+}
 
 const snapshotInlineStyleProperty = (element, property) => {
     if (!(element instanceof HTMLElement)) return null
@@ -141,676 +107,18 @@ const restoreInlineStyleProperty = (element, property, snapshot) => {
     else element.style.removeProperty(property)
 }
 
-const setDebugAttr = (element, key, value) => {
-    if (!element) return
-    const attr = `data-debug-${key}`
-    if (value === undefined || value === null) element.removeAttribute(attr)
-    else element.setAttribute(attr, String(value))
-}
-
 const formatPx = value => {
     if (!Number.isFinite(value)) return '0px'
     const rounded = Math.max(0, Math.round(value * 1000) / 1000)
     return `${rounded}px`
 }
 
-const roundMetric = value => {
-    if (!Number.isFinite(value)) return null
-    return Math.round(value * 1000) / 1000
-}
+// Geometry measurement disabled: keep signature for compatibility, do nothing.
+const measureTrackingSection = _element => {}
 
-const describeRect = rect => {
-    if (!rect) return null
-    return {
-        width: roundMetric(rect.width),
-        height: roundMetric(rect.height),
-        top: roundMetric((rect.top ?? rect.y)),
-        left: roundMetric((rect.left ?? rect.x)),
-    }
-}
-
-const snapshotRect = element => {
-    try {
-        return element?.getBoundingClientRect?.() ?? null
-    } catch (_error) {
-        return null
-    }
-}
-
-const rectFromGeometry = geometry => {
-    if (!geometry) return null
-    return {
-        width: geometry.width,
-        height: geometry.height,
-        top: geometry.top ?? null,
-        left: geometry.left ?? null,
-    }
-}
-
-const geometriesRoughlyMatch = (rect, geometry) => {
-    if (!rect || !geometry) return false
-    const widthDiff = Math.abs(rect.width - geometry.width)
-    const heightDiff = Math.abs(rect.height - geometry.height)
-    const widthTolerance = Math.max(2, Math.abs(rect.width) * 0.05)
-    const heightTolerance = Math.max(2, Math.abs(rect.height) * 0.05)
-    return widthDiff <= widthTolerance && heightDiff <= heightTolerance
-}
-
-const trackingSectionGeometryCache = new Map()
-const TRACKING_GEOMETRY_INLINE_PROPERTIES = [
-    'display',
-    'width',
-    'min-width',
-    'max-width',
-    'height',
-    'min-height',
-    'max-height',
-    'overflow',
-    'contain',
-]
-
-const clearGeometryFromSection = element => {
-    if (!element?.style) return
-    for (const property of TRACKING_GEOMETRY_INLINE_PROPERTIES) {
-        element.style.removeProperty(property)
-    }
-}
-
-const getSectionCacheKey = (element, viewportKey) => {
-    if (!element) return null
-    const id = element.id || element.getAttribute('data-manabi-tracking-section-id')
-    if (!id) return null
-    return viewportKey ? `${viewportKey}::${id}` : id
-}
-
-const applyGeometryToSection = (element, geometry, { source = 'measurement' } = {}) => {
-    if (!element?.style || !geometry) return
-    const { width, height } = geometry
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return
-    const widthPx = formatPx(width)
-    const heightPx = formatPx(height)
-    element.style.setProperty('display', 'block', 'important')
-    element.style.setProperty('width', widthPx, 'important')
-    element.style.setProperty('min-width', widthPx, 'important')
-    element.style.setProperty('max-width', widthPx, 'important')
-    element.style.setProperty('height', heightPx, 'important')
-    element.style.setProperty('min-height', heightPx, 'important')
-    element.style.setProperty('max-height', heightPx, 'important')
-    element.style.setProperty('overflow', 'hidden', 'important')
-    element.style.setProperty('contain', 'strict', 'important')
-    setDebugAttr(element, 'tracking-geometry-size', `${width.toFixed(3)}x${height.toFixed(3)}`)
-    setDebugAttr(element, 'tracking-geometry-source', source)
-}
-
-const logGeometryComparison = ({
-    reason,
-    index,
-    sectionId,
-    baselineRect,
-    bakedRect,
-    geometry,
-    source,
-}) => {
-    const baseline = describeRect(baselineRect)
-    const baked = describeRect(bakedRect)
-    logEBook('tracking-geometry:compare', {
-        reason,
-        index,
-        sectionId,
-        source,
-        baselineWidth: baseline?.width ?? null,
-        baselineHeight: baseline?.height ?? null,
-        baselineTop: baseline?.top ?? null,
-        baselineLeft: baseline?.left ?? null,
-        bakedWidth: baked?.width ?? null,
-        bakedHeight: baked?.height ?? null,
-        bakedTop: baked?.top ?? null,
-        bakedLeft: baked?.left ?? null,
-        targetWidth: roundMetric(geometry?.width),
-        targetHeight: roundMetric(geometry?.height),
-    })
-}
-
-const logPostLayoutComparisons = async entries => {
-    if (!entries?.length) return
-    await nextFrame()
-    for (const entry of entries) {
-        const actualRect = snapshotRect(entry.section)
-        const targetRect = rectFromGeometry(entry.geometry)
-        logGeometryComparison({
-            reason: `${entry.reason}-post`,
-            index: entry.index,
-            sectionId: entry.sectionId,
-            baselineRect: targetRect,
-            bakedRect: actualRect,
-            geometry: entry.geometry,
-            source: `${entry.source}-post`
-        })
-    }
-}
-
-const measureTrackingSection = (element, { index } = {}) => {
-    if (!(element && element.nodeType === Node.ELEMENT_NODE && element.style)) return null
-    const style = element.style
-    const previousDisplay = snapshotInlineStyleProperty(element, 'display')
-    const previousContain = snapshotInlineStyleProperty(element, 'contain')
-    const previousOverflow = snapshotInlineStyleProperty(element, 'overflow')
-    const previousWidth = snapshotInlineStyleProperty(element, 'width')
-    const previousMinWidth = snapshotInlineStyleProperty(element, 'min-width')
-    const previousMaxWidth = snapshotInlineStyleProperty(element, 'max-width')
-    const previousHeight = snapshotInlineStyleProperty(element, 'height')
-    const previousMinHeight = snapshotInlineStyleProperty(element, 'min-height')
-    const previousMaxHeight = snapshotInlineStyleProperty(element, 'max-height')
-    style.setProperty('display', 'block', 'important')
-    style.setProperty('contain', 'none', 'important')
-    style.setProperty('overflow', 'visible', 'important')
-    style.setProperty('width', 'auto', 'important')
-    style.setProperty('min-width', '0px', 'important')
-    style.setProperty('max-width', 'none', 'important')
-    style.setProperty('height', 'auto', 'important')
-    style.setProperty('min-height', '0px', 'important')
-    style.setProperty('max-height', 'none', 'important')
-    const rect = element.getBoundingClientRect()
-    setDebugAttr(element, 'tracking-geometry-size', `${rect.width.toFixed(3)}x${rect.height.toFixed(3)}`)
-    setDebugAttr(element, 'tracking-geometry-index', index ?? '')
-    setDebugAttr(element, 'tracking-geometry-measured-at', Date.now())
-    setDebugAttr(element, 'tracking-geometry-contain', 'none')
-    restoreInlineStyleProperty(element, 'display', previousDisplay)
-    restoreInlineStyleProperty(element, 'contain', previousContain)
-    restoreInlineStyleProperty(element, 'overflow', previousOverflow)
-    restoreInlineStyleProperty(element, 'width', previousWidth)
-    restoreInlineStyleProperty(element, 'min-width', previousMinWidth)
-    restoreInlineStyleProperty(element, 'max-width', previousMaxWidth)
-    restoreInlineStyleProperty(element, 'height', previousHeight)
-    restoreInlineStyleProperty(element, 'min-height', previousMinHeight)
-    restoreInlineStyleProperty(element, 'max-height', previousMaxHeight)
-    return rect
-}
-
-const disableDocumentColumnization = doc => {
-    const root = doc?.documentElement
-    if (!root) return () => {}
-    const body = doc?.body ?? null
-    const rootProps = [
-        'column-width',
-        'column-count',
-        'column-gap',
-        'column-fill',
-        '--paginator-column-gap',
-        '--paginator-margin',
-        'width',
-        'height',
-        'max-width',
-        'max-height',
-        'min-width',
-        'min-height',
-        'padding',
-        'overflow',
-    ]
-    const bodyProps = [
-        'max-width',
-        'max-height',
-        'margin',
-    ]
-    const snapshotEntries = (element, props) => {
-        if (!element) return new Map()
-        return new Map(props.map(prop => [prop, snapshotInlineStyleProperty(element, prop)]))
-    }
-    const rootSnapshots = snapshotEntries(root, rootProps)
-    const bodySnapshots = snapshotEntries(body, bodyProps)
-    const setImportant = (element, property, value) => {
-        if (!element) return
-        element.style?.setProperty(property, value, 'important')
-    }
-    setImportant(root, 'column-width', 'auto')
-    setImportant(root, 'column-count', 'auto')
-    setImportant(root, 'column-gap', '0px')
-    setImportant(root, 'column-fill', 'balance')
-    setImportant(root, '--paginator-column-gap', '0px')
-    setImportant(root, '--paginator-margin', '0px')
-    setImportant(root, 'width', 'auto')
-    setImportant(root, 'height', 'auto')
-    setImportant(root, 'max-width', 'none')
-    setImportant(root, 'max-height', 'none')
-    setImportant(root, 'min-width', '0px')
-    setImportant(root, 'min-height', '0px')
-    setImportant(root, 'padding', '0px')
-    setImportant(root, 'overflow', 'visible')
-    setImportant(body, 'max-width', 'none')
-    setImportant(body, 'max-height', 'none')
-    setImportant(body, 'margin', '0px')
-    return () => {
-        for (const [prop, snapshot] of rootSnapshots.entries()) {
-            restoreInlineStyleProperty(root, prop, snapshot)
-        }
-        for (const [prop, snapshot] of bodySnapshots.entries()) {
-            restoreInlineStyleProperty(body, prop, snapshot)
-        }
-    }
-}
-
-const waitForGeometryExpansion = (elements, {
-    timeoutMs = MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
-    maxObserved = Infinity,
-} = {}) => {
-    if (!elements?.length) return Promise.resolve(false)
-    const limit = Number.isFinite(maxObserved) ? maxObserved : elements.length
-    const targets = elements.slice(0, limit).filter(el => el && el.nodeType === Node.ELEMENT_NODE)
-    if (!targets.length) return Promise.resolve(false)
-    const hasSizedTarget = () => targets.some(el => {
-        const rect = el.getBoundingClientRect()
-        return rect?.width > 0 && rect?.height > 0
-    })
-    if (hasSizedTarget()) return Promise.resolve(false)
-
-    return new Promise(resolve => {
-        let resolved = false
-        const ro = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                if (entry?.contentRect?.width > 0 && entry?.contentRect?.height > 0) {
-                    resolved = true
-                    ro.disconnect()
-                    resolve(true)
-                    return
-                }
-            }
-        })
-        targets.forEach(el => {
-            try {
-                ro.observe(el)
-            } catch (_error) {
-                // ignore
-            }
-        })
-        setTimeout(() => {
-            if (resolved) return
-            ro.disconnect()
-            resolve(false)
-        }, timeoutMs)
-    })
-}
-
-const bakeTrackingSectionGeometries = async (doc, {
-    reason = 'unknown',
-    viewportKey = null,
-} = {}) => {
-    const body = doc?.body
-    const root = doc?.documentElement
-    if (!body) {
-        logEBook('tracking-geometry:skip', {
-            reason,
-            cause: 'no-body'
-        })
-        setDebugAttr(doc?.documentElement, 'tracking-geometry-state', 'skipped-no-body')
-        return {
-            sections: 0,
-            success: false,
-            skipped: 'no-body'
-        }
-    }
-    setDebugAttr(body, 'tracking-geometry-state', 'pending')
-    setDebugAttr(body, 'tracking-geometry-reason', reason)
-    if (body.dataset?.isCacheWarmer === 'true') {
-        body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
-        logEBook('tracking-geometry:skip', {
-            reason,
-            cause: 'cache-warmer'
-        })
-        setDebugAttr(body, 'tracking-geometry-state', 'skipped-cache-warmer')
-        return {
-            sections: 0,
-            success: false,
-            skipped: 'cache-warmer'
-        }
-    }
-    const sections = Array.from(body.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
-    const stylableSections = sections.filter(el => el && el.nodeType === Node.ELEMENT_NODE && el.style)
-    setDebugAttr(body, 'tracking-geometry-total-sections', sections.length)
-    setDebugAttr(body, 'tracking-geometry-stylable-sections', stylableSections.length)
-    if (stylableSections.length === 0) {
-        const cause = sections.length === 0 ? 'no-sections' : 'no-stylable-sections'
-        body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
-        logEBook('tracking-geometry:skip', {
-            reason,
-            cause,
-            totalSections: sections.length,
-            stylableSections: stylableSections.length
-        })
-        setDebugAttr(body, 'tracking-geometry-state', `skipped-${cause}`)
-        return {
-            sections: 0,
-            success: false,
-            skipped: cause
-        }
-    }
-
-    logEBook('tracking-geometry:start', {
-        reason,
-        totalSections: sections.length,
-        stylableSections: stylableSections.length
-    })
-
-    const startedAt = performance?.now?.() ?? Date.now()
-    let success = false
-    let zeroSized = 0
-    let firstSample = null
-    let lastSample = null
-    let sampleEntries = []
-    let zeroEntries = []
-    let postLayoutEntries = []
-    try {
-        await geometryLoadingIndicator.run(async () => {
-            body.classList.remove(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
-            let measuringClassApplied = false
-            let restoreColumnization = null
-            const enableMeasuringClass = () => {
-                if (measuringClassApplied) return
-                body.classList.add('manabi-tracking-section-measuring')
-                root?.classList?.add?.('manabi-tracking-section-measuring')
-                restoreColumnization = disableDocumentColumnization(doc)
-                measuringClassApplied = true
-            }
-            const disableMeasuringClass = () => {
-                if (!measuringClassApplied) return
-                body.classList.remove('manabi-tracking-section-measuring')
-                root?.classList?.remove?.('manabi-tracking-section-measuring')
-                if (restoreColumnization) {
-                    restoreColumnization()
-                    restoreColumnization = null
-                }
-                measuringClassApplied = false
-            }
-
-            const measureAllSections = async () => {
-                enableMeasuringClass()
-                await nextFrame()
-                let localZero = 0
-                let localFirst = null
-                let localLast = null
-                const localSamples = []
-                const localZeros = []
-                const postLayoutEntries = []
-                for (let index = 0; index < stylableSections.length; index++) {
-                    const section = stylableSections[index]
-                    try {
-                        const baselineRect = snapshotRect(section)
-                        const cacheKey = getSectionCacheKey(section, viewportKey)
-                        let cachedGeometry = cacheKey ? trackingSectionGeometryCache.get(cacheKey) : null
-                        const hasValidBaseline = (baselineRect?.width ?? 0) > 0 && (baselineRect?.height ?? 0) > 0
-                        if (cachedGeometry && hasValidBaseline && !geometriesRoughlyMatch(baselineRect, cachedGeometry)) {
-                            logEBook('tracking-geometry:cache-invalidated', {
-                                reason,
-                                index,
-                                sectionId: section.id ?? null,
-                                baselineWidth: baselineRect?.width ?? null,
-                                baselineHeight: baselineRect?.height ?? null,
-                                cachedWidth: cachedGeometry?.width ?? null,
-                                cachedHeight: cachedGeometry?.height ?? null
-                            })
-                            trackingSectionGeometryCache.delete(cacheKey)
-                            cachedGeometry = null
-                        }
-                        if (cachedGeometry) {
-                            applyGeometryToSection(section, cachedGeometry, { source: 'cache' })
-                            const bakedRect = snapshotRect(section)
-                            const bakedMetrics = describeRect(bakedRect)
-                            const sample = {
-                                index,
-                                width: bakedMetrics?.width ?? roundMetric(cachedGeometry.width),
-                                height: bakedMetrics?.height ?? roundMetric(cachedGeometry.height),
-                                top: bakedMetrics?.top ?? null,
-                                left: bakedMetrics?.left ?? null,
-                                sectionId: section.id ?? null,
-                                source: 'cache'
-                            }
-                            logGeometryComparison({
-                                reason,
-                                index,
-                                sectionId: section.id ?? null,
-                                baselineRect,
-                                bakedRect,
-                                geometry: cachedGeometry,
-                                source: 'cache'
-                            })
-                            if (!localFirst) localFirst = {
-                                index: sample.index,
-                                width: sample.width,
-                                height: sample.height
-                            }
-                            localLast = {
-                                index: sample.index,
-                                width: sample.width,
-                                height: sample.height
-                            }
-                            localSamples.push(sample)
-                            postLayoutEntries.push({
-                                section,
-                                index,
-                                sectionId: section.id ?? null,
-                                geometry: cachedGeometry,
-                                source: 'cache',
-                                reason
-                            })
-                            continue
-                        }
-                        clearGeometryFromSection(section)
-                        const rect = measureTrackingSection(section, { index })
-                        if (!rect || rect.width <= 0 || rect.height <= 0) {
-                            localZero++
-                            localZeros.push({
-                                index,
-                                sectionId: section.id ?? null
-                            })
-                        } else {
-                            applyGeometryToSection(section, rect, { source: 'measurement' })
-                            const bakedRect = snapshotRect(section)
-                            const bakedMetrics = describeRect(bakedRect)
-                            const sample = {
-                                index,
-                                width: bakedMetrics?.width ?? roundMetric(rect.width),
-                                height: bakedMetrics?.height ?? roundMetric(rect.height),
-                                top: bakedMetrics?.top ?? null,
-                                left: bakedMetrics?.left ?? null,
-                                sectionId: section.id ?? null,
-                                source: 'measurement'
-                            }
-                            logGeometryComparison({
-                                reason,
-                                index,
-                                sectionId: section.id ?? null,
-                                baselineRect,
-                                bakedRect,
-                                geometry: rect,
-                                source: 'measurement'
-                            })
-                            if (!localFirst) localFirst = {
-                                index: sample.index,
-                                width: sample.width,
-                                height: sample.height
-                            }
-                            localLast = {
-                                index: sample.index,
-                                width: sample.width,
-                                height: sample.height
-                            }
-                            localSamples.push(sample)
-                            postLayoutEntries.push({
-                                section,
-                                index,
-                                sectionId: section.id ?? null,
-                                geometry: rect,
-                                source: 'measurement',
-                                reason
-                            })
-                            if (cacheKey) {
-                                trackingSectionGeometryCache.set(cacheKey, {
-                                    width: rect.width,
-                                    height: rect.height
-                                })
-                            }
-                        }
-                    } catch (error) {
-                        logEBook('tracking-geometry:section-error', {
-                            reason,
-                            index,
-                            message: error?.message ?? String(error)
-                        })
-                        setDebugAttr(section, 'tracking-geometry-error', error?.message ?? 'unknown')
-                    }
-                    if ((index + 1) % MANABI_TRACKING_GEOMETRY_BATCH_SIZE === 0) {
-                        await nextFrame()
-                    }
-                }
-                return {
-                    zeroSized: localZero,
-                    firstSample: localFirst,
-                    lastSample: localLast,
-                    samples: localSamples,
-                    zeroEntries: localZeros,
-                    postLayoutEntries,
-                }
-            }
-
-            try {
-                enableMeasuringClass()
-                const isInitialLoadReason = typeof reason === 'string' && reason.startsWith('initial-load')
-                const shouldObserveGeometry = isInitialLoadReason
-                if (shouldObserveGeometry) {
-                    const resolved = await waitForGeometryExpansion(stylableSections, {
-                        timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
-                        maxObserved: Math.min(
-                            stylableSections.length,
-                            MANABI_TRACKING_GEOMETRY_INITIAL_OBSERVED_SECTIONS
-                        )
-                    })
-                    logEBook('tracking-geometry:resizeobserver-wait', {
-                        reason,
-                        resolved,
-                        timeoutMs: MANABI_TRACKING_GEOMETRY_RESIZE_OBSERVER_TIMEOUT_MS,
-                        sections: stylableSections.length,
-                        observed: Math.min(
-                            stylableSections.length,
-                            MANABI_TRACKING_GEOMETRY_INITIAL_OBSERVED_SECTIONS
-                        )
-                    })
-                }
-
-                const shouldInlineDelay = isInitialLoadReason && stylableSections.length > 0
-                let measurement = await measureAllSections()
-                if (shouldInlineDelay && measurement.zeroSized === stylableSections.length) {
-                    logEBook('tracking-geometry:inline-delay-retry', {
-                        reason,
-                        delayMs: MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS,
-                        sections: stylableSections.length
-                    })
-                    await nextFrame()
-                    await wait(MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS)
-                    measurement = await measureAllSections()
-                    const improved = measurement.zeroSized < stylableSections.length
-                    logEBook('tracking-geometry:inline-delay-result', {
-                        reason,
-                        delayMs: MANABI_TRACKING_GEOMETRY_INLINE_DELAY_MS,
-                        zeroSized: measurement.zeroSized,
-                        sections: stylableSections.length,
-                        improved
-                    })
-                }
-
-                zeroSized = measurement.zeroSized
-                firstSample = measurement.firstSample
-                lastSample = measurement.lastSample
-                sampleEntries = measurement.samples
-                zeroEntries = measurement.zeroEntries
-                postLayoutEntries = measurement.postLayoutEntries ?? []
-                setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
-            } finally {
-                disableMeasuringClass()
-            }
-        })
-        await logPostLayoutComparisons(postLayoutEntries)
-        success = true
-    } catch (error) {
-        logEBook('tracking-geometry:error', {
-            reason,
-            message: error?.message ?? String(error)
-        })
-        setDebugAttr(body, 'tracking-geometry-last-error', error?.message ?? String(error))
-    } finally {
-        body.classList.add(MANABI_TRACKING_GEOMETRY_BAKED_CLASS)
-    }
-
-    const logSampleEntries = () => {
-        if (!sampleEntries.length) return
-        for (const entry of sampleEntries.slice(0, MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT)) {
-            logEBook('tracking-geometry:sample', {
-                reason,
-                index: entry.index,
-                width: entry.width,
-                height: entry.height,
-                top: entry.top ?? null,
-                left: entry.left ?? null,
-                sectionId: entry.sectionId
-            })
-        }
-    }
-
-    const logZeroEntries = () => {
-        if (!zeroEntries.length) return
-        for (const entry of zeroEntries.slice(0, MANABI_TRACKING_GEOMETRY_SAMPLE_LOG_LIMIT)) {
-            logEBook('tracking-geometry:zero-sized', {
-                reason,
-                index: entry.index,
-                sectionId: entry.sectionId
-            })
-        }
-    }
-
-    logSampleEntries()
-    logZeroEntries()
-
-    const durationMs = Math.round((performance?.now?.() ?? Date.now()) - startedAt)
-    logEBook(success ? 'tracking-geometry:finish' : 'tracking-geometry:finish-with-errors', {
-        reason,
-        count: stylableSections.length,
-        durationMs,
-        zeroSized,
-        firstSample,
-        lastSample
-    })
-    setDebugAttr(body, 'tracking-geometry-duration-ms', durationMs)
-    setDebugAttr(body, 'tracking-geometry-count', stylableSections.length)
-    setDebugAttr(body, 'tracking-geometry-zero-sized', zeroSized)
-    setDebugAttr(body, 'tracking-geometry-first-sample', firstSample ? `${firstSample.index}:${firstSample.width}x${firstSample.height}` : null)
-    setDebugAttr(body, 'tracking-geometry-last-sample', lastSample ? `${lastSample.index}:${lastSample.width}x${lastSample.height}` : null)
-    setDebugAttr(body, 'tracking-geometry-state', success ? 'baked' : 'error')
-    const needsRetry = stylableSections.length > 0 && zeroSized === stylableSections.length
-    if (needsRetry) {
-        logEBook('tracking-geometry:needs-retry', {
-            reason,
-            stylableCount: stylableSections.length,
-            zeroSized
-        })
-    }
-    if (firstSample || lastSample) {
-        logEBook('tracking-geometry:samples', {
-            reason,
-            first: firstSample,
-            last: lastSample,
-            count: stylableSections.length,
-            zeroSized
-        })
-    }
-    return {
-        sections: stylableSections.length,
-        durationMs,
-        success,
-        zeroSized,
-        stylableCount: stylableSections.length,
-        needsRetry,
-        reason,
-        firstSample,
-        lastSample
-    }
+const bakeTrackingSectionGeometries = async (_doc, { reason = 'unknown' } = {}) => {
+    logEBook('tracking-geometry:skip', { reason, cause: 'disabled' })
+    return { sections: 0, durationMs: 0, success: true, skipped: 'disabled' }
 }
 
 // collapsed range doesn't return client rects sometimes (or always?)
@@ -1423,8 +731,6 @@ export class Paginator extends HTMLElement {
     #trackingGeometryBakeNeedsRerun = false
     #trackingGeometryBakeQueuedRestoreLocation = false
     #trackingGeometryBakeQueuedReason = null
-    #trackingGeometryRetryBudget = 2
-    #trackingGeometryInitialDelayDone = false
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
 
@@ -1433,22 +739,6 @@ export class Paginator extends HTMLElement {
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
-
-    #resetTrackingGeometryRetryBudget() {
-        this.#trackingGeometryRetryBudget = 2
-    }
-
-    #resetTrackingGeometryInitialDelay() {
-        this.#trackingGeometryInitialDelayDone = false
-    }
-
-    #geometryViewportKey(doc) {
-        const win = doc?.defaultView
-        const width = Math.round(win?.innerWidth ?? this.#container?.clientWidth ?? 0)
-        const height = Math.round(win?.innerHeight ?? this.#container?.clientHeight ?? 0)
-        const flow = this.getAttribute('flow') ?? ''
-        return `${width}x${height}:${flow}`
-    }
 
     constructor() {
         super()
@@ -1675,8 +965,6 @@ export class Paginator extends HTMLElement {
     }
     #createView() {
         this.#cancelTrackingGeometryBakeSchedule()
-        this.#resetTrackingGeometryRetryBudget()
-        this.#resetTrackingGeometryInitialDelay()
         if (this.#view) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
@@ -1705,29 +993,8 @@ export class Paginator extends HTMLElement {
         restoreLocation = false,
         immediate = false,
     } = {}) {
-        if (this.#isCacheWarmer) return
-        if (!this.#view?.document?.body) return
-        setDebugAttr(this, 'tracking-geometry-last-request', reason)
-        setDebugAttr(this, 'tracking-geometry-will-restore', restoreLocation ? 'true' : 'false')
-        if (immediate) {
-            this.#performTrackingSectionGeometryBake({ reason, restoreLocation })
-            return
-        }
-        this.#trackingGeometryPendingReason = reason
-        if (restoreLocation) this.#trackingGeometryPendingRestoreLocation = true
-        clearTimeout(this.#trackingGeometryRebakeTimer)
-        this.#trackingGeometryRebakeTimer = setTimeout(() => {
-            this.#trackingGeometryRebakeTimer = null
-            const finalReason = this.#trackingGeometryPendingReason ?? 'debounced'
-            const finalRestore = this.#trackingGeometryPendingRestoreLocation
-            this.#trackingGeometryPendingReason = null
-            this.#trackingGeometryPendingRestoreLocation = false
-            setDebugAttr(this, 'tracking-geometry-pending', finalReason)
-            this.#performTrackingSectionGeometryBake({
-                reason: finalReason,
-                restoreLocation: finalRestore,
-            })
-        }, MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS)
+        // Geometry bake disabled
+        return
     }
 
     #cancelTrackingGeometryBakeSchedule() {
@@ -1743,103 +1010,8 @@ export class Paginator extends HTMLElement {
         reason = 'unspecified',
         restoreLocation = false,
     } = {}) {
-        if (this.#isCacheWarmer) return
-        const doc = this.#view?.document
-        if (!doc?.body) return
-        setDebugAttr(this, 'tracking-geometry-pending', null)
-
-        if (this.#trackingGeometryBakeInFlight) {
-            this.#trackingGeometryBakeNeedsRerun = true
-            if (restoreLocation) this.#trackingGeometryBakeQueuedRestoreLocation = true
-            this.#trackingGeometryBakeQueuedReason = reason
-            setDebugAttr(this, 'tracking-geometry-status', 'queued')
-            return this.#trackingGeometryBakeInFlight
-        }
-
-        const anchor = restoreLocation ? await this.#safeCaptureVisibleRange() : null
-
-        const run = async () => {
-            setDebugAttr(this, 'tracking-geometry-status', 'running')
-            if (!this.#trackingGeometryInitialDelayDone && reason === 'initial-load') {
-                await nextFrame()
-                await nextFrame()
-                await wait(MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS)
-                this.#trackingGeometryInitialDelayDone = true
-                logEBook('tracking-geometry:initial-delay-applied', {
-                    reason,
-                    delayMs: MANABI_TRACKING_GEOMETRY_INITIAL_DELAY_MS
-                })
-            }
-            const result = await bakeTrackingSectionGeometries(doc, {
-                reason,
-                viewportKey: this.#geometryViewportKey(doc)
-            })
-            if (anchor) {
-                try {
-                    await this.#scrollToAnchor(anchor, 'geometry-bake')
-                    logEBook('tracking-geometry:relocate', {
-                        reason,
-                        restored: true
-                    })
-                    setDebugAttr(doc.body, 'tracking-geometry-restored', 'true')
-                } catch (error) {
-                    logEBook('tracking-geometry:relocate-error', {
-                        reason,
-                        message: error?.message ?? String(error)
-                    })
-                    setDebugAttr(doc.body, 'tracking-geometry-restored', 'error')
-                }
-            }
-            if (result?.needsRetry && result?.stylableCount > 0) {
-                if (this.#trackingGeometryRetryBudget > 0) {
-                    const retryReason = `${reason}-retry`
-                    this.#trackingGeometryRetryBudget -= 1
-                    logEBook('tracking-geometry:retry-queued', {
-                        reason,
-                        retryReason,
-                        remainingBudget: this.#trackingGeometryRetryBudget,
-                        stylableCount: result.stylableCount,
-                        zeroSized: result.zeroSized
-                    })
-                    setTimeout(() => {
-                        this.requestTrackingSectionGeometryBake({
-                            reason: retryReason,
-                            restoreLocation,
-                            immediate: true,
-                        })
-                    }, 50)
-                } else {
-                    logEBook('tracking-geometry:retry-exhausted', {
-                        reason,
-                        stylableCount: result.stylableCount,
-                        zeroSized: result.zeroSized
-                    })
-                    this.#resetTrackingGeometryRetryBudget()
-                }
-            } else {
-                this.#resetTrackingGeometryRetryBudget()
-            }
-            return result
-        }
-
-        this.#trackingGeometryBakeInFlight = run().finally(() => {
-            this.#trackingGeometryBakeInFlight = null
-            setDebugAttr(this, 'tracking-geometry-status', 'idle')
-            if (this.#trackingGeometryBakeNeedsRerun) {
-                const rerunReason = this.#trackingGeometryBakeQueuedReason ?? 'geometry-bake-rerun'
-                const rerunRestore = this.#trackingGeometryBakeQueuedRestoreLocation
-                this.#trackingGeometryBakeNeedsRerun = false
-                this.#trackingGeometryBakeQueuedRestoreLocation = false
-                this.#trackingGeometryBakeQueuedReason = null
-                setDebugAttr(this, 'tracking-geometry-status', 'rerun')
-                this.#performTrackingSectionGeometryBake({
-                    reason: rerunReason,
-                    restoreLocation: rerunRestore,
-                })
-            }
-        })
-
-        return this.#trackingGeometryBakeInFlight
+        // Geometry bake disabled
+        return
     }
 
     async #safeCaptureVisibleRange() {
@@ -2510,45 +1682,6 @@ export class Paginator extends HTMLElement {
                 resolve()
             })
         })
-        //                } else {
-        //                    let goingForward = offset > this.start;
-        //                    let slideFrom, slideTo;
-        //
-        //                    if (!this.#rtl) {
-        //                        if (goingForward) {
-        //                            slideFrom = 'slide-from-right';
-        //                            slideTo = 'slide-to-left';
-        //                        } else {
-        //                            slideFrom = 'slide-from-left';
-        //                            slideTo = 'slide-to-right';
-        //                        }
-        //                    } else {
-        //                        if (goingForward) {
-        //                            slideFrom = 'slide-from-left';
-        //                            slideTo = 'slide-to-right';
-        //                        } else {
-        //                            slideFrom = 'slide-from-right';
-        //                            slideTo = 'slide-to-left';
-        //                        }
-        //                    }
-        //
-        //                    this.dispatchEvent(new CustomEvent('setViewTransition', {
-        //                        bubbles: true,
-        //                        composed: true,
-        //                        detail: {
-        //                            viewTransitionName: 'scroll-to',
-        //                            slideFrom,
-        //                            slideTo
-        //                        }
-        //                    }));
-        //
-        //                    this.#transitioning = true;
-        //                    try {
-        //                        await document.startViewTransition(scroll);
-        //                    } finally {
-        //                        this.#transitioning = false;
-        //                    }
-        //                }
     }
     async #scrollToPage(page, reason, smooth) {
         const size = await this.size()
@@ -2832,7 +1965,6 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display...awaited promise")
         this.#index = index
-        const shouldBakeInitialGeometry = Boolean(src && !this.#isCacheWarmer)
         if (src) {
             const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
@@ -2852,6 +1984,10 @@ export class Paginator extends HTMLElement {
                         doc,
                         location: doc.location.href,
                         index,
+                    })
+                    await this.#performTrackingSectionGeometryBake({
+                        reason: 'initial-load',
+                        restoreLocation: false,
                     })
                     //                    console.log("#display... awaited onLoad")
                 }
@@ -2892,12 +2028,6 @@ export class Paginator extends HTMLElement {
 
         await this.scrollToAnchor((typeof anchor === 'function' ?
             anchor(this.#view.document) : anchor) ?? 0, select)
-        if (shouldBakeInitialGeometry) {
-            await this.#performTrackingSectionGeometryBake({
-                reason: 'initial-load',
-                restoreLocation: false,
-            })
-        }
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
