@@ -51,6 +51,8 @@ export class NavigationHUD {
             forward: document.getElementById('nav-relocate-label-forward'),
         };
         this.completionStack = document.getElementById('completion-stack');
+        this.progressWrapper = document.getElementById('progress-wrapper');
+        this.progressSlider = document.getElementById('progress-slider');
         
         this.hideNavigationDueToScroll = false;
         this.isRTL = false;
@@ -127,6 +129,16 @@ export class NavigationHUD {
     setHideNavigationDueToScroll(shouldHide) {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
+        if (this.progressWrapper) {
+            this.progressWrapper.setAttribute('aria-hidden', this.hideNavigationDueToScroll ? 'true' : 'false');
+        }
+        if (this.progressSlider) {
+            if (this.hideNavigationDueToScroll) {
+                this.progressSlider.setAttribute('tabindex', '-1');
+            } else {
+                this.progressSlider.removeAttribute('tabindex');
+            }
+        }
         if (this.lastRelocateDetail) {
             this.#updatePrimaryLine(this.lastRelocateDetail);
         }
@@ -731,18 +743,6 @@ export class NavigationHUD {
             ...payload,
         };
         const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
-        const metadata = JSON.stringify(cleaned);
-        const line = `# PAGENUMBERS ${metadata}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (error) {
-            // optional handler
-        }
-        try {
-            console.log(line);
-        } catch (error) {
-            // optional console
-        }
     }
 
     #logPageScrub(_event, _payload = {}) {}

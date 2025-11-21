@@ -1201,6 +1201,31 @@ class Reader {
             icon.style.opacity = '';
         });
     }
+
+    #deriveRelocateDirection(detail, { previousFraction = null, previousPageEstimate = null } = {}) {
+        const explicit = detail?.navigationDirection ?? detail?.direction ?? detail?.pageTurnDirection;
+        if (explicit === 'forward' || explicit === 'backward') {
+            return explicit;
+        }
+
+        const currentPage = typeof detail?.pageItem?.current === 'number' ? detail.pageItem.current : null;
+        const lastPage = typeof previousPageEstimate?.current === 'number' ? previousPageEstimate.current : null;
+        if (currentPage != null && lastPage != null) {
+            if (currentPage > lastPage) return 'forward';
+            if (currentPage < lastPage) return 'backward';
+        }
+
+        const priorFraction = typeof previousFraction === 'number' ? previousFraction : null;
+        const nextFraction = typeof detail?.fraction === 'number' ? detail.fraction : null;
+        if (priorFraction != null && nextFraction != null) {
+            const delta = nextFraction - priorFraction;
+            const EPSILON = 0.000001;
+            if (delta > EPSILON) return 'forward';
+            if (delta < -EPSILON) return 'backward';
+        }
+
+        return null;
+    }
     
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
@@ -1227,6 +1252,8 @@ class Reader {
             cfi,
             reason
         } = detail
+        const previousFraction = typeof this.lastKnownFraction === 'number' ? this.lastKnownFraction : null;
+        const previousPageEstimate = this.lastPageEstimate;
         const percent = percentFormat.format(fraction)
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
@@ -1239,6 +1266,28 @@ class Reader {
             detail.liveScrollPhase = 'dragging';
         } else if (detail.reason === 'live-scroll') {
             detail.liveScrollPhase = 'settled';
+        }
+
+        const normalizedReason = (detail.reason || '').toLowerCase();
+        const relocateDirection = this.#deriveRelocateDirection(detail, {
+            previousFraction,
+            previousPageEstimate,
+        });
+        switch (normalizedReason) {
+            case 'live-scroll':
+            case 'selection':
+            case 'navigation':
+                postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
+                break;
+            case 'page':
+                if (relocateDirection === 'forward') {
+                    postNavigationChromeVisibility(true, { source: 'relocate', direction: 'forward' });
+                } else if (relocateDirection === 'backward') {
+                    postNavigationChromeVisibility(false, { source: 'relocate', direction: 'backward' });
+                }
+                break;
+            default:
+                break;
         }
 
         if (this.hasLoadedLastPosition) {
