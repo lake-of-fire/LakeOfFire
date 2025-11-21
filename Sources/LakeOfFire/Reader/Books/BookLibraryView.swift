@@ -326,10 +326,36 @@ public class BookLibraryViewModel: ObservableObject {
             else { continue }
             downloads.insert(downloadable)
         }
-        guard !downloads.isEmpty else { return }
+        if !downloads.isEmpty {
+            await DownloadController.shared.ensureDownloaded(downloads)
+            try? await readerFileManager.refreshAllFilesMetadata()
+        }
 
-        await DownloadController.shared.ensureDownloaded(downloads)
-        try? await readerFileManager.refreshAllFilesMetadata()
+        await updateMediaLinks(for: publications, readerFileManager: readerFileManager)
+    }
+
+    @MainActor
+    static func updateMediaLinks(for publications: [Publication], readerFileManager: ReaderFileManager = .shared) async {
+        let localFiles = readerFileManager.files(ofTypes: [.epub, .epubZip]) ?? []
+        for publication in publications {
+            guard publication.voiceAudioURL != nil || publication.audioSubtitlesURL != nil else { continue }
+            guard
+                let downloadURL = publication.downloadURL,
+                let content = localFiles.first(where: { $0.url == downloadURL || $0.sourceDownloadURL == downloadURL })
+            else { continue }
+            try? await ReaderContentLoader.updateContent(url: content.url) { object in
+                var changed = false
+                if object.voiceAudioURL != publication.voiceAudioURL {
+                    object.voiceAudioURL = publication.voiceAudioURL
+                    changed = true
+                }
+                if object.audioSubtitlesURL != publication.audioSubtitlesURL {
+                    object.audioSubtitlesURL = publication.audioSubtitlesURL
+                    changed = true
+                }
+                return changed
+            }
+        }
     }
     
     static func fetchPublications(from url: URL) async -> ([Publication], String?) {
@@ -342,14 +368,28 @@ public class BookLibraryViewModel: ObservableObject {
                     }
                     
                     if let publications = parseData?.feed?.publications, !publications.isEmpty {
-                        let mapped = publications.map {
-                            let coverLink = $0.images.first(withRel: .cover) ?? $0.images.first(withRel: .opdsImage) ?? $0.images.first(withRel: .opdsImageThumbnail)
+                        let mapped = publications.map { publication -> Publication in
+                            let coverLink = publication.images.first(withRel: .cover) ?? publication.images.first(withRel: .opdsImage) ?? publication.images.first(withRel: .opdsImageThumbnail)
+                            let acquisitionLink = publication.links.first(withRel: .opdsAcquisition)
+                            let audioLink = publication.links.first { link in
+                                guard let type = link.type else { return false }
+                                return type.hasPrefix("audio/") || type.contains("audio")
+                            }
+                            let subtitleLink = publication.links.first { link in
+                                guard let type = link.type else { return false }
+                                return type.contains("vtt") || type == "text/vtt"
+                            }
+                            let summary = publication.metadata.description ?? publication.metadata.subtitle
                             return Publication(
-                                title: $0.metadata.title,
-                                author: $0.metadata.authors.map { $0.name } .joined(separator: ", "),
-                                publicationDate: $0.metadata.published,
+                                title: publication.metadata.title,
+                                author: publication.metadata.authors.map { $0.name } .joined(separator: ", "),
+                                publicationDate: publication.metadata.published,
                                 coverURL: coverLink?.url(relativeTo: url.domainURL),
-                                downloadURL: $0.links.first(withRel: .opdsAcquisition)?.url(relativeTo: url.domainURL))
+                                downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
+                                summary: summary,
+                                voiceAudioURL: audioLink?.url(relativeTo: url.domainURL),
+                                audioSubtitlesURL: subtitleLink?.url(relativeTo: url.domainURL)
+                            )
                         }
                         continuation.resume(returning: (mapped, nil))
                         return
@@ -416,4 +456,7 @@ public struct Publication: Identifiable, Hashable {
     public var publicationDate: Date?
     public var coverURL: URL?
     public var downloadURL: URL?
+    public var summary: String?
+    public var voiceAudioURL: URL?
+    public var audioSubtitlesURL: URL?
 }

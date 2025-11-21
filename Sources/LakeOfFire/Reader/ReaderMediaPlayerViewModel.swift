@@ -26,7 +26,7 @@ public class ReaderMediaPlayerViewModel: ObservableObject {
             hasStartedPlaybackForCurrentContent = false
             isTemporarilySuspendedForLoading = false
         }
-        let voiceAudioURLs = Array(content.voiceAudioURLs)
+        let voiceAudioURLs = content.voiceAudioURL.map { [$0] } ?? []
 #if DEBUG
         debugPrint(
             "# AUDIO ReaderMediaPlayerViewModel.onNavigationCommitted url=\(newState.pageURL.absoluteString) voiceCount=\(voiceAudioURLs.count) host=\(newState.pageURL.host ?? "nil") isReaderMode=\(newState.pageURL.isNativeReaderView)"

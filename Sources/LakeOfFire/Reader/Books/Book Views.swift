@@ -110,7 +110,8 @@ fileprivate struct StaticBookListRow: View {
             imageURL: publication.coverURL,
             title: publication.title,
             author: publication.author,
-            publicationDate: publication.publicationDate
+            publicationDate: publication.publicationDate,
+            summary: publication.summary
         ) {
             EmptyView()
         }
@@ -130,7 +131,8 @@ fileprivate struct DownloadableBookListRow: View {
             imageURL: publication.coverURL,
             title: publication.title,
             author: publication.author,
-            publicationDate: publication.publicationDate
+            publicationDate: publication.publicationDate,
+            summary: publication.summary
         ) {
             HidingDownloadButton(
                 downloadable: downloadable,
@@ -167,6 +169,7 @@ fileprivate struct DownloadableBookListRow: View {
             let wasAlreadyDownloaded = await downloadable.existsLocally()
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
+                await BookLibraryViewModel.updateMediaLinks(for: [publication])
             }
             onSelected?(wasAlreadyDownloaded)
         }
@@ -186,24 +189,30 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     let title: String
     let author: String?
     let publicationDate: Date?
+    let summary: String?
     private let trailing: () -> Trailing
 
     @ScaledMetric(relativeTo: .title3) private var thumbnailWidth: CGFloat = 68
     private var thumbnailDimension: CGFloat { thumbnailWidth * 1.45 * (2.0 / 3.0) }
     private let cornerRadius: CGFloat = 18
-    private let placeholderBlurb: String = "A breezy Kyoto mystery that slips in casual Japanese banter.\nFollow a book club of friends as they decode clues over conbini snacks.\nPerfect bite-size reading for commuters."
+    private var resolvedSummary: LocalizedStringKey? {
+        let trimmed = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : LocalizedStringKey(trimmed)
+    }
     
     init(
         imageURL: URL?,
         title: String,
         author: String?,
         publicationDate: Date?,
+        summary: String?,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
         self.imageURL = imageURL
         self.title = title
         self.author = author
         self.publicationDate = publicationDate
+        self.summary = summary
         self.trailing = trailing
     }
     
@@ -244,14 +253,16 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
             Divider()
                 .padding(.horizontal, 14)
 
-            Text(placeholderBlurb)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if let resolvedSummary {
+                Text(resolvedSummary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -260,11 +271,18 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         )
     }
     
-    private var publicationYearText: String? {
+private var publicationYearText: String? {
         guard let publicationDate else { return nil }
         let components = Calendar.current.dateComponents([.year], from: publicationDate)
         guard let year = components.year else { return nil }
         return String(year)
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var nonEmpty: String? {
+        guard let value = self?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
     }
 }
 

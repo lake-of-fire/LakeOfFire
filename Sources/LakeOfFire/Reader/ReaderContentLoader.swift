@@ -117,6 +117,25 @@ public struct ReaderContentLoader {
         let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
         return candidates
     }
+
+    /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
+    @RealmBackgroundActor
+    public static func updateContent(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async throws {
+        let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+        for case let object as (Object & ReaderContentProtocol) in objects {
+            guard let realm = object.realm else { continue }
+            try await realm.asyncWrite {
+                if mutate(object) {
+                    object.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        }
+    }
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {

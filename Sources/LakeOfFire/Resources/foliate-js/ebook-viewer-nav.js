@@ -38,6 +38,8 @@ export class NavigationHUD {
         
         this.navBar = document.getElementById('nav-bar');
         this.navPrimaryText = document.getElementById('nav-primary-text');
+        this.navPrimaryTextFull = document.getElementById('nav-primary-text-full');
+        this.navPrimaryTextCompact = document.getElementById('nav-primary-text-compact');
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
@@ -189,7 +191,10 @@ export class NavigationHUD {
             frozenLabel,
         };
         if (frozenLabel && this.navPrimaryText) {
-            this.navPrimaryText.textContent = frozenLabel;
+            const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
+            const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
+            fullLabelTarget.textContent = frozenLabel;
+            compactLabelTarget.textContent = frozenLabel;
         }
         this.#logPageScrub('begin', {
             originFraction,
@@ -292,19 +297,32 @@ export class NavigationHUD {
     }
     
     #updatePrimaryLine(detail) {
-        if (!this.navPrimaryText) return;
+        const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
+        const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
+        if (!fullLabelTarget || !compactLabelTarget) return;
+
         if (this.scrubSession?.active && this.scrubSession.frozenLabel != null) {
-            this.navPrimaryText.textContent = this.scrubSession.frozenLabel;
+            fullLabelTarget.textContent = this.scrubSession.frozenLabel;
+            compactLabelTarget.textContent = this.scrubSession.frozenLabel;
             return;
         }
-        const label = this.formatPrimaryLabel(detail);
-        if (label) {
-            this.navPrimaryText.textContent = label;
-            this.latestPrimaryLabel = label;
-            return;
+
+        const fullLabel = this.formatPrimaryLabel(detail);
+        const compactLabel = this.formatPrimaryLabel(detail, { allowRendererFallback: true, condensedOnly: true });
+
+        if (fullLabel) {
+            fullLabelTarget.textContent = fullLabel;
+            this.latestPrimaryLabel = fullLabel;
+        } else {
+            fullLabelTarget.textContent = '';
+            this.#requestRendererPrimaryLine();
         }
-        this.navPrimaryText.textContent = '';
-        this.#requestRendererPrimaryLine();
+
+        if (compactLabel) {
+            compactLabelTarget.textContent = compactLabel;
+        } else {
+            compactLabelTarget.textContent = fullLabelTarget.textContent;
+        }
     }
 
     #applyRelocateButtonEdges() {
@@ -344,17 +362,23 @@ export class NavigationHUD {
         return null;
     }
 
-    formatPrimaryLabel(detail, { allowRendererFallback = true } = {}) {
+    formatPrimaryLabel(detail, { allowRendererFallback = true, condensedOnly = false } = {}) {
         const derived = this.#derivePrimaryLabel(detail);
         if (derived) {
-            this.latestPrimaryLabel = derived;
-            return derived;
+            const label = condensedOnly ? this.#condensePrimaryLabel(derived) : derived;
+            if (!condensedOnly) {
+                this.latestPrimaryLabel = label;
+            }
+            return label;
         }
         if (allowRendererFallback && this.rendererPageSnapshot) {
             const fallback = this.#formatRendererPageLabel(this.rendererPageSnapshot);
             if (fallback) {
-                this.latestPrimaryLabel = fallback;
-                return fallback;
+                const label = condensedOnly ? this.#condensePrimaryLabel(fallback) : fallback;
+                if (!condensedOnly) {
+                    this.latestPrimaryLabel = label;
+                }
+                return label;
             }
         }
         return '';
@@ -424,6 +448,16 @@ export class NavigationHUD {
             source: 'pending-renderer',
         };
         return '';
+    }
+
+    #condensePrimaryLabel(label) {
+        if (typeof label !== 'string') return '';
+        // If label is already condensed (single number) return as-is
+        if (!label.includes(' of ')) return label;
+        const [current, total] = label.split(' of ');
+        const trimmedCurrent = current?.trim() ?? '';
+        if (!trimmedCurrent) return label;
+        return trimmedCurrent;
     }
 
     #computePageMetrics(detail) {
@@ -673,7 +707,10 @@ export class NavigationHUD {
             this.rendererPageSnapshot = normalized;
             const label = this.#formatRendererPageLabel(normalized);
             if (label) {
-                this.navPrimaryText.textContent = label;
+                const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
+                const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
+                fullLabelTarget.textContent = label;
+                compactLabelTarget.textContent = this.#condensePrimaryLabel(label) || label;
                 this.latestPrimaryLabel = label;
                 this.lastPrimaryLabelDiagnostics = {
                     label,

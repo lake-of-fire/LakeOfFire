@@ -3,9 +3,6 @@ import './view.js'
 import {
     createTOCView
 } from './ui/tree.js'
-import {
-    Overlayer
-} from '../foliate-js/overlayer.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 
 const DEFAULT_RUBY_FONT_STACK = `'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui`;
@@ -72,6 +69,14 @@ globalThis.manabiToggleReaderTableOfContents = () => {
     }
 };
 
+const updateNavHiddenClass = (shouldHide) => {
+    try {
+        document?.body?.classList.toggle('nav-hidden', !!shouldHide);
+    } catch (_error) {
+        // best-effort
+    }
+};
+
 const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
     applyLocalHideNavigationDueToScroll(!!shouldHide);
     try {
@@ -83,6 +88,7 @@ const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) 
     } catch (error) {
         console.error('Failed to notify native navigation chrome visibility', error);
     }
+    updateNavHiddenClass(shouldHide);
 };
 
 // Factory for replaceText with isCacheWarmer support
@@ -339,7 +345,7 @@ const getCSSForBookContent = ({
         display: none;
     }
 
-    body *:not(manabi-segment) {
+    body *:not(manabi-segment, manabi-segment *) {
         background: inherit !important;
         color: inherit !important;
     }
@@ -498,6 +504,7 @@ class Reader {
     }
     setHideNavigationDueToScroll(shouldHide) {
         this.navHUD?.setHideNavigationDueToScroll(shouldHide);
+        updateNavHiddenClass(shouldHide);
     }
     constructor() {
         this.navHUD = new NavigationHUD({
@@ -864,31 +871,7 @@ class Reader {
                             this.annotationsByValue.set(value, annotation)
                             }
             }
-            this.view.addEventListener('create-overlay', e => {
-                const {
-                    index
-                } = e.detail
-                const list = this.annotations.get(index)
-                if (list)
-                    for (const annotation of list)
-                        this.view.addAnnotation(annotation)
-                        })
-            this.view.addEventListener('draw-annotation', e => {
-                const {
-                    draw,
-                    annotation
-                } = e.detail
-                const {
-                    color
-                } = annotation
-                draw(Overlayer.highlight, {
-                    color
-                })
-            })
-            this.view.addEventListener('show-annotation', e => {
-                const annotation = this.annotationsByValue.get(e.detail.value)
-                if (annotation.note) alert(annotation.note)
-                    })
+            // Overlayer removed: no overlay events or drawing.
         }
     }
     

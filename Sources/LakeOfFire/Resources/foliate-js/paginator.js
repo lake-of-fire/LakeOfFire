@@ -632,7 +632,9 @@ class View {
     }
     set overlayer(overlayer) {
         this.#overlayer = overlayer
-        this.#element.append(overlayer.element)
+        if (overlayer?.element) {
+            this.#element.append(overlayer.element)
+        }
     }
     get overlayer() {
         return this.#overlayer

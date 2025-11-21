@@ -1,6 +1,5 @@
 import * as CFI from './epubcfi.js'
 import { TOCProgress, SectionProgress } from './progress.js'
-import { Overlayer } from './overlayer.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
 
@@ -140,23 +139,7 @@ export class View extends HTMLElement {
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
-        if (!this.#isCacheWarmer) {
-            this.renderer.addEventListener('create-overlayer', e =>
-                                           e.detail.attach(this.#createOverlayer(e.detail)))
-            //            this.renderer.addEventListener('setViewTransition', e => {
-            //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
-            //                this.style.setProperty('display', 'block');
-            //                this.style.setProperty('width', '100%');
-            //                this.style.setProperty('height', '100%');
-            //
-            //                this.style.viewTransitionName = e.detail.viewTransitionName;
-            //                this.style.setProperty('--slide-from', e.detail.slideFrom);
-            //                this.style.setProperty('--slide-to', e.detail.slideTo);
-            ////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
-            ////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
-            ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
-            //            });
-        }
+        // Overlayer support removed
         
         this.renderer.open(book, isCacheWarmer)
         this.#root.append(this.renderer)
@@ -229,68 +212,24 @@ export class View extends HTMLElement {
                         .catch(e => console.error(e))
                         })
             }
-    async addAnnotation(annotation, remove) {
+    async addAnnotation(annotation, _remove) {
         const { value } = annotation
-        if (value.startsWith(SEARCH_PREFIX)) {
-            const cfi = value.replace(SEARCH_PREFIX, '')
-            const { index, anchor } = await this.resolveNavigation(cfi)
-            const obj = this.#getOverlayer(index)
-            if (obj) {
-                const { overlayer, doc } = obj
-                if (remove) {
-                    overlayer.remove(value)
-                    return
-                }
-                const range = doc ? anchor(doc) : anchor
-                overlayer.add(value, range, Overlayer.outline)
-            }
-            return
-        }
-        const { index, anchor } = await this.resolveNavigation(value)
-        const obj = this.#getOverlayer(index)
-        if (obj) {
-            const { overlayer, doc } = obj
-            overlayer.remove(value)
-            if (!remove) {
-                const range = doc ? anchor(doc) : anchor
-                const draw = (func, opts) => overlayer.add(value, range, func, opts)
-                this.#emit('draw-annotation', { draw, annotation, doc, range })
-            }
-        }
-        const label = this.#tocProgress.getProgress(index)?.label ?? ''
+        const resolved = await this.resolveNavigation(value.startsWith?.(SEARCH_PREFIX) ? value.replace(SEARCH_PREFIX, '') : value)
+        const index = resolved?.index
+        const label = typeof index === 'number' ? (this.#tocProgress?.getProgress(index)?.label ?? '') : ''
         return { index, label }
     }
     deleteAnnotation(annotation) {
         return this.addAnnotation(annotation, true)
     }
-    #getOverlayer(index) {
-        return this.renderer.getContents()
-        .find(x => x.index === index && x.overlayer)
+    #getOverlayer(_index) {
+        return null
     }
-    #createOverlayer({ doc, index }) {
-        const overlayer = new Overlayer()
-        doc.addEventListener('click', e => {
-            const [value, range] = overlayer.hitTest(e)
-            if (value && !value.startsWith(SEARCH_PREFIX)) {
-                this.#emit('show-annotation', { value, range })
-            }
-        }, false)
-        
-        const list = this.#searchResults.get(index)
-        if (list) for (const item of list) this.addAnnotation(item)
-            
-            this.#emit('create-overlay', { index })
-            return overlayer
-            }
-    async showAnnotation(annotation) {
-        const { value } = annotation
-        const resolved = await this.goTo(value)
-        if (resolved) {
-            const { index, anchor } = resolved
-            const { doc } =  this.#getOverlayer(index)
-            const range = anchor(doc)
-            this.#emit('show-annotation', { value, range })
-        }
+    #createOverlayer(_detail) {
+        return null
+    }
+    async showAnnotation(_annotation) {
+        return
     }
     getCFI(index, range) {
         const baseCFI = this.book.sections[index].cfi ?? CFI.fake.fromIndex(index)

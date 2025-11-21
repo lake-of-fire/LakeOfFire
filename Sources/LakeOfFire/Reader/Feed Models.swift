@@ -222,7 +222,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         set { }
     }
     @Persisted public var voiceFrameUrl: URL?
-    @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
+    @Persisted public var voiceAudioURL: URL?
     @Persisted public var audioSubtitlesURL: URL?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
@@ -334,8 +334,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         }
         bookmark.isRSSAvailable = !bookmark.rssURLs.isEmpty
         bookmark.voiceFrameUrl = voiceFrameUrl
-        bookmark.voiceAudioURLs.removeAll()
-        bookmark.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+        bookmark.voiceAudioURL = voiceAudioURL ?? bookmark.voiceAudioURL
         bookmark.audioSubtitlesURL = audioSubtitlesURL
         bookmark.redditTranslationsUrl = redditTranslationsUrl
         bookmark.redditTranslationsTitle = redditTranslationsTitle
@@ -657,7 +656,7 @@ public extension Feed {
                 feedEntry.publicationDate = item.published ?? item.updated
                 feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl
-                feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+                feedEntry.voiceAudioURL = voiceAudioURLs.first ?? feedEntry.voiceAudioURL
                 let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
                 let existingSubtitle = existingEntry?.audioSubtitlesURL
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
@@ -908,7 +907,7 @@ fileprivate struct FeedEntryPayload {
     let publicationDate: Date?
     let content: Data?
     let voiceFrameUrl: URL?
-    let voiceAudioURLs: [URL]
+    let voiceAudioURL: URL?
     let audioSubtitlesURL: URL?
     let redditTranslationsUrl: URL?
     let redditTranslationsTitle: String?
@@ -925,7 +924,7 @@ fileprivate struct FeedEntryPayload {
         publicationDate = entry.publicationDate
         content = entry.content
         voiceFrameUrl = entry.voiceFrameUrl
-        voiceAudioURLs = Array(entry.voiceAudioURLs)
+        voiceAudioURL = entry.voiceAudioURL
         audioSubtitlesURL = entry.audioSubtitlesURL
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
@@ -985,10 +984,8 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
             "target=\(targetType)"
         )
     }
-    let existingVoiceAudio = Array(content.voiceAudioURLs)
-    if existingVoiceAudio != payload.voiceAudioURLs {
-        content.voiceAudioURLs.removeAll()
-        payload.voiceAudioURLs.forEach { content.voiceAudioURLs.append($0) }
+    if content.voiceAudioURL != payload.voiceAudioURL {
+        content.voiceAudioURL = payload.voiceAudioURL
         didChange = true
     }
     if content.redditTranslationsUrl != payload.redditTranslationsUrl {

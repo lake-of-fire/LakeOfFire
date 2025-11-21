@@ -67,6 +67,7 @@ public struct ReadabilityParsedMessage {
     public let readabilityContainerRootSelector: NestedDOMRootSelector?
     public let title: String
     public let byline: String
+    public let publishedTime: String?
     public let content: String
     public let inputHTML: String
     public let outputHTML: String
@@ -84,6 +85,7 @@ public struct ReadabilityParsedMessage {
         
         title = body["title"] as! String
         byline = body["byline"] as! String
+        publishedTime = body["publishedTime"] as? String
         content = body["content"] as! String
         inputHTML = body["inputHTML"] as! String
         outputHTML = body["outputHTML"] as! String

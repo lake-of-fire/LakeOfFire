@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 51
+    public static let schemaVersion: UInt64 = 52
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -31,9 +31,16 @@ public enum DefaultRealmConfiguration {
     }
 
     public static func migrationBlock(migration: Migration, oldSchemaVersion: UInt64) {
-        if oldSchemaVersion < schemaVersion {
-            if oldSchemaVersion < 32 {
-                migration.deleteData(forType: FeedEntry.className())
+        if oldSchemaVersion < 32 {
+            migration.deleteData(forType: FeedEntry.className())
+        }
+
+        if oldSchemaVersion < 52 {
+            migration.enumerateObjects(ofType: FeedEntry.className()) { oldObject, newObject in
+                guard let newObject else { return }
+                if let oldList = oldObject?["voiceAudioURLs"] as? List<URL>, let first = oldList.first {
+                    newObject["voiceAudioURL"] = first
+                }
             }
         }
     }

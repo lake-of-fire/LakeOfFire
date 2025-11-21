@@ -172,6 +172,17 @@
                     contain: strict;
                     padding: 0;
                 }
+                body.nav-hidden {
+                    --manabi-highlight-opacity: 0.5;
+                }
+                #nav-bar *,
+                #nav-bottom-row,
+                #progress-wrapper,
+                .nav-relocate-button,
+                .nav-section-progress,
+                #nav-primary-text {
+                    transition: opacity 240ms ease;
+                }
                 #nav-content {
                     display: flex;
                     flex-direction: column;
@@ -200,13 +211,34 @@
                     direction: ltr;
                     unicode-bidi: isolate;
                     pointer-events: none;
+                    position: relative;
+                    height: 12px;
+                }
+                .nav-primary-layer {
+                    position: absolute;
+                    inset: 0;
+                    display: block;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                }
+                #nav-primary-text-full {
+                    opacity: 1;
+                }
+                body.nav-hidden #nav-primary-text-full {
+                    opacity: 0;
+                }
+                body.nav-hidden #nav-primary-text-compact {
+                    opacity: 1;
                 }
                 .nav-section-progress {
                     font-size: var(--nav-section-progress-font-size, 14px);
                     font-weight: 500;
                     color: var(--secondary-color);
                     white-space: nowrap;
-                    transition: opacity 0.2s ease;
+                    transition: opacity 240ms ease;
                 }
                 .nav-section-progress[hidden] {
                     display: none;
@@ -890,7 +922,10 @@
         <div id="nav-bar" class="toolbar">
             <div id="nav-content">
                 <div id="nav-top-row">
-                    <div id="nav-primary-text" aria-live="polite"></div>
+                    <div id="nav-primary-text" aria-live="polite">
+                        <span id="nav-primary-text-full" class="nav-primary-layer"></span>
+                        <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
+                    </div>
                     <div id="completion-stack" class="button-stack" hidden>
                         <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
                             <svg class="icon finish-icon" width="1em" height="1em" viewBox="0 0 49.328125 52.400390625" aria-hidden="true">

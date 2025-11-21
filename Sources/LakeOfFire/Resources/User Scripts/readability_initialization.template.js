@@ -76,6 +76,18 @@
         }
         return text.slice(0, max) + `...(truncated ${text.length - max} chars)`
     }
+
+    function normalizeBylineText(rawByline) {
+        if (typeof rawByline !== "string") {
+            return ""
+        }
+        const trimmed = rawByline.trim()
+        if (!trimmed) {
+            return ""
+        }
+        const withoutPrefix = trimmed.replace(/^(by|par)\s+/i, "")
+        return (withoutPrefix || trimmed).trim()
+    }
     
     function captureBodyMetrics() {
         const body = document.body
@@ -264,6 +276,7 @@
                 const rawTitle = article && typeof article.title === "string" ? article.title : ""
                 const rawByline = article && typeof article.byline === "string" ? article.byline : ""
                 const rawContent = article && typeof article.content === "string" ? article.content : ""
+                const publishedTime = article && typeof article.publishedTime === "string" ? article.publishedTime : null
                 readerLog("rawContent", {
                     titleBytes: rawTitle.length,
                     bylineBytes: rawByline.length,
@@ -292,6 +305,8 @@
                     let contentIsInternal = isInternalURL(uri.spec)
                     let title = DOMPurify.sanitize(rawTitle)
                     let byline = DOMPurify.sanitize(rawByline)
+                    const displayByline = normalizeBylineText(byline)
+                    const hasByline = displayByline.length > 0
                     var content = DOMPurify.sanitize(rawContent)
                     const sanitizedContentBytes = content && typeof content === "string" ? content.length : 0
                     readerLog("sanitizedContent", {
@@ -300,6 +315,11 @@
                         preview: previewText(content, 512),
                     })
                     let viewOriginal = contentIsInternal ? '' : `<a class="reader-view-original">View Original</a>`
+
+                    const bylineLine = hasByline
+                        ? `<div id="reader-byline-line" class="byline-line"><span class="byline-label">By</span> <span id="reader-byline" class="byline">${displayByline}</span></div>`
+                        : ''
+                    const metaLine = `<div id="reader-meta-line" class="byline-meta-line"><span id="reader-publication-date"></span>${viewOriginal ? `<span class="reader-meta-divider"></span>${viewOriginal}` : ''}</div>`
                     
                     /*
                      let openGraphImage = document.head.querySelector('meta[property="og:image"]')
@@ -335,8 +355,8 @@
         <div id="reader-header" class="header">
             <h1 id="reader-title">${title}</h1>
             <div id="reader-byline-container">
-                <span id="reader-byline" class="byline">${byline}</span>
-                ${viewOriginal}
+                ${bylineLine}
+                ${metaLine}
             </div>
         </div>
         <div id="reader-content">
@@ -424,6 +444,7 @@
                                 readabilityContainerSelector: null,
                                 title: title,
                                 byline: byline,
+                                publishedTime: publishedTime,
                                 content: content,
                                 inputHTML: inputHTML,
                                 outputHTML: html,

@@ -65,7 +65,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     
     // Feed entry metadata.
     var voiceFrameUrl: URL? { get set }
-    var voiceAudioURLs: RealmSwift.List<URL> { get set }
+    var voiceAudioURL: URL? { get set }
     var audioSubtitlesURL: URL? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
@@ -440,11 +440,7 @@ public extension ReaderContentProtocol {
                 record.isReaderModeAvailable = isReaderModeAvailable
                 record.voiceFrameUrl = voiceFrameUrl
                 record.audioSubtitlesURL = audioSubtitlesURL
-                for audioURL in voiceAudioURLs {
-                    if !record.voiceAudioURLs.contains(audioURL) {
-                        record.voiceAudioURLs.append(audioURL)
-                    }
-                }
+                record.voiceAudioURL = voiceAudioURL ?? record.voiceAudioURL
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
@@ -469,7 +465,7 @@ public extension ReaderContentProtocol {
             }
             record.voiceFrameUrl = voiceFrameUrl
             record.audioSubtitlesURL = audioSubtitlesURL
-            record.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+            record.voiceAudioURL = voiceAudioURL ?? record.voiceAudioURL
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard

@@ -372,6 +372,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
 
                 readerModeViewModel.readabilityContent = result.outputHTML
+                readerModeViewModel.readabilityPublishedTime = result.publishedTime
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
                 if isSnippetURL {
