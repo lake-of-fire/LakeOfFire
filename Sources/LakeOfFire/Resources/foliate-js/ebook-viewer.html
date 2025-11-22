@@ -175,13 +175,38 @@
                 body.nav-hidden {
                     --manabi-highlight-opacity: 0.5;
                 }
+                /* Prevent accidental text selection on nav chrome */
+                .nav-relocate-button,
+                .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
+                #nav-primary-text,
+                #nav-primary-text-full,
+                #nav-primary-text-compact,
+                #nav-bottom-row,
+                #progress-wrapper,
+                #nav-top-row,
+                #nav-hidden-buttons button,
+                #btn-prev-chapter,
+                #btn-next-chapter,
+                .button-label,
+                .side-nav {
+                    user-select: none;
+                    -webkit-user-select: none;
+                }
                 #nav-bar *,
                 #nav-bottom-row,
                 #progress-wrapper,
                 .nav-relocate-button,
                 .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
                 #nav-primary-text {
                     transition: opacity 240ms ease;
+                }
+                .nav-fade-out {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
                 }
                 #nav-content {
                     display: flex;
@@ -306,6 +331,16 @@
                 }
                 #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
                 #nav-bar.nav-hidden-due-to-scroll .nav-section-progress {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+                body.nav-hidden .nav-relocate-button,
+                body.nav-hidden .nav-section-progress,
+                body.nav-hidden #nav-section-progress-leading,
+                body.nav-hidden #nav-section-progress-trailing,
+                body.nav-hidden #nav-primary-text,
+                body.nav-hidden #nav-bottom-row,
+                body.nav-hidden #progress-wrapper {
                     opacity: 0;
                     pointer-events: none;
                 }

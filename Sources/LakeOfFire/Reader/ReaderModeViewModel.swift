@@ -76,7 +76,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
 
-    private static let readerHeaderDateFormatter: DateFormatter = {
+    fileprivate static let readerHeaderDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = .autoupdatingCurrent
         let template = DateFormatter.dateFormat(
@@ -549,7 +549,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
             let parseDuration = Date().timeIntervalSince(parseStartedAt)
             let parseSummary = String(format: "%.3fs", parseDuration)
-            try Self.updateBylineSection(
+            try updateBylineSection(
                 in: doc,
                 publicationDateText: headerDateText
             )
@@ -1201,93 +1201,94 @@ public class ReaderModeViewModel: ObservableObject {
         cancelReaderModeLoad(for: pageURL)
     }
 
-    private func makeReaderHeaderDateText(
-        readabilityPublishedTime: String?,
-        content: any ReaderContentProtocol
-    ) -> String? {
-        if let readabilityPublishedTime,
-           !readabilityPublishedTime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let parsed = Self.parseReadabilityPublishedDate(readabilityPublishedTime) {
-                return ReaderDateFormatter.absoluteString(
-                    from: parsed,
-                    dateFormatter: Self.readerHeaderDateFormatter
-                )
-            }
-            return readabilityPublishedTime.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+}
 
-        guard content.displayPublicationDate else { return nil }
-        return content.humanReadablePublicationDate
+private func makeReaderHeaderDateText(
+    readabilityPublishedTime: String?,
+    content: any ReaderContentProtocol
+) -> String? {
+    if let readabilityPublishedTime,
+       !readabilityPublishedTime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let parsed = parseReadabilityPublishedDate(readabilityPublishedTime) {
+            return ReaderDateFormatter.absoluteString(
+                from: parsed,
+                dateFormatter: ReaderModeViewModel.readerHeaderDateFormatter
+            )
+        }
+        return readabilityPublishedTime.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func parseReadabilityPublishedDate(_ rawValue: String) -> Date? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+    guard content.displayPublicationDate else { return nil }
+    return content.humanReadablePublicationDate
+}
 
-        let isoWithFractional = ISO8601DateFormatter()
-        isoWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = isoWithFractional.date(from: trimmed) {
-            return date
-        }
+private func parseReadabilityPublishedDate(_ rawValue: String) -> Date? {
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
 
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime]
-        if let date = iso.date(from: trimmed) {
-            return date
-        }
-
-        let dateOnly = ISO8601DateFormatter()
-        dateOnly.formatOptions = [.withFullDate]
-        if let date = dateOnly.date(from: trimmed) {
-            return date
-        }
-
-        let simple = DateFormatter()
-        simple.locale = Locale(identifier: "en_US_POSIX")
-        simple.dateFormat = "yyyy-MM-dd"
-        return simple.date(from: trimmed)
+    let isoWithFractional = ISO8601DateFormatter()
+    isoWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = isoWithFractional.date(from: trimmed) {
+        return date
     }
 
-    private static func updateBylineSection(
-        in doc: SwiftSoup.Document,
-        publicationDateText: String?
-    ) throws {
-        let bylineElement = try doc.getElementById("reader-byline")
-        let bylineText = try bylineElement?.text(trimAndNormaliseWhitespace: true) ?? ""
-        if bylineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            try doc.getElementById("reader-byline-line")?.remove()
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime]
+    if let date = iso.date(from: trimmed) {
+        return date
+    }
+
+    let dateOnly = ISO8601DateFormatter()
+    dateOnly.formatOptions = [.withFullDate]
+    if let date = dateOnly.date(from: trimmed) {
+        return date
+    }
+
+    let simple = DateFormatter()
+    simple.locale = Locale(identifier: "en_US_POSIX")
+    simple.dateFormat = "yyyy-MM-dd"
+    return simple.date(from: trimmed)
+}
+
+private func updateBylineSection(
+    in doc: SwiftSoup.Document,
+    publicationDateText: String?
+) throws {
+    let bylineElement = try doc.getElementById("reader-byline")
+    let bylineText = try bylineElement?.text(trimAndNormaliseWhitespace: true) ?? ""
+    if bylineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        try doc.getElementById("reader-byline-line")?.remove()
+    }
+
+    let metaLine = try doc.getElementById("reader-meta-line")
+    let dateSpan = try doc.getElementById("reader-publication-date")
+    let viewOriginal = try metaLine?.select("a.reader-view-original").first()
+    let dateText = publicationDateText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let hasDate = !dateText.isEmpty
+
+    if hasDate {
+        if let dateSpan {
+            try dateSpan.text(dateText)
         }
+    } else {
+        try dateSpan?.remove()
+    }
 
-        let metaLine = try doc.getElementById("reader-meta-line")
-        let dateSpan = try doc.getElementById("reader-publication-date")
-        let viewOriginal = try metaLine?.select("a.reader-view-original").first()
-        let dateText = publicationDateText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let hasDate = !dateText.isEmpty
-
-        if hasDate {
-            if let dateSpan {
-                try dateSpan.text(dateText)
-            }
+    if let divider = try metaLine?.select(".reader-meta-divider").first() {
+        if hasDate && viewOriginal != nil {
+            try divider.text(" | ")
         } else {
-            try dateSpan?.remove()
+            try divider.remove()
         }
+    }
 
-        if let divider = try metaLine?.select(".reader-meta-divider").first() {
-            if hasDate && viewOriginal != nil {
-                try divider.text(" | ")
-            } else {
-                try divider.remove()
-            }
-        }
+    if let metaLine, metaLine.children().isEmpty() {
+        try metaLine.remove()
+    }
 
-        if let metaLine, metaLine.children().isEmpty() {
-            try metaLine.remove()
-        }
-
-        if let container = try doc.getElementById("reader-byline-container"),
-           container.children().isEmpty() {
-            try container.remove()
-        }
+    if let container = try doc.getElementById("reader-byline-container"),
+       container.children().isEmpty() {
+        try container.remove()
     }
 }
 

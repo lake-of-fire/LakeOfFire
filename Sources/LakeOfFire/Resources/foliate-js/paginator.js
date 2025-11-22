@@ -140,6 +140,7 @@ const uncollapse = range => {
     return range
 }
 
+const NF = globalThis.NodeFilter ?? {}
 const {
     SHOW_ELEMENT,
     SHOW_TEXT,
@@ -147,7 +148,7 @@ const {
     FILTER_ACCEPT,
     FILTER_REJECT,
     FILTER_SKIP
-} = NodeFilter
+} = NF
 
 /**
  * Creates a hidden iframe with a cloned document (head and empty body) to compute computed style.
@@ -418,6 +419,7 @@ class View {
             //            console.log("render(layout)... return")
             return
         }
+        layout.usePaginate = false // disable Paginate integration for now
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
 
@@ -741,6 +743,10 @@ export class Paginator extends HTMLElement {
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
+     = null
+    #pageStrip = null
+    #currentPageIndex = 0
+    #pageSizeCache = null
 
     constructor() {
         super()
@@ -891,6 +897,13 @@ export class Paginator extends HTMLElement {
         this.#header = this.#root.getElementById('header')
         this.#footer = this.#root.getElementById('footer')
 
+        // The new Paginate.js page strip lives alongside the legacy iframe view.
+        this.#pageStrip = document.createElement('div')
+        Object.assign(this.#pageStrip.style, {
+            display: 'none',
+        })
+        this.#container.append(this.#pageStrip)
+
         this.#resizeObserver.observe(this.#container)
 
         this.#container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
@@ -1035,6 +1048,7 @@ export class Paginator extends HTMLElement {
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
         this.#setLoading(true)
+        this.#cachedStart = null
     }
     async #onExpand() {
 //        console.log("#onExpand...", this.style.display)
@@ -1196,7 +1210,11 @@ export class Paginator extends HTMLElement {
         const rawGap = -g / (g - 1) * size
         const gap = Math.max(rawGap, minGapPx)
 
-        const flow = this.getAttribute('flow')
+        const flow = this.getAttribute('flow') || 'paginated'
+        const writingMode = vertical ? (verticalRTL ? 'vertical-rl' : 'vertical-lr') : 'horizontal-tb'
+        const resolvedDir = this.bookDir || (rtl ? 'rtl' : 'ltr')
+        const hasPaginate = false
+
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
@@ -1215,6 +1233,9 @@ export class Paginator extends HTMLElement {
                 bottomMargin,
                 gap,
                 columnWidth,
+                usePaginate: false,
+                writingMode,
+                direction: resolvedDir,
             }
         }
 
@@ -1260,11 +1281,20 @@ export class Paginator extends HTMLElement {
             gap,
             columnWidth,
             divisor,
+            usePaginate: false,
+            writingMode,
+            direction: resolvedDir,
         }
     }
     async render() {
         if (!this.#view) {
             return
+        }
+
+        if (this.scrolled) {
+            this.#pageStrip.style.display = 'none'
+            if (this.#view?.element) this.#view.element.style.display = 'block'
+            this.#pageStrip.style.transform = 'translate3d(0,0,0)'
         }
 
         // avoid unwanted triggers
@@ -1276,6 +1306,10 @@ export class Paginator extends HTMLElement {
             rtl: this.#rtl,
         }))
         //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
+    }
+
+    async layoutWithPaginate({ doc, layout }) {
+        return false
     }
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
@@ -1330,10 +1364,18 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
+        if (this.) {
+            const size = this.#pageSizeCache || this..getPageSize()
+            return size.width || 0
+        }
         return (await this.sizes())[await this.sideProp()]
     }
     async viewSize() {
         if (this.#isCacheWarmer) return 0
+        if (this.) {
+            const size = await this.size()
+            return size * (this..getPageCount() || 1)
+        }
         const view = this.#view
         if (!view || !view.element) return 0
         if (typeof view.cachedViewSize === 'undefined') {
@@ -1362,6 +1404,10 @@ export class Paginator extends HTMLElement {
         return view.cachedViewSize[await this.sideProp()]
     }
     async start() {
+        if (this.) {
+            const size = await this.size()
+            return size * this..getCurrentPageIndex()
+        }
         if (this.#cachedStart === null) {
             //        return new Promise(resolve => {
             //            requestAnimationFrame(async () => {
@@ -1380,16 +1426,22 @@ export class Paginator extends HTMLElement {
         return (await this.start()) + (await this.size())
     }
     async page() {
-        //        await this.#awaitDirection();
+        if (this.) return this..getCurrentPageIndex()
         return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
     }
     async pages() {
-        //        await this.#awaitDirection();
-        //        console.log("pages() view size & size:", (await this.viewSize()), (await this.size()))
+        if (this.) return this..getPageCount()
         return Math.round((await this.viewSize()) / (await this.size()))
     }
     async scrollBy(dx, dy) {
-        //        await this.#awaitDirection()
+        if (this.) {
+            const delta = this.#vertical ? dy : dx
+            if (Math.abs(delta) > 0) {
+                const dir = delta > 0 ? 1 : -1
+                await this.#scrollToPage(this..getCurrentPageIndex() + dir, 'page')
+            }
+            return
+        }
         await new Promise(resolve => {
             requestAnimationFrame(async () => {
                 const delta = this.#vertical ? dy : dx
@@ -1407,7 +1459,12 @@ export class Paginator extends HTMLElement {
         })
     }
     async snap(vx, vy) {
-        //        await this.#awaitDirection();
+        if (this.) {
+            const velocity = this.#vertical ? vy : vx
+            const dir = velocity >= 0 ? 1 : -1
+            await this.#scrollToPage(this..getCurrentPageIndex() + dir, 'snap')
+            return
+        }
         const velocity = this.#vertical ? vy : vx
         const [offset, a, b] = this.#scrollBounds
         const start = await this.start()
@@ -1686,6 +1743,13 @@ export class Paginator extends HTMLElement {
         })
     }
     async #scrollToPage(page, reason, smooth) {
+        if (this.) {
+            const clamped = this..goToPage(page)
+            this.#currentPageIndex = clamped
+            this.#updatePageStripTransform()
+            await this.#afterPageChange(reason ?? 'page')
+            return true
+        }
         const size = await this.size()
         const offset = size * (this.#rtl ? -page : page)
         return await this.#scrollTo(offset, reason, smooth)
@@ -1698,6 +1762,19 @@ export class Paginator extends HTMLElement {
     async #scrollToAnchor(anchor, reason = 'anchor') {
         //        console.log('#scrollToAnchor0...', anchor)
         this.#anchor = anchor
+        if (this.) {
+            const pageIndex = this..findPageIndex(anchor)
+            if (pageIndex !== null && pageIndex !== undefined) {
+                await this.#scrollToPage(pageIndex, reason)
+                return
+            }
+            if (typeof anchor === 'number') {
+                const pages = this..getPageCount() || 1
+                const newPage = Math.max(0, Math.min(pages - 1, Math.round(anchor * (pages - 1))))
+                await this.#scrollToPage(newPage, reason)
+                return
+            }
+        }
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
         if (rects) {
@@ -1822,6 +1899,9 @@ export class Paginator extends HTMLElement {
     }
     async #getVisibleRange() {
         //            console.log("getVisibleRange...")
+        if (this.) {
+            return this..getCurrentRange()
+        }
         await this.#awaitDirection();
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
         const visibleSentinelIDs = await this.#getSentinelVisibilities()
@@ -1928,6 +2008,35 @@ export class Paginator extends HTMLElement {
                 }
             }));
         }
+    }
+
+    #updatePageStripTransform() {
+        if (!this.) return
+        const size = this.#pageSizeCache || this..getPageSize()
+        const pageWidth = size?.width || 1
+        const index = this..getCurrentPageIndex()
+        const offsetX = pageWidth * index
+        const translate = this.bookDir === 'rtl' ? offsetX : -offsetX
+        this.#pageStrip.style.transform = `translateX(${translate}px)`
+    }
+
+    async #afterPageChange(reason = 'page') {
+        if (this.#isCacheWarmer || !this.) return
+        const range = this..getCurrentRange()
+        if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor') {
+            this.#anchor = range
+        }
+        const pages = this..getPageCount()
+        const page = this..getCurrentPageIndex() + 1
+        const detail = {
+            reason,
+            range,
+            index: this.#index,
+            fraction: pages > 0 ? (page - 1) / pages : 0,
+            size: pages > 0 ? 1 / pages : 1,
+        }
+        if (this.#header) this.#header.style.visibility = page > 0 ? 'visible' : 'hidden'
+        this.dispatchEvent(new CustomEvent('relocate', { detail }))
     }
     #updateSwipeChevron(dx, minSwipe) {
         let leftOpacity = 0,
@@ -2140,6 +2249,12 @@ export class Paginator extends HTMLElement {
             }
             return true;
         }
+        if (this.) {
+            if (await this.atStart()) return true
+            const page = await this.page() - 1
+            await this.#scrollToPage(page, 'page', true)
+            return page <= 0
+        }
         if (await this.atStart()) return
         const page = await this.page() - 1
         return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
@@ -2157,15 +2272,28 @@ export class Paginator extends HTMLElement {
             }
             return true;
         }
+        if (this.) {
+            if (await this.atEnd()) return true
+            const page = await this.page() + 1
+            const pages = await this.pages()
+            await this.#scrollToPage(page, 'page', true)
+            return page >= pages - 1
+        }
         if (await this.atEnd()) return
         const page = await this.page() + 1
         const pages = await this.pages()
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     async atStart() {
+        if (this.) {
+            return this.#adjacentIndex(-1) == null && (await this.page()) <= 0
+        }
         return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
     }
     async atEnd() {
+        if (this.) {
+            return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 1
+        }
         return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
     }
     #adjacentIndex(dir) {
@@ -2178,6 +2306,9 @@ export class Paginator extends HTMLElement {
         this.#locked = true
         const prev = dir === -1
         const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+        if (!shouldGo) {
+            logEBook('paginate:turn-blocked', { dir, page: await this.page(), pages: await this.pages(), index: this.#index })
+        }
         if (shouldGo) await this.#goTo({
             index: this.#adjacentIndex(dir),
             anchor: prev ? () => 1 : () => 0,

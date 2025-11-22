@@ -1328,6 +1328,11 @@ class Reader {
     async #onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
+        try {
+            const line = `# EBOOK nav:click ${JSON.stringify({ type })}`;
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+            console.log(line);
+        } catch (_) {}
         // For spinner placement
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
@@ -1374,11 +1379,7 @@ class Reader {
                 // TODO: Clean up, the scroll cases here won't be reached because of above...
             case 'prev':
                 postNavigationChromeVisibility(false, { source: 'button-prev', direction: 'backward' });
-                // Go to previous section, then jump to its end
-                nav = this.view.renderer.prevSection().then(() => {
-                    // TODO: Add this here...
-                    //this.view.fraction = 1;
-                });
+                nav = this.view.renderer.prevSection();
                 break;
             case 'next':
                 postNavigationChromeVisibility(true, { source: 'button-next', direction: 'forward' });
@@ -1396,7 +1397,10 @@ class Reader {
                 nav = Promise.resolve();
                 break;
         }
-        Promise.resolve(nav).finally(() => {
+        Promise.resolve(nav).catch(err => {
+            const line = `# EBOOK nav:error ${JSON.stringify({ type, message: err?.message ?? String(err) })}`;
+            try { window.webkit?.messageHandlers?.print?.postMessage?.(line); console.log(line); } catch (_) {}
+        }).finally(() => {
             // Keep spinner for 'finish' or 'restart' – Swift layer will handle refresh
             if (type === 'finish' || type === 'restart') return;
             restoreIcon();

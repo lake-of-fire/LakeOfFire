@@ -509,6 +509,22 @@ export class NavigationHUD {
             this.completionStack.hidden = !shouldShow;
             this.completionStack.style.display = shouldShow ? '' : 'none';
         }
+        const fadeTargets = [
+            this.navRelocateButtons?.back,
+            this.navRelocateButtons?.forward,
+            this.navSectionLabels?.leading,
+            this.navSectionLabels?.trailing,
+            this.navPrimaryText,
+            document.getElementById('progress-wrapper'),
+            document.getElementById('nav-bottom-row'),
+        ].filter(Boolean);
+        fadeTargets.forEach(el => {
+            if (shouldShow) {
+                el.classList.add('nav-fade-out');
+            } else {
+                el.classList.remove('nav-fade-out');
+            }
+        });
         if (this.navPrimaryText) {
             this.navPrimaryText.hidden = shouldShow;
             if (shouldShow) {
@@ -728,10 +744,7 @@ export class NavigationHUD {
         if (rawPage == null && rawTotal == null) return null;
         const numericPage = Number(rawPage);
         const numericTotal = Number(rawTotal);
-        let total = Number.isFinite(numericTotal) ? Math.max(0, Math.round(numericTotal - 2)) : null;
-        if (!total || total <= 0) {
-            total = Number.isFinite(numericTotal) ? Math.max(1, Math.round(numericTotal)) : null;
-        }
+        let total = Number.isFinite(numericTotal) ? Math.max(1, Math.round(numericTotal)) : null;
         const currentBase = Number.isFinite(numericPage) ? Math.max(1, Math.round(numericPage)) : 1;
         const current = total ? Math.max(1, Math.min(total, currentBase)) : currentBase;
         if (!Number.isFinite(current)) return null;
