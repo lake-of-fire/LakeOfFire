@@ -515,8 +515,6 @@ export class NavigationHUD {
             this.navSectionLabels?.leading,
             this.navSectionLabels?.trailing,
             this.navPrimaryText,
-            document.getElementById('progress-wrapper'),
-            document.getElementById('nav-bottom-row'),
         ].filter(Boolean);
         fadeTargets.forEach(el => {
             if (shouldShow) {

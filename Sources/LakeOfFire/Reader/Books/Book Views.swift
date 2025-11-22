@@ -4,6 +4,7 @@ import SwiftUIDownloads
 import LakeImage
 import LakeKit
 import Pow
+import ExpandableText
 
 struct BookThumbnail: View { //, Equatable {
     let imageURL: URL
@@ -195,9 +196,9 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     @ScaledMetric(relativeTo: .title3) private var thumbnailWidth: CGFloat = 68
     private var thumbnailDimension: CGFloat { thumbnailWidth * 1.45 * (2.0 / 3.0) }
     private let cornerRadius: CGFloat = 18
-    private var resolvedSummary: LocalizedStringKey? {
+    private var resolvedSummary: String? {
         let trimmed = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : LocalizedStringKey(trimmed)
+        return trimmed.isEmpty ? nil : trimmed
     }
     
     init(
@@ -254,7 +255,9 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                 .padding(.horizontal, 14)
 
             if let resolvedSummary {
-                Text(resolvedSummary)
+                ExpandableText(resolvedSummary)
+                    .lineLimit(3)
+                    .moreButtonText("more")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)

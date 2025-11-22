@@ -4,7 +4,7 @@ const CSS_DEFAULTS = {
     gapPct: 5,
     minGapPx: 36,
     topMarginPx: 4,
-    bottomMarginPx: 62,
+    bottomMarginPx: 66,
     sideMarginPx: 32,
     maxInlineSizePx: 720,
     maxBlockSizePx: 1440,
@@ -62,7 +62,7 @@ const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
 const MANABI_TRACKING_SIZE_BAKE_DELAY_MS = 2000
-const MANABI_TRACKING_SIZE_BAKE_ENABLED = false
+const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
@@ -116,6 +116,25 @@ const formatPx = value => {
     return `${rounded}px`
 }
 
+const serializeElementTag = element => {
+    // iframe elements come from a different global, so avoid instanceof checks.
+    if (!element || element.nodeType !== 1) return ''
+    const safeEscape = v => String(v ?? '').replace(/"/g, '&quot;')
+    try {
+        const shallow = element.cloneNode(false)
+        const html = shallow?.outerHTML
+        if (html && html.length > 0) return html
+    } catch (error) {
+        // swallow and fall through
+    }
+
+    const tag = (element.tagName || element.nodeName || 'div').toLowerCase()
+    const attrs = Array.from(element.attributes ?? [], ({ name, value }) =>
+        value === '' ? name : `${name}="${safeEscape(value)}"`)
+    const attrString = attrs.length ? ` ${attrs.join(' ')}` : ''
+    return `<${tag}${attrString}></${tag}>`
+}
+
 const inlineBlockSizesForWritingMode = (rect, vertical) => {
     const inlineSize = vertical ? rect.height : rect.width
     const blockSize = vertical ? rect.width : rect.height
@@ -125,34 +144,120 @@ const inlineBlockSizesForWritingMode = (rect, vertical) => {
     }
 }
 
-const bakeTrackingSectionSizes = (doc, {
+const measureSectionSizes = (el, vertical) => {
+    // Force a layout flush before measurement
+    void el.offsetHeight
+    const rects = Array.from(el.getClientRects?.() ?? []).filter(r => r && (r.width || r.height))
+    if (rects.length === 0) return null
+
+    // Compute union for debugging
+    let minLeft = Number.POSITIVE_INFINITY
+    let minTop = Number.POSITIVE_INFINITY
+    let maxRight = Number.NEGATIVE_INFINITY
+    let maxBottom = Number.NEGATIVE_INFINITY
+    const fragments = []
+    for (const r of rects) {
+        fragments.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height })
+        minLeft = Math.min(minLeft, r.left)
+        minTop = Math.min(minTop, r.top)
+        maxRight = Math.max(maxRight, r.right)
+        maxBottom = Math.max(maxBottom, r.bottom)
+    }
+    const unionRect = {
+        left: minLeft,
+        top: minTop,
+        right: maxRight,
+        bottom: maxBottom,
+        width: maxRight - minLeft,
+        height: maxBottom - minTop,
+    }
+
+    // For column-spanning content, union undercounts inline extent. Use sum of inline fragments and max block fragment.
+    const unionInline = vertical ? unionRect.height : unionRect.width
+    const unionBlock = vertical ? unionRect.width : unionRect.height
+
+    return {
+        inlineSize: unionInline,
+        blockSize: unionBlock,
+        multiColumn: rects.length > 1,
+        fragments,
+        unionRect,
+        unionInline,
+        unionBlock,
+    }
+}
+
+const bakeTrackingSectionSizes = async (doc, {
     vertical
 } = {}) => {
     if (!doc) return
     if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) return
 
+    // Wait for fonts to settle to reduce post-bake growth
+    try { await doc.fonts?.ready } catch {}
+
     const sections = doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR)
+    logEBook('tracking-size:run', {
+        candidates: sections.length,
+        vertical,
+        tags: Array.from(sections, serializeElementTag),
+        debugTypes: Array.from(sections, s => ({
+            nodeType: s?.nodeType,
+            tagName: s?.tagName,
+            hasOuterHTML: !!s?.outerHTML,
+        })),
+    })
+
+    let multiColumnCount = 0
+    const diagnostics = []
     for (const section of sections) {
-        if (!(section instanceof HTMLElement)) continue
+        if (!section || section.nodeType !== 1) continue
+        const el = section
 
-        if (section.hasAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) continue
+        if (el.hasAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) continue
 
-        const rect = section.getBoundingClientRect()
-        if (!rect || (!rect.width && !rect.height)) continue
+        const sizes = measureSectionSizes(el, vertical)
+        if (!sizes) continue
+        if (sizes.multiColumn) multiColumnCount++
 
-        const {
-            inlineSize,
-            blockSize
-        } = inlineBlockSizesForWritingMode(rect, vertical)
+        const { inlineSize, blockSize } = sizes
+        if (!Number.isFinite(blockSize) || blockSize <= 0) continue
+        if (!Number.isFinite(inlineSize) || inlineSize <= 0) continue
 
-        section.style.setProperty('inline-size', formatPx(inlineSize))
-        section.style.setProperty('block-size', formatPx(blockSize))
-        section.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
+        el.style.setProperty('block-size', formatPx(blockSize))
+        el.style.setProperty('inline-size', formatPx(inlineSize))
+        el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
+
+        diagnostics.push({
+            id: el.id,
+            class: el.className,
+            fragments: sizes.fragments,
+            union: sizes.unionRect,
+            unionInline: sizes.unionInline,
+            unionBlock: sizes.unionBlock,
+            bakedInline: inlineSize,
+            bakedBlock: blockSize,
+            multiColumn: sizes.multiColumn,
+        })
     }
+
+    const bakedTags = Array.from(sections, serializeElementTag)
+    const bakedStats = Array.from(sections).reduce((acc, el) => {
+        if (el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR)) acc.tagged++
+        const style = el?.getAttribute?.('style') ?? ''
+        if (style.includes('block-size')) acc.blockSize++
+        if (style.includes('inline-size')) acc.inlineSize++
+        return acc
+    }, { tagged: 0, blockSize: 0, inlineSize: 0 })
 
     logEBook('tracking-size:baked', {
         sections: sections.length,
         vertical,
+        bakedTags,
+        bakedStats,
+        multiColumnCount,
+        diagnostics,
+        note: 'multi-column sections included via union of client rects'
     })
 }
 
@@ -1055,6 +1160,10 @@ export class Paginator extends HTMLElement {
             clearTimeout(this.#trackingSizeBakeTimer)
         }
 
+        logEBook('tracking-size:schedule', {
+            delayMs: MANABI_TRACKING_SIZE_BAKE_DELAY_MS,
+        })
+
         this.#trackingSizeBakeTimer = setTimeout(async () => {
             // Give layout one more frame after the delay before measuring.
             await nextFrame()
@@ -1067,6 +1176,7 @@ export class Paginator extends HTMLElement {
                     message: error?.message ?? String(error)
                 })
             }
+            this.#trackingSizeBakeTimer = null
         }, MANABI_TRACKING_SIZE_BAKE_DELAY_MS)
     }
 

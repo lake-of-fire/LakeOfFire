@@ -109,7 +109,7 @@
                     align-items: center;
                     justify-content: space-between;
                     width: 100dvw;
-                    height: 56px;
+                    height: 60px;
                     /*padding: 6px;*/
                     transition: opacity 250ms ease;
                     visibility: hidden;
@@ -236,7 +236,6 @@
                     direction: ltr;
                     unicode-bidi: isolate;
                     pointer-events: none;
-                    position: relative;
                     height: 12px;
                 }
                 .nav-primary-layer {
@@ -263,7 +262,7 @@
                     font-weight: 500;
                     color: var(--secondary-color);
                     white-space: nowrap;
-                    transition: opacity 240ms ease;
+                    transition: opacity 375ms ease-out;
                 }
                 .nav-section-progress[hidden] {
                     display: none;
@@ -283,7 +282,7 @@
                     min-height: 26px;
                     border-radius: 999px;
                     cursor: pointer;
-                    transition: color 0.2s ease, opacity 0.2s ease, background-color 0.2s ease;
+                    transition: color 0.2s ease, opacity 375ms ease-out, background-color 0.2s ease;
                     position: absolute;
                     bottom: calc(-1 * var(--nav-relocate-baseline-offset));
                     direction: ltr;
@@ -338,7 +337,6 @@
                 body.nav-hidden .nav-section-progress,
                 body.nav-hidden #nav-section-progress-leading,
                 body.nav-hidden #nav-section-progress-trailing,
-                body.nav-hidden #nav-primary-text,
                 body.nav-hidden #nav-bottom-row,
                 body.nav-hidden #progress-wrapper {
                     opacity: 0;
@@ -431,10 +429,11 @@
                 }
                 #nav-bottom-row {
                     width: 100%;
-                    padding: 5px var(--nav-horizontal-padding) 0;
+                    padding: 5px var(--nav-horizontal-padding) 4px;
                     box-sizing: border-box;
                     display: flex;
                     align-items: center;
+                    transition: opacity 375ms ease-out;
                 }
                 #progress-wrapper {
                     display: flex;
@@ -446,6 +445,7 @@
                     -webkit-user-select: none;
                     -moz-user-select: none;
                     -ms-user-select: none;
+                    transition: opacity 375ms ease-out;
                 }
                 #progress-slider {
                     flex-grow: 1;

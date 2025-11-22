@@ -205,7 +205,8 @@ public struct FractionalCompletionMessage {
     public var cfi: String
     public var reason: String
     public var mainDocumentURL: URL?
-    
+    public var sectionIndex: Int?
+
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
         fractionalCompletion = Float(completion)
@@ -213,6 +214,11 @@ public struct FractionalCompletionMessage {
         self.reason = reason
         if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
+        }
+        if let rawSectionIndex = body["sectionIndex"] as? Int {
+            sectionIndex = rawSectionIndex
+        } else if let doubleIndex = body["sectionIndex"] as? Double {
+            sectionIndex = Int(doubleIndex)
         }
     }
 }

@@ -14,6 +14,7 @@ public class ReaderContent: ObservableObject {
             }
         }
     }
+    @Published public var currentSectionIndex: Int?
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
     private var cancellables = Set<AnyCancellable>()
@@ -51,6 +52,7 @@ public class ReaderContent: ObservableObject {
         }
 
         content = nil
+        currentSectionIndex = nil
         pageURL = url
 
         loadingTask?.cancel()

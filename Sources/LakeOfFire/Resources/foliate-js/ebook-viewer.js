@@ -345,7 +345,7 @@ const getCSSForBookContent = ({
         display: none;
     }
 
-    body *:not(manabi-segment, manabi-segment *) {
+    body *:not(manabi-segment, manabi-segment *, .manabi-tracking-container *) {
         background: inherit !important;
         color: inherit !important;
     }
@@ -1213,13 +1213,15 @@ class Reader {
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
         cfi,
-        reason
+        reason,
+        sectionIndex
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
             fractionalCompletion: fraction,
             cfi: cfi,
             reason: reason,
+            sectionIndex: typeof sectionIndex === 'number' ? sectionIndex : null,
             mainDocumentURL: mainDocumentURL,
         })
     }, 400)
@@ -1233,7 +1235,8 @@ class Reader {
             tocItem,
             pageItem,
             cfi,
-            reason
+            reason,
+            index: sectionIndex
         } = detail
         const previousFraction = typeof this.lastKnownFraction === 'number' ? this.lastKnownFraction : null;
         const previousPageEstimate = this.lastPageEstimate;
@@ -1277,7 +1280,8 @@ class Reader {
             this.#postUpdateReadingProgressMessage({
                 fraction,
                 cfi,
-                reason
+                reason,
+                sectionIndex
             })
         }
         
