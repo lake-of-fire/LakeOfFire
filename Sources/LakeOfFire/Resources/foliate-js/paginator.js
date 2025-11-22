@@ -4,7 +4,7 @@ const CSS_DEFAULTS = {
     gapPct: 5,
     minGapPx: 36,
     topMarginPx: 4,
-    bottomMarginPx: 66,
+    bottomMarginPx: 69,
     sideMarginPx: 32,
     maxInlineSizePx: 720,
     maxBlockSizePx: 1440,
@@ -150,40 +150,26 @@ const measureSectionSizes = (el, vertical) => {
     const rects = Array.from(el.getClientRects?.() ?? []).filter(r => r && (r.width || r.height))
     if (rects.length === 0) return null
 
-    // Compute union for debugging
-    let minLeft = Number.POSITIVE_INFINITY
-    let minTop = Number.POSITIVE_INFINITY
-    let maxRight = Number.NEGATIVE_INFINITY
-    let maxBottom = Number.NEGATIVE_INFINITY
-    const fragments = []
-    for (const r of rects) {
-        fragments.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height })
-        minLeft = Math.min(minLeft, r.left)
-        minTop = Math.min(minTop, r.top)
-        maxRight = Math.max(maxRight, r.right)
-        maxBottom = Math.max(maxBottom, r.bottom)
-    }
-    const unionRect = {
-        left: minLeft,
-        top: minTop,
-        right: maxRight,
-        bottom: maxBottom,
-        width: maxRight - minLeft,
-        height: maxBottom - minTop,
-    }
+    // Column gap (px); fall back to 0 if unavailable
+    let gap = 0
+    try {
+        const cs = el.ownerDocument?.defaultView?.getComputedStyle?.(el)
+        gap = parseFloat(cs?.columnGap) || 0
+    } catch {}
 
-    // For column-spanning content, union undercounts inline extent. Use sum of inline fragments and max block fragment.
-    const unionInline = vertical ? unionRect.height : unionRect.width
-    const unionBlock = vertical ? unionRect.width : unionRect.height
+    // Axis-aware aggregation:
+    // Horizontal writing: inline = max column width; block = sum of column heights + gaps.
+    // Vertical writing:   inline = max column height; block = sum of column widths + gaps.
+    const inlineLengths = rects.map(r => vertical ? r.height : r.width)
+    const blockLengths = rects.map(r => vertical ? r.width : r.height)
+    const inlineSize = Math.max(...inlineLengths)
+    const blockSize = blockLengths.reduce((acc, v) => acc + v, 0) + gap * Math.max(0, rects.length - 1)
 
+    // Minimal diagnostics
     return {
-        inlineSize: unionInline,
-        blockSize: unionBlock,
+        inlineSize,
+        blockSize,
         multiColumn: rects.length > 1,
-        fragments,
-        unionRect,
-        unionInline,
-        unionBlock,
     }
 }
 
@@ -197,19 +183,9 @@ const bakeTrackingSectionSizes = async (doc, {
     try { await doc.fonts?.ready } catch {}
 
     const sections = doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR)
-    logEBook('tracking-size:run', {
-        candidates: sections.length,
-        vertical,
-        tags: Array.from(sections, serializeElementTag),
-        debugTypes: Array.from(sections, s => ({
-            nodeType: s?.nodeType,
-            tagName: s?.tagName,
-            hasOuterHTML: !!s?.outerHTML,
-        })),
-    })
+    logEBook('tracking-size:run', { candidates: sections.length, vertical })
 
     let multiColumnCount = 0
-    const diagnostics = []
     for (const section of sections) {
         if (!section || section.nodeType !== 1) continue
         const el = section
@@ -224,21 +200,10 @@ const bakeTrackingSectionSizes = async (doc, {
         if (!Number.isFinite(blockSize) || blockSize <= 0) continue
         if (!Number.isFinite(inlineSize) || inlineSize <= 0) continue
 
-        el.style.setProperty('block-size', formatPx(blockSize))
-        el.style.setProperty('inline-size', formatPx(inlineSize))
+        el.style.setProperty('block-size', formatPx(blockSize), 'important')
+        el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
         el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
 
-        diagnostics.push({
-            id: el.id,
-            class: el.className,
-            fragments: sizes.fragments,
-            union: sizes.unionRect,
-            unionInline: sizes.unionInline,
-            unionBlock: sizes.unionBlock,
-            bakedInline: inlineSize,
-            bakedBlock: blockSize,
-            multiColumn: sizes.multiColumn,
-        })
     }
 
     const bakedTags = Array.from(sections, serializeElementTag)
@@ -253,11 +218,9 @@ const bakeTrackingSectionSizes = async (doc, {
     logEBook('tracking-size:baked', {
         sections: sections.length,
         vertical,
-        bakedTags,
         bakedStats,
         multiColumnCount,
-        diagnostics,
-        note: 'multi-column sections included via union of client rects'
+        sampleTags: bakedTags.slice(0, 3), // cap noise
     })
 }
 

@@ -112,7 +112,8 @@ fileprivate struct StaticBookListRow: View {
             title: publication.title,
             author: publication.author,
             publicationDate: publication.publicationDate,
-            summary: publication.summary
+            summary: publication.summary,
+            onTopTap: nil
         ) {
             EmptyView()
         }
@@ -133,7 +134,8 @@ fileprivate struct DownloadableBookListRow: View {
             title: publication.title,
             author: publication.author,
             publicationDate: publication.publicationDate,
-            summary: publication.summary
+            summary: publication.summary,
+            onTopTap: buttonPress
         ) {
             HidingDownloadButton(
                 downloadable: downloadable,
@@ -191,6 +193,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     let author: String?
     let publicationDate: Date?
     let summary: String?
+    let onTopTap: (() -> Void)?
     private let trailing: () -> Trailing
 
     @ScaledMetric(relativeTo: .title3) private var thumbnailWidth: CGFloat = 68
@@ -207,6 +210,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         author: String?,
         publicationDate: Date?,
         summary: String?,
+        onTopTap: (() -> Void)? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
         self.imageURL = imageURL
@@ -214,64 +218,95 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         self.author = author
         self.publicationDate = publicationDate
         self.summary = summary
+        self.onTopTap = onTopTap
         self.trailing = trailing
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
-                BookListRowThumbnail(
-                    imageURL: imageURL,
-                    dimension: thumbnailDimension
-                )
-                VStack(alignment: .leading, spacing: 6) {
-                    if let author, !author.isEmpty {
-                        Text(author)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(3)
-                    if let publicationYearText {
-                        Text(publicationYearText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Spacer(minLength: 12)
-                trailing()
-            }
-            .padding(.vertical, 14)
-            .padding(.horizontal, 14)
-
+            topHalf
             Divider()
                 .padding(.horizontal, 14)
-
-            if let resolvedSummary {
-                ExpandableText(resolvedSummary)
-                    .lineLimit(3)
-                    .moreButtonText("more")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            summaryView
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Color(.tertiarySystemFill))
         )
+    }
+
+    @ViewBuilder
+    private var topHalf: some View {
+        let content = HStack(alignment: .center, spacing: 12) {
+            BookListRowThumbnail(
+                imageURL: imageURL,
+                dimension: thumbnailDimension
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                if let author, !author.isEmpty {
+                    Text(author)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(3)
+                if let publicationYearText {
+                    Text(publicationYearText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 12)
+            trailing()
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .contentShape(Rectangle())
+
+        if let onTopTap {
+            Button(action: onTopTap) {
+                content
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        } else {
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var summaryView: some View {
+        Group {
+            if let resolvedSummary {
+                ExpandableText(resolvedSummary)
+                    .lineLimit(3)
+                    .moreButtonText("more")
+                    .font(.callout)
+//                    .foregroundStyle(.secondary)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .allowsHitTesting(true)
+            }
+        }
+    }
+
+    // Attempt to tap the trailing action, if it's a button; otherwise no-op.
+    private var trailingAsButton: (() -> Void)? {
+        nil // Trailing view is rendered; tap is handled by the surrounding Button to keep top-half tappable.
     }
     
 private var publicationYearText: String? {
