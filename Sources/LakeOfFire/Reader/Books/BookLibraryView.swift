@@ -380,10 +380,12 @@ public class BookLibraryViewModel: ObservableObject {
                                 return type.contains("vtt") || type == "text/vtt"
                             }
                             let summary = publication.metadata.description ?? publication.metadata.subtitle
+                            // Show the OPDS published date only; if missing, omit the date entirely.
+                            let publishedDate = publication.metadata.published
                             return Publication(
                                 title: publication.metadata.title,
                                 author: publication.metadata.authors.map { $0.name } .joined(separator: ", "),
-                                publicationDate: publication.metadata.published,
+                                publicationDate: publishedDate,
                                 coverURL: coverLink?.url(relativeTo: url.domainURL),
                                 downloadURL: acquisitionLink?.url(relativeTo: url.domainURL),
                                 summary: summary,

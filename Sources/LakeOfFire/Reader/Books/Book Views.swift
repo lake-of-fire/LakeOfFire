@@ -329,6 +329,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
             if let resolvedSummary {
                 ExpandableText(resolvedSummary)
                     .lineLimit(3)
+                    .foregroundColor(.secondary)
                     .moreButtonText("MORE")
                     .moreButtonFont(.footnote)
                     .moreButtonColor(.primary)

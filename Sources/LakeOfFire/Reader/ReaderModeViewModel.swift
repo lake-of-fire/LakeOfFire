@@ -1327,6 +1327,7 @@ fileprivate func prepareHTMLForNextReaderLoad(_ html: String) -> String {
     let nsHTML = updatedHTML as NSString
     let nsRange = NSRange(location: 0, length: nsHTML.length)
 
+    // Ensure the fallback body stays hidden until the readability content is injected.
     if let styleMatch = bodyStyleRegex.firstMatch(in: updatedHTML, options: [], range: nsRange) {
         let existingStyle = nsHTML.substring(with: styleMatch.range(at: 2))
         if existingStyle.range(of: "content-visibility", options: .caseInsensitive) == nil {

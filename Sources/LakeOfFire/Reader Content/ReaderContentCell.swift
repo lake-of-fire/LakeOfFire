@@ -592,6 +592,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
                                 BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
                                     .labelStyle(.iconOnly)
+                                    .frame(
+                                        width: viewModel.forceShowBookmark ? ReaderContentCell<C>.buttonSize : 0,
+                                        height: ReaderContentCell<C>.buttonSize,
+                                        alignment: .center
+                                    )
+                                    .opacity(viewModel.forceShowBookmark ? 1 : 0)
+                                    .accessibilityHidden(!viewModel.forceShowBookmark)
                                 
                                 let deletable = (self.item as? (any DeletableReaderContent))
                                 let shouldShowMenu = deletable != nil || customMenuOptions != nil

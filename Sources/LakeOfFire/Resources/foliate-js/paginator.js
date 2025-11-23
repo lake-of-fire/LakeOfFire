@@ -65,11 +65,14 @@ const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKE_DELAY_MS = 2000
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 3
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
-const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = false
+const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKING_BODY_CLASS = 'manabi-tracking-size-baking'
 const MANABI_TRACKING_SECTION_BAKING_CLASS = 'manabi-tracking-section-baking'
+const MANABI_TRACKING_SECTION_HIDDEN_CLASS = 'manabi-tracking-section-hidden'
 const MANABI_TRACKING_SIZE_BAKE_STYLE_ID = 'manabi-tracking-size-bake-style'
 const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
+const MANABI_TRACKING_DOC_STABLE_MAX_EVENTS = 180
+const MANABI_TRACKING_DOC_STABLE_REQUIRED_STREAK = 2
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
@@ -130,7 +133,8 @@ const ensureTrackingSizeBakeStyles = doc => {
 
     const style = doc.createElement('style')
     style.id = MANABI_TRACKING_SIZE_BAKE_STYLE_ID
-    style.textContent = `body.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS} ${MANABI_TRACKING_SECTION_SELECTOR}:not(.${MANABI_TRACKING_SECTION_BAKING_CLASS}) { display: none !important; }`
+    // Hidden trailing sections while baking to avoid layout thrash.
+    style.textContent = `.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }`
     doc.head.append(style)
 }
 
@@ -179,6 +183,65 @@ const waitForStableSectionSize = (section, { maxEvents = MANABI_TRACKING_SIZE_ST
     }
 
     resizeObserver.observe(section)
+
+    // safety: if no events fire, resolve on next frame with the last known rect
+    requestAnimationFrame(() => {
+        if (!finished && lastRect) finish(lastRect)
+    })
+})
+
+const waitForStableDocumentSize = (doc, {
+    maxEvents = MANABI_TRACKING_DOC_STABLE_MAX_EVENTS,
+    requiredStreak = MANABI_TRACKING_DOC_STABLE_REQUIRED_STREAK,
+} = {}) => new Promise(resolve => {
+    const body = doc?.body
+    if (!body) return resolve(null)
+
+    let lastRect = null
+    let stableCount = 0
+    let events = 0
+    let finished = false
+
+    const finish = rect => {
+        if (finished) return
+        finished = true
+        resizeObserver.disconnect()
+        resolve(rect ?? lastRect)
+    }
+
+    const resizeObserver = new ResizeObserver(entries => {
+        if (finished) return
+        events++
+        const rect = entries?.[0]?.contentRect
+        if (!rect) return
+        const roundedRect = {
+            width: Math.round(rect.width * 1000) / 1000,
+            height: Math.round(rect.height * 1000) / 1000,
+        }
+        const unchanged =
+            lastRect &&
+            roundedRect.width === lastRect.width &&
+            roundedRect.height === lastRect.height
+
+        lastRect = roundedRect
+        stableCount = unchanged ? stableCount + 1 : 1
+
+        if (stableCount >= requiredStreak || events >= maxEvents) finish(roundedRect)
+    })
+
+    const initialRect = body.getBoundingClientRect?.()
+    if (initialRect) {
+        lastRect = {
+            width: Math.round(initialRect.width * 1000) / 1000,
+            height: Math.round(initialRect.height * 1000) / 1000,
+        }
+    }
+
+    resizeObserver.observe(body)
+
+    requestAnimationFrame(() => {
+        if (!finished && lastRect) finish(lastRect)
+    })
 })
 
 const serializeElementTag = element => {
@@ -259,6 +322,9 @@ const bakeTrackingSectionSizes = async (doc, {
 
     logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason })
 
+    // Ensure the document layout has stabilized (no timeouts; event-based).
+    await waitForStableDocumentSize(doc)
+
     const bakedTags = []
     const startTs = performance?.now?.() ?? Date.now()
     const addedBodyClass = MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && !body.classList.contains(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
@@ -267,6 +333,7 @@ const bakeTrackingSectionSizes = async (doc, {
     for (const el of sections) {
         el.removeAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
+        el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
         el.style.removeProperty('block-size')
         el.style.removeProperty('inline-size')
     }
@@ -275,6 +342,21 @@ const bakeTrackingSectionSizes = async (doc, {
 
     let bakedCount = 0
     let multiColumnCount = 0
+
+    const hideTrailing = startIndex => {
+        for (let t = startIndex; t < sections.length; t++) {
+            const el = sections[t]
+            if (!el.getAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) {
+                el.classList.add(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
+            }
+        }
+    }
+
+    const unhideWindow = (startIndex, count) => {
+        for (let t = startIndex; t < Math.min(sections.length, startIndex + count); t++) {
+            sections[t].classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
+        }
+    }
 
     const bakeSection = async section => {
         if (!section || section.nodeType !== 1) return null
@@ -292,6 +374,7 @@ const bakeTrackingSectionSizes = async (doc, {
             el.style.setProperty('block-size', formatPx(blockSize), 'important')
             el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
+            el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
 
             bakedTags.push(serializeElementTag(el))
             if (multiColumn) multiColumnCount++
@@ -304,10 +387,15 @@ const bakeTrackingSectionSizes = async (doc, {
 
     try {
         for (let i = 0; i < sections.length; i += batchSize) {
-            const batch = sections.slice(i, i + batchSize)
-            await Promise.all(batch.map(bakeSection))
+            // hide trailing unbaked sections after this window
+            hideTrailing(i + batchSize)
+            // unhide the active window
+            unhideWindow(i, batchSize)
+            await Promise.all(sections.slice(i, i + batchSize).map(bakeSection))
         }
     } finally {
+        // unhide everything at end
+        for (const el of sections) el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
         if (addedBodyClass) body.classList.remove(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
     }
 
@@ -503,33 +591,45 @@ class View {
         }
 
         const old = this.#lastResizerRect;
-        const unchanged =
-            old &&
-            newSize.width === old.width &&
-            newSize.height === old.height &&
-            newSize.top === old.top &&
-            newSize.left === old.left;
+        const changed =
+            !old ||
+            newSize.width !== old.width ||
+            newSize.height !== old.height ||
+            newSize.top !== old.top ||
+            newSize.left !== old.left;
 
-        if (unchanged) {
-            return
-        }
+        if (changed) {
+            this.#lastResizerRect = newSize
+            this.cachedViewSize = null
 
-        this.#lastResizerRect = newSize
-        this.cachedViewSize = null
+            // Only trigger size/geometry bake after the new size stays stable for one more frame.
+            requestAnimationFrame(() => {
+                const bodyRect = this.document?.body?.getBoundingClientRect?.()
+                if (!bodyRect) return
+                const stableSize = {
+                    width: Math.round(bodyRect.width),
+                    height: Math.round(bodyRect.height),
+                    top: Math.round(bodyRect.top),
+                    left: Math.round(bodyRect.left),
+                }
+                const still =
+                    stableSize.width === this.#lastResizerRect?.width &&
+                    stableSize.height === this.#lastResizerRect?.height &&
+                    stableSize.top === this.#lastResizerRect?.top &&
+                    stableSize.left === this.#lastResizerRect?.left
 
-        //        requestAnimationFrame(() => {
-        //            this.#debouncedExpand();
-        //        this.expand();
-        //        })
+                if (!still) return
 
-        this.container?.requestTrackingSectionGeometryBake?.({
-            reason: 'iframe-resize',
-            restoreLocation: true
-        })
-        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
-            this.container?.requestTrackingSectionSizeBake?.({
-                reason: 'iframe-resize',
-                rect: newSize,
+                this.container?.requestTrackingSectionGeometryBake?.({
+                    reason: 'iframe-resize',
+                    restoreLocation: true
+                })
+                if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
+                    this.container?.requestTrackingSectionSizeBake?.({
+                        reason: 'iframe-resize',
+                        rect: stableSize,
+                    })
+                }
             })
         }
     })
@@ -898,35 +998,53 @@ export class Paginator extends HTMLElement {
         //        console.log("RESIZE OBS...", newSize)
 
         const old = this.#lastResizerRect
-        const unchanged =
-            old &&
-            newSize.width === old.width &&
-            newSize.height === old.height &&
-            newSize.top === old.top &&
-            newSize.left === old.left
+        const changed =
+            !old ||
+            newSize.width !== old.width ||
+            newSize.height !== old.height ||
+            newSize.top !== old.top ||
+            newSize.left !== old.left
 
-        if (unchanged) {
-            return
-        }
+        if (!changed) return
 
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
-        //            console.log("sizes() from resize updated to ", this.#cachedSizes)
         this.#cachedStart = null
 
-        //        this.render()
-        //        requestAnimationFrame(() => {
         this.#debouncedRender();
-        //        })
 
-        this.requestTrackingSectionGeometryBake({
-            reason: 'container-resize',
-            restoreLocation: true
-        })
+        // Wait one frame to ensure the container size has settled before rebaking sizes.
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
-            this.requestTrackingSectionSizeBake({
+            requestAnimationFrame(() => {
+                const r = this.#container?.getBoundingClientRect?.()
+                if (!r) return
+                const stable = {
+                    width: Math.round(r.width),
+                    height: Math.round(r.height),
+                    top: Math.round(r.top),
+                    left: Math.round(r.left),
+                }
+                const still =
+                    stable.width === this.#lastResizerRect?.width &&
+                    stable.height === this.#lastResizerRect?.height &&
+                    stable.top === this.#lastResizerRect?.top &&
+                    stable.left === this.#lastResizerRect?.left
+
+                if (!still) return
+
+                this.requestTrackingSectionGeometryBake({
+                    reason: 'container-resize',
+                    restoreLocation: true
+                })
+                this.requestTrackingSectionSizeBake({
+                    reason: 'container-resize',
+                    rect: stable,
+                })
+            })
+        } else {
+            this.requestTrackingSectionGeometryBake({
                 reason: 'container-resize',
-                rect: newSize,
+                restoreLocation: true
             })
         }
     })
