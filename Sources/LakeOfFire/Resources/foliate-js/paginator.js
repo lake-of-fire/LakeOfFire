@@ -1093,6 +1093,7 @@ export class Paginator extends HTMLElement {
     #trackingSizeBakeReady = false
     #trackingSizeLastObservedRect = null
     #pendingTrackingSizeBakeReason = null
+    #lastTrackingSizeBakedRect = null
 
     #cachedSizes = null
     #cachedStart = null
@@ -1386,6 +1387,26 @@ export class Paginator extends HTMLElement {
                 rect.left === last.left
             if (unchanged) return false
             this.#trackingSizeLastObservedRect = rect
+        } else {
+            // If no rect provided, derive from current body to coalesce duplicates.
+            const bodyRect = this.#view?.document?.body?.getBoundingClientRect?.()
+            if (bodyRect) {
+                const derived = {
+                    width: Math.round(bodyRect.width),
+                    height: Math.round(bodyRect.height),
+                    top: Math.round(bodyRect.top),
+                    left: Math.round(bodyRect.left),
+                }
+                const lastBaked = this.#lastTrackingSizeBakedRect
+                if (lastBaked &&
+                    derived.width === lastBaked.width &&
+                    derived.height === lastBaked.height &&
+                    derived.top === lastBaked.top &&
+                    derived.left === lastBaked.left) {
+                    return false
+                }
+                this.#trackingSizeLastObservedRect = derived
+            }
         }
 
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) {
@@ -1437,6 +1458,7 @@ export class Paginator extends HTMLElement {
         this.#trackingSizeLastObservedRect = null
         this.#pendingTrackingSizeBakeReason = null
         this.#trackingSizeBakeReady = false
+        this.#lastTrackingSizeBakedRect = null
     }
 
     async #performTrackingSectionSizeBake({
@@ -1457,6 +1479,15 @@ export class Paginator extends HTMLElement {
                 vertical: this.#vertical,
                 reason,
             })
+            const bodyRect = doc.body?.getBoundingClientRect?.()
+            if (bodyRect) {
+                this.#lastTrackingSizeBakedRect = {
+                    width: Math.round(bodyRect.width),
+                    height: Math.round(bodyRect.height),
+                    top: Math.round(bodyRect.top),
+                    left: Math.round(bodyRect.left),
+                }
+            }
         } finally {
             if (this.#view === activeView) {
                 this.#setLoading(false)
