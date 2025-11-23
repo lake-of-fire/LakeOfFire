@@ -61,8 +61,15 @@ const MANABI_TRACKING_GEOMETRY_LOADING_CLASS = 'manabi-tracking-geometry-loading
 const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
-const MANABI_TRACKING_SIZE_BAKE_DELAY_MS = 2000
 const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
+const MANABI_TRACKING_SIZE_BAKE_DELAY_MS = 2000
+const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 3
+const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
+const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = false
+const MANABI_TRACKING_SIZE_BAKING_BODY_CLASS = 'manabi-tracking-size-baking'
+const MANABI_TRACKING_SECTION_BAKING_CLASS = 'manabi-tracking-section-baking'
+const MANABI_TRACKING_SIZE_BAKE_STYLE_ID = 'manabi-tracking-size-bake-style'
+const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
@@ -115,6 +122,64 @@ const formatPx = value => {
     const rounded = Math.max(0, Math.round(value * 1000) / 1000)
     return `${rounded}px`
 }
+
+const ensureTrackingSizeBakeStyles = doc => {
+    if (!MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) return
+    if (!doc?.head) return
+    if (doc.getElementById(MANABI_TRACKING_SIZE_BAKE_STYLE_ID)) return
+
+    const style = doc.createElement('style')
+    style.id = MANABI_TRACKING_SIZE_BAKE_STYLE_ID
+    style.textContent = `body.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS} ${MANABI_TRACKING_SECTION_SELECTOR}:not(.${MANABI_TRACKING_SECTION_BAKING_CLASS}) { display: none !important; }`
+    doc.head.append(style)
+}
+
+const waitForStableSectionSize = (section, { maxEvents = MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS } = {}) => new Promise(resolve => {
+    if (!(section instanceof Element)) return resolve(null)
+
+    let lastRect = null
+    let stableCount = 0
+    let events = 0
+    let finished = false
+
+    const finish = rect => {
+        if (finished) return
+        finished = true
+        resizeObserver.disconnect()
+        resolve(rect ?? lastRect)
+    }
+
+    const resizeObserver = new ResizeObserver(entries => {
+        if (finished) return
+        events++
+        const rect = entries?.[0]?.contentRect
+        if (!rect) return
+        const roundedRect = {
+            width: Math.round(rect.width * 1000) / 1000,
+            height: Math.round(rect.height * 1000) / 1000,
+        }
+        const unchanged =
+            lastRect &&
+            roundedRect.width === lastRect.width &&
+            roundedRect.height === lastRect.height
+
+        lastRect = roundedRect
+        stableCount = unchanged ? stableCount + 1 : 1
+
+        if (stableCount >= 2) finish(roundedRect)
+        else if (events >= maxEvents) finish(roundedRect)
+    })
+
+    const initialRect = section.getBoundingClientRect?.()
+    if (initialRect) {
+        lastRect = {
+            width: Math.round(initialRect.width * 1000) / 1000,
+            height: Math.round(initialRect.height * 1000) / 1000,
+        }
+    }
+
+    resizeObserver.observe(section)
+})
 
 const serializeElementTag = element => {
     // iframe elements come from a different global, so avoid instanceof checks.
@@ -174,40 +239,80 @@ const measureSectionSizes = (el, vertical) => {
 }
 
 const bakeTrackingSectionSizes = async (doc, {
-    vertical
+    vertical,
+    batchSize = MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE,
+    reason = 'unspecified',
 } = {}) => {
     if (!doc) return
     if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) return
 
+    const body = doc.body
+    if (!body) return
+
+    ensureTrackingSizeBakeStyles(doc)
+
     // Wait for fonts to settle to reduce post-bake growth
     try { await doc.fonts?.ready } catch {}
 
-    const sections = doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR)
-    logEBook('tracking-size:run', { candidates: sections.length, vertical })
+    const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
+    if (sections.length === 0) return
 
-    let multiColumnCount = 0
-    for (const section of sections) {
-        if (!section || section.nodeType !== 1) continue
-        const el = section
+    logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason })
 
-        if (el.hasAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) continue
+    const bakedTags = []
+    const startTs = performance?.now?.() ?? Date.now()
+    const addedBodyClass = MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && !body.classList.contains(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
 
-        const sizes = measureSectionSizes(el, vertical)
-        if (!sizes) continue
-        if (sizes.multiColumn) multiColumnCount++
-
-        const { inlineSize, blockSize } = sizes
-        if (!Number.isFinite(blockSize) || blockSize <= 0) continue
-        if (!Number.isFinite(inlineSize) || inlineSize <= 0) continue
-
-        el.style.setProperty('block-size', formatPx(blockSize), 'important')
-        el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
-        el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
-
+    // Reset any previous bake markers so we always measure fresh sizes.
+    for (const el of sections) {
+        el.removeAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)
+        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
+        el.style.removeProperty('block-size')
+        el.style.removeProperty('inline-size')
     }
 
-    const bakedTags = Array.from(sections, serializeElementTag)
-    const bakedStats = Array.from(sections).reduce((acc, el) => {
+    if (addedBodyClass) body.classList.add(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
+
+    let bakedCount = 0
+    let multiColumnCount = 0
+
+    const bakeSection = async section => {
+        if (!section || section.nodeType !== 1) return null
+        const el = section
+        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.add(MANABI_TRACKING_SECTION_BAKING_CLASS)
+
+        try {
+            await waitForStableSectionSize(el)
+            const sizes = measureSectionSizes(el, vertical)
+            if (!sizes) return null
+            const { inlineSize, blockSize, multiColumn } = sizes
+            if (!Number.isFinite(blockSize) || blockSize <= 0) return null
+            if (!Number.isFinite(inlineSize) || inlineSize <= 0) return null
+
+            el.style.setProperty('block-size', formatPx(blockSize), 'important')
+            el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
+            el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
+
+            bakedTags.push(serializeElementTag(el))
+            if (multiColumn) multiColumnCount++
+            bakedCount++
+            return sizes
+        } finally {
+            if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
+        }
+    }
+
+    try {
+        for (let i = 0; i < sections.length; i += batchSize) {
+            const batch = sections.slice(i, i + batchSize)
+            await Promise.all(batch.map(bakeSection))
+        }
+    } finally {
+        if (addedBodyClass) body.classList.remove(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
+    }
+
+    const durationMs = (performance?.now?.() ?? Date.now()) - startTs
+    const bakedStats = sections.reduce((acc, el) => {
         if (el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR)) acc.tagged++
         const style = el?.getAttribute?.('style') ?? ''
         if (style.includes('block-size')) acc.blockSize++
@@ -217,10 +322,13 @@ const bakeTrackingSectionSizes = async (doc, {
 
     logEBook('tracking-size:baked', {
         sections: sections.length,
+        baked: bakedCount,
         vertical,
         bakedStats,
         multiColumnCount,
         sampleTags: bakedTags.slice(0, 3), // cap noise
+        durationMs,
+        reason,
     })
 }
 
@@ -418,6 +526,12 @@ class View {
             reason: 'iframe-resize',
             restoreLocation: true
         })
+        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
+            this.container?.requestTrackingSectionSizeBake?.({
+                reason: 'iframe-resize',
+                rect: newSize,
+            })
+        }
     })
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
@@ -809,6 +923,12 @@ export class Paginator extends HTMLElement {
             reason: 'container-resize',
             restoreLocation: true
         })
+        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
+            this.requestTrackingSectionSizeBake({
+                reason: 'container-resize',
+                rect: newSize,
+            })
+        }
     })
     #top
     #transitioning = false;
@@ -849,6 +969,12 @@ export class Paginator extends HTMLElement {
     #wheelArmed = true // Hysteresis-based horizontal wheel paging
     #scrolledToAnchorOnLoad = false
     #trackingSizeBakeTimer = null
+    #trackingSizeBakeInFlight = null
+    #trackingSizeBakeNeedsRerun = false
+    #trackingSizeBakeQueuedReason = null
+    #trackingSizeBakeReady = false
+    #trackingSizeLastObservedRect = null
+    #pendingTrackingSizeBakeReason = null
 
     #cachedSizes = null
     #cachedStart = null
@@ -1081,7 +1207,7 @@ export class Paginator extends HTMLElement {
     }
     #createView() {
         this.#cancelTrackingGeometryBakeSchedule()
-        this.#cancelTrackingSectionSizeBake()
+        this.#resetTrackingSectionSizeState()
         if (this.#view) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
@@ -1114,39 +1240,109 @@ export class Paginator extends HTMLElement {
         return
     }
 
-    #scheduleTrackingSectionSizeBake() {
-        if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) return
-        if (this.#isCacheWarmer) return
-        if (!this.#view?.document) return
-
-        if (this.#trackingSizeBakeTimer) {
-            clearTimeout(this.#trackingSizeBakeTimer)
+    requestTrackingSectionSizeBake({
+        reason = 'unspecified',
+        rect = null,
+    } = {}) {
+        if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            this.#setLoading(false)
+            return false
+        }
+        if (this.#isCacheWarmer) return false
+        if (!this.#view?.document) {
+            this.#pendingTrackingSizeBakeReason = reason
+            return false
+        }
+        if (!this.#trackingSizeBakeReady) {
+            this.#pendingTrackingSizeBakeReason = reason
+            return false
         }
 
-        logEBook('tracking-size:schedule', {
-            delayMs: MANABI_TRACKING_SIZE_BAKE_DELAY_MS,
-        })
+        if (rect) {
+            const last = this.#trackingSizeLastObservedRect
+            const unchanged =
+                last &&
+                rect.width === last.width &&
+                rect.height === last.height &&
+                rect.top === last.top &&
+                rect.left === last.left
+            if (unchanged) return false
+            this.#trackingSizeLastObservedRect = rect
+        }
 
-        this.#trackingSizeBakeTimer = setTimeout(async () => {
-            // Give layout one more frame after the delay before measuring.
-            await nextFrame()
-            try {
-                bakeTrackingSectionSizes(this.#view.document, {
-                    vertical: this.#vertical,
-                })
-            } catch (error) {
-                logEBook('tracking-size:error', {
-                    message: error?.message ?? String(error)
-                })
+        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) {
+            if (this.#trackingSizeBakeInFlight) {
+                this.#trackingSizeBakeNeedsRerun = true
+                this.#trackingSizeBakeQueuedReason = reason
+                return true
             }
-            this.#trackingSizeBakeTimer = null
-        }, MANABI_TRACKING_SIZE_BAKE_DELAY_MS)
+
+            this.#trackingSizeBakeQueuedReason = null
+            this.#trackingSizeBakeNeedsRerun = false
+
+            this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
+                reason,
+            }).catch(error => {
+                logEBook('tracking-size:error', {
+                    message: error?.message ?? String(error),
+                    reason,
+                })
+            }).finally(() => {
+                this.#trackingSizeBakeInFlight = null
+                if (this.#trackingSizeBakeNeedsRerun) {
+                    const queuedReason = this.#trackingSizeBakeQueuedReason || 'rerun'
+                    this.#trackingSizeBakeNeedsRerun = false
+                    this.requestTrackingSectionSizeBake({ reason: queuedReason })
+                }
+            })
+        } else {
+            if (this.#trackingSizeBakeTimer) {
+                clearTimeout(this.#trackingSizeBakeTimer)
+            }
+            this.#trackingSizeBakeTimer = setTimeout(() => {
+                this.#trackingSizeBakeTimer = null
+                this.#performTrackingSectionSizeBake({ reason })
+            }, MANABI_TRACKING_SIZE_BAKE_DELAY_MS)
+        }
+
+        return true
     }
 
-    #cancelTrackingSectionSizeBake() {
+    #resetTrackingSectionSizeState() {
         if (this.#trackingSizeBakeTimer) {
             clearTimeout(this.#trackingSizeBakeTimer)
             this.#trackingSizeBakeTimer = null
+        }
+        this.#trackingSizeBakeInFlight = null
+        this.#trackingSizeBakeNeedsRerun = false
+        this.#trackingSizeBakeQueuedReason = null
+        this.#trackingSizeLastObservedRect = null
+        this.#pendingTrackingSizeBakeReason = null
+        this.#trackingSizeBakeReady = false
+    }
+
+    async #performTrackingSectionSizeBake({
+        reason = 'unspecified',
+    } = {}) {
+        const doc = this.#view?.document
+        if (!doc) {
+            this.#setLoading(false)
+            return
+        }
+
+        const activeView = this.#view
+
+        this.#setLoading(true)
+        try {
+            await nextFrame()
+            await bakeTrackingSectionSizes(doc, {
+                vertical: this.#vertical,
+                reason,
+            })
+        } finally {
+            if (this.#view === activeView) {
+                this.#setLoading(false)
+            }
         }
     }
 
@@ -1187,6 +1383,8 @@ export class Paginator extends HTMLElement {
         this.#cachedStart = null;
         this.#setLoading(true)
         this.#cachedStart = null
+        this.#trackingSizeBakeReady = false
+        this.#trackingSizeLastObservedRect = null
     }
     async #onExpand() {
 //        console.log("#onExpand...", this.style.display)
@@ -1200,8 +1398,12 @@ export class Paginator extends HTMLElement {
             await this.#scrollToAnchor(this.#anchor);
         }
 
+        this.#trackingSizeBakeReady = true
+        const pendingReason = this.#pendingTrackingSizeBakeReason
+        this.#pendingTrackingSizeBakeReason = null
+
         this.#setLoading(false)
-        this.#scheduleTrackingSectionSizeBake()
+        this.requestTrackingSectionSizeBake({ reason: pendingReason || 'expand' })
     }
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
@@ -2400,11 +2602,13 @@ export class Paginator extends HTMLElement {
 
         // needed because the resize observer doesn't work in Firefox
         //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+
+        this.requestTrackingSectionSizeBake({ reason: 'styles-applied' })
     }
     destroy() {
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
-        this.#cancelTrackingSectionSizeBake()
+        this.#resetTrackingSectionSizeState()
         this.#view.destroy()
         this.#view = null
         this.sections[this.#index]?.unload?.()

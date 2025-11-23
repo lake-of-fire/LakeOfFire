@@ -93,6 +93,10 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 }
 
 public extension ReaderContentProtocol {
+    var hasAudio: Bool {
+        voiceAudioURL != nil || audioSubtitlesURL != nil
+    }
+    
     var keyPrefix: String? {
         return nil
     }

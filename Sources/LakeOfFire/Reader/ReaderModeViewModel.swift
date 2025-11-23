@@ -455,6 +455,8 @@ public class ReaderModeViewModel: ObservableObject {
                 try await scriptCaller.evaluateJavaScript("""
                 if (document.body) {
                     document.body.dataset.isNextLoadInReaderMode = 'true';
+                    document.body.dataset.nextLoadIsReadabilityMode = 'true';
+                    try { document.body.style.setProperty('content-visibility', 'hidden'); } catch (_) {}
                 }
                 """)
             } catch {
@@ -1018,7 +1020,7 @@ public class ReaderModeViewModel: ObservableObject {
                         return
                     }
 
-                    let hasReadabilityMarkup = html.range(of: #"<body.*?class=['"].*?readability-mode.*?['"]>"#, options: .regularExpression) != nil || html.range(of: #"<body.*?data-is-next-load-in-reader-mode=['"]true['"]>"#, options: .regularExpression) != nil
+                    let hasReadabilityMarkup = html.range(of: #"<body.*?class=['"].*?readability-mode.*?['"]>"#, options: .regularExpression) != nil || html.range(of: #"<body.*?data-(is-next-load-in-reader-mode|next-load-is-readability-mode)=['"]true['"]>"#, options: .regularExpression) != nil
                     let isSnippetURL = committedURL.isSnippetURL
                     let snippetHasReaderContent = isSnippetURL && html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil
                     if snippetHasReaderContent {
@@ -1072,11 +1074,7 @@ public class ReaderModeViewModel: ObservableObject {
                                 "reason=missingReadabilityMarkup"
                             )
                         }
-                        if let _ = html.range(of: "<body", options: .caseInsensitive) {
-                            html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
-                        } else {
-                            html = "<body data-is-next-load-in-reader-mode='true'>\n" + html + "</html>"
-                        }
+                        html = prepareHTMLForNextReaderLoad(html)
                         try Task.checkCancellation()
                         if let htmlData = html.data(using: .utf8) {
                             debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted navigator.load fallback html", committedURL)
@@ -1151,7 +1149,11 @@ public class ReaderModeViewModel: ObservableObject {
                         (function () {
                             const body = document.body;
                             if (!body || !body.dataset) { return false; }
-                            return body.dataset.isNextLoadInReaderMode === 'true';
+                            const nextReader = body.dataset.isNextLoadInReaderMode === 'true' || body.dataset.nextLoadIsReadabilityMode === 'true';
+                            if (nextReader) {
+                                try { body.style.setProperty('content-visibility', 'hidden'); } catch (_) {}
+                            }
+                            return nextReader;
                         })();
                         """
                     ) as? Bool
@@ -1310,6 +1312,35 @@ fileprivate func bodyInnerHTML(from html: String) -> String? {
         return nil
     }
     return String(html[range])
+}
+
+fileprivate func prepareHTMLForNextReaderLoad(_ html: String) -> String {
+    let markerAttributes = "data-is-next-load-in-reader-mode='true' data-next-load-is-readability-mode='true'"
+    var updatedHTML: String
+
+    if html.range(of: "<body", options: .caseInsensitive) != nil {
+        updatedHTML = html.replacingOccurrences(of: "<body", with: "<body \(markerAttributes) ", options: .caseInsensitive)
+    } else {
+        return "<body \(markerAttributes) style='content-visibility: hidden;'>\n" + html + "</html>"
+    }
+
+    let nsHTML = updatedHTML as NSString
+    let nsRange = NSRange(location: 0, length: nsHTML.length)
+
+    if let styleMatch = bodyStyleRegex.firstMatch(in: updatedHTML, options: [], range: nsRange) {
+        let existingStyle = nsHTML.substring(with: styleMatch.range(at: 2))
+        if existingStyle.range(of: "content-visibility", options: .caseInsensitive) == nil {
+            let prefix = nsHTML.substring(with: styleMatch.range(at: 1))
+            let suffix = nsHTML.substring(with: styleMatch.range(at: 3))
+            let newStyle = "content-visibility: hidden; \(existingStyle)"
+            let replacement = prefix + newStyle + suffix
+            updatedHTML = nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
+        }
+    } else {
+        updatedHTML = updatedHTML.replacingOccurrences(of: "<body", with: "<body style='content-visibility: hidden;'", options: .caseInsensitive)
+    }
+
+    return updatedHTML
 }
 
 @MainActor
@@ -1486,9 +1517,19 @@ public func processForReaderMode(
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
             let darkModeTheme = (UserDefaults.standard.object(forKey: "darkModeTheme") as? DarkModeTheme) ?? .black
-            
+
+            var existingBodyStyle = (try? bodyTag.attr("style")) ?? ""
+            if !existingBodyStyle.isEmpty {
+                existingBodyStyle = existingBodyStyle
+                    .split(separator: ";")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.lowercased().hasPrefix("content-visibility") && !$0.isEmpty }
+                    .joined(separator: "; ")
+                _ = try? bodyTag.attr("style", existingBodyStyle)
+            }
+
             var bodyStyle = "font-size: \(readerFontSize)px"
-            if let existingBodyStyle = try? bodyTag.attr("style"), !existingBodyStyle.isEmpty {
+            if !existingBodyStyle.isEmpty {
                 bodyStyle = "\(bodyStyle); \(existingBodyStyle)"
             }
             _ = try? bodyTag.attr("style", bodyStyle)

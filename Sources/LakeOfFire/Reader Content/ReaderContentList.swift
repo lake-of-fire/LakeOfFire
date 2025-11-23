@@ -102,16 +102,32 @@ public extension View {
 }
 
 private extension View {
-    func readerContentListRowStyle() -> some View {
-        self
-            .listRowInsets(.init())
-            .modifier { content in
-                if #available(iOS 15, macOS 12, *) {
-                    content.listRowSeparator(.hidden)
-                } else {
-                    content
-                }
-            }
+    @ViewBuilder
+    func readerContentListRowStyle(showSeparators: Bool = false) -> some View {
+        if #available(iOS 15, macOS 12, *) {
+            self
+                .listRowInsets(.init())
+                .listRowSeparator(showSeparators ? .visible : .hidden)
+        } else {
+            self
+                .listRowInsets(.init())
+        }
+    }
+}
+
+private struct ReaderContentRowSeparatorModifier: ViewModifier {
+    let isFirst: Bool
+    let isLast: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 15, macOS 12, *) {
+            content
+                .listRowSeparator(isFirst ? .hidden : .automatic, edges: .top)
+                .listRowSeparator(isLast ? .hidden : .automatic, edges: .bottom)
+        } else {
+            content
+        }
     }
 }
 
@@ -390,6 +406,8 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     let includeSource: Bool
     var alwaysShowThumbnails = true
+    let isFirst: Bool
+    let isLast: Bool
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
@@ -489,6 +507,14 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
 #endif
+#if os(iOS) || os(macOS)
+        .modifier(
+            ReaderContentRowSeparatorModifier(
+                isFirst: isFirst,
+                isLast: isLast
+            )
+        )
+#endif
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
@@ -502,18 +528,24 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     let includeSource: Bool
     var alwaysShowThumbnails = true
+    var showSeparators = false
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     
     var body: some View {
+        let lastIndex = viewModel.filteredContents.indices.last
         Group {
-            ForEach(viewModel.filteredContents, id: \.compoundKey) { (content: C) in
+            ForEach(Array(viewModel.filteredContents.enumerated()), id: \.element.compoundKey) { index, content in
+                let isFirst = index == viewModel.filteredContents.startIndex
+                let isLast = lastIndex.map { index == $0 } ?? false
                 ReaderContentInnerListItem(
                     content: content,
                     entrySelection: $entrySelection,
                     includeSource: includeSource,
                     alwaysShowThumbnails: alwaysShowThumbnails,
+                    isFirst: isFirst,
+                    isLast: isLast,
                     viewModel: viewModel,
                     onRequestDelete: onRequestDelete,
                     customMenuOptions: customMenuOptions
@@ -527,6 +559,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         entrySelection: Binding<String?>,
         includeSource: Bool,
         alwaysShowThumbnails: Bool = true,
+        showSeparators: Bool = false,
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil
@@ -534,6 +567,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
         _entrySelection = entrySelection
         self.includeSource = includeSource
         self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.showSeparators = showSeparators
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
@@ -638,18 +672,22 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         .readerContentListLayoutAdjustments()
     }
 
+#if os(iOS)
+    @ViewBuilder
+    private var listContainerWithSpacing: some View {
+        if #available(iOS 16, *) {
+            listContainer.listRowSpacing(15)
+        } else {
+            listContainer
+        }
+    }
+#else
+    private var listContainerWithSpacing: some View { listContainer }
+#endif
+
     public var body: some View {
         Group {
-            listContainer
-                .modifier {
-#if os(iOS)
-                    if #available(iOS 16, *) {
-                        $0.listRowSpacing(15)
-                    } else { $0 }
-#else
-                    $0
-#endif
-                }
+            listContainerWithSpacing
                 .toolbar {
                     //#if os(iOS)
                     //            ToolbarItem(placement: .navigationBarTrailing) {
@@ -780,12 +818,15 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                 ForEach(groupedSections) { section in
                     if #available(iOS 17, macOS 14, *) {
                         Section(isExpanded: binding(for: section.id)) {
-                            ForEach(section.items, id: \.compoundKey) { (content: C) in
+                            let lastIndex = section.items.indices.last ?? section.items.startIndex
+                            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
                                 ReaderContentInnerListItem(
                                     content: content,
                                     entrySelection: $entrySelection,
                                     includeSource: includeSource,
                                     alwaysShowThumbnails: alwaysShowThumbnails,
+                                    isFirst: index == section.items.startIndex,
+                                    isLast: index == lastIndex,
                                     viewModel: viewModel,
                                     onRequestDelete: onRequestDelete,
                                     customMenuOptions: customMenuOptions
@@ -798,12 +839,15 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                         .headerProminence(.increased)
                     } else {
                         Section {
-                            ForEach(section.items, id: \.compoundKey) { (content: C) in
+                            let lastIndex = section.items.indices.last ?? section.items.startIndex
+                            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
                                 ReaderContentInnerListItem(
                                     content: content,
                                     entrySelection: $entrySelection,
                                     includeSource: includeSource,
                                     alwaysShowThumbnails: alwaysShowThumbnails,
+                                    isFirst: index == section.items.startIndex,
+                                    isLast: index == lastIndex,
                                     viewModel: viewModel,
                                     onRequestDelete: onRequestDelete,
                                     customMenuOptions: customMenuOptions
@@ -863,6 +907,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     var contentSortAscending = false
     let includeSource: Bool
     var alwaysShowThumbnails = true
+    var showSeparators = false
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
@@ -872,11 +917,12 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
             entrySelection: $entrySelection,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            showSeparators: showSeparators,
             viewModel: viewModel,
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
-        .readerContentListRowStyle()
+        .readerContentListRowStyle(showSeparators: showSeparators)
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,
@@ -893,7 +939,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         alwaysShowThumbnails: Bool = true,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
-        onContentSelected: ((C) -> Void)? = nil
+        onContentSelected: ((C) -> Void)? = nil,
+        showSeparators: Bool = false
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -903,6 +950,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.showSeparators = showSeparators
     }
     
 }

@@ -179,9 +179,9 @@ public struct BookLibraryView: View {
                 viewModel: readerContentListViewModel,
                 entrySelection: contentSelection,
                 includeSource: false,
-                alwaysShowThumbnails: true
+                alwaysShowThumbnails: true,
+                showSeparators: true
             )
-            .listRowSeparatorIfAvailable(.hidden)
         }
     }
 
@@ -446,6 +446,30 @@ public class BookLibraryViewModel: ObservableObject {
                 readerModeViewModel: readerModeViewModel
             )
         }.value
+    }
+
+    @MainActor
+    public static func openDownloaded(
+        publication: Publication,
+        readerFileManager: ReaderFileManager = .shared,
+        readerContent: ReaderContent,
+        navigator: WebViewNavigator,
+        readerModeViewModel: ReaderModeViewModel
+    ) async throws {
+        guard
+            let downloadURL = publication.downloadURL,
+            let downloadable = try? await readerFileManager.downloadable(url: downloadURL, name: publication.title),
+            await downloadable.existsLocally(),
+            let importedURL = try await readerFileManager.readerFileURL(for: downloadable)
+        else { return }
+
+        guard let content = try await ReaderContentLoader.load(url: importedURL, persist: true, countsAsHistoryVisit: true) else { return }
+        if content.url.matchesReaderURL(readerContent.pageURL) { return }
+        try await navigator.load(
+            content: content,
+            readerFileManager: readerFileManager,
+            readerModeViewModel: readerModeViewModel
+        )
     }
 }
 

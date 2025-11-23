@@ -379,6 +379,55 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
         return nil
     }
+    
+    private var isProgressVisible: Bool {
+        if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
+            return true
+        }
+        return false
+    }
+    
+    private var shouldShowProgressRow: Bool {
+        if isProgressVisible { return true }
+        if item.hasAudio { return !appearance.isEbookStyle }
+        return false
+    }
+    
+    @ViewBuilder
+    private var audioBadge: some View {
+        if item.hasAudio {
+            Image(systemName: "headphones")
+                .imageScale(.small)
+                .foregroundStyle(.secondary)
+        }
+    }
+    
+    @ViewBuilder
+    private var newBadge: some View {
+        if appearance.isEbookStyle && !isProgressVisible {
+            Text("NEW")
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .textCase(.uppercase)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6) // +1px for a roomier capsule
+                .padding(.vertical, 3)
+                .modifier {
+                    if #available(iOS 16, macOS 14, *) {
+                        $0.baselineOffset(-0.5) // visually center the glyph within the capsule
+                    } else { $0 }
+                }
+                .background(
+                    Capsule().fill(
+                        Color(
+                            red: 0x1d / 255.0,
+                            green: 0x46 / 255.0,
+                            blue: 0x75 / 255.0
+                        )
+                    )
+                )
+        }
+    }
 
     private var titleLineLimit: Int {
         if appearance.maxCellHeight >= 150 { return 3 }
@@ -394,13 +443,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
-    }
-
-    private var isProgressVisible: Bool {
-        if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
-            return true
-        }
-        return false
     }
     
     private var metadataText: String? {
@@ -463,6 +505,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 .lineLimit(1)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .padding(.bottom, 2)
                         } else if appearance.includeSource {
                             HStack(alignment: .center) {
                                 if let sourceIconURL = inlineSourceIconURL {
@@ -489,24 +532,37 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
                             .frame(maxWidth: .infinity, alignment: .topLeading)
                             .layoutPriority(1)
+                        
+                        if appearance.isEbookStyle && !isProgressVisible {
+                            HStack(spacing: 8) {
+                                if item.hasAudio {
+                                    audioBadge
+                                }
+                                newBadge
+                            }
+                        }
                     }
                     
                     Spacer(minLength: 4)
                     
                     VStack(alignment: .leading, spacing: 0) {
-                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                        if shouldShowProgressRow {
                             HStack(spacing: 8) {
-                                ProgressView(value: min(1, readingProgressFloat))
-                                    .progressViewStyle(LinearProgressViewStyle())
-                                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                                    .frame(width: progressBarWidth)
+                                audioBadge
                                 
-                                if let metadataText {
-                                    Text(metadataText)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .allowsTightening(true)
+                                if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                                    ProgressView(value: min(1, readingProgressFloat))
+                                        .progressViewStyle(LinearProgressViewStyle())
+                                        .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
+                                        .frame(width: progressBarWidth)
+                                        
+                                    if let metadataText {
+                                        Text(metadataText)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .allowsTightening(true)
+                                    }
                                 }
                             }
                             .offset(y: max(0, menuTrailingPadding - 5))
@@ -522,16 +578,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                         .font(.footnote)
                                         .layoutPriority(2)
                                 }
-                                if let item = item as? ContentFile {
-                                    CloudDriveSyncStatusView(item: item)
-                                        .labelStyle(.iconOnly)
-                                        .font(.callout)
-                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .foregroundStyle(.secondary)
                             
                             HStack(alignment: .center, spacing: 0) {
+                                if let item = item as? ContentFile {
+                                    CloudDriveSyncStatusView(item: item)
+                                        .labelStyle(.iconOnly)
+                                        .font(.callout)
+                                        .padding(.trailing, 6)
+                                }
+
                                 BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
                                     .labelStyle(.iconOnly)
                                 

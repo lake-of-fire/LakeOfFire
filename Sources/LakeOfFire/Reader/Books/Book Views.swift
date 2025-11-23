@@ -5,6 +5,7 @@ import LakeImage
 import LakeKit
 import Pow
 import ExpandableText
+import SwiftUIWebView
 
 struct BookThumbnail: View { //, Equatable {
     let imageURL: URL
@@ -113,6 +114,7 @@ fileprivate struct StaticBookListRow: View {
             author: publication.author,
             publicationDate: publication.publicationDate,
             summary: publication.summary,
+            hasAudio: publication.voiceAudioURL != nil || publication.audioSubtitlesURL != nil,
             onTopTap: nil
         ) {
             EmptyView()
@@ -127,6 +129,9 @@ fileprivate struct DownloadableBookListRow: View {
     @ObservedObject var downloadable: Downloadable
     @State private var wasDownloaded = false
     @ObservedObject private var downloadController = DownloadController.shared
+    @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     
     var body: some View {
         BookListRowContent(
@@ -135,7 +140,8 @@ fileprivate struct DownloadableBookListRow: View {
             author: publication.author,
             publicationDate: publication.publicationDate,
             summary: publication.summary,
-            onTopTap: buttonPress
+            hasAudio: publication.voiceAudioURL != nil || publication.audioSubtitlesURL != nil,
+            onTopTap: topTap
         ) {
             HidingDownloadButton(
                 downloadable: downloadable,
@@ -154,9 +160,6 @@ fileprivate struct DownloadableBookListRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            buttonPress()
-        }
         .task { @MainActor in
             await refreshDownloadable()
         }
@@ -185,6 +188,27 @@ fileprivate struct DownloadableBookListRow: View {
             wasDownloaded = true
         }
     }
+
+    private func topTap() {
+        Task { @MainActor in
+            let alreadyDownloaded = await downloadable.existsLocally()
+            if alreadyDownloaded {
+                do {
+                    try await BookLibraryViewModel.openDownloaded(
+                        publication: publication,
+                        readerFileManager: ReaderFileManager.shared,
+                        readerContent: readerContent,
+                        navigator: navigator,
+                        readerModeViewModel: readerModeViewModel
+                    )
+                } catch {
+                    print("Failed to open downloaded book: \\(error)")
+                }
+            } else {
+                buttonPress()
+            }
+        }
+    }
 }
 
 fileprivate struct BookListRowContent<Trailing: View>: View {
@@ -193,6 +217,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     let author: String?
     let publicationDate: Date?
     let summary: String?
+    let hasAudio: Bool
     let onTopTap: (() -> Void)?
     private let trailing: () -> Trailing
 
@@ -210,6 +235,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         author: String?,
         publicationDate: Date?,
         summary: String?,
+        hasAudio: Bool = false,
         onTopTap: (() -> Void)? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
@@ -218,6 +244,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         self.author = author
         self.publicationDate = publicationDate
         self.summary = summary
+        self.hasAudio = hasAudio
         self.onTopTap = onTopTap
         self.trailing = trailing
     }
@@ -228,6 +255,8 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
             Divider()
                 .padding(.horizontal, 14)
             summaryView
+                .contentShape(Rectangle())
+                .allowsHitTesting(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -255,6 +284,16 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(3)
+                if hasAudio {
+                    HStack(spacing: 6) {
+                        Image(systemName: "headphones")
+                            .imageScale(.small)
+                        Text("Audiobook with Text")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.secondary)
+                }
                 if let publicationYearText {
                     Text(publicationYearText)
                         .font(.caption)
@@ -281,6 +320,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         } else {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
         }
     }
 
@@ -289,22 +329,19 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
             if let resolvedSummary {
                 ExpandableText(resolvedSummary)
                     .lineLimit(3)
-                    .moreButtonText("more")
-                    .font(.callout)
-//                    .foregroundStyle(.secondary)
-                    .foregroundColor(.secondary)
+                    .moreButtonText("MORE")
+                    .moreButtonFont(.footnote)
+                    .moreButtonColor(.primary)
+                    .expandAnimation(.easeIn)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-                    .allowsHitTesting(true)
             }
         }
     }
-
-    // Attempt to tap the trailing action, if it's a button; otherwise no-op.
     private var trailingAsButton: (() -> Void)? {
         nil // Trailing view is rendered; tap is handled by the surrounding Button to keep top-half tappable.
     }
