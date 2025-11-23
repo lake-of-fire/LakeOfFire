@@ -62,7 +62,7 @@ const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
 const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
-const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 3
+const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
 const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKING_BODY_CLASS = 'manabi-tracking-size-baking'
@@ -71,6 +71,7 @@ const MANABI_TRACKING_SECTION_HIDDEN_CLASS = 'manabi-tracking-section-hidden'
 const MANABI_TRACKING_SECTION_BAKED_CLASS = 'manabi-tracking-section-baked'
 const MANABI_TRACKING_SIZE_BAKE_STYLE_ID = 'manabi-tracking-size-bake-style'
 const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
+const MANABI_TRACKING_SIZE_STABLE_REQUIRED_STREAK = 2
 const MANABI_TRACKING_DOC_STABLE_MAX_EVENTS = 180
 const MANABI_TRACKING_DOC_STABLE_REQUIRED_STREAK = 2
 
@@ -134,11 +135,15 @@ const ensureTrackingSizeBakeStyles = doc => {
     const style = doc.createElement('style')
     style.id = MANABI_TRACKING_SIZE_BAKE_STYLE_ID
     // Hidden trailing sections while baking to avoid layout thrash.
-    style.textContent = `.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }`
+    style.textContent = `.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }
+${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKED_CLASS} { contain: layout !important; }`
     doc.head.append(style)
 }
 
-const waitForStableSectionSize = (section, { maxEvents = MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS } = {}) => new Promise(resolve => {
+const waitForStableSectionSize = (section, {
+    maxEvents = MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS,
+    requiredStreak = MANABI_TRACKING_SIZE_STABLE_REQUIRED_STREAK,
+} = {}) => new Promise(resolve => {
     if (!(section instanceof Element)) return resolve(null)
 
     let lastRect = null
@@ -170,8 +175,7 @@ const waitForStableSectionSize = (section, { maxEvents = MANABI_TRACKING_SIZE_ST
         lastRect = roundedRect
         stableCount = unchanged ? stableCount + 1 : 1
 
-        if (stableCount >= 2) finish(roundedRect)
-        else if (events >= maxEvents) finish(roundedRect)
+        if (stableCount >= requiredStreak || events >= maxEvents) finish(roundedRect)
     })
 
     const initialRect = section.getBoundingClientRect?.()

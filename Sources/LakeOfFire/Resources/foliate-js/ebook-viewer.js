@@ -359,7 +359,7 @@ const getCSSForBookContent = ({
         font-weight: inherit !important;
     }
 
-    body *:not(.manabi-tracking-container, .manabi-tracking-container *):not(manabi-segment, manabi-segment *):not(ruby *):not(#manabi-tracking-section-subscription-preview-inline-notice):not(.manabi-tracking-status-unlock-button-container):not(.manabi-tracking-status-tip):not(.manabi-tracking-footer) {
+    body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-sentence, manabi-sentence *):not(#manabi-tracking-section-subscription-preview-inline-notice) {
         /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
         height: inherit !important;
     }
