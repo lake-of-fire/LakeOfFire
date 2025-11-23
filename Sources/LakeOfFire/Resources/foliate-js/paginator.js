@@ -62,13 +62,13 @@ const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
 const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
-const MANABI_TRACKING_SIZE_BAKE_DELAY_MS = 2000
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 3
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
 const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKING_BODY_CLASS = 'manabi-tracking-size-baking'
 const MANABI_TRACKING_SECTION_BAKING_CLASS = 'manabi-tracking-section-baking'
 const MANABI_TRACKING_SECTION_HIDDEN_CLASS = 'manabi-tracking-section-hidden'
+const MANABI_TRACKING_SECTION_BAKED_CLASS = 'manabi-tracking-section-baked'
 const MANABI_TRACKING_SIZE_BAKE_STYLE_ID = 'manabi-tracking-size-bake-style'
 const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
 const MANABI_TRACKING_DOC_STABLE_MAX_EVENTS = 180
@@ -134,7 +134,8 @@ const ensureTrackingSizeBakeStyles = doc => {
     const style = doc.createElement('style')
     style.id = MANABI_TRACKING_SIZE_BAKE_STYLE_ID
     // Hidden trailing sections while baking to avoid layout thrash.
-    style.textContent = `.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }`
+    style.textContent = `.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }
+${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKED_CLASS} { contain: size layout style !important; }`
     doc.head.append(style)
 }
 
@@ -244,6 +245,7 @@ const waitForStableDocumentSize = (doc, {
     })
 })
 
+
 const serializeElementTag = element => {
     // iframe elements come from a different global, so avoid instanceof checks.
     if (!element || element.nodeType !== 1) return ''
@@ -322,7 +324,7 @@ const bakeTrackingSectionSizes = async (doc, {
 
     logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason })
 
-    // Ensure the document layout has stabilized (no timeouts; event-based).
+    // Ensure the document layout has settled before hiding/baking sections.
     await waitForStableDocumentSize(doc)
 
     const bakedTags = []
@@ -332,6 +334,7 @@ const bakeTrackingSectionSizes = async (doc, {
     // Reset any previous bake markers so we always measure fresh sizes.
     for (const el of sections) {
         el.removeAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)
+        el.classList.remove(MANABI_TRACKING_SECTION_BAKED_CLASS)
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
         el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
         el.style.removeProperty('block-size')
@@ -374,6 +377,7 @@ const bakeTrackingSectionSizes = async (doc, {
             el.style.setProperty('block-size', formatPx(blockSize), 'important')
             el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
+            el.classList.add(MANABI_TRACKING_SECTION_BAKED_CLASS)
             el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
 
             bakedTags.push(serializeElementTag(el))
@@ -1409,40 +1413,30 @@ export class Paginator extends HTMLElement {
             }
         }
 
-        if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) {
-            if (this.#trackingSizeBakeInFlight) {
-                this.#trackingSizeBakeNeedsRerun = true
-                this.#trackingSizeBakeQueuedReason = reason
-                return true
-            }
-
-            this.#trackingSizeBakeQueuedReason = null
-            this.#trackingSizeBakeNeedsRerun = false
-
-            this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
-                reason,
-            }).catch(error => {
-                logEBook('tracking-size:error', {
-                    message: error?.message ?? String(error),
-                    reason,
-                })
-            }).finally(() => {
-                this.#trackingSizeBakeInFlight = null
-                if (this.#trackingSizeBakeNeedsRerun) {
-                    const queuedReason = this.#trackingSizeBakeQueuedReason || 'rerun'
-                    this.#trackingSizeBakeNeedsRerun = false
-                    this.requestTrackingSectionSizeBake({ reason: queuedReason })
-                }
-            })
-        } else {
-            if (this.#trackingSizeBakeTimer) {
-                clearTimeout(this.#trackingSizeBakeTimer)
-            }
-            this.#trackingSizeBakeTimer = setTimeout(() => {
-                this.#trackingSizeBakeTimer = null
-                this.#performTrackingSectionSizeBake({ reason })
-            }, MANABI_TRACKING_SIZE_BAKE_DELAY_MS)
+        if (this.#trackingSizeBakeInFlight) {
+            this.#trackingSizeBakeNeedsRerun = true
+            this.#trackingSizeBakeQueuedReason = reason
+            return true
         }
+
+        this.#trackingSizeBakeQueuedReason = null
+        this.#trackingSizeBakeNeedsRerun = false
+
+        this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
+            reason,
+        }).catch(error => {
+            logEBook('tracking-size:error', {
+                message: error?.message ?? String(error),
+                reason,
+            })
+        }).finally(() => {
+            this.#trackingSizeBakeInFlight = null
+            if (this.#trackingSizeBakeNeedsRerun) {
+                const queuedReason = this.#trackingSizeBakeQueuedReason || 'rerun'
+                this.#trackingSizeBakeNeedsRerun = false
+                this.requestTrackingSectionSizeBake({ reason: queuedReason })
+            }
+        })
 
         return true
     }
