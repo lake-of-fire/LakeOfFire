@@ -1483,7 +1483,7 @@ private func updateBylineSection(
     }
 }
 
-fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#
+fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*?)(font-size:\s*[\d.]+px)([^"]*")"#
 fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: readerFontSizeStylePattern, options: .caseInsensitive)
 
 fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
@@ -1669,11 +1669,46 @@ private func propagateReaderModeDefaults(
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
+    func normalisedTitle(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.truncate(36)
+    }
+
+    // Prefer semantic title hints in the readability HTML.
+    if let doc = try? SwiftSoup.parse(html) {
+        if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
+           let title = normalisedTitle(readerTitleText) {
+            return title
+        }
+
+        if let headingText = try? doc.select("h1").first()?.text(),
+           let title = normalisedTitle(headingText) {
+            return title
+        }
+
+        if let headTitle = try? doc.title(),
+           let title = normalisedTitle(headTitle) {
+            return title
+        }
+
+        // Avoid pulling the full article body into the title by removing the main
+        // content container before falling back to the body text.
+        let docCopy = doc
+        if let readerContent = try? docCopy.getElementById("reader-content") {
+            try? readerContent.remove()
+        }
+        if let bodyText = try? docCopy.body()?.text(),
+           let title = normalisedTitle(bodyText) {
+            return title
+        }
+    }
+
+    // Final fallback: strip markup and grab the first line as before.
     let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
     guard !stripped.isEmpty else { return nil }
     let candidate = stripped.components(separatedBy: "\n").first ?? stripped
-    let truncated = candidate.truncate(36)
-    return truncated.isEmpty ? nil : truncated
+    return normalisedTitle(candidate)
 }
 
 internal func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
@@ -1685,15 +1720,16 @@ internal func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSiz
     let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
     let nsHTML = html as NSString
     var updatedHtml: String
-    let newFontSizeStr = "font-size: " + String(newFontSize) + "px"
-    // If a font-size exists in the style, replace it.
-    if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: nsRange) {
-        let replacement = readerFontSizeStyleRegex.replacementString(
-            for: firstMatch,
-            in: html,
-            offset: 0,
-            template: "$1" + newFontSizeStr
-        )
+    let formattedFontSize = newFontSize.truncatingRemainder(dividingBy: 1) == 0
+        ? String(Int(newFontSize))
+        : String(newFontSize)
+    let newFontSizeStr = "font-size: " + formattedFontSize + "px"
+    // If a font-size exists in the style, replace its value while preserving other declarations.
+    if let firstMatch = readerFontSizeStyleRegex.firstMatch(in: html, options: [], range: nsRange),
+       firstMatch.numberOfRanges >= 4 {
+        let prefix = nsHTML.substring(with: firstMatch.range(at: 1))
+        let suffix = nsHTML.substring(with: firstMatch.range(at: 3))
+        let replacement = prefix + newFontSizeStr + suffix
         updatedHtml = nsHTML.replacingCharacters(in: firstMatch.range, with: replacement)
     }
     // Otherwise, if a <body ... style="..."> exists, insert the font-size.

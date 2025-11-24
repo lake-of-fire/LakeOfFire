@@ -78,6 +78,8 @@ globalThis.manabiResolveTrackingSizeCache = function (requestId, entries) {
 const MANABI_TRACKING_SECTION_CLASS = 'manabi-tracking-section'
 const MANABI_TRACKING_SECTION_SELECTOR = `.${MANABI_TRACKING_SECTION_CLASS}`
 const MANABI_TRACKING_SECTION_VISIBLE_CLASS = 'manabi-tracking-section-visible'
+const MANABI_TRACKING_PREBAKE_HIDDEN_CLASS = 'manabi-prebake-hidden'
+const MANABI_TRACKING_PREBAKE_HIDE_ENABLED = false
 // Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
 const MANABI_TRACKING_GEOMETRY_LOADING_CLASS = 'manabi-tracking-geometry-loading'
 const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
@@ -177,6 +179,35 @@ const restoreInlineStyleProperty = (element, property, snapshot) => {
     else element.style.removeProperty(property)
 }
 
+const preBakeDisplaySnapshots = new WeakMap()
+
+const hideDocumentContentForPreBake = doc => {
+    if (!MANABI_TRACKING_PREBAKE_HIDE_ENABLED) return null
+    const target = doc?.getElementById?.('reader-content') || doc?.body
+    if (!(target instanceof HTMLElement)) return null
+    if (preBakeDisplaySnapshots.has(doc)) return target
+
+    const snapshot = snapshotInlineStyleProperty(target, 'display')
+    preBakeDisplaySnapshots.set(doc, { target, snapshot })
+    target.classList.add(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
+    target.style.setProperty('display', 'none', 'important')
+    return target
+}
+
+const revealDocumentContentForBake = doc => {
+    if (!MANABI_TRACKING_PREBAKE_HIDE_ENABLED) return
+    if (!doc) return
+    const entry = preBakeDisplaySnapshots.get(doc)
+    if (!entry) return
+
+    const { target, snapshot } = entry
+    if (target instanceof HTMLElement) {
+        target.classList.remove(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
+        restoreInlineStyleProperty(target, 'display', snapshot)
+    }
+    preBakeDisplaySnapshots.delete(doc)
+}
+
 const formatPx = value => {
     if (!Number.isFinite(value)) return '0px'
     const rounded = Math.max(0, Math.round(value * 1000) / 1000)
@@ -271,31 +302,137 @@ const logTrackingRectSamples = (doc, sections, count = 3, { reason = 'unknown' }
     logEBook('tracking-visibility:samples', { reason, samples, total: sections.length })
 }
 
-const findNextTrackingSectionSibling = section => {
-    if (!section) return null
-    let cursor = section.nextElementSibling
-    while (cursor) {
-        if (cursor.classList?.contains?.(MANABI_TRACKING_SECTION_CLASS)) return cursor
-        cursor = cursor.nextElementSibling
+const getViewportRect = doc => {
+    const vv = doc?.defaultView?.visualViewport
+    if (vv) {
+        const left = Math.round(vv.offsetLeft || 0)
+        const top = Math.round(vv.offsetTop || 0)
+        return {
+            left,
+            top,
+            right: left + Math.round(vv.width || 0),
+            bottom: top + Math.round(vv.height || 0),
+        }
     }
-    return null
+    const width = Math.round(doc?.defaultView?.innerWidth ?? doc?.documentElement?.clientWidth ?? 0)
+    const height = Math.round(doc?.defaultView?.innerHeight ?? doc?.documentElement?.clientHeight ?? 0)
+    return {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+    }
 }
 
-const findPrevTrackingSectionSibling = section => {
-    if (!section) return null
-    let cursor = section.previousElementSibling
-    while (cursor) {
-        if (cursor.classList?.contains?.(MANABI_TRACKING_SECTION_CLASS)) return cursor
-        cursor = cursor.previousElementSibling
-    }
-    return null
-}
+const rectanglesIntersect = (a, b) =>
+    a && b &&
+    a.left < b.right &&
+    a.right > b.left &&
+    a.top < b.bottom &&
+    a.bottom > b.top
 
-const applySentinelVisibilityToTrackingSections = (doc, {
-    visibleSentinels = [],
-    logReason = 'sentinel-visibility',
-    container = null,
+const computeVisibleTrackingSectionsFromLayout = ({
+    doc,
+    layout,
+    containerElement = null,
     sectionsCache = null,
+    logReason = 'geometry-visibility',
+} = {}) => {
+    const sections = Array.isArray(sectionsCache) && sectionsCache.length
+        ? sectionsCache
+        : Array.from(doc?.querySelectorAll?.(MANABI_TRACKING_SECTION_SELECTOR) ?? [])
+
+    if (!doc || !layout || !Array.isArray(layout.entries) || layout.entries.length === 0 || !containerElement || sections.length === 0) {
+        return {
+            visibleSections: new Set(),
+            layoutMissing: !layout,
+            containerMissing: !containerElement,
+            sectionsMissing: sections.length === 0,
+            viewport: getViewportRect(doc),
+            containerRect: containerElement?.getBoundingClientRect?.() ?? null,
+            logReason,
+        }
+    }
+
+    const containerRect = containerElement.getBoundingClientRect()
+    const viewport = getViewportRect(doc)
+    const vertical = !!layout.vertical
+    const verticalRTL = !!layout.verticalRTL
+
+    const idToSection = new Map(sections.map(el => [el?.id || '', el]))
+    const visibleSections = new Set()
+    const visibleIds = []
+
+    for (const entry of layout.entries) {
+        const id = entry?.id || ''
+        const section = idToSection.get(id)
+        if (!section) continue
+        const blockSize = Number(entry.blockSize)
+        const inlineSize = Number(entry.inlineSize)
+        const blockStart = Number(entry.blockStart)
+        if (!Number.isFinite(blockSize) || blockSize <= 0 || !Number.isFinite(blockStart)) continue
+
+        let rect = null
+        if (vertical) {
+            const width = blockSize
+            const height = Number.isFinite(inlineSize) && inlineSize > 0 ? inlineSize : containerRect.height
+            const left = verticalRTL
+                ? containerRect.right - blockStart - width
+                : containerRect.left + blockStart
+            rect = {
+                left,
+                right: left + width,
+                top: containerRect.top,
+                bottom: containerRect.top + height,
+            }
+        } else {
+            const height = blockSize
+            const width = Number.isFinite(inlineSize) && inlineSize > 0 ? inlineSize : containerRect.width
+            const top = containerRect.top + blockStart
+            rect = {
+                left: containerRect.left,
+                right: containerRect.left + width,
+                top,
+                bottom: top + height,
+            }
+        }
+
+        if (rectanglesIntersect(rect, viewport)) {
+            visibleSections.add(section)
+            visibleIds.push(id)
+        }
+    }
+
+    // Add a one-section buffer on either side to smooth transitions.
+    if (visibleSections.size > 0) {
+        for (let i = 0; i < sections.length; i++) {
+            if (!visibleSections.has(sections[i])) continue
+            const prev = sections[i - 1]
+            const next = sections[i + 1]
+            if (prev) visibleSections.add(prev)
+            if (next) visibleSections.add(next)
+        }
+    }
+
+    return {
+        visibleSections,
+        visibleIds,
+        layoutMissing: false,
+        containerMissing: false,
+        sectionsMissing: false,
+        viewport,
+        containerRect,
+        logReason,
+    }
+}
+
+const applyTrackingSectionVisibility = (doc, {
+    visibleSections = new Set(),
+    sectionsCache = null,
+    logReason = 'geometry-visibility',
+    container = null,
+    sentinelInfo = null,
+    layoutDiagnostics = {},
 } = {}) => {
     if (!doc) return
     const sections = Array.isArray(sectionsCache) && sectionsCache.length
@@ -303,73 +440,35 @@ const applySentinelVisibilityToTrackingSections = (doc, {
         : Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
     if (sections.length === 0) return
 
-    const containerRect = container?.getBoundingClientRect?.()
-    logEPUBSentinel('apply:start', {
-        reason: logReason,
-        visibleSentinels: Array.isArray(visibleSentinels) ? visibleSentinels.length : 0,
-        sectionCount: sections.length,
-        bodyClasses: Array.from(doc.body?.classList ?? []),
-        container: containerRect ? {
-            width: Math.round(containerRect.width * 1000) / 1000,
-            height: Math.round(containerRect.height * 1000) / 1000,
-        } : null,
-    })
+    const visibleSet = visibleSections instanceof Set ? visibleSections : new Set(visibleSections ?? [])
 
-    const visibleSections = new Set()
-    const visibleCount = visibleSentinels instanceof Set
-        ? visibleSentinels.size
-        : (Array.isArray(visibleSentinels) ? visibleSentinels.length : 0)
-    const markSectionVisible = (section, { includeBuffer = true } = {}) => {
-        if (!section?.classList?.contains?.(MANABI_TRACKING_SECTION_CLASS)) return
-        visibleSections.add(section)
-        if (includeBuffer) {
-            const buffer = findNextTrackingSectionSibling(section)
-            if (buffer) visibleSections.add(buffer)
-            const prevBuffer = findPrevTrackingSectionSibling(section)
-            if (prevBuffer) visibleSections.add(prevBuffer)
-        }
-    }
-
-    for (const sentinel of visibleSentinels) {
-        const section = sentinel?.closest?.(MANABI_TRACKING_SECTION_SELECTOR)
-        if (!section) {
-            logEPUBSentinel('visible-sentinel-no-section', { id: sentinel?.id || '', tag: sentinel?.tagName || '' })
-        }
-        markSectionVisible(section, { includeBuffer: true })
-    }
-
-    // Fallback: if intersections were reported but none mapped to a section,
-    // ensure we still have an anchor section to avoid getting stuck in force-visible.
-    if (visibleSections.size === 0 && visibleCount > 0) {
-        const fallback = sections[0]
-        markSectionVisible(fallback, { includeBuffer: true })
-        logEPUBSentinel('visible-sentinel-fallback', {
-            usedFallback: !!fallback,
-            fallbackId: fallback?.id || '',
-            sentinelCount: visibleCount,
-        })
-    }
-
-    if (visibleSections.size === 0) {
+    if (visibleSet.size === 0) {
         let seeded = 0
         for (let i = 0; i < Math.min(3, sections.length); i++) {
-            markSectionVisible(sections[i], { includeBuffer: false })
+            visibleSet.add(sections[i])
             seeded++
         }
         const appliedForceVisible = !doc.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
-        if (appliedForceVisible) {
-            doc.body.classList.add(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
-        }
-        logEBook('tracking-sentinel:force-visible', { reason: 'no-intersections', seeded, appliedForceVisible })
-        logEPUBSentinel('force-visible', { reason: 'no-intersections', seeded, appliedForceVisible })
+        if (appliedForceVisible) doc.body.classList.add(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
+        logEBook('tracking-visibility:force-visible', {
+            reason: logReason,
+            seeded,
+            appliedForceVisible,
+            sentinelVisible: sentinelInfo?.visibleSentinels ?? null,
+        })
+        logEPUBSentinel('force-visible', { reason: logReason, seeded, appliedForceVisible })
     } else if (doc.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS)) {
         doc.body.classList.remove(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
-        logEBook('tracking-sentinel:clear-force-visible', { reason: 'intersections-found', visibleSections: visibleSections.size })
-        logEPUBSentinel('force-visible-clear', { reason: 'intersections-found', visibleSections: visibleSections.size })
+        logEBook('tracking-visibility:clear-force-visible', {
+            reason: logReason,
+            markedVisible: visibleSet.size,
+            sentinelVisible: sentinelInfo?.visibleSentinels ?? null,
+        })
+        logEPUBSentinel('force-visible-clear', { reason: logReason, markedVisible: visibleSet.size })
     }
 
     for (const section of sections) {
-        if (visibleSections.has(section)) section.classList.add(MANABI_TRACKING_SECTION_VISIBLE_CLASS)
+        if (visibleSet.has(section)) section.classList.add(MANABI_TRACKING_SECTION_VISIBLE_CLASS)
         else section.classList.remove(MANABI_TRACKING_SECTION_VISIBLE_CLASS)
     }
 
@@ -377,9 +476,14 @@ const applySentinelVisibilityToTrackingSections = (doc, {
 
     logEPUBSentinel('apply:end', {
         reason: logReason,
-        markedVisible: visibleSections.size,
+        markedVisible: visibleSet.size,
         forceVisible: doc.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS) ?? false,
-        sampleIds: Array.from(visibleSections).slice(0, 5).map(el => el?.id || ''),
+        sampleIds: Array.from(visibleSet).slice(0, 5).map(el => el?.id || ''),
+        sentinelCount: sentinelInfo?.totalSentinels ?? null,
+        sentinelVisible: sentinelInfo?.visibleSentinels ?? null,
+        layoutMissing: layoutDiagnostics.layoutMissing ?? null,
+        containerMissing: layoutDiagnostics.containerMissing ?? null,
+        sectionsMissing: layoutDiagnostics.sectionsMissing ?? null,
     })
 }
 
@@ -569,6 +673,8 @@ const bakeTrackingSectionSizes = async (doc, {
 
     const body = doc.body
     if (!body) return
+
+    revealDocumentContentForBake(doc)
 
     ensureTrackingSizeBakeStyles(doc)
 
@@ -788,6 +894,33 @@ const bakeTrackingSectionSizes = async (doc, {
         missing: Math.max(0, sections.length - appliedFromCache),
         hasContainerCache,
     })
+
+    const persistTrackingLayoutSnapshot = () => {
+        try {
+            const containerEntry = bakedEntryMap.get('__container__') ?? null
+            const entries = Array.from(bakedEntryMap.values())
+                .filter(entry =>
+                    entry &&
+                    entry.id &&
+                    entry.id !== '__container__' &&
+                    Number.isFinite(entry.blockSize) &&
+                    Number.isFinite(entry.blockStart))
+            doc.manabiTrackingSectionLayout = {
+                entries,
+                container: containerEntry,
+                vertical,
+                verticalRTL: !!globalThis.manabiTrackingVerticalRTL,
+            }
+            logEBook('tracking-visibility:layout-snapshot', {
+                entries: entries.length,
+                hasContainer: !!containerEntry,
+                vertical,
+                verticalRTL: !!globalThis.manabiTrackingVerticalRTL,
+            })
+        } catch (error) {
+            logEBook('tracking-visibility:layout-snapshot-error', { message: error?.message ?? String(error) })
+        }
+    }
 
     if (addedBodyClass) body.classList.add(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
     if (addedBodyClass) logEBook('tracking-size:baking-state', { state: 'begin', reason })
@@ -1020,6 +1153,8 @@ const bakeTrackingSectionSizes = async (doc, {
             styleFallbackCount,
             skipNonFiniteCount,
         })
+
+        persistTrackingLayoutSnapshot()
     }
 
     applyAbsoluteLayout()
@@ -1802,6 +1937,7 @@ export class Paginator extends HTMLElement {
     #cachedSentinelDoc = null
     #cachedSentinelElements = []
     #cachedTrackingSections = []
+    #cachedTrackingContainer = null
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
@@ -2176,6 +2312,12 @@ export class Paginator extends HTMLElement {
         this.#cachedSentinelDoc = null
         this.#cachedSentinelElements = []
         this.#cachedTrackingSections = []
+        this.#cachedTrackingContainer = null
+    }
+
+    #revealPreBakeContent() {
+        if (!this.#view?.document) return
+        revealDocumentContentForBake(this.#view.document)
     }
 
     async #performTrackingSectionSizeBake({
@@ -2187,6 +2329,8 @@ export class Paginator extends HTMLElement {
             this.#setLoading(false)
             return
         }
+
+        this.#revealPreBakeContent()
 
         logEBook('tracking-size:bake-start', {
             reason,
@@ -2267,6 +2411,7 @@ export class Paginator extends HTMLElement {
     }
     async #onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
+        this.#revealPreBakeContent()
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
@@ -2308,17 +2453,50 @@ export class Paginator extends HTMLElement {
             this.#cachedSentinelDoc = doc
             this.#cachedSentinelElements = Array.from(doc.body.getElementsByTagName('reader-sentinel'))
             this.#cachedTrackingSections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
+            this.#cachedTrackingContainer = this.#cachedTrackingSections[0]?.parentElement
         } else if (!Array.isArray(this.#cachedSentinelElements) || this.#cachedSentinelElements.length === 0) {
             this.#cachedSentinelElements = Array.from(doc.body.getElementsByTagName('reader-sentinel'))
+            if (!this.#cachedTrackingContainer && this.#cachedTrackingSections?.length) {
+                this.#cachedTrackingContainer = this.#cachedTrackingSections[0]?.parentElement
+            }
         }
 
         const sentinelElements = this.#cachedSentinelElements
-        if (sentinelElements.length === 0) {
-            applySentinelVisibilityToTrackingSections(doc, {
-                visibleSentinels: [],
-                logReason: 'sentinel-visibility:none',
-                container: this.#container,
+        const computeAndApplyTrackingVisibility = (reason, sentinelInfo) => {
+            const containerInDoc =
+                this.#cachedTrackingContainer ||
+                this.#cachedTrackingSections?.[0]?.parentElement ||
+                doc.querySelector(MANABI_TRACKING_SECTION_SELECTOR)?.parentElement ||
+                doc.querySelector('.manabi-tracking-container')
+
+            if (!this.#cachedTrackingContainer && containerInDoc) {
+                this.#cachedTrackingContainer = containerInDoc
+            }
+
+            const geometry = computeVisibleTrackingSectionsFromLayout({
+                doc,
+                layout: doc?.manabiTrackingSectionLayout,
+                containerElement: containerInDoc,
                 sectionsCache: this.#cachedTrackingSections,
+                logReason: reason,
+            })
+
+            applyTrackingSectionVisibility(doc, {
+                visibleSections: geometry.visibleSections,
+                sectionsCache: this.#cachedTrackingSections,
+                logReason: reason,
+                container: this.#container,
+                sentinelInfo,
+                layoutDiagnostics: geometry,
+            })
+
+            return geometry
+        }
+
+        if (sentinelElements.length === 0) {
+            computeAndApplyTrackingVisibility('sentinel-visibility:none', {
+                totalSentinels: 0,
+                visibleSentinels: 0,
             })
             logEPUBSentinel('observe:none', {
                 totalSentinels: 0,
@@ -2340,11 +2518,9 @@ export class Paginator extends HTMLElement {
                     .map(el => el?.id)
                     .filter(Boolean)
 
-                applySentinelVisibilityToTrackingSections(doc, {
-                    visibleSentinels,
-                    logReason: 'sentinel-visibility',
-                    container: this.#container,
-                    sectionsCache: this.#cachedTrackingSections,
+                computeAndApplyTrackingVisibility('sentinel-visibility', {
+                    totalSentinels: sentinelElements.length,
+                    visibleSentinels: visibleSentinelIDs.length,
                 })
 
                 logEPUBSentinel('observe:complete', {
@@ -3278,6 +3454,7 @@ export class Paginator extends HTMLElement {
                         doc.head.append($style)
                         this.#styleMap.set(doc, [$styleBefore, $style])
                     }
+                    hideDocumentContentForPreBake(doc)
                     // Defer injecting tracking-size bake styles until the actual
                     // bake pass so we don't hide sections during initial display
                     // (this caused page jumps when turning into the next section).
