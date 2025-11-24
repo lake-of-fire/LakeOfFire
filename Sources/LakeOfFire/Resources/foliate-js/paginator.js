@@ -3278,7 +3278,9 @@ export class Paginator extends HTMLElement {
                         doc.head.append($style)
                         this.#styleMap.set(doc, [$styleBefore, $style])
                     }
-                    if (MANABI_TRACKING_SIZE_BAKE_ENABLED) ensureTrackingSizeBakeStyles(doc)
+                    // Defer injecting tracking-size bake styles until the actual
+                    // bake pass so we don't hide sections during initial display
+                    // (this caused page jumps when turning into the next section).
                     //                    console.log("#display... await onLoad")
                     await onLoad?.({
                         doc,

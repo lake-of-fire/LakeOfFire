@@ -14,6 +14,10 @@ fileprivate struct ThemeModifier: ViewModifier {
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
 
     private func updateTrackingSettingsKey(reason: String) async {
+        guard scriptCaller.hasAsyncCaller else {
+            debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+            return
+        }
         let key = "pagination-size:v1|font:\(readerFontSize ?? 0)|light:\(lightModeTheme.rawValue)|dark:\(darkModeTheme.rawValue)"
         do {
             try await scriptCaller.evaluateJavaScript(
@@ -35,6 +39,10 @@ fileprivate struct ThemeModifier: ViewModifier {
     }
     
     private func applyFontSize(_ size: Double, reason: String) async {
+        guard scriptCaller.hasAsyncCaller else {
+            debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+            return
+        }
         do {
             try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(size)px';", duplicateInMultiTargetFrames: true)
             await updateTrackingSettingsKey(reason: "font-size-change")
