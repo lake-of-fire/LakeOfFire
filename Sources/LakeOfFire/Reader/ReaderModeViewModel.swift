@@ -1108,7 +1108,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "hasReaderContent=\(hasReaderContentNode)",
                             "hasReadabilityClass=\(hasReadabilityClass)"
                         )
-                        if !readabilityMarkersPresent {
+                        if !(isSnippetURL && readabilityMarkersPresent) {
                             await invalidateReaderModeCache(
                                 for: content,
                                 url: committedURL,
