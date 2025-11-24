@@ -404,7 +404,7 @@ public class ReaderModeViewModel: ObservableObject {
     
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
-    private func showReadabilityContent(
+    internal func showReadabilityContent(
         readerContent: ReaderContent,
         readabilityContent: String,
         renderToSelector: String?,
@@ -1108,7 +1108,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "hasReaderContent=\(hasReaderContentNode)",
                             "hasReadabilityClass=\(hasReadabilityClass)"
                         )
-                        if !(isSnippetURL && readabilityMarkersPresent) {
+                        if !readabilityMarkersPresent {
                             await invalidateReaderModeCache(
                                 for: content,
                                 url: committedURL,

@@ -265,7 +265,13 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color(.tertiarySystemFill))
+                .modifier {
+                    if #available(iOS 15, macOS 14, *) {
+                        $0.fill(Color(.tertiarySystemFill))
+                    } else {
+                        $0.fill(Color(.lightGray))
+                    }
+                }
         )
     }
 

@@ -1320,6 +1320,16 @@ class Reader {
     
     async #goToDescriptor(descriptor) {
         if (!descriptor) return;
+        const fraction = typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
+        const line = fraction != null
+            ? `# JUMPBACK goToDescriptor ${JSON.stringify({ fraction })}`
+            : `# JUMPBACK goToDescriptor ${JSON.stringify({ hasCFI: !!descriptor.cfi })}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional logger
+        }
+        try { console.log(line); } catch (_error) {}
         if (descriptor.cfi) {
             await this.view.goTo(descriptor.cfi);
             return;

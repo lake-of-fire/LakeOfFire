@@ -467,7 +467,7 @@
                     if (document.body) {
                         if (content) {
                             document.body.dataset.manabiReaderModeAvailable = 'true';
-                            document.body.dataset.manabiReaderModeAvailableFor = loc.href;
+                        document.body.dataset.manabiReaderModeAvailableFor = windowURL;
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                             document.body.dataset.nextLoadIsReadabilityMode = 'false';
                             const hasReaderBody = html.indexOf('id="reader-content"') !== -1

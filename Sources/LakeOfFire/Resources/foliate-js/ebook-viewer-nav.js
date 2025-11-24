@@ -94,6 +94,22 @@ export class NavigationHUD {
         this.#applyRelocateButtonEdges();
     }
 
+    #logJumpBack(event, payload = {}) {
+        const cleanedEntries = Object.entries(payload ?? {}).filter(([, value]) => value !== undefined);
+        const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
+        const line = metadata ? `# JUMPBACK ${event} ${metadata}` : `# JUMPBACK ${event}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional native logger
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
+            // optional console logger
+        }
+    }
+
     setIsRTL(isRTL) {
         this.isRTL = !!isRTL;
         this.#applyRelocateButtonEdges();
@@ -281,6 +297,12 @@ export class NavigationHUD {
         await this.#refreshRendererSnapshot();
         this.lastRelocateDetail = detail;
         this.#handleRelocateHistory(detail);
+        this.#logJumpBack('relocate-detail', {
+            reason: detail?.reason ?? null,
+            phase: detail?.liveScrollPhase ?? null,
+            fraction: typeof detail?.fraction === 'number' ? Number(detail.fraction.toFixed(6)) : null,
+            processingPending: this.isProcessingRelocateJump,
+        });
         this.#logRelocateDetail(detail);
         this.#updatePrimaryLine(detail);
         this.#toggleCompletionStack();
@@ -576,6 +598,10 @@ export class NavigationHUD {
             this.currentLocationDescriptor = descriptor;
             this.#finalizePendingRelocateJump(descriptor);
             if (this.isProcessingRelocateJump || this.pendingRelocateJump) {
+                this.#logJumpBack('relocate-finalize-pending', {
+                    pending: !!this.pendingRelocateJump,
+                    descriptorFraction: typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null,
+                });
                 return;
             }
             // fall through to normal handling to capture subsequent movement if needed
@@ -1184,6 +1210,12 @@ export class NavigationHUD {
         }
         this.pendingRelocateJump = null;
         this.isProcessingRelocateJump = false;
+        this.#logJumpBack('jump-finalized', {
+            direction,
+            targetFraction,
+            backDepth: this.relocateStacks?.back?.length ?? 0,
+            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
+        });
         this.#logStackSnapshot('jump-finalized', {
             direction,
             targetFraction,
@@ -1195,10 +1227,23 @@ export class NavigationHUD {
     
     async #handleRelocateJump(direction) {
         const stack = this.relocateStacks?.[direction];
-        if (!stack?.length || this.hideNavigationDueToScroll) return;
-        if (this.pendingRelocateJump) return;
+        if (!stack?.length) {
+            this.#logJumpBack('tap-ignored-empty', { direction });
+            return;
+        }
+        if (this.hideNavigationDueToScroll) {
+            this.#logJumpBack('tap-ignored-hidden', { direction });
+            return;
+        }
+        if (this.pendingRelocateJump) {
+            this.#logJumpBack('tap-ignored-pending', { direction });
+            return;
+        }
         const descriptor = this.#cloneDescriptor(stack[stack.length - 1]);
-        if (!descriptor) return;
+        if (!descriptor) {
+            this.#logJumpBack('tap-ignored-nodescriptor', { direction });
+            return;
+        }
         const preJumpDescriptor = this.lastRelocateDetail
             ? this.#makeLocationDescriptor(this.lastRelocateDetail)
             : this.#cloneDescriptor(this.currentLocationDescriptor);
@@ -1212,6 +1257,13 @@ export class NavigationHUD {
         this.isProcessingRelocateJump = true;
         this.#updateRelocateButtons();
         const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
+        this.#logJumpBack('tap', {
+            direction,
+            stackDepth: stack.length,
+            targetFraction,
+            oppositeDepth: oppositeStack?.length ?? 0,
+            hiddenDueToScroll: this.hideNavigationDueToScroll,
+        });
         this.#logJumpDiagnostic('relocate-button', {
             direction,
             stackDepth: stack.length,
@@ -1224,14 +1276,32 @@ export class NavigationHUD {
             targetFraction,
         });
         try {
+            this.#logJumpBack('request', {
+                direction,
+                targetFraction,
+                stackDepth: stack.length,
+            });
             await this.onJumpRequest?.(descriptor);
+            this.#logJumpBack('request-complete', {
+                direction,
+                targetFraction,
+            });
         } catch (error) {
             console.error('Failed to navigate to saved location', error);
+            this.#logJumpBack('error', {
+                direction,
+                message: error?.message ?? String(error),
+            });
             this.pendingRelocateJump = null;
             this.isProcessingRelocateJump = false;
             this.#logStackSnapshot('button-error', { direction });
             this.#updateRelocateButtons();
         } finally {
+            this.#logJumpBack('postjump', {
+                direction,
+                pending: !!this.pendingRelocateJump,
+                processing: !!this.isProcessingRelocateJump,
+            });
             this.#logStackSnapshot('button-postjump', { direction });
         }
     }

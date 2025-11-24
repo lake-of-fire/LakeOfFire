@@ -88,6 +88,7 @@ const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 7
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
 const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKING_BODY_CLASS = 'manabi-tracking-size-baking'
+const MANABI_TRACKING_SIZE_PREBAKE_BODY_CLASS = 'manabi-tracking-size-prebake'
 const MANABI_TRACKING_FORCE_VISIBLE_CLASS = 'manabi-tracking-force-visible'
 const MANABI_TRACKING_SECTION_BAKING_CLASS = 'manabi-tracking-section-baking'
 const MANABI_TRACKING_SECTION_HIDDEN_CLASS = 'manabi-tracking-section-hidden'
@@ -163,7 +164,8 @@ const ensureTrackingSizeBakeStyles = doc => {
     const style = doc.createElement('style')
     style.id = MANABI_TRACKING_SIZE_BAKE_STYLE_ID
     // Hidden trailing sections while baking to avoid layout thrash.
-    style.textContent = `body.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS} { visibility: hidden !important; }
+    style.textContent = `body.${MANABI_TRACKING_SIZE_PREBAKE_BODY_CLASS} { visibility: hidden !important; }
+body.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS} { visibility: hidden !important; }
 .${MANABI_TRACKING_SECTION_CLASS} { contain: paint style !important; }
 .${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }
 ${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKED_CLASS} { contain: layout style !important; }
@@ -503,59 +505,62 @@ const bakeTrackingSectionSizes = async (doc, {
     const body = doc.body
     if (!body) return
 
-    ensureTrackingSizeBakeStyles(doc)
+    body.classList.add(MANABI_TRACKING_SIZE_PREBAKE_BODY_CLASS)
 
-    // Wait for fonts to settle to reduce post-bake growth
-    try { await doc.fonts?.ready } catch {}
+    try {
+        ensureTrackingSizeBakeStyles(doc)
 
-    const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
-    if (sections.length === 0) return
+        // Wait for fonts to settle to reduce post-bake growth
+        try { await doc.fonts?.ready } catch {}
 
-    logEBook('tracking-size:bake-context', {
-        reason,
-        vertical,
-        batchSize,
-        sectionIndex,
-        bookId,
-        sectionHref,
-        sectionCount: sections.length,
-        appliedFromCacheFlag: !!globalThis.manabiTrackingAppliedFromCache,
-    })
+        const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
+        if (sections.length === 0) return
 
-    const viewport = {
-        width: Math.round(doc.documentElement?.clientWidth ?? 0),
-        height: Math.round(doc.documentElement?.clientHeight ?? 0),
-        dpr: Math.round((doc.defaultView?.devicePixelRatio ?? 1) * 1000) / 1000,
-        safeTop: Math.round((globalThis.manabiSafeAreaInsets?.top ?? 0) * 1000) / 1000,
-        safeBottom: Math.round((globalThis.manabiSafeAreaInsets?.bottom ?? 0) * 1000) / 1000,
-        safeLeft: Math.round((globalThis.manabiSafeAreaInsets?.left ?? 0) * 1000) / 1000,
-        safeRight: Math.round((globalThis.manabiSafeAreaInsets?.right ?? 0) * 1000) / 1000,
-    }
-    logEBook('tracking-size:viewport', { ...viewport, reason })
-    let settingsKey = globalThis.paginationTrackingSettingsKey ?? ''
-    if (!settingsKey) {
-        try {
-            const cs = doc?.defaultView?.getComputedStyle?.(doc.body)
-            const fontSize = cs?.fontSize || '0'
-            const fontFamily = (cs?.fontFamily || '').split(',')[0]?.trim?.() || 'unknown'
-            settingsKey = `fallback|font:${fontSize}|family:${fontFamily}`
-        } catch {}
-    }
-    logEBook('tracking-size:settings-key', { settingsKey, reason })
-    const writingModeKey = globalThis.manabiTrackingWritingMode || (vertical ? 'vertical-rl' : 'horizontal-ltr')
-    const cacheKey = [
-        MANABI_TRACKING_CACHE_VERSION,
-        settingsKey || 'no-settings',
-        writingModeKey,
-        `rtl:${globalThis.manabiTrackingRTL ? 1 : 0}`,
-        `vw:${viewport.width}`,
-        `vh:${viewport.height}`,
-        `dpr:${viewport.dpr}`,
-        `safe:${viewport.safeTop},${viewport.safeRight},${viewport.safeBottom},${viewport.safeLeft}`,
-        `sect:${sectionIndex ?? -1}`,
-        `book:${globalThis.paginationTrackingBookKey || bookId || ''}`,
-        `href:${sectionHref || ''}`,
-    ].join('|')
+        logEBook('tracking-size:bake-context', {
+            reason,
+            vertical,
+            batchSize,
+            sectionIndex,
+            bookId,
+            sectionHref,
+            sectionCount: sections.length,
+            appliedFromCacheFlag: !!globalThis.manabiTrackingAppliedFromCache,
+        })
+
+        const viewport = {
+            width: Math.round(doc.documentElement?.clientWidth ?? 0),
+            height: Math.round(doc.documentElement?.clientHeight ?? 0),
+            dpr: Math.round((doc.defaultView?.devicePixelRatio ?? 1) * 1000) / 1000,
+            safeTop: Math.round((globalThis.manabiSafeAreaInsets?.top ?? 0) * 1000) / 1000,
+            safeBottom: Math.round((globalThis.manabiSafeAreaInsets?.bottom ?? 0) * 1000) / 1000,
+            safeLeft: Math.round((globalThis.manabiSafeAreaInsets?.left ?? 0) * 1000) / 1000,
+            safeRight: Math.round((globalThis.manabiSafeAreaInsets?.right ?? 0) * 1000) / 1000,
+        }
+        logEBook('tracking-size:viewport', { ...viewport, reason })
+        let settingsKey = globalThis.paginationTrackingSettingsKey ?? ''
+        if (!settingsKey) {
+            try {
+                const cs = doc?.defaultView?.getComputedStyle?.(doc.body)
+                const fontSize = cs?.fontSize || '0'
+                const fontFamily = (cs?.fontFamily || '').split(',')[0]?.trim?.() || 'unknown'
+                settingsKey = `fallback|font:${fontSize}|family:${fontFamily}`
+            } catch {}
+        }
+        logEBook('tracking-size:settings-key', { settingsKey, reason })
+        const writingModeKey = globalThis.manabiTrackingWritingMode || (vertical ? 'vertical-rl' : 'horizontal-ltr')
+        const cacheKey = [
+            MANABI_TRACKING_CACHE_VERSION,
+            settingsKey || 'no-settings',
+            writingModeKey,
+            `rtl:${globalThis.manabiTrackingRTL ? 1 : 0}`,
+            `vw:${viewport.width}`,
+            `vh:${viewport.height}`,
+            `dpr:${viewport.dpr}`,
+            `safe:${viewport.safeTop},${viewport.safeRight},${viewport.safeBottom},${viewport.safeLeft}`,
+            `sect:${sectionIndex ?? -1}`,
+            `book:${globalThis.paginationTrackingBookKey || bookId || ''}`,
+            `href:${sectionHref || ''}`,
+        ].join('|')
 
     logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason, cacheKey })
 
@@ -980,21 +985,24 @@ const bakeTrackingSectionSizes = async (doc, {
         reason,
     })
 
-    try {
-        const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
-        const entriesForCache = Array.from(bakedEntryMap.values())
-        if (handler?.postMessage && entriesForCache.length > 0) {
-            handler.postMessage({
-                command: 'set',
-                key: cacheKey,
-                entries: entriesForCache,
-                reason,
-            })
+        try {
+            const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
+            const entriesForCache = Array.from(bakedEntryMap.values())
+            if (handler?.postMessage && entriesForCache.length > 0) {
+                handler.postMessage({
+                    command: 'set',
+                    key: cacheKey,
+                    entries: entriesForCache,
+                    reason,
+                })
+            }
+        } catch (error) {
+            // ignore cache store errors
         }
-    } catch (error) {
-        // ignore cache store errors
-    }
 
+    } finally {
+        body.classList.remove(MANABI_TRACKING_SIZE_PREBAKE_BODY_CLASS)
+    }
 }
 
 // Geometry measurement disabled: keep signature for compatibility, do nothing.
@@ -3192,6 +3200,10 @@ export class Paginator extends HTMLElement {
                         const $style = doc.createElement('style')
                         doc.head.append($style)
                         this.#styleMap.set(doc, [$styleBefore, $style])
+                    }
+                    if (MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+                        ensureTrackingSizeBakeStyles(doc)
+                        doc.body?.classList?.add(MANABI_TRACKING_SIZE_PREBAKE_BODY_CLASS)
                     }
                     //                    console.log("#display... await onLoad")
                     await onLoad?.({
