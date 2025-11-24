@@ -152,17 +152,15 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                       let itemSelection = itemSelection,
                       let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
                       !content.url.matchesReaderURL(readerContent.pageURL) else { return }
-                if let handler = onSelection {
-                    handler(content)
-                    Task { @MainActor in
+                Task { @MainActor in
+                    if let handler = onSelection {
+                        handler(content)
                         if entrySelection == itemSelection {
                             entrySelection = nil
                         }
+                        return
                     }
-                    return
-                }
-                guard shouldSyncToReader else { return }
-                Task { @MainActor in
+                    guard shouldSyncToReader else { return }
                     do {
                         try await navigator.load(
                             content: content,

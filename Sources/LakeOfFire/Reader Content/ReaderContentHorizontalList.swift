@@ -180,28 +180,38 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     let customMenuOptions: ((C) -> AnyView)?
     let contentSelection: Binding<String?>
     let onContentSelected: ((C) -> Void)?
-    
+    let resetScrollOnAppear: Bool
+
+    @State private var pendingScrollTask: Task<Void, Never>?
+    @State private var scrollPositionID: String?
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
     //    @State private var viewWidth: CGFloat = 0
     
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 15) {
-                ForEach(filteredContents, id: \.compoundKey) { (content: C) in
-                    ReaderContentInnerHorizontalListItem(
-                        content: content,
-                        includeSource: includeSource,
-                        maxCellHeight: maxCellHeight,
-                        customMenuOptions: customMenuOptions,
-                        contentSelection: contentSelection,
-                        onContentSelected: onContentSelected
-                    )
+        Group {
+            if #available(iOS 17, macOS 14, *) {
+                ScrollView(.horizontal) {
+                    contentStack
                 }
-                //                .headerProminence(.increased)
+                .scrollTargetBehavior(.viewAligned)
+                .scrollPosition(id: $scrollPositionID, anchor: .leading)
+                .onAppear { applyScrollPosition() }
+                .onChange(of: filteredContents.map(\.compoundKey)) { _ in
+                    applyScrollPosition()
+                }
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
+                        contentStack
+                    }
+                    .onAppear {
+                        scheduleScrollToStart(proxy: proxy)
+                    }
+                    .onChange(of: filteredContents.map(\.compoundKey)) { _ in
+                        scheduleScrollToStart(proxy: proxy)
+                    }
+                }
             }
-            .frame(minHeight: maxCellHeight)
-            //            .fixedSize()
-            //            .padding(.horizontal)
         }
         .modifier {
             if #available(iOS 17, macOS 14, *) {
@@ -225,13 +235,61 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
         includeSource: Bool,
         customMenuOptions: ((C) -> AnyView)? = nil,
         contentSelection: Binding<String?>,
-        onContentSelected: ((C) -> Void)? = nil
+        onContentSelected: ((C) -> Void)? = nil,
+        resetScrollOnAppear: Bool = false
     ) {
         self.filteredContents = filteredContents
         self.includeSource = includeSource
         self.customMenuOptions = customMenuOptions
         self.contentSelection = contentSelection
         self.onContentSelected = onContentSelected
+        self.resetScrollOnAppear = resetScrollOnAppear
+    }
+
+    @MainActor
+    private func applyScrollPosition() {
+        guard resetScrollOnAppear, let firstID = filteredContents.first?.compoundKey else { return }
+        debugPrint("# HORIZONTALSCROLL schedule", "firstID:", firstID, "count:", filteredContents.count)
+        Task { @MainActor in
+            scrollPositionID = firstID
+            debugPrint("# HORIZONTALSCROLL scrolled", "firstID:", firstID)
+        }
+    }
+
+    private func scheduleScrollToStart(proxy: ScrollViewProxy) {
+        guard resetScrollOnAppear else { return }
+        guard let firstID = filteredContents.first?.compoundKey else { return }
+        pendingScrollTask?.cancel()
+        debugPrint("# HORIZONTALSCROLL schedule", "firstID:", firstID, "count:", filteredContents.count)
+        pendingScrollTask = Task { @MainActor in
+            // Small delay to ensure layout has a valid content size.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            proxy.scrollTo(firstID, anchor: .leading)
+            debugPrint("# HORIZONTALSCROLL scrolled", "firstID:", firstID)
+        }
+    }
+
+    @ViewBuilder
+    private var contentStack: some View {
+        HStack(spacing: 15) {
+            ForEach(filteredContents, id: \.compoundKey) { (content: C) in
+                ReaderContentInnerHorizontalListItem(
+                    content: content,
+                    includeSource: includeSource,
+                    maxCellHeight: maxCellHeight,
+                    customMenuOptions: customMenuOptions,
+                    contentSelection: contentSelection,
+                    onContentSelected: onContentSelected
+                )
+                .id(content.compoundKey)
+            }
+        }
+        .modifier {
+            if #available(iOS 17, macOS 14, *) {
+                $0.scrollTargetLayout()
+            } else { $0 }
+        }
+        .frame(minHeight: maxCellHeight)
     }
 }
 
@@ -242,6 +300,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
+    let resetScrollOnAppear: Bool
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     
@@ -256,14 +315,15 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
                 ReaderContentInnerHorizontalList(
                     filteredContents: viewModel.filteredContents,
-                    includeSource: includeSource,
-                    customMenuOptions: customMenuOptions,
-                    contentSelection: contentSelection,
-                    onContentSelected: onContentSelected
-                )
-            }
-            
-            if !viewModel.showLoadingIndicator,
+                includeSource: includeSource,
+                customMenuOptions: customMenuOptions,
+                contentSelection: contentSelection,
+                onContentSelected: onContentSelected,
+                resetScrollOnAppear: resetScrollOnAppear
+            )
+        }
+        
+        if !viewModel.showLoadingIndicator,
                viewModel.filteredContents.isEmpty {
                 emptyStateView()
             }
@@ -308,6 +368,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         contentSelection: Binding<String?>,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        resetScrollOnAppear: Bool = false,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
@@ -321,6 +382,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         self.contentSelection = contentSelection
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.resetScrollOnAppear = resetScrollOnAppear
         self.emptyStateView = { emptyStateView() }
     }
 }

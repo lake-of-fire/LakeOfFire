@@ -108,6 +108,14 @@
         const previous = lastBodyMetrics
         const previousBodyHTML = previous ? previous.bodyHTMLBytes : 0
         const previousReaderHTML = previous ? previous.readerContentHTMLBytes : 0
+        if (current.hasBody && current.bodyHTMLBytes === 0 && (!previous || previousBodyHTML > 0)) {
+            readerLog("emptyBodyDetected", {
+                readyState: document.readyState || "unknown",
+                bodyHTMLBytes: current.bodyHTMLBytes,
+                bodyTextBytes: current.bodyTextBytes,
+                outerHTMLBytes: document.documentElement?.outerHTML?.length || 0,
+            })
+        }
         const deltaBodyHTML = previous ? current.bodyHTMLBytes - previousBodyHTML : 0
         const deltaReaderHTML = previous ? current.readerContentHTMLBytes - previousReaderHTML : 0
         const shouldLog =
@@ -131,8 +139,25 @@
         readerLog("bodyState." + event, payload)
     }
     
+    function canonicalContentURL() {
+        try {
+            const href = window.location.href
+            const url = new URL(href)
+            if (url.protocol === "internal:" && url.host === "local" && url.pathname === "/load/reader") {
+                const readerURL = new URLSearchParams(url.search || "").get("reader-url")
+                if (readerURL) {
+                    return decodeURIComponent(readerURL)
+                }
+            }
+            return href
+        } catch (_) {
+            return window.location.href
+        }
+    }
+
     function getOriginURL() {
-        return window.top.location.href;
+        // Always use the canonical article URL so frame registration lines up with Swift lookups.
+        return canonicalContentURL()
     }
     
     function nextManabiUniqueIdentifier() {
@@ -201,8 +226,14 @@
     }
     
     let manabi_readability = function () {
-        // Don't run on already-Readability-ified content
-        if (window.top.location.protocol !== 'ebook:' && document.body?.dataset.isNextLoadInReaderMode === 'true' || (!document.body?.classList.contains('readability-mode') && document.getElementById('reader-content') === null)) {
+        const body = document.body
+        const nextLoadFlag = body?.dataset?.isNextLoadInReaderMode === 'true' || body?.dataset?.nextLoadIsReadabilityMode === 'true'
+        const hasReadabilityMode = body?.classList.contains('readability-mode')
+        const hasReaderContent = document.getElementById('reader-content') !== null
+        const shouldProcess = (window.top.location.protocol !== 'ebook:' && nextLoadFlag) || (!hasReadabilityMode && !hasReaderContent)
+
+        // Don't run on already-Readability-ified content unless explicitly requested for the next load.
+        if (shouldProcess) {
             // Only process document if it didn't already come from SwiftReadability's output.
             // Ensures idempotency.
             
@@ -296,6 +327,8 @@
                     if (document.body) {
                         document.body.dataset.manabiReaderModeAvailable = 'false';
                         document.body.dataset.isNextLoadInReaderMode = 'false';
+                        document.body.dataset.nextLoadIsReadabilityMode = 'false';
+                        delete document.body.dataset.manabiReaderModeAvailableFor;
                     }
                     window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
                         pageURL: loc.href,
@@ -309,8 +342,10 @@
                     const hasByline = displayByline.length > 0
                     var content = DOMPurify.sanitize(rawContent)
                     const sanitizedContentBytes = content && typeof content === "string" ? content.length : 0
+                    const hasReaderBody = typeof content === "string" && content.indexOf('id="reader-content"') !== -1
                     readerLog("sanitizedContent", {
                         contentBytes: sanitizedContentBytes,
+                        hasReaderBody: hasReaderBody,
                         hasMarkup: !!(content && typeof content === "string" && content.indexOf("<body") !== -1),
                         preview: previewText(content, 512),
                     })
@@ -406,12 +441,20 @@
 </html>
 `
                     const htmlBytes = typeof html === "string" ? html.length : 0
+                    const hasReaderBody = typeof html === "string" ? html.indexOf('id="reader-content"') !== -1 : false
                     readerLog("htmlTemplatePrepared", {
                         outputBytes: htmlBytes,
                         contentBytes: sanitizedContentBytes,
-                        hasReaderBody: typeof html === "string" ? html.indexOf("class=\"readability-mode\"") !== -1 : false,
+                        hasReaderBody: hasReaderBody,
                         readerContentPreview: previewText(content, 512),
                     })
+                    if (!hasReaderBody) {
+                        readerLog("missingReaderContent", {
+                            reason: "htmlTemplatePrepared",
+                            contentBytes: sanitizedContentBytes,
+                            outputBytes: htmlBytes,
+                        })
+                    }
 
                     // 0 is innermost.
                     // Currently only supports optional [shadowRoot][shadowRoot][iframe] nesting
@@ -425,12 +468,22 @@
                         if (content) {
                             document.body.dataset.manabiReaderModeAvailable = 'true';
                             document.body.dataset.manabiReaderModeAvailableFor = loc.href;
+                            document.body.dataset.isNextLoadInReaderMode = 'false';
+                            document.body.dataset.nextLoadIsReadabilityMode = 'false';
+                            const hasReaderBody = html.indexOf('id="reader-content"') !== -1
                             readerLog("outputPrepared", {
                                 contentBytes: content.length,
                                 outputBytes: html.length,
-                                hasReaderBody: html.indexOf("class=\"readability-mode\"") !== -1,
+                                hasReaderBody: hasReaderBody,
                                 contentPreview: previewText(content, 512),
                             })
+                            if (!hasReaderBody) {
+                                readerLog("missingReaderContent", {
+                                    reason: "outputPrepared",
+                                    contentBytes: content.length,
+                                    outputBytes: html.length,
+                                })
+                            }
                             readerLog("readabilityParsedPayload", {
                                 contentBytes: content.length,
                                 outputBytes: html.length,
@@ -452,6 +505,7 @@
                         } else {
                             document.body.dataset.manabiReaderModeAvailable = 'false';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
+                            document.body.dataset.nextLoadIsReadabilityMode = 'false';
                             delete document.body.dataset.manabiReaderModeAvailableFor;
 
                             window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({

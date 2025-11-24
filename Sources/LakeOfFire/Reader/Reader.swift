@@ -224,6 +224,7 @@ public extension WebViewNavigator {
             debugPrint("# FLASH WebViewNavigator.load missing url", content.url)
         }
     }
+
 }
 
 public struct Reader: View {

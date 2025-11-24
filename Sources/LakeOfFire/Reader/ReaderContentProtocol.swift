@@ -208,6 +208,7 @@ public extension ReaderContentProtocol {
         guard let content else { return nil }
         let nsContent: NSData = content as NSData
         guard let data = try? nsContent.decompressed(using: .lzfse) as Data? else {
+            debugPrint("# READER htmlToDisplay.decompressFailed", "bytes=\(content.count)")
             return nil
         }
         return String(decoding: data, as: UTF8.self)
@@ -220,8 +221,14 @@ public extension ReaderContentProtocol {
         if rssContainsFullContent || isFromClipboard {
             let html = self.html
             try Task.checkCancellation()
+            let bytes = html?.utf8.count ?? 0
+            debugPrint(
+                "# READER htmlToDisplay.source",
+                "url=\(url.absoluteString)",
+                "source=\(rssContainsFullContent ? "stored-html" : "clipboard")",
+                "bytes=\(bytes)"
+            )
             if url.isSnippetURL {
-                let bytes = html?.utf8.count ?? 0
                 let preview = html.flatMap { snippetPreview($0, maxLength: 240) } ?? "<nil>"
                 debugPrint(
                     "# READER snippetContent.rawHTML",
@@ -233,12 +240,31 @@ public extension ReaderContentProtocol {
             return html
         } else if url.isReaderFileURL {
             guard let data = try? await readerFileManager.read(fileURL: url) else {
+                debugPrint(
+                    "# READER htmlToDisplay.source",
+                    "url=\(url.absoluteString)",
+                    "source=reader-file",
+                    "bytes=<nil>",
+                    "error=readFailed"
+                )
                 return nil
             }
             try Task.checkCancellation()
             let html = String(decoding: data, as: UTF8.self)
+            debugPrint(
+                "# READER htmlToDisplay.source",
+                "url=\(url.absoluteString)",
+                "source=reader-file",
+                "bytes=\(data.count)"
+            )
             return html
         }
+        debugPrint(
+            "# READER htmlToDisplay.source",
+            "url=\(url.absoluteString)",
+            "source=unknown",
+            "bytes=<nil>"
+        )
         return nil
     }
     

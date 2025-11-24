@@ -137,7 +137,7 @@ public struct BookLibraryView: View {
     @EnvironmentObject private var readerFileManager: ReaderFileManager
     
     @StateObject private var readerContentListViewModel = ReaderContentListViewModel<ContentFile>()
-    @State private var isEditorsPicksExpanded = true
+    @AppStorage("BookLibraryView.editorsPicks.isExpanded") private var isEditorsPicksExpanded = true
     @State private var isMyBooksExpanded = true
 
     private var isMyBooksEmpty: Bool {

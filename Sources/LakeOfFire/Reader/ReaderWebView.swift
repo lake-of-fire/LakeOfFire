@@ -59,6 +59,7 @@ fileprivate class ReaderWebViewHandler {
     
     func handleNewURL(state: WebViewState) async throws {
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating)
+        debugPrint("# READER webView.state", "url=\(state.pageURL.absoluteString)", "loading=\(state.isLoading)", "provisional=\(state.isProvisionallyNavigating)")
 
         if state.pageURL.isReaderURLLoaderURL,
            let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: state.pageURL),
@@ -91,6 +92,19 @@ fileprivate class ReaderWebViewHandler {
         try await readerContent.load(url: state.pageURL)
         if state.pageURL.isSnippetURL {
             debugPrint("# FLASH ReaderWebViewHandler.handleNewURL snippetPageLoaded", state.pageURL.absoluteString)
+        }
+        if let current = readerContent.content {
+            debugPrint(
+                "# READER content.state",
+                "pageURL=\(state.pageURL.absoluteString)",
+                "contentURL=\(current.url.absoluteString)",
+                "isSnippet=\(current.url.isSnippetURL)",
+                "readerDefault=\(current.isReaderModeByDefault)",
+                "hasHTML=\(current.hasHTML)",
+                "rssFull=\(current.rssContainsFullContent)"
+            )
+        } else {
+            debugPrint("# READER content.state", "pageURL=\(state.pageURL.absoluteString)", "contentURL=<nil>")
         }
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerContent loaded", state.pageURL)
         try Task.checkCancellation()
@@ -167,6 +181,14 @@ fileprivate class ReaderWebViewHandler {
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed event", state.pageURL)
         navigationTaskManager.startOnNavigationFailed { @MainActor in
             if let error = state.error {
+                let nsError = error as NSError
+                debugPrint(
+                    "# READER navigation.failed",
+                    "url=\(state.pageURL.absoluteString)",
+                    "provisional=\(state.isProvisionallyNavigating)",
+                    "code=\(nsError.code)",
+                    "domain=\(nsError.domain)"
+                )
                 self.readerModeViewModel.onNavigationError(
                     pageURL: state.pageURL,
                     error: error,

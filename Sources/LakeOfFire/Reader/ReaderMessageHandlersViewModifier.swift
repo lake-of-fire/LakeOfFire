@@ -6,10 +6,11 @@ import RealmSwiftGaps
 import LakeKit
 import WebKit
 
-private struct TrackingSizeCacheEntry: Codable {
+private struct ReaderSizeTrackingCacheEntry: Codable {
     let id: String
     let inlineSize: Double
     let blockSize: Double
+    let blockStart: Double?
 }
 
 private let readerModeDatasetProbeScript = """
@@ -98,7 +99,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
 
     // Cache baked tracking-section sizes keyed by settings/viewport/section.
-    private let trackingSizeCache = LRUSQLiteCache<String, [TrackingSizeCacheEntry]>(
+    private let trackingSizeCache = LRUSQLiteCache<String, [ReaderSizeTrackingCacheEntry]>(
         namespace: "reader-pagination-size-tracking-cache-v1",
         version: 1,
         totalBytesLimit: 20 * 1024 * 1024,
@@ -169,11 +170,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 switch command {
                 case "set":
                     if let entries = body["entries"] as? [[String: Any]] {
-                        let decoded: [TrackingSizeCacheEntry] = entries.compactMap { dict in
+                        let decoded: [ReaderSizeTrackingCacheEntry] = entries.compactMap { dict in
                             guard let id = dict["id"] as? String,
                                   let inlineSize = dict["inlineSize"] as? Double,
                                   let blockSize = dict["blockSize"] as? Double else { return nil }
-                            return TrackingSizeCacheEntry(id: id, inlineSize: inlineSize, blockSize: blockSize)
+                            let blockStart = dict["blockStart"] as? Double
+                            return ReaderSizeTrackingCacheEntry(id: id, inlineSize: inlineSize, blockSize: blockSize, blockStart: blockStart)
                         }
                         trackingSizeCache.setValue(decoded, forKey: key)
                         debugPrint("# READER trackingSizeCache set", "key=\(key.prefix(72))…", "count=\(decoded.count)")
@@ -249,14 +251,69 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("readabilityFramePing", { @MainActor [weak self] message in
                 guard let self else { return }
+                let frameInfo = message.frameInfo
+                let frameRequestURL = frameInfo.request.url?.absoluteString ?? "<nil>"
+                let frameMainDocURL = frameInfo.request.mainDocumentURL?.absoluteString ?? "<nil>"
+                let frameSecurityOrigin = String(describing: frameInfo.securityOrigin)
+                debugPrint(
+                    "# READER readability.framePing.frameInfo",
+                    "debug=\(frameInfo.debugDescription)",
+                    "requestURL=\(frameRequestURL)",
+                    "mainDocumentURL=\(frameMainDocURL)",
+                    "securityOrigin=\(frameSecurityOrigin)",
+                    "isMain=\(frameInfo.isMainFrame)"
+                )
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {
                     debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
                     return
                 }
-                guard !windowURL.isNativeReaderView, let content = try? await ReaderViewModel.getContent(forURL: windowURL) else { return }
-                if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
+                let canonicalWindowURL = ReaderContentLoader.getContentURL(fromLoaderURL: windowURL) ?? windowURL
+                debugPrint(
+                    "# READER readability.framePing",
+                    "uuid=\(uuid)",
+                    "windowURL=\(windowURL.absoluteString)",
+                    "canonicalURL=\(canonicalWindowURL.absoluteString)",
+                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")",
+                    "isMain=\(message.frameInfo.isMainFrame)"
+                )
+                guard !canonicalWindowURL.isNativeReaderView, let content = try? await ReaderViewModel.getContent(forURL: canonicalWindowURL) else { return }
+                if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid, canonicalURL: canonicalWindowURL) {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
+                if readerModeViewModel.readabilityContainerFrameInfo == nil {
+                    readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
+                }
+            }),
+            ("readerBootstrapPing", { @MainActor [weak self] message in
+                guard let self else { return }
+                let frameInfo = message.frameInfo
+                let frameURL = frameInfo.request.url
+                let body = message.body as? [String: Any]
+                let href = body?["href"] as? String ?? "<nil>"
+                let readyState = body?["readyState"] as? String ?? "<nil>"
+                debugPrint(
+                    "# READER bootstrap.ping",
+                    "href=\(href)",
+                    "readyState=\(readyState)",
+                    "frameURL=\(frameURL?.absoluteString ?? "<nil>")",
+                    "isMain=\(frameInfo.isMainFrame)"
+                )
+                // Try to seed the frame registry early.
+                if let url = frameURL {
+                    let canonicalHref = URL(string: href).flatMap { ReaderContentLoader.getContentURL(fromLoaderURL: $0) ?? $0 }
+                    let bootstrapKey = canonicalHref?.absoluteString ?? url.absoluteString
+                    _ = await readerViewModel.scriptCaller.addMultiTargetFrame(frameInfo, uuid: "bootstrap-\(bootstrapKey)", canonicalURL: canonicalHref)
+                    let pageMatches = canonicalHref.map { urlsMatchWithoutHash($0, self.readerViewModel.state.pageURL) || (self.readerModeViewModel.isReaderModeLoadPending(for: $0)) } ?? false
+                    if frameInfo.isMainFrame && pageMatches {
+                        // Always refresh to the latest main-frame WKFrameInfo for this page; older instances become invalid after nav.
+                        readerModeViewModel.readabilityContainerFrameInfo = frameInfo
+                    } else if readerModeViewModel.readabilityContainerFrameInfo == nil {
+                        readerModeViewModel.readabilityContainerFrameInfo = frameInfo
+                    }
+                }
+            }),
+            ("readerDocState", { @MainActor _ in
+                debugPrint("# READER docState.ping")
             }),
             ("readabilityModeUnavailable", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -264,16 +321,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 // TODO: Reuse guard code across this and readabilityParsed
-                guard let url = result.windowURL,
-                      urlsMatchWithoutHash(url, readerViewModel.state.pageURL),
-                      let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                guard let rawURL = result.windowURL else { return }
+                let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: rawURL) ?? rawURL
+                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL),
+                      let content = try? await ReaderViewModel.getContent(forURL: resolvedURL) else {
                     return
                 }
-                let isSnippetURL = url.isSnippetURL
+                let isSnippetURL = resolvedURL.isSnippetURL
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
-                        "pageURL=\(url.absoluteString)",
+                        "pageURL=\(resolvedURL.absoluteString)",
                         "frameIsMain=\(message.frameInfo.isMainFrame)"
                     )
                 }
@@ -281,12 +339,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     // Don't override a parent window readability result.
                     return
                 }
-                guard !url.isReaderURLLoaderURL else { return }
+                guard !resolvedURL.isReaderURLLoaderURL else { return }
 
                 if isSnippetURL, readerModeViewModel.readabilityContent != nil {
                     debugPrint(
                         "# READER readability.snippetReset",
-                        "url=\(url.absoluteString)",
+                        "url=\(resolvedURL.absoluteString)",
                         "reason=existingReadabilityState"
                     )
                     readerModeViewModel.readabilityContent = nil
@@ -312,7 +370,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     
                     try await { @RealmBackgroundActor in
                         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                        if let historyRecord = HistoryRecord.get(forURL: url, realm: historyRealm) {
+                        if let historyRecord = HistoryRecord.get(forURL: resolvedURL, realm: historyRealm) {
                             try await historyRecord.refreshDemotedStatus()
                         }
                     }()
@@ -322,33 +380,45 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("readabilityParsed", { @MainActor [weak self] message in
                 guard let self else { return }
+                let frameInfo = message.frameInfo
+                let frameRequestURL = frameInfo.request.url?.absoluteString ?? "<nil>"
+                let frameMainDocURL = frameInfo.request.mainDocumentURL?.absoluteString ?? "<nil>"
+                let frameSecurityOrigin = String(describing: frameInfo.securityOrigin)
+                debugPrint(
+                    "# READER readability.parsed.frameInfo",
+                    "debug=\(frameInfo.debugDescription)",
+                    "requestURL=\(frameRequestURL)",
+                    "mainDocumentURL=\(frameMainDocURL)",
+                    "securityOrigin=\(frameSecurityOrigin)",
+                    "isMain=\(frameInfo.isMainFrame)"
+                )
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
-                guard let windowURL = result.windowURL,
-                      urlsMatchWithoutHash(windowURL, readerViewModel.state.pageURL),
-                      let content = try? await ReaderViewModel.getContent(forURL: windowURL) else {
+                guard let rawWindowURL = result.windowURL else { return }
+                let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: rawWindowURL) ?? rawWindowURL
+                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL),
+                      let content = try? await ReaderViewModel.getContent(forURL: resolvedURL) else {
                     return
                 }
-                let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: windowURL) ?? windowURL
                 let isSnippetURL = resolvedURL.isSnippetURL
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
-                        "windowURL=\(windowURL.absoluteString)",
+                        "windowURL=\(rawWindowURL.absoluteString)",
                         "contentURL=\(resolvedURL.absoluteString)",
                         "frameIsMain=\(message.frameInfo.isMainFrame)"
                     )
                     debugPrint(
                         "# READER snippet.readabilityHTML",
-                        "windowURL=\(windowURL.absoluteString)",
+                        "windowURL=\(rawWindowURL.absoluteString)",
                         "bytes=\(result.outputHTML.utf8.count)",
                         "html=\(result.outputHTML)"
                     )
                     let hasReaderContent = result.outputHTML.contains("id=\"reader-content\"")
                     debugPrint(
                         "# READER readability.snippetOutput",
-                        "windowURL=\(windowURL.absoluteString)",
+                        "windowURL=\(resolvedURL.absoluteString)",
                         "contentURL=\(resolvedURL.absoluteString)",
                         "hasReaderContent=\(hasReaderContent)"
                     )
@@ -356,7 +426,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 if let bodySummary = summarizeBodyMarkup(from: result.outputHTML) {
                     debugPrint(
                         "# READER readability.parsedBody",
-                        "windowURL=\(windowURL.absoluteString)",
+                        "windowURL=\(resolvedURL.absoluteString)",
                         "contentBytes=\(result.outputHTML.utf8.count)",
                         "body=\(bodySummary)"
                     )
@@ -371,7 +441,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     if isSnippetURL {
                         debugPrint(
                             "# READER readability.empty",
-                            "windowURL=\(windowURL.absoluteString)",
+                            "windowURL=\(resolvedURL.absoluteString)",
                             "contentURL=\(resolvedURL.absoluteString)",
                             "snippet=true"
                         )
@@ -395,7 +465,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     if isSnippetURL {
                         debugPrint(
                             "# READER readability.shortCircuitSkipped",
-                            "windowURL=\(windowURL.absoluteString)",
+                            "windowURL=\(resolvedURL.absoluteString)",
                             "contentURL=\(resolvedURL.absoluteString)",
                             "reason=\(shortCircuitReason)",
                             "snippet=true"
@@ -403,12 +473,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     } else {
                         debugPrint(
                             "# READER readability.shortCircuit",
-                            "windowURL=\(windowURL.absoluteString)",
+                            "windowURL=\(resolvedURL.absoluteString)",
                             "contentURL=\(resolvedURL.absoluteString)",
                             "reason=\(shortCircuitReason)",
                             "snippet=false"
                         )
-                        await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: windowURL, frameInfo: message.frameInfo)
+                        await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: resolvedURL, frameInfo: message.frameInfo)
                         try? await scriptCaller.evaluateJavaScript("""
                             if (document.body) {
                                 document.body.dataset.manabiReaderModeAvailable = 'false';
@@ -431,7 +501,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         if readerModeViewModel.isReaderModeLoadPending(for: resolvedURL) {
                             readerModeViewModel.markReaderModeLoadComplete(for: resolvedURL)
                         }
-                        await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.postUpdate", url: windowURL, frameInfo: message.frameInfo)
+                        await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.postUpdate", url: resolvedURL, frameInfo: message.frameInfo)
                         return
                     }
                 }
@@ -440,6 +510,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 readerModeViewModel.readabilityPublishedTime = result.publishedTime
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
+                debugPrint(
+                    "# READER readabilityParsed.dispatch",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")",
+                    "outputBytes=\(result.outputHTML.utf8.count)",
+                    "frameIsMain=\(message.frameInfo.isMainFrame)"
+                )
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityDispatch",

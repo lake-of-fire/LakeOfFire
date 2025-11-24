@@ -245,7 +245,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return 26
     }
     
-    private let progressBarWidth: CGFloat = 31
+    private let progressBarWidth: CGFloat = 21.0
     
     private var thumbnailEdgeLength: CGFloat {
         let base = appearance.thumbnailDimension ?? appearance.maxCellHeight
