@@ -13,6 +13,19 @@ fileprivate struct ThemeModifier: ViewModifier {
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
 
+    private func updateTrackingSettingsKey(reason: String) async {
+        let key = "pagination-size:v1|font:\(readerFontSize ?? 0)|light:\(lightModeTheme.rawValue)|dark:\(darkModeTheme.rawValue)"
+        do {
+            try await scriptCaller.evaluateJavaScript(
+                "window.paginationTrackingSettingsKey = '" + key + "';",
+                duplicateInMultiTargetFrames: true
+            )
+            debugPrint("# READER paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
+        } catch {
+            debugPrint("# READER paginationSettingsKey.set.error", error.localizedDescription)
+        }
+    }
+
     private func requestGeometryBake(reason: String) async {
         do {
             try await scriptCaller.evaluateJavaScript("window.reader?.view?.renderer?.requestTrackingSectionGeometryBake?.({ reason: '\(reason)', restoreLocation: true, immediate: true });", duplicateInMultiTargetFrames: true)
@@ -24,6 +37,7 @@ fileprivate struct ThemeModifier: ViewModifier {
     private func applyFontSize(_ size: Double, reason: String) async {
         do {
             try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(size)px';", duplicateInMultiTargetFrames: true)
+            await updateTrackingSettingsKey(reason: "font-size-change")
             await requestGeometryBake(reason: reason)
         } catch {
             print("Font size update failed: \(error)")
@@ -39,6 +53,7 @@ fileprivate struct ThemeModifier: ViewModifier {
                             document.body?.setAttribute('data-manabi-light-theme', '\(newValue)');
                         }
                         """, duplicateInMultiTargetFrames: true)
+                    await updateTrackingSettingsKey(reason: "light-theme-change")
                     await requestGeometryBake(reason: "light-theme-change")
                 }
             }
@@ -49,12 +64,15 @@ fileprivate struct ThemeModifier: ViewModifier {
                             document.body?.setAttribute('data-manabi-dark-theme', '\(newValue)');
                         }
                         """, duplicateInMultiTargetFrames: true)
+                    await updateTrackingSettingsKey(reason: "dark-theme-change")
                     await requestGeometryBake(reason: "dark-theme-change")
                 }
             }
             .task { @MainActor in
-                guard let readerFontSize else { return }
-                await applyFontSize(readerFontSize, reason: "font-size-initial")
+                await updateTrackingSettingsKey(reason: "initial")
+                if let readerFontSize {
+                    await applyFontSize(readerFontSize, reason: "font-size-initial")
+                }
             }
             .onChange(of: readerFontSize) { newValue in
                 guard let newValue else { return }

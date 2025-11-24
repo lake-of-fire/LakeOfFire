@@ -92,18 +92,22 @@ fileprivate struct EditorsPicksView: View {
             EmptyView()
         } else {
             ForEach(viewModel.editorsPicks) { publication in
-                BookListRow(publication: publication) { wasAlreadyDownloaded in
-                    guard wasAlreadyDownloaded else { return }
-                    Task { @MainActor in
-                        try await viewModel.open(
-                            publication: publication,
-                            readerFileManager: ReaderFileManager.shared,
-                            readerPageURL: readerContent.pageURL,
-                            navigator: navigator,
-                            readerModeViewModel: readerModeViewModel
-                        )
-                    }
-                }
+                BookListRow(
+                    publication: publication,
+                    onSelected: { wasAlreadyDownloaded in
+                        guard wasAlreadyDownloaded else { return }
+                        Task { @MainActor in
+                            try await viewModel.open(
+                                publication: publication,
+                                readerFileManager: ReaderFileManager.shared,
+                                readerPageURL: readerContent.pageURL,
+                                navigator: navigator,
+                                readerModeViewModel: readerModeViewModel
+                            )
+                        }
+                    },
+                    onNavigateToReader: viewModel.onNavigateToReader
+                )
             }
         }
     }
@@ -284,7 +288,8 @@ public class BookLibraryViewModel: ObservableObject {
         opdsURL: URL = BookLibraryViewModel.defaultOPDSURL,
         fileTypes: [UTType] = [.epub, .epubZip],
         fileFilter: ((ContentFile) throws -> Bool)? = nil,
-        loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)? = nil
+        loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)? = nil,
+        onNavigateToReader: (() -> Void)? = nil
     ) {
         self.mediaTypeTitle = mediaTypeTitle
         self.mediaFileTypeTitle = mediaFileTypeTitle
@@ -292,10 +297,13 @@ public class BookLibraryViewModel: ObservableObject {
         self.fileTypes = fileTypes
         self.fileFilter = fileFilter
         self.loadedFiles = loadedFiles
+        self.onNavigateToReader = onNavigateToReader
     }
- 
+
     @Published var editorsPicks: [Publication] = []
     @Published var errorMessage: String?
+    /// Hook used by host apps to run navigation side effects (e.g., clearing tab selection) after jumping into the reader.
+    @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
     
     func fetchAllData() async {
@@ -447,6 +455,7 @@ public class BookLibraryViewModel: ObservableObject {
                 readerFileManager: readerFileManager,
                 readerModeViewModel: readerModeViewModel
             )
+            onNavigateToReader?()
         }.value
     }
 
@@ -456,7 +465,8 @@ public class BookLibraryViewModel: ObservableObject {
         readerFileManager: ReaderFileManager = .shared,
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
-        readerModeViewModel: ReaderModeViewModel
+        readerModeViewModel: ReaderModeViewModel,
+        onNavigateToReader: (() -> Void)? = nil
     ) async throws {
         guard
             let downloadURL = publication.downloadURL,
@@ -472,6 +482,7 @@ public class BookLibraryViewModel: ObservableObject {
             readerFileManager: readerFileManager,
             readerModeViewModel: readerModeViewModel
         )
+        onNavigateToReader?()
     }
 }
 

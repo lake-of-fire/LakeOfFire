@@ -54,6 +54,27 @@ const animate = (a, b, duration, ease, render) => new Promise(resolve => {
 
 const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve))
 
+const requestTrackingSizeCache = (payload) => new Promise(resolve => {
+    try {
+        const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
+        if (!handler?.postMessage) return resolve(null)
+
+        const requestId = `cache-${Date.now()}-${trackingSizeCacheRequestCounter++}`
+        trackingSizeCacheResolvers.set(requestId, resolve)
+        handler.postMessage({ requestId, ...payload })
+    } catch (error) {
+        resolve(null)
+    }
+})
+
+globalThis.manabiResolveTrackingSizeCache = function (requestId, entries) {
+    const resolver = trackingSizeCacheResolvers.get(requestId)
+    if (resolver) {
+        trackingSizeCacheResolvers.delete(requestId)
+        resolver(entries)
+    }
+}
+
 const MANABI_TRACKING_SECTION_CLASS = 'manabi-tracking-section'
 const MANABI_TRACKING_SECTION_SELECTOR = `.${MANABI_TRACKING_SECTION_CLASS}`
 // Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
@@ -74,6 +95,11 @@ const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
 const MANABI_TRACKING_SIZE_STABLE_REQUIRED_STREAK = 2
 const MANABI_TRACKING_DOC_STABLE_MAX_EVENTS = 180
 const MANABI_TRACKING_DOC_STABLE_REQUIRED_STREAK = 2
+const MANABI_TRACKING_CACHE_HANDLER = 'trackingSizeCache'
+const MANABI_TRACKING_CACHE_VERSION = 'v1'
+
+const trackingSizeCacheResolvers = new Map()
+let trackingSizeCacheRequestCounter = 0
 
 const logEBook = (event, payload = {}) => {
     let metadata = ''
@@ -135,7 +161,9 @@ const ensureTrackingSizeBakeStyles = doc => {
     const style = doc.createElement('style')
     style.id = MANABI_TRACKING_SIZE_BAKE_STYLE_ID
     // Hidden trailing sections while baking to avoid layout thrash.
-    style.textContent = `.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }
+    style.textContent = `body.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS} { visibility: hidden !important; }
+.${MANABI_TRACKING_SECTION_CLASS} { contain: paint style !important; }
+.${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }
 ${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKED_CLASS} { contain: layout style !important; }`
     doc.head.append(style)
 }
@@ -310,6 +338,9 @@ const bakeTrackingSectionSizes = async (doc, {
     vertical,
     batchSize = MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE,
     reason = 'unspecified',
+    sectionIndex = null,
+    bookId = null,
+    sectionHref = null,
 } = {}) => {
     if (!doc) return
     if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) return
@@ -325,12 +356,52 @@ const bakeTrackingSectionSizes = async (doc, {
     const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
     if (sections.length === 0) return
 
-    logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason })
+    const viewport = {
+        width: Math.round(doc.documentElement?.clientWidth ?? 0),
+        height: Math.round(doc.documentElement?.clientHeight ?? 0),
+        dpr: Math.round((doc.defaultView?.devicePixelRatio ?? 1) * 1000) / 1000,
+        safeTop: Math.round((globalThis.manabiSafeAreaInsets?.top ?? 0) * 1000) / 1000,
+        safeBottom: Math.round((globalThis.manabiSafeAreaInsets?.bottom ?? 0) * 1000) / 1000,
+        safeLeft: Math.round((globalThis.manabiSafeAreaInsets?.left ?? 0) * 1000) / 1000,
+        safeRight: Math.round((globalThis.manabiSafeAreaInsets?.right ?? 0) * 1000) / 1000,
+    }
+    let settingsKey = globalThis.paginationTrackingSettingsKey ?? ''
+    if (!settingsKey) {
+        try {
+            const cs = doc?.defaultView?.getComputedStyle?.(doc.body)
+            const fontSize = cs?.fontSize || '0'
+            const fontFamily = (cs?.fontFamily || '').split(',')[0]?.trim?.() || 'unknown'
+            settingsKey = `fallback|font:${fontSize}|family:${fontFamily}`
+        } catch {}
+    }
+    const writingModeKey = globalThis.manabiTrackingWritingMode || (vertical ? 'vertical-rl' : 'horizontal-ltr')
+    const cacheKey = [
+        MANABI_TRACKING_CACHE_VERSION,
+        settingsKey || 'no-settings',
+        writingModeKey,
+        `rtl:${globalThis.manabiTrackingRTL ? 1 : 0}`,
+        `vw:${viewport.width}`,
+        `vh:${viewport.height}`,
+        `dpr:${viewport.dpr}`,
+        `safe:${viewport.safeTop},${viewport.safeRight},${viewport.safeBottom},${viewport.safeLeft}`,
+        `sect:${sectionIndex ?? -1}`,
+        `book:${globalThis.paginationTrackingBookKey || bookId || ''}`,
+        `href:${sectionHref || ''}`,
+    ].join('|')
+
+    logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason, cacheKey })
+
+    // Try to hydrate from cache first
+    const cachedEntries = await requestTrackingSizeCache({ command: 'get', key: cacheKey })
+    if (cachedEntries === null || cachedEntries === undefined) {
+        // treat null as miss, but avoid logging miss twice
+    }
 
     // Ensure the document layout has settled before hiding/baking sections.
     await waitForStableDocumentSize(doc)
 
     const bakedTags = []
+    const bakedEntries = []
     const startTs = performance?.now?.() ?? Date.now()
     const addedBodyClass = MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && !body.classList.contains(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
 
@@ -343,6 +414,34 @@ const bakeTrackingSectionSizes = async (doc, {
         el.style.removeProperty('block-size')
         el.style.removeProperty('inline-size')
     }
+
+    const applyCachedEntries = cached => {
+        if (!Array.isArray(cached)) return 0
+        let applied = 0
+        for (const entry of cached) {
+            const el = doc.getElementById(entry?.id)
+            if (!el) continue
+            const inlineSize = Number(entry.inlineSize)
+            const blockSize = Number(entry.blockSize)
+            if (!Number.isFinite(inlineSize) || !Number.isFinite(blockSize)) continue
+            el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
+            el.style.setProperty('block-size', formatPx(blockSize), 'important')
+            el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
+            el.classList.add(MANABI_TRACKING_SECTION_BAKED_CLASS)
+            el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
+            applied++
+        }
+        return applied
+    }
+
+    const appliedFromCache = applyCachedEntries(cachedEntries)
+    logEBook('tracking-size:cache-result', {
+        hit: appliedFromCache > 0,
+        applied: appliedFromCache,
+        total: sections.length,
+        cacheKey,
+        reason,
+    })
 
     if (addedBodyClass) body.classList.add(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
 
@@ -367,6 +466,7 @@ const bakeTrackingSectionSizes = async (doc, {
     const bakeSection = async section => {
         if (!section || section.nodeType !== 1) return null
         const el = section
+        if (el.hasAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) return null
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.add(MANABI_TRACKING_SECTION_BAKING_CLASS)
 
         try {
@@ -386,6 +486,7 @@ const bakeTrackingSectionSizes = async (doc, {
             bakedTags.push(serializeElementTag(el))
             if (multiColumn) multiColumnCount++
             bakedCount++
+            bakedEntries.push({ id: el.id || '', inlineSize, blockSize })
             return sizes
         } finally {
             if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
@@ -425,6 +526,20 @@ const bakeTrackingSectionSizes = async (doc, {
         durationMs,
         reason,
     })
+
+    try {
+        const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
+        if (handler?.postMessage && bakedEntries.length > 0) {
+            handler.postMessage({
+                command: 'set',
+                key: cacheKey,
+                entries: bakedEntries,
+                reason,
+            })
+        }
+    } catch (error) {
+        // ignore cache store errors
+    }
 }
 
 // Geometry measurement disabled: keep signature for compatibility, do nothing.
@@ -719,6 +834,12 @@ class View {
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
+                    globalThis.manabiTrackingVertical = this.#vertical
+                    globalThis.manabiTrackingVerticalRTL = this.#verticalRTL
+                    globalThis.manabiTrackingRTL = this.#rtl
+                    globalThis.manabiTrackingWritingMode = this.#vertical
+                        ? (this.#verticalRTL ? 'vertical-rl' : 'vertical-lr')
+                        : (this.#rtl ? 'horizontal-rtl' : 'horizontal-ltr')
                     this.#directionReadyResolve?.();
 
                     this.#contentRange.selectNodeContents(doc.body)
@@ -1369,6 +1490,7 @@ export class Paginator extends HTMLElement {
     requestTrackingSectionSizeBake({
         reason = 'unspecified',
         rect = null,
+        sectionIndex = null,
     } = {}) {
         if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
             this.#setLoading(false)
@@ -1427,6 +1549,7 @@ export class Paginator extends HTMLElement {
 
         this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
             reason,
+            sectionIndex: sectionIndex ?? this.#index,
         }).catch(error => {
             logEBook('tracking-size:error', {
                 message: error?.message ?? String(error),
@@ -1460,6 +1583,7 @@ export class Paginator extends HTMLElement {
 
     async #performTrackingSectionSizeBake({
         reason = 'unspecified',
+        sectionIndex = null,
     } = {}) {
         const doc = this.#view?.document
         if (!doc) {
@@ -1475,6 +1599,9 @@ export class Paginator extends HTMLElement {
             await bakeTrackingSectionSizes(doc, {
                 vertical: this.#vertical,
                 reason,
+                sectionIndex,
+                bookId: this.bookDir,
+                sectionHref: this.sections?.[this.#index]?.href || this.sections?.[this.#index]?.url || null,
             })
             const bodyRect = doc.body?.getBoundingClientRect?.()
             if (bodyRect) {
@@ -1932,6 +2059,7 @@ export class Paginator extends HTMLElement {
             if (dir) return await this.#goTo({
                 index: this.#adjacentIndex(dir),
                 anchor: dir < 0 ? () => 1 : () => 0,
+                reason: 'page',
             })
         })
     }
@@ -2196,9 +2324,10 @@ export class Paginator extends HTMLElement {
         const offset = size * (this.#rtl ? -page : page)
         return await this.#scrollTo(offset, reason, smooth)
     }
-    async scrollToAnchor(anchor, select) {
+    async scrollToAnchor(anchor, select, reasonOverride) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
-        await this.#scrollToAnchor(anchor, select ? 'selection' : 'navigation')
+        const reason = reasonOverride || (select ? 'selection' : 'navigation');
+        await this.#scrollToAnchor(anchor, reason)
     }
     // TODO: Fix newer way and stop using this one that calculates getClientRects
     async #scrollToAnchor(anchor, reason = 'anchor') {
@@ -2469,7 +2598,8 @@ export class Paginator extends HTMLElement {
             src,
             anchor,
             onLoad,
-            select
+            select,
+            reason,
         } = await promise
 
         //            console.log("#display...awaited promise")
@@ -2536,7 +2666,14 @@ export class Paginator extends HTMLElement {
         //            console.log("#display... call scroll to anchor")
 
         await this.scrollToAnchor((typeof anchor === 'function' ?
-            anchor(this.#view.document) : anchor) ?? 0, select)
+            anchor(this.#view.document) : anchor) ?? 0, select, reason)
+        // Diagnostics: capture initial pagination metrics after display
+        try {
+            const [pageNumber, pageCount] = await Promise.all([this.page(), this.pages()]);
+            window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKPAGE display ${JSON.stringify({ index, pageNumber, pageCount, reason })}`);
+        } catch (_error) {
+            // best-effort; do not fail display on logging issues
+        }
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
@@ -2549,9 +2686,11 @@ export class Paginator extends HTMLElement {
     async #goTo({
         index,
         anchor,
-        select
+        select,
+        reason,
     }) {
         //        console.log("#goTo...", this.style.display, index, anchor)
+        const navigationReason = reason ?? (select ? 'selection' : 'navigation');
         const willLoadNewIndex = index !== this.#index;
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
@@ -2560,7 +2699,8 @@ export class Paginator extends HTMLElement {
             await this.#display({
                 index,
                 anchor,
-                select
+                select,
+                reason: navigationReason,
             })
         } else {
             // hide the view until final relocate needs
@@ -2595,7 +2735,8 @@ export class Paginator extends HTMLElement {
                     src,
                     anchor,
                     onLoad,
-                    select
+                    select,
+                    reason: navigationReason,
                 }))
                 .catch(error => {
                     console.error(error);
@@ -2691,6 +2832,7 @@ export class Paginator extends HTMLElement {
         if (shouldGo) await this.#goTo({
             index: this.#adjacentIndex(dir),
             anchor: prev ? () => 1 : () => 0,
+            reason: 'page',
         })
         if (shouldGo || !this.hasAttribute('animated')) await wait(100)
         this.#locked = false
@@ -2703,12 +2845,14 @@ export class Paginator extends HTMLElement {
     }
     async prevSection() {
         return await this.goTo({
-            index: this.#adjacentIndex(-1)
+            index: this.#adjacentIndex(-1),
+            reason: 'page',
         })
     }
     async nextSection() {
         return await this.goTo({
-            index: this.#adjacentIndex(1)
+            index: this.#adjacentIndex(1),
+            reason: 'page',
         })
     }
     async firstSection() {

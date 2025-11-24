@@ -877,6 +877,14 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async throws {
         debugPrint("# FLASH ReaderModeViewModel.onNavigationCommitted", newState.pageURL)
+        let pageURL = newState.pageURL
+        // Provide a stable book key for JS tracking-size cache
+        try? await scriptCaller.evaluateJavaScript(
+            "window.paginationTrackingBookKey = '" + pageURL.absoluteString + "';",
+            in: nil,
+            duplicateInMultiTargetFrames: true
+        )
+        debugPrint("# READER paginationBookKey.set", "key=\(pageURL.absoluteString.prefix(72))…")
         readabilityContainerFrameInfo = nil
         readabilityContent = nil
         readabilityContainerSelector = nil

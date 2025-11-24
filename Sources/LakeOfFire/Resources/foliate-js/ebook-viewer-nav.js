@@ -738,7 +738,7 @@ export class NavigationHUD {
         }).catch(() => {});
     }
     
-    #normalizeRendererPageInfo(rawPage, rawTotal) {
+    #normalizeRendererPageInfo(rawPage, rawTotal, renderer) {
         if (rawPage == null && rawTotal == null) return null;
         const numericPage = Number(rawPage);
         const numericTotal = Number(rawTotal);
@@ -746,9 +746,23 @@ export class NavigationHUD {
         const currentBase = Number.isFinite(numericPage) ? Math.max(1, Math.round(numericPage)) : 1;
         const current = total ? Math.max(1, Math.min(total, currentBase)) : currentBase;
         if (!Number.isFinite(current)) return null;
+        // Foliate paginator inserts two sentinel “pages” (lead/trail). Adjust so UI shows text pages only.
+        const isPaginated = renderer && renderer.scrolled === false;
+        if (isPaginated && total && total > 2) {
+            const textTotal = Math.max(1, total - 2);
+            const textCurrent = Math.max(1, Math.min(textTotal, current - 1));
+            return {
+                current: textCurrent,
+                total: textTotal,
+                rawCurrent: current,
+                rawTotal: total,
+            };
+        }
         return {
             current,
             total,
+            rawCurrent: current,
+            rawTotal: total,
         };
     }
     
@@ -770,13 +784,15 @@ export class NavigationHUD {
             if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
                 return null;
             }
-            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value);
+            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
             if (!normalized) return null;
             this.rendererPageSnapshot = normalized;
             this.#updateFallbackTotalPages(normalized.total);
             this.#logPageNumberDiagnostic('renderer-snapshot', {
                 rendererCurrent: normalized.current,
                 rendererTotal: normalized.total,
+                rawRendererCurrent: normalized.rawCurrent,
+                rawRendererTotal: normalized.rawTotal,
             });
             return normalized;
         } catch (_error) {
@@ -788,9 +804,21 @@ export class NavigationHUD {
         const base = {
             event,
             totalPageCount: this.totalPageCount,
+            totalSource: this.lastTotalSource ?? null,
             ...payload,
         };
         const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
+        const line = `# EBOOKPAGE ${JSON.stringify(cleaned)}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional native logger
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
+            // optional console logger
+        }
     }
 
     #logPageScrub(_event, _payload = {}) {}
@@ -880,12 +908,12 @@ export class NavigationHUD {
         if (this.totalPageCount > 0) {
             candidates.push({ source: 'page-targets', total: this.totalPageCount });
         }
-        if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
-            candidates.push({ source: 'fallback', total: this.fallbackTotalPageCount });
-        }
         const rendererTotal = typeof this.rendererPageSnapshot?.total === 'number' ? this.rendererPageSnapshot.total : null;
         if (rendererTotal && rendererTotal > 0) {
             candidates.push({ source: 'renderer', total: rendererTotal });
+        }
+        if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
+            candidates.push({ source: 'fallback', total: this.fallbackTotalPageCount });
         }
         const locationTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locationTotal && locationTotal > 0) {
@@ -895,22 +923,14 @@ export class NavigationHUD {
             this.lastTotalSource = null;
             return null;
         }
-        const precedence = {
-            'page-targets': 4,
-            'renderer': 3,
-            'fallback': 2,
-            'location': 1,
-        };
-        const best = candidates.reduce((winner, candidate) => {
-            if (!winner) return candidate;
-            if (candidate.total > winner.total) return candidate;
-            if (candidate.total === winner.total) {
-                const winnerScore = precedence[winner.source] ?? 0;
-                const candidateScore = precedence[candidate.source] ?? 0;
-                return candidateScore >= winnerScore ? candidate : winner;
-            }
-            return winner;
-        }, null);
+        const precedence = ['page-targets', 'renderer', 'fallback', 'location'];
+        const best = candidates
+            .sort((a, b) => {
+                const pa = precedence.indexOf(a.source);
+                const pb = precedence.indexOf(b.source);
+                if (pa !== pb) return pa - pb; // lower index = higher priority
+                return (b.total ?? 0) - (a.total ?? 0); // tie-break by larger total
+            })[0];
         this.lastTotalSource = best?.source ?? null;
         if (best?.total && best.source !== 'page-targets') {
             this.#updateFallbackTotalPages(best.total);
@@ -931,8 +951,8 @@ export class NavigationHUD {
             return String((this.pageTargetIndexByKey.get(descriptor.pageItemKey) ?? 0) + 1);
         }
         const inferredTotal = this.totalPageCount
-            || this.fallbackTotalPageCount
             || this.rendererPageSnapshot?.total
+            || this.fallbackTotalPageCount
             || null;
         const indexFromFraction = this.#pageIndexFromFraction(descriptor.fraction, inferredTotal);
         if (indexFromFraction != null) {

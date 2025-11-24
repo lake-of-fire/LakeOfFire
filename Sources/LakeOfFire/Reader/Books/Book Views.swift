@@ -69,6 +69,7 @@ struct HorizontalBooks: View {
 struct BookListRow: View {
     let publication: Publication
     var onSelected: ((Bool) -> Void)? = nil
+    var onNavigateToReader: (() -> Void)? = nil
     @State private var downloadable: Downloadable?
     
     var body: some View {
@@ -77,6 +78,7 @@ struct BookListRow: View {
                 DownloadableBookListRow(
                     publication: publication,
                     onSelected: onSelected,
+                    onNavigateToReader: onNavigateToReader,
                     downloadable: downloadable
                 )
             } else {
@@ -126,6 +128,7 @@ fileprivate struct StaticBookListRow: View {
 fileprivate struct DownloadableBookListRow: View {
     let publication: Publication
     let onSelected: ((Bool) -> Void)?
+    let onNavigateToReader: (() -> Void)?
     @ObservedObject var downloadable: Downloadable
     @State private var wasDownloaded = false
     @ObservedObject private var downloadController = DownloadController.shared
@@ -199,7 +202,8 @@ fileprivate struct DownloadableBookListRow: View {
                         readerFileManager: ReaderFileManager.shared,
                         readerContent: readerContent,
                         navigator: navigator,
-                        readerModeViewModel: readerModeViewModel
+                        readerModeViewModel: readerModeViewModel,
+                        onNavigateToReader: onNavigateToReader
                     )
                 } catch {
                     print("Failed to open downloaded book: \\(error)")

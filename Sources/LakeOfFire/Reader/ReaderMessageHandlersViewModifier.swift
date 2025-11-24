@@ -6,6 +6,12 @@ import RealmSwiftGaps
 import LakeKit
 import WebKit
 
+private struct TrackingSizeCacheEntry: Codable {
+    let id: String
+    let inlineSize: Double
+    let blockSize: Double
+}
+
 private let readerModeDatasetProbeScript = """
 (() => {
     const hasDocument = typeof document !== 'undefined';
@@ -91,6 +97,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
 
+    // Cache baked tracking-section sizes keyed by settings/viewport/section.
+    private let trackingSizeCache = LRUSQLiteCache<String, [TrackingSizeCacheEntry]>(
+        namespace: "reader-pagination-size-tracking-cache-v1",
+        version: 1,
+        totalBytesLimit: 20 * 1024 * 1024,
+        countLimit: 10_000
+    )
+
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
             ("readerConsoleLog", { [weak self] message in
@@ -136,6 +150,57 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(logMessage)
                 } else {
                     debugPrint(logMessage, components.joined(separator: " "))
+                }
+            }),
+            ("trackingBookKey", { [weak self] message in
+                guard let body = message.body as? [String: Any],
+                      let bookKey = body["bookKey"] as? String else { return }
+                Task { @MainActor in
+                    try? await self?.scriptCaller.evaluateJavaScript("window.paginationTrackingBookKey = '" + bookKey + "';", in: message.frameInfo)
+                    debugPrint("# READER paginationBookKey.set", "key=\(bookKey.prefix(72))…")
+                }
+            }),
+            ("trackingSizeCache", { [weak self] message in
+                guard let self else { return }
+                guard let body = message.body as? [String: Any],
+                      let command = body["command"] as? String,
+                      let key = body["key"] as? String else { return }
+
+                switch command {
+                case "set":
+                    if let entries = body["entries"] as? [[String: Any]] {
+                        let decoded: [TrackingSizeCacheEntry] = entries.compactMap { dict in
+                            guard let id = dict["id"] as? String,
+                                  let inlineSize = dict["inlineSize"] as? Double,
+                                  let blockSize = dict["blockSize"] as? Double else { return nil }
+                            return TrackingSizeCacheEntry(id: id, inlineSize: inlineSize, blockSize: blockSize)
+                        }
+                        trackingSizeCache.setValue(decoded, forKey: key)
+                        debugPrint("# READER trackingSizeCache set", "key=\(key.prefix(72))…", "count=\(decoded.count)")
+                    }
+                case "get":
+                    guard let requestId = body["requestId"] as? String else { return }
+                    if let cached = trackingSizeCache.value(forKey: key) {
+                        do {
+                            let data = try JSONEncoder().encode(cached)
+                            if let json = String(data: data, encoding: .utf8) {
+                                let js = "window.manabiResolveTrackingSizeCache(\"\(requestId)\", \(json))"
+                                Task { @MainActor in
+                                    try? await self.scriptCaller.evaluateJavaScript(js, in: message.frameInfo)
+                                }
+                            }
+                            debugPrint("# READER trackingSizeCache hit", "key=\(key.prefix(72))…", "count=\(cached.count)")
+                        } catch {
+                            // ignore encoding errors
+                        }
+                    } else {
+                        Task { @MainActor in
+                            try? await self.scriptCaller.evaluateJavaScript("window.manabiResolveTrackingSizeCache(\"\(requestId)\", null)", in: message.frameInfo)
+                        }
+                        debugPrint("# READER trackingSizeCache miss", "key=\(key.prefix(72))…")
+                    }
+                default:
+                    break
                 }
             }),
             ("readerOnError", { [weak self] message in
