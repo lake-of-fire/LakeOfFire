@@ -1251,6 +1251,13 @@ class View {
             })
         })
     }
+
+    revealIframeForBake(reason) {
+        if (this.#iframe?.style?.display === 'none') {
+            this.#iframe.style.display = 'block'
+            logEBookPerf('iframe-display-set', { state: 'shown-for-bake', reason })
+        }
+    }
     get element() {
         return this.#element
     }
@@ -1270,7 +1277,7 @@ class View {
                 console.log("Don't create View for cache warmers")
                 resolve()
             } else {
-                this.#iframe.addEventListener('load', async () => {
+        this.#iframe.addEventListener('load', async () => {
                     try { await globalThis.manabiWaitForFontCSS?.() } catch {}
                     const doc = this.document
 
@@ -2138,10 +2145,7 @@ export class Paginator extends HTMLElement {
         }
 
         // Reveal iframe itself right as we begin baking; body stays hidden until reveal step below.
-        if (this.#iframe?.style?.display === 'none') {
-            this.#iframe.style.display = 'block'
-            logEBookPerf('iframe-display-set', { state: 'shown-for-bake', reason, sectionIndex })
-        }
+        this.#view?.revealIframeForBake(reason)
 
         logEBookPerf('tracking-size-bake-begin', {
             reason,
