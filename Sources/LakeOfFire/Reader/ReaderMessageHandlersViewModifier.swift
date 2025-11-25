@@ -800,8 +800,22 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
     
     private func logReaderDatasetState(stage: String, url: URL, frameInfo: WKFrameInfo?) async {
-        _ = await readerDatasetSummary(stage: stage, frameInfo: frameInfo)
-        _ = (stage, url)
+        let summary = await readerDatasetSummary(stage: stage, frameInfo: frameInfo)
+        let pending = readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil"
+        let expected = readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil"
+        let isLoading = readerModeViewModel.isReaderModeLoading
+        let isReaderMode = readerModeViewModel.isReaderMode
+        debugPrint(
+            "# READERPERF dataset.state",
+            "stage=\(stage)",
+            "url=\(url.absoluteString)",
+            "frameIsMain=\(frameInfo?.isMainFrame ?? true)",
+            "pending=\(pending)",
+            "expectedLoader=\(expected)",
+            "isReaderModeLoading=\(isLoading)",
+            "isReaderMode=\(isReaderMode)",
+            "summary=\(summary ?? "nil")"
+        )
     }
     
     init(

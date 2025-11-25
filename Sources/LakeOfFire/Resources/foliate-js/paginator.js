@@ -745,7 +745,7 @@ const bakeTrackingSectionSizes = async (doc, {
             if (coverageBlock >= initialViewportBlockTarget) break
         }
 
-        if (!initialViewportReleased && coverageBlock >= initialViewportBlockTarget) {
+        if (!initialViewportReleased && bakedCount > 0 && coverageBlock >= initialViewportBlockTarget) {
             initialViewportReleased = true
             if (addedBodyClass && body.classList.contains(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)) {
                 body.classList.remove(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
@@ -1170,6 +1170,11 @@ class View {
                     return
                 }
 
+                logEBookPerf('EXPAND.callsite', {
+                    source: 'view-resize-stable',
+                    suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                    ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+                })
                 this.container?.requestTrackingSectionGeometryBake?.({
                     reason: 'iframe-resize',
                     restoreLocation: true
@@ -1324,10 +1329,22 @@ class View {
             }
         })
     }
-    async render(layout, { skipExpand = false } = {}) {
+    async render(layout, { skipExpand = false, source = 'unknown' } = {}) {
         //        console.log("render(layout)...")
         if (!layout) {
             //            console.log("render(layout)... return")
+            return
+        }
+        const suppressingEarlyExpand = (this.container?.suppressBakeOnExpandPublic && !this.container?.trackingSizeBakeReadyPublic)
+        if (source === 'unknown' && suppressingEarlyExpand) {
+            logEBookPerf('EXPAND.render-skip', {
+                reason: 'suppressing-early-render',
+                source,
+                skipExpand,
+                suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+                inExpand: this.#inExpand || false,
+            })
             return
         }
         logEBookPerf('render-start', {
@@ -1335,6 +1352,14 @@ class View {
             column: layout.flow !== 'scrolled',
             vertical: this.#vertical,
             isCacheWarmer: this.#isCacheWarmer,
+        })
+        logEBookPerf('EXPAND.render-start', {
+            flow: layout.flow,
+            skipExpand,
+            source,
+            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+            inExpand: this.#inExpand || false,
         })
         layout.usePaginate = false // disable Paginate integration for now
         this.#column = layout.flow !== 'scrolled'
@@ -1346,7 +1371,7 @@ class View {
 
         if (this.#column) {
             //            console.log("render(layout)... await columnize(layout)")
-            await this.columnize(layout)
+            await this.columnize(layout, { skipExpand })
             //            console.log("render(layout)... await'd columnize(layout)")
         } else {
             //            console.log("render(layout)... await scrolled")
@@ -1358,6 +1383,14 @@ class View {
             column: this.#column,
             vertical: this.#vertical,
         })
+        logEBookPerf('EXPAND.render-complete', {
+            flow: layout.flow,
+            skipExpand,
+            source,
+            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+            inExpand: this.#inExpand || false,
+        })
     }
     async scrolled({
         gap,
@@ -1367,6 +1400,11 @@ class View {
         const vertical = this.#vertical
         const doc = this.document
         const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
+        logEBookPerf('EXPAND.scrolled-entry', {
+            skipExpand,
+            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+        })
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
             'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
@@ -1403,8 +1441,15 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-        if (!skipExpand) {
+        const canExpand = !skipExpand && !(this.container?.suppressBakeOnExpandPublic && !this.container?.trackingSizeBakeReadyPublic)
+        if (canExpand) {
             this.#debouncedExpand()
+        } else if (!skipExpand) {
+            logEBookPerf('EXPAND.expand-skip', {
+                source: 'scrolled',
+                suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+            })
         }
         //        await this.expand()
     }
@@ -1420,6 +1465,14 @@ class View {
         //        console.log("columnize... await'd direction")
         const vertical = this.#vertical
         this.#size = vertical ? height : width
+        logEBookPerf('EXPAND.columnize-entry', {
+            skipExpand,
+            size: this.#size,
+            width,
+            height,
+            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+        })
         //        console.log("columnize #size = ", this.#size)
 
         const doc = this.document
@@ -1459,8 +1512,15 @@ class View {
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
-        if (!skipExpand) {
+        const canExpand = !skipExpand && !(this.container?.suppressBakeOnExpandPublic && !this.container?.trackingSizeBakeReadyPublic)
+        if (canExpand) {
             await this.expand()
+        } else if (!skipExpand) {
+            logEBookPerf('EXPAND.expand-skip', {
+                source: 'columnize',
+                suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+            })
         }
         //        console.log("columnize... await'd expand")
         //            //            this.#debouncedExpand()
@@ -1475,6 +1535,12 @@ class View {
             vertical: this.#vertical,
             size: this.#size,
             cacheWarmer: this.#isCacheWarmer,
+        })
+        logEBookPerf('EXPAND.expand-entry', {
+            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+            trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
+            pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
+            inExpand: this.#inExpand || false,
         })
         this.#inExpand = true
         try {
@@ -1503,6 +1569,15 @@ class View {
                             : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
                         const contentSize = contentStart + contentRect[side]
                         const pageCount = Math.ceil(contentSize / this.#size)
+                        logEBookPerf('EXPAND.metrics', {
+                            mode: 'column',
+                            side,
+                            size: this.#size,
+                            contentSize,
+                            pageCount,
+                            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+                        })
                         const expandedSize = pageCount * this.#size
 
                         this.#element.style.padding = '0'
@@ -1527,6 +1602,14 @@ class View {
                             topMargin,
                             bottomMargin
                         } = this.layout
+                        logEBookPerf('EXPAND.metrics', {
+                            mode: 'scrolled',
+                            side,
+                            size: this.#size,
+                            contentSize,
+                            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+                        })
                         //                    const paddingTop = `${marginTop}px`
                         //                    const paddingBottom = `${marginBottom}px`
                         const paddingTop = `${topMargin}px`
@@ -1571,12 +1654,18 @@ class View {
                         side,
                         expandedSize: this.#iframe?.style?.[side] || null,
                     })
-                    await this.onExpand()
-                    logEBookPerf('expand-complete', {
-                        column: this.#column,
-                        vertical: this.#vertical,
-                        size: this.#size,
-                    })
+                await this.onExpand()
+                logEBookPerf('expand-complete', {
+                    column: this.#column,
+                    vertical: this.#vertical,
+                    size: this.#size,
+                })
+                logEBookPerf('EXPAND.expand-complete', {
+                    suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                    trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
+                    pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
+                    inExpand: this.#inExpand || false,
+                })
                     //                console.log("expand... call'd onexpand")
                 } finally {
                     this.#inExpand = false
@@ -1609,7 +1698,11 @@ export class Paginator extends HTMLElement {
     #root = this.attachShadow({
         mode: 'closed'
     })
-    #debouncedRender = debounce(this.render.bind(this), 333)
+    #debouncedRender = debounce(() => {
+        if (!this.layout) return
+        // Explicit source so diagnostics can attribute resize-triggered renders.
+        this.render(this.layout, { source: 'resize' })
+    }, 333)
     #lastResizerRect = null
     #resizeObserverFrame = null
     #pendingResizeRect = null
@@ -1732,6 +1825,11 @@ export class Paginator extends HTMLElement {
     #trackingSizeLastObservedRect = null
     #pendingTrackingSizeBakeReason = null
     #lastTrackingSizeBakedRect = null
+
+    // Expose selected private state for logging/debug from View.
+    get trackingSizeBakeReadyPublic() { return this.#trackingSizeBakeReady }
+    get suppressBakeOnExpandPublic() { return this.#suppressBakeOnExpand }
+    get pendingTrackingSizeBakeReasonPublic() { return this.#pendingTrackingSizeBakeReason }
 
     #cachedSizes = null
     #cachedStart = null
@@ -2017,6 +2115,7 @@ export class Paginator extends HTMLElement {
         reason = 'unspecified',
         rect = null,
         sectionIndex = null,
+        skipPostBakeRefresh = false,
     } = {}) {
         if (reason === 'styles-applied' && !this.#trackingSizeBakeReady) {
             logEBookPerf('tracking-size-bake-request', {
@@ -2103,6 +2202,7 @@ export class Paginator extends HTMLElement {
         this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
             reason,
             sectionIndex: sectionIndex ?? this.#index,
+            skipPostBakeRefresh,
         }).catch(error => {
             // swallow bake errors after reporting if needed
             console.error('tracking size bake error', error)
@@ -2143,28 +2243,54 @@ export class Paginator extends HTMLElement {
 
     // Public helper for View to force an initial size bake before first expand.
     async performInitialBakeFromView(sectionIndex, layout) {
-        // Apply layout styles (without expanding) so bake measures correct flow.
-        await this.view?.render(layout, { skipExpand: true })
-
-        this.#trackingSizeBakeReady = true
+        // Lock expands and reset readiness before pre-bake render.
         this.#suppressBakeOnExpand = true
+        this.#trackingSizeBakeReady = false
+
+        // Apply layout styles (without expanding) so bake measures correct flow.
+        await this.#view?.render(layout, { skipExpand: true, source: 'initial-bake-pre-render' })
         logEBookPerf('tracking-size-bake-initial-from-view', {
             sectionIndex,
+            ready: this.#trackingSizeBakeReady,
+        })
+        logEBookPerf('EXPAND.callsite', {
+            source: 'initial-bake-start',
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
             ready: this.#trackingSizeBakeReady,
         })
         try {
             await this.#performTrackingSectionSizeBake({
                 reason: 'initial-load',
                 sectionIndex,
+                skipPostBakeRefresh: true,
             })
         } finally {
-            this.#suppressBakeOnExpand = false
+            // Keep suppressBakeOnExpand true through the first post-bake render/expand
+            // to avoid a redundant bake loop. It will be unset after that expand.
         }
+
+        logEBookPerf('EXPAND.callsite', {
+            source: 'initial-bake-after-bake',
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            ready: this.#trackingSizeBakeReady,
+            bodyHidden: this.view?.document?.body?.classList?.contains?.(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS) ?? null,
+        })
+
+        // Post-bake render/expand with fresh measurements; allow expand to bake if needed.
+        this.#suppressBakeOnExpand = false
+        await this.#view?.render(layout, { source: 'initial-bake-post-render' })
+        logEBookPerf('EXPAND.callsite', {
+            source: 'initial-bake-after-render',
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            ready: this.#trackingSizeBakeReady,
+            bodyHidden: this.view?.document?.body?.classList?.contains?.(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS) ?? null,
+        })
     }
 
     async #performTrackingSectionSizeBake({
         reason = 'unspecified',
         sectionIndex = null,
+        skipPostBakeRefresh = false,
     } = {}) {
         const perfStart = performance?.now?.() ?? null
         const doc = this.#view?.document
@@ -2218,13 +2344,18 @@ export class Paginator extends HTMLElement {
 
             // After bake completes, refresh layout & relocate once the full layout is known.
             // Guard against races where the user navigated away.
-            if (!this.#isCacheWarmer && this.#view === activeView && sectionIndex === this.#index) {
+            if (!skipPostBakeRefresh && !this.#isCacheWarmer && this.#view === activeView && sectionIndex === this.#index) {
                 try {
                     // Re-render (columnize + expand) with the newly baked sizes without
                     // kicking off another bake loop from onExpand.
+                    logEBookPerf('EXPAND.callsite', {
+                        source: 'post-bake-refresh',
+                        suppressBakeOnExpand: this.#suppressBakeOnExpand,
+                        ready: this.#trackingSizeBakeReady,
+                    })
                     this.#suppressBakeOnExpand = true
                     if (typeof this.render === 'function') {
-                        await this.render(this.layout)
+                        await this.render(this.layout, { source: 'post-bake-refresh' })
                     } else {
                     }
                     this.#suppressBakeOnExpand = false

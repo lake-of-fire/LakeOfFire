@@ -12,6 +12,8 @@ fileprivate actor ReaderViewModelActor {
     static var shared = ReaderViewModelActor()
 }
 
+private let readerPerfStacksEnabled = false
+
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
@@ -105,6 +107,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func logPerfStack(_ label: String, url: URL?) {
+        guard readerPerfStacksEnabled else { return }
         let stack = Thread.callStackSymbols.prefix(6).joined(separator: " | ")
         debugPrint(
             "# READERPERF stack",
@@ -120,16 +123,21 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         expectedSyntheticReaderLoaderURL = baseURL
+        let stack = Thread.callStackSymbols.prefix(6).joined(separator: " | ")
         debugPrint(
             "# READERPERF readerMode.expectedLoader.set",
             "ts=\(Date().timeIntervalSince1970)",
-            "expected=\(baseURL.absoluteString)"
+            "expected=\(baseURL.absoluteString)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isLoading=\(isReaderModeLoading)",
+            "stack=\(stack)"
         )
     }
 
     @discardableResult
     private func consumeSyntheticReaderLoaderExpectationIfNeeded(for url: URL) -> Bool {
         guard let expectedSyntheticReaderLoaderURL else { return false }
+        let stack = Thread.callStackSymbols.prefix(6).joined(separator: " | ")
 
         func matchesLoaderURL(_ lhs: URL, _ rhs: URL) -> Bool {
             if lhs.matchesReaderURL(rhs) || rhs.matchesReaderURL(lhs) {
@@ -143,7 +151,10 @@ public class ReaderModeViewModel: ObservableObject {
             debugPrint(
                 "# READERPERF readerMode.expectedLoader.consume",
                 "ts=\(Date().timeIntervalSince1970)",
-                "url=\(url.absoluteString)"
+                "url=\(url.absoluteString)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "isLoading=\(isReaderModeLoading)",
+                "stack=\(stack)"
             )
             return true
         }
@@ -174,9 +185,24 @@ public class ReaderModeViewModel: ObservableObject {
             "ts=\(Date().timeIntervalSince1970)",
             "isLoading=\(isReaderModeLoading)",
             "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
-            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "stack=\(Thread.callStackSymbols.prefix(5).joined(separator: " | "))"
         )
         pendingReaderModeURL = newValue
+    }
+
+    private func logStateSnapshot(_ label: String, url: URL?) {
+        debugPrint(
+            "# READERPERF state.snapshot",
+            "label=\(label)",
+            "url=\(url?.absoluteString ?? "nil")",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "lastFallback=\(lastFallbackLoaderURL?.absoluteString ?? "nil")"
+        )
     }
 
     private func urlMatchesLastRendered(_ url: URL) -> Bool {
@@ -293,6 +319,17 @@ public class ReaderModeViewModel: ObservableObject {
         let matchesRendered = urlMatchesLastRendered(url)
         let start = Date()
 
+        if let expected = expectedSyntheticReaderLoaderURL, !urlsMatchWithoutHash(expected, url) {
+            debugPrint(
+                "# READERPERF readerMode.expectedLoader.reset",
+                "from=\(expected.absoluteString)",
+                "to=nil",
+                "reason=beginLoad.newURL",
+                "ts=\(Date().timeIntervalSince1970)"
+            )
+            expectedSyntheticReaderLoaderURL = nil
+        }
+
         let pendingMatches = pendingReaderModeURL?.matchesReaderURL(url) == true
         let alreadyLoadingSame = pendingMatches && isReaderModeLoading
         let isSameAsLastRendered = lastRenderedReadabilityURL?.matchesReaderURL(url) == true
@@ -321,6 +358,7 @@ public class ReaderModeViewModel: ObservableObject {
             // Force a fresh render to avoid stale/empty content while still clearing spinners.
             lastRenderedReadabilityURL = nil
         }
+        logStateSnapshot("beginLoad.precheck", url: url)
         var isContinuing = false
         if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) {
             // already tracking this load
@@ -357,6 +395,7 @@ public class ReaderModeViewModel: ObservableObject {
             "reason=\(reason ?? "unspecified")"
         )
         logPerfStack("beginLoad", url: trackedURL)
+        logStateSnapshot("beginLoad.postcheck", url: trackedURL)
         logTrace(
             .begin,
             url: trackedURL,
@@ -376,6 +415,8 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func cancelReaderModeLoad(for url: URL? = nil) {
+        logPerfStack("cancel.invoked", url: url)
+        logStateSnapshot("cancel.invoked", url: url)
         guard let pendingReaderModeURL else {
             debugPrint(
                 "# READER readerMode.cancel",
@@ -397,6 +438,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
             )
             logPerfStack("cancel.noPending", url: url)
+            logStateSnapshot("cancel.noPending", url: url)
             logTrace(.cancel, url: url, details: "no pending load to cancel")
             // If a caller asks us to cancel but we no longer have a pending URL,
             // still force the spinner off so the UI cannot get stuck in a loading state.
@@ -425,6 +467,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "isReaderModeLoading=\(isReaderModeLoading)",
                 "matchesRendered=\(matchesRendered)"
             )
+            logStateSnapshot("cancel.pendingMismatch", url: url)
             logTrace(.cancel, url: url, details: "cancel ignored: pending load is for \(pendingReaderModeURL.absoluteString)")
             return
         }
@@ -438,6 +481,7 @@ public class ReaderModeViewModel: ObservableObject {
             "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
         )
         let traceURL = pendingReaderModeURL
+        logStateSnapshot("cancel.requested", url: traceURL)
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
         logTrace(.cancel, url: traceURL, details: "cancelReaderModeLoad invoked")
         readerModeLoading(false)
@@ -468,6 +512,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "ts=\(Date().timeIntervalSince1970)"
             )
             logPerfStack("complete.skip", url: url)
+            logStateSnapshot("complete.skip", url: url)
 
             // If the content was already rendered (e.g., we navigated away and back to
             // a reader-file loader URL), we still want to clear spinners even though
@@ -478,10 +523,22 @@ public class ReaderModeViewModel: ObservableObject {
             }
             return
         }
+        let readabilityBytes = readabilityContent?.utf8.count ?? 0
+        if readabilityBytes == 0 {
+            debugPrint(
+                "# READERPERF readerMode.complete.deferred",
+                "url=\(url.absoluteString)",
+                "reason=emptyReadability",
+                "pending=\(pendingReaderModeURL.absoluteString)",
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+            )
+            return
+        }
         let traceURL = pendingReaderModeURL
         updatePendingReaderModeURL(nil, reason: "markReaderModeLoadComplete")
         let loadStart = loadStartTimes[traceURL.absoluteString] ?? Date()
         let loadElapsed = Date().timeIntervalSince(loadStart)
+        let hasReadableBody = readabilityBytes > 0
         debugPrint(
             "# READER readerMode.complete",
             "url=\(traceURL.absoluteString)"
@@ -490,8 +547,11 @@ public class ReaderModeViewModel: ObservableObject {
             "# READERPERF readerMode.complete",
             "ts=\(Date().timeIntervalSince1970)",
             "url=\(traceURL.absoluteString)",
-            "elapsed=\(formattedInterval(loadElapsed))"
+            "elapsed=\(formattedInterval(loadElapsed))",
+            "readabilityBytes=\(readabilityBytes)",
+            "hasReadableBody=\(hasReadableBody)"
         )
+        logStateSnapshot("complete.success", url: traceURL)
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         loadStartTimes.removeValue(forKey: traceURL.absoluteString)
         readerModeLoading(false)
@@ -725,13 +785,23 @@ public class ReaderModeViewModel: ObservableObject {
             let readabilityChars = readabilityContent.count
             let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML")
             await MainActor.run {
+                let pending = self?.pendingReaderModeURL?.absoluteString ?? "nil"
+                let expected = self?.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil"
+                let loading = self?.isReaderModeLoading ?? false
+                let readerMode = self?.isReaderMode ?? false
+                let isInternalShell = url.scheme == "internal"
                 debugPrint(
                     "# READERPERF readerMode.readability.input",
                     "ts=\(parseStartedAt.timeIntervalSince1970)",
                     "url=\(url.absoluteString)",
                     "bytes=\(readabilityBytes)",
                     "chars=\(readabilityChars)",
-                    "isXML=\(isXML)"
+                    "isXML=\(isXML)",
+                    "pending=\(pending)",
+                    "expectedLoader=\(expected)",
+                    "isReaderModeLoading=\(loading)",
+                    "isReaderMode=\(readerMode)",
+                    "isInternalShell=\(isInternalShell)"
                 )
             }
 
@@ -1135,6 +1205,18 @@ public class ReaderModeViewModel: ObservableObject {
         await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
 
         let isLoaderNavigation = newState.pageURL.isReaderURLLoaderURL
+
+        debugPrint(
+            "# READERPERF readerMode.navCommit.flags",
+            "ts=\(Date().timeIntervalSince1970)",
+            "pageURL=\(newState.pageURL.absoluteString)",
+            "committedURL=\(committedURL.absoluteString)",
+            "isLoaderNavigation=\(isLoaderNavigation)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)"
+        )
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             debugPrint(
