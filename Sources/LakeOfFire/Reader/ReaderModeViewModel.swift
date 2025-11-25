@@ -530,7 +530,9 @@ public class ReaderModeViewModel: ObservableObject {
                 "url=\(url.absoluteString)",
                 "reason=emptyReadability",
                 "pending=\(pendingReaderModeURL.absoluteString)",
-                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                "isReaderModeLoading=\(isReaderModeLoading)",
+                "ts=\(Date().timeIntervalSince1970)"
             )
             return
         }
