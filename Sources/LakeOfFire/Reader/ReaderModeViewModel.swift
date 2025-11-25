@@ -1099,6 +1099,9 @@ public class ReaderModeViewModel: ObservableObject {
         try Task.checkCancellation()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
 
+        // Inject reader font via JS for non-ebook pages before any scroll/geometry restore runs.
+        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+
         let isLoaderNavigation = newState.pageURL.isReaderURLLoaderURL
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
@@ -1477,6 +1480,31 @@ public class ReaderModeViewModel: ObservableObject {
         cancelReaderModeLoad(for: pageURL)
     }
 
+}
+
+@MainActor
+private extension ReaderModeViewModel {
+    func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        guard !pageURL.isEBookURL else { return }
+        guard #available(iOS 16.4, macOS 14, *) else { return }
+        let base64 = sharedFontCSSBase64 ?? await sharedFontCSSBase64Provider?()
+        guard let base64, !base64.isEmpty else { return }
+        let js = """
+        (function() {
+            try {
+                if (document.getElementById('manabi-custom-fonts-inline')) { return; }
+                const css = atob('\(base64)');
+                const style = document.createElement('style');
+                style.id = 'manabi-custom-fonts-inline';
+                style.textContent = css;
+                (document.head || document.documentElement).appendChild(style);
+            } catch (e) {
+                try { console.log('manabi font inject error', e); } catch (_) {}
+            }
+        })();
+        """
+        try? await scriptCaller.evaluateJavaScript(js, duplicateInMultiTargetFrames: true)
+    }
 }
 
 private func makeReaderHeaderDateText(

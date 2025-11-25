@@ -1311,14 +1311,11 @@ class View {
                     this.revealIframeForBake('initial-load')
                     revealDocumentContentForBake(doc)
 
-                    // Set up layout styles but defer expand to keep bake first.
-                    await this.render(layout, { skipExpand: true })
-
                     // First bake happens before any expand/page sizing.
-                    await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex)
+                    await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex, layout)
 
                     // Now expand/pages after bake.
-                    await this.expand()
+                    await this.render(layout)
 
                     this.#resizeObserver.observe(doc.body)
 
@@ -2140,7 +2137,10 @@ export class Paginator extends HTMLElement {
     }
 
     // Public helper for View to force an initial size bake before first expand.
-    async performInitialBakeFromView(sectionIndex) {
+    async performInitialBakeFromView(sectionIndex, layout) {
+        // Apply layout styles (without expanding) so bake measures correct flow.
+        await this.view?.render(layout, { skipExpand: true })
+
         this.#trackingSizeBakeReady = true
         this.#suppressBakeOnExpand = true
         logEBookPerf('tracking-size-bake-initial-from-view', {
