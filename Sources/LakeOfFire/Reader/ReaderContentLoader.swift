@@ -374,7 +374,25 @@ public struct ReaderContentLoader {
             }
             return content.url
         }
-        
+
+        if contentURL.isReaderFileURL {
+            if let loaderURL = readerLoaderURL(for: contentURL) {
+                debugPrint(
+                    "# READER readerLoader.redirect",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "loaderURL=\(loaderURL.absoluteString)",
+                    "hasHTML=\(content.hasHTML)",
+                    "rssFull=\(content.rssContainsFullContent)"
+                )
+                return loaderURL
+            } else {
+                debugPrint(
+                    "# READER readerLoader.redirect.missing",
+                    "contentURL=\(contentURL.absoluteString)"
+                )
+            }
+        }
+
         return content.url
     }
 

@@ -3,6 +3,38 @@ import { TOCProgress, SectionProgress } from './progress.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
 
+const logEBookPagination = (event, payload = {}) => {
+    let metadata = ''
+    try {
+        if (payload && Object.keys(payload).length > 0) metadata = ` ${JSON.stringify(payload)}`
+    } catch (_error) {
+        metadata = ''
+    }
+    const line = `# EBOOKPAGINATION ${event}${metadata}`
+    try { globalThis.webkit?.messageHandlers?.print?.postMessage?.(line) } catch {}
+    try { console.log(line) } catch {}
+}
+
+const summarizeAnchor = anchor => {
+    if (anchor == null) return 'null'
+    if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
+    if (typeof anchor === 'function') return 'function'
+    if (anchor?.startContainer) return 'range'
+    if (anchor?.nodeType === Node.ELEMENT_NODE) return `element:${anchor.tagName ?? 'unknown'}`
+    if (anchor?.nodeType) return `nodeType:${anchor.nodeType}`
+    return typeof anchor
+}
+
+const summarizeNavigationTarget = target => {
+    if (!target) return null
+    return {
+        index: typeof target.index === 'number' ? target.index : null,
+        anchor: summarizeAnchor(target.anchor),
+        hasSelect: !!target.select,
+        reason: target.reason ?? null,
+    }
+}
+
 const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
@@ -161,15 +193,26 @@ export class View extends HTMLElement {
     }
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
+        logEBookPagination('view:init', {
+            hasLastLocation: !!lastLocation,
+            showTextStart,
+            resolved: summarizeNavigationTarget(resolved),
+        })
         if (resolved) {
             await this.renderer.goTo(resolved)
             this.history.pushState(lastLocation)
+            logEBookPagination('view:init:restored', {
+                resolved: summarizeNavigationTarget(resolved),
+            })
         }
-        else if (showTextStart) await this.goToTextStart()
-            else {
-                this.history.pushState(0)
-                await this.next()
-            }
+        else if (showTextStart) {
+            await this.goToTextStart()
+            logEBookPagination('view:init:text-start', {})
+        } else {
+            this.history.pushState(0)
+            await this.next()
+            logEBookPagination('view:init:default-next', {})
+        }
     }
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
@@ -179,6 +222,14 @@ export class View extends HTMLElement {
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
+        logEBookPagination('view:relocate', {
+            reason,
+            index,
+            fraction,
+            tocLabel: tocItem?.label ?? null,
+            pageCurrent: pageItem?.current ?? null,
+            pageTotal: pageItem?.total ?? null,
+        })
         this.lastLocation = { ...progress, tocItem, pageItem, cfi, range, reason }
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)

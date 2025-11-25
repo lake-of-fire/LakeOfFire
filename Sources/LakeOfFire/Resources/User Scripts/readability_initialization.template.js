@@ -227,7 +227,7 @@
     
     let manabi_readability = function () {
         const body = document.body
-        const nextLoadFlag = body?.dataset?.isNextLoadInReaderMode === 'true' || body?.dataset?.nextLoadIsReadabilityMode === 'true'
+        const nextLoadFlag = body?.dataset?.isNextLoadInReaderMode === 'true'
         const hasReadabilityMode = body?.classList.contains('readability-mode')
         const hasReaderContent = document.getElementById('reader-content') !== null
         const shouldProcess = (window.top.location.protocol !== 'ebook:' && nextLoadFlag) || (!hasReadabilityMode && !hasReaderContent)
@@ -327,7 +327,6 @@
                     if (document.body) {
                         document.body.dataset.manabiReaderModeAvailable = 'false';
                         document.body.dataset.isNextLoadInReaderMode = 'false';
-                        document.body.dataset.nextLoadIsReadabilityMode = 'false';
                         delete document.body.dataset.manabiReaderModeAvailableFor;
                     }
                     window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
@@ -342,10 +341,10 @@
                     const hasByline = displayByline.length > 0
                     var content = DOMPurify.sanitize(rawContent)
                     const sanitizedContentBytes = content && typeof content === "string" ? content.length : 0
-                    const hasReaderBody = typeof content === "string" && content.indexOf('id="reader-content"') !== -1
+                    const hasReaderBodyInContent = typeof content === "string" && content.indexOf('id="reader-content"') !== -1
                     readerLog("sanitizedContent", {
                         contentBytes: sanitizedContentBytes,
-                        hasReaderBody: hasReaderBody,
+                        hasReaderBody: hasReaderBodyInContent,
                         hasMarkup: !!(content && typeof content === "string" && content.indexOf("<body") !== -1),
                         preview: previewText(content, 512),
                     })
@@ -469,7 +468,6 @@
                             document.body.dataset.manabiReaderModeAvailable = 'true';
                         document.body.dataset.manabiReaderModeAvailableFor = windowURL;
                             document.body.dataset.isNextLoadInReaderMode = 'false';
-                            document.body.dataset.nextLoadIsReadabilityMode = 'false';
                             const hasReaderBody = html.indexOf('id="reader-content"') !== -1
                             readerLog("outputPrepared", {
                                 contentBytes: content.length,
@@ -505,7 +503,6 @@
                         } else {
                             document.body.dataset.manabiReaderModeAvailable = 'false';
                             document.body.dataset.isNextLoadInReaderMode = 'false';
-                            document.body.dataset.nextLoadIsReadabilityMode = 'false';
                             delete document.body.dataset.manabiReaderModeAvailableFor;
 
                             window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
