@@ -86,7 +86,7 @@ const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
 const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
 const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
-const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 7
+const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
 const MANABI_TRACKING_POSITION_BAKE_ENABLED = false
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
 const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
@@ -113,6 +113,18 @@ const logEBook = () => {}
 // Focused pagination diagnostics for tricky resume/relocate cases.
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {}
+
+// Perf logger for targeted instrumentation
+const logEBookPerf = (event, detail = {}) => {
+    const ts = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now()
+    const payload = { event, ts, ...detail }
+    const line = `# EBOOKPERF ${event} ${JSON.stringify(payload)}`
+    try { window.webkit?.messageHandlers?.print?.postMessage?.(line) } catch {}
+    try { console.debug?.(line) } catch {}
+    return payload
+}
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -160,6 +172,10 @@ const hideDocumentContentForPreBake = doc => {
     preBakeDisplaySnapshots.set(doc, { target, snapshot })
     target.classList.add(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
     target.style.setProperty('display', 'none', 'important')
+    logEBookPerf('prebake-hide', {
+        url: doc?.URL || null,
+        targetId: target.id || null,
+    })
     return target
 }
 
@@ -174,6 +190,10 @@ const revealDocumentContentForBake = doc => {
         target.classList.remove(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
         restoreInlineStyleProperty(target, 'display', snapshot)
     }
+    logEBookPerf('prebake-reveal', {
+        url: doc?.URL || null,
+        targetId: target?.id || null,
+    })
     preBakeDisplaySnapshots.delete(doc)
 }
 
@@ -1026,25 +1046,10 @@ class View {
     #resizeEventSeq = 0
     #resizeObserverFrame = null
     #pendingResizeRect = null
+    #resizeObserver = null
     #styleCache = new WeakMap()
+    #isCacheWarmer = false
     cachedViewSize = null
-    #resizeObserver = new ResizeObserver(entries => {
-        if (this.#isCacheWarmer) return;
-        const entry = entries[0];
-        if (!entry) return;
-        const rect = entry.contentRect;
-        this.#pendingResizeRect = {
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-            top: Math.round(rect.top),
-            left: Math.round(rect.left),
-        }
-        if (this.#resizeObserverFrame !== null) cancelAnimationFrame(this.#resizeObserverFrame)
-        this.#resizeObserverFrame = requestAnimationFrame(() => {
-            this.#resizeObserverFrame = null
-            this.#handleResize(this.#pendingResizeRect)
-        })
-    })
     #handleResize(newSize) {
         if (!newSize) return
         const roundRect = r => r ? {
@@ -1055,13 +1060,7 @@ class View {
         } : null
         const bodyRect = roundRect(this.document?.body?.getBoundingClientRect?.())
         const containerRect = roundRect(this.container?.getBoundingClientRect?.())
-        const seq = ++this.#resizeEventSeq
-            seq,
-            contentRect: newSize,
-            bodyRect,
-            containerRect,
-            cachedViewSize: this.cachedViewSize,
-        })
+        ++this.#resizeEventSeq
 
         if (!this.#hasResizerObserverTriggered) {
             this.#hasResizerObserverTriggered = true;
@@ -1096,11 +1095,6 @@ class View {
             this.#lastContainerRect = containerRect;
 
             if (!changedBody && !changedContainer) {
-                    reason: 'body-container-stable',
-                    contentRect: newSize,
-                    bodyRect,
-                    containerRect,
-                })
                 return
             }
 
@@ -1151,7 +1145,6 @@ class View {
     #column = true
     #size
     layout = {}
-    #isCacheWarmer
     constructor({
         container,
         onBeforeExpand,
@@ -1189,6 +1182,24 @@ class View {
         //        this.#iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-downloads')
         //this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts') // Breaks font-src data: blobs...
         this.#iframe.setAttribute('scrolling', 'no')
+
+        this.#resizeObserver = new ResizeObserver(entries => {
+            if (this.#isCacheWarmer) return;
+            const entry = entries[0];
+            if (!entry) return;
+            const rect = entry.contentRect;
+            this.#pendingResizeRect = {
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                top: Math.round(rect.top),
+                left: Math.round(rect.left),
+            }
+            if (this.#resizeObserverFrame !== null) cancelAnimationFrame(this.#resizeObserverFrame)
+            this.#resizeObserverFrame = requestAnimationFrame(() => {
+                this.#resizeObserverFrame = null
+                this.#handleResize(this.#pendingResizeRect)
+            })
+        })
     }
     get element() {
         return this.#element
@@ -1256,6 +1267,12 @@ class View {
             //            console.log("render(layout)... return")
             return
         }
+        logEBookPerf('render-start', {
+            flow: layout.flow,
+            column: layout.flow !== 'scrolled',
+            vertical: this.#vertical,
+            isCacheWarmer: this.#isCacheWarmer,
+        })
         layout.usePaginate = false // disable Paginate integration for now
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
@@ -1273,6 +1290,11 @@ class View {
             await this.scrolled(layout)
             //            console.log("render(layout)... await'd scrolled")
         }
+        logEBookPerf('render-complete', {
+            flow: layout.flow,
+            column: this.#column,
+            vertical: this.#vertical,
+        })
     }
     async scrolled({
         gap,
@@ -1381,6 +1403,12 @@ class View {
         if (this.#vertical === null) await this.#directionReady;
     }
     async expand() {
+        logEBookPerf('expand-request', {
+            column: this.#column,
+            vertical: this.#vertical,
+            size: this.#size,
+            cacheWarmer: this.#isCacheWarmer,
+        })
         await this.onBeforeExpand()
         //        console.log("expand...")
         return new Promise(resolve => {
@@ -1463,7 +1491,18 @@ class View {
                     }
                 }
                 //                console.log("expand... call onexpand")
+                logEBookPerf('expand-before-onexpand', {
+                    column: this.#column,
+                    vertical: this.#vertical,
+                    side,
+                    expandedSize: this.#iframe?.style?.[side] || null,
+                })
                 await this.onExpand()
+                logEBookPerf('expand-complete', {
+                    column: this.#column,
+                    vertical: this.#vertical,
+                    size: this.#size,
+                })
                 //                console.log("expand... call'd onexpand")
                 resolve()
             })
@@ -1900,16 +1939,27 @@ export class Paginator extends HTMLElement {
         rect = null,
         sectionIndex = null,
     } = {}) {
+        const ctxBase = {
+            reason,
+            sectionIndex: sectionIndex ?? this.#index,
+            hasDoc: !!this.#view?.document,
+            ready: this.#trackingSizeBakeReady,
+            inFlight: !!this.#trackingSizeBakeInFlight,
+            pendingReason: this.#pendingTrackingSizeBakeReason || null,
+        }
         if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'disabled' })
             this.#setLoading(false)
             return false
         }
         if (this.#isCacheWarmer) return false
         if (!this.#view?.document) {
+            logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'no-document' })
             this.#pendingTrackingSizeBakeReason = reason
             return false
         }
         if (!this.#trackingSizeBakeReady) {
+            logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'not-ready' })
             this.#pendingTrackingSizeBakeReason = reason
             return false
         }
@@ -1923,6 +1973,7 @@ export class Paginator extends HTMLElement {
                 rect.top === last.top &&
                 rect.left === last.left
             if (unchanged) {
+                logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'unchanged-rect' })
                 return false
             }
             this.#trackingSizeLastObservedRect = rect
@@ -1942,6 +1993,7 @@ export class Paginator extends HTMLElement {
                     derived.height === lastBaked.height &&
                     derived.top === lastBaked.top &&
                     derived.left === lastBaked.left) {
+                    logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'unchanged-derived' })
                     return false
                 }
                 this.#trackingSizeLastObservedRect = derived
@@ -1951,25 +2003,20 @@ export class Paginator extends HTMLElement {
         if (this.#trackingSizeBakeInFlight) {
             this.#trackingSizeBakeNeedsRerun = true
             this.#trackingSizeBakeQueuedReason = reason
+            logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'queued-rerun' })
             return true
         }
 
         this.#trackingSizeBakeQueuedReason = null
         this.#trackingSizeBakeNeedsRerun = false
 
-            reason,
-            sectionIndex: sectionIndex ?? this.#index,
-        })
-
+        logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'start' })
         this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
             reason,
             sectionIndex: sectionIndex ?? this.#index,
         }).catch(error => {
-                message: error?.message ?? String(error),
-                name: error?.name,
-                stack: error?.stack,
-                reason,
-            })
+            // swallow bake errors after reporting if needed
+            console.error('tracking size bake error', error)
         }).finally(() => {
             this.#trackingSizeBakeInFlight = null
             if (this.#trackingSizeBakeNeedsRerun) {
@@ -2012,18 +2059,23 @@ export class Paginator extends HTMLElement {
         const perfStart = performance?.now?.() ?? null
         const doc = this.#view?.document
         if (!doc) {
+            logEBookPerf('tracking-size-bake-begin', {
+                reason,
+                sectionIndex,
+                status: 'no-doc',
+            })
             this.#setLoading(false)
             return
         }
 
-        this.#revealPreBakeContent()
-
+        logEBookPerf('tracking-size-bake-begin', {
             reason,
             sectionIndex,
-            vertical: this.#vertical,
-            appliedFromCache: !!globalThis.manabiTrackingAppliedFromCache,
-            viewCachedSize: this.#view?.cachedViewSize ? { ...this.#view.cachedViewSize } : null,
+            isCacheWarmer: this.#isCacheWarmer,
+            hasDoc: !!doc,
         })
+
+        this.#revealPreBakeContent()
 
         const activeView = this.#view
 
@@ -2036,11 +2088,6 @@ export class Paginator extends HTMLElement {
                 sectionIndex,
                 bookId: this.bookDir,
                 sectionHref: this.sections?.[this.#index]?.href || this.sections?.[this.#index]?.url || null,
-            })
-                reason,
-                sectionIndex,
-                appliedFromCache: !!globalThis.manabiTrackingAppliedFromCache,
-                lastBakedRect: this.#lastTrackingSizeBakedRect,
             })
             try {
                 await this.#getSentinelVisibilities()
@@ -2079,6 +2126,15 @@ export class Paginator extends HTMLElement {
             if (this.#view === activeView) {
                 this.#setLoading(false)
             }
+            const durationMs = perfStart !== null && typeof performance !== 'undefined' && typeof performance.now === 'function'
+                ? performance.now() - perfStart
+                : null
+            logEBookPerf('tracking-size-bake-complete', {
+                reason,
+                sectionIndex,
+                durationMs,
+                stillActiveView: this.#view === activeView,
+            })
         }
     }
 
@@ -2106,8 +2162,7 @@ export class Paginator extends HTMLElement {
             if (typeof range.cloneRange === 'function') return range.cloneRange()
             return range
         } catch (error) {
-                message: error?.message ?? String(error)
-            })
+            // ignore capture errors
             return null
         }
     }
@@ -2309,6 +2364,11 @@ export class Paginator extends HTMLElement {
     }
     async #onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
+        logEBookPerf('on-before-expand', {
+            pendingBakeReason: this.#pendingTrackingSizeBakeReason || null,
+            vertical: this.#vertical,
+            column: this.#column,
+        })
         this.#revealPreBakeContent()
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
@@ -2335,7 +2395,15 @@ export class Paginator extends HTMLElement {
         this.#pendingTrackingSizeBakeReason = null
 
         this.#setLoading(false)
-        if (!this.#suppressBakeOnExpand) {
+        const shouldBake = !this.#suppressBakeOnExpand
+        logEBookPerf('on-expand', {
+            pendingReason: pendingReason || null,
+            suppressBake: this.#suppressBakeOnExpand,
+            hasDoc: !!this.#view?.document,
+            vertical: this.#vertical,
+            column: this.#column,
+        })
+        if (shouldBake) {
             this.requestTrackingSectionSizeBake({ reason: pendingReason || 'expand' })
         }
     }

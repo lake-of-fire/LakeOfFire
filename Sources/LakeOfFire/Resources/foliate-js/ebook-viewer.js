@@ -10,6 +10,17 @@ const DEFAULT_RUBY_FONT_STACK = `'Hiragino Kaku Gothic ProN', 'Hiragino Sans', s
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {};
 
+const logEBookPerf = (event, detail = {}) => {
+    const ts = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now();
+    const payload = { event, ts, ...detail };
+    const line = `# EBOOKPERF ${event} ${JSON.stringify(payload)}`;
+    try { window.webkit?.messageHandlers?.print?.postMessage?.(line); } catch (_err) {}
+    try { console.debug?.(line); } catch (_err) {}
+    return payload;
+};
+
 window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
         message: msg,
@@ -51,6 +62,41 @@ function forwardShadowErrors(root) {
         });
     });
 }
+
+const installFontDiagnostics = () => {
+    try {
+        const fontSet = document?.fonts
+        if (!fontSet?.addEventListener) return
+
+        const serializeFace = face => ({
+            family: face?.family || null,
+            weight: face?.weight || null,
+            style: face?.style || null,
+            stretch: face?.stretch || null,
+            status: face?.status || null,
+            display: face?.display || null,
+        })
+        const logFaces = (event, faces) => {
+            const arr = Array.from(faces ?? []).map(serializeFace)
+            logEBookPerf(event, {
+                count: arr.length,
+                status: fontSet.status,
+                faces: arr,
+            })
+        }
+
+        fontSet.addEventListener('loading', e => logFaces('fontset-loading', e?.fontfaces))
+        fontSet.addEventListener('loadingdone', e => logFaces('fontset-loadingdone', e?.fontfaces))
+        fontSet.addEventListener('loadingerror', e => logFaces('fontset-loadingerror', e?.fontfaces))
+        fontSet.ready?.then?.(() => {
+            logEBookPerf('fontset-ready', { status: fontSet.status, size: fontSet.size })
+        }).catch(() => {})
+    } catch (_error) {
+        // diagnostics best-effort
+    }
+}
+
+installFontDiagnostics()
 
 let pendingHideNavigationState = null;
 const applyLocalHideNavigationDueToScroll = (shouldHide) => {

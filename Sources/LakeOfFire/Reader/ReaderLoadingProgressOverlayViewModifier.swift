@@ -180,7 +180,13 @@ private struct ReaderLoadingOverlay: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 if Task.isCancelled { break }
-                let activeMessage = displayedMessage ?? statusMessage ?? "<none>"
+                // When loading is false, reflect that in the log by suppressing any stale status text.
+                let activeMessage: String
+                if isLoading || isShowingStatus {
+                    activeMessage = displayedMessage ?? statusMessage ?? "<none>"
+                } else {
+                    activeMessage = "<none>"
+                }
                 debugPrint(
                     "# READER overlay.heartbeat",
                     "context=\(context)",

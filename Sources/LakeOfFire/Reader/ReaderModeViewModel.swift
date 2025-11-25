@@ -255,17 +255,12 @@ public class ReaderModeViewModel: ObservableObject {
            pendingReaderModeURL == nil,
            isReaderMode {
             debugPrint(
-                "# READER readerMode.beginLoad.skipAlreadyRendered",
+                "# READER readerMode.beginLoad.rerenderAlreadyRendered",
                 "url=\(url.absoluteString)",
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
             )
-            // We already rendered this URL, but the UI may still be showing a spinner
-            // (e.g., when navigating back to the history item). Treat this as a
-            // resumed load so completion handlers run and overlays clear.
-            updatePendingReaderModeURL(url, reason: "resumeAlreadyRendered")
-            markReaderModeLoadComplete(for: url)
-            readerModeLoading(false)
-            return
+            // Force a fresh render to avoid stale/empty content while still clearing spinners.
+            lastRenderedReadabilityURL = nil
         }
         var isContinuing = false
         if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) {
@@ -304,8 +299,20 @@ public class ReaderModeViewModel: ObservableObject {
                 "reason=noPending"
             )
             logTrace(.cancel, url: url, details: "no pending load to cancel")
-            if url == nil {
-                readerModeLoading(false)
+            // If a caller asks us to cancel but we no longer have a pending URL,
+            // still force the spinner off so the UI cannot get stuck in a loading state.
+            readerModeLoading(false)
+            debugPrint(
+                "# READER readerMode.spinner.forceOff",
+                "reason=noPendingCancel",
+                "requestedURL=\(url?.absoluteString ?? "nil")"
+            )
+            if let handler = readerModeLoadCompletionHandler {
+                let completedURL = url
+                    ?? lastRenderedReadabilityURL
+                    ?? lastFallbackLoaderURL
+                    ?? URL(string: "about:blank")!
+                handler(completedURL)
             }
             return
         }
@@ -332,6 +339,9 @@ public class ReaderModeViewModel: ObservableObject {
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
         logTrace(.cancel, url: traceURL, details: "cancelReaderModeLoad invoked")
         readerModeLoading(false)
+        if let handler = readerModeLoadCompletionHandler {
+            handler(traceURL ?? url ?? URL(string: "about:blank")!)
+        }
     }
 
     @MainActor
@@ -1046,6 +1056,7 @@ public class ReaderModeViewModel: ObservableObject {
                                 url: committedURL,
                                 reason: "emptyBodyAfterDecompress"
                             )
+                            // Fall back to forcing a fresh fetch rather than treating this as success.
                             htmlResult = nil
                         }
                     }
@@ -1056,6 +1067,20 @@ public class ReaderModeViewModel: ObservableObject {
                     "emptyBody=\(htmlBodyIsEmpty)"
                 ].joined(separator: " | ")
                 logTrace(.htmlFetchEnd, url: committedURL, details: traceDetails)
+                if htmlResult == nil {
+                    debugPrint(
+                        "# READER readability.htmlFetched.nil",
+                        "url=\(committedURL.absoluteString)",
+                        "reason=emptyBodyOrDecompressFailure"
+                    )
+                    // Do not abandon the load outright; instead, clear cached render state
+                    // and let the caller retry (so we don't get stuck with blank content).
+                    lastRenderedReadabilityURL = nil
+                    readerModeLoading(false)
+                    updatePendingReaderModeURL(nil, reason: "htmlFetchEmptyBody")
+                    readerModeLoadCompletionHandler?(committedURL)
+                    return
+                }
                 if var html = htmlResult {
                     if !htmlBodyIsEmpty {
                         debugPrint(
