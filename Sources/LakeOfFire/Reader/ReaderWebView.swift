@@ -7,23 +7,23 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
-fileprivate let blockedHosts = Set([
+private let blockedHosts = Set([
     "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
     "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
     "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
     "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
     "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
-    "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
+    "adservice.google.ca", "adservice.google.com", "adservice.google.jp"
 ])
 
 // To avoid redraws...
 @MainActor
-fileprivate class ReaderWebViewHandler {
+private class ReaderWebViewHandler {
     var onNavigationCommitted: ((WebViewState) async throws -> Void)?
     var onNavigationFinished: ((WebViewState) -> Void)?
     var onNavigationFailed: ((WebViewState) -> Void)?
     var onURLChanged: ((WebViewState) async throws -> Void)?
-    
+
     var readerContent: ReaderContent
     var readerViewModel: ReaderViewModel
     var readerModeViewModel: ReaderModeViewModel
@@ -34,7 +34,7 @@ fileprivate class ReaderWebViewHandler {
     private var lastHandledURL: URL?
     private var lastHandledIsProvisionallyNavigating: Bool?
     private var lastHandledIsLoading: Bool?
-    
+
     init(
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -56,7 +56,7 @@ fileprivate class ReaderWebViewHandler {
         self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
         self.scriptCaller = scriptCaller
     }
-    
+
     func handleNewURL(state: WebViewState) async throws {
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating)
         debugPrint("# READER webView.state", "url=\(state.pageURL.absoluteString)", "loading=\(state.isLoading)", "provisional=\(state.isProvisionallyNavigating)")
@@ -135,7 +135,7 @@ fileprivate class ReaderWebViewHandler {
         )
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerModeViewModel finished", state.pageURL)
         try Task.checkCancellation()
-        self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
+        self.readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
             // no external callback here
         }
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerViewModel finished", state.pageURL)
@@ -166,7 +166,7 @@ fileprivate class ReaderWebViewHandler {
             )
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", state.pageURL)
             guard let content = self.readerContent.content else { return }
-            self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
+            self.readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
                 // no external callback here
             }
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerViewModel", state.pageURL)
@@ -210,7 +210,7 @@ fileprivate class ReaderWebViewHandler {
             do {
                 try await self.handleNewURL(state: state)
             } catch is CancellationError {
-//                print("onURLChanged task was cancelled.")
+                //                print("onURLChanged task was cancelled.")
             } catch {
                 print("Error during onURLChanged: \(error)")
             }
@@ -219,10 +219,10 @@ fileprivate class ReaderWebViewHandler {
 }
 
 public struct ReaderWebView: View {
-    var persistentWebViewID: String? = nil
+    var persistentWebViewID: String?
     let obscuredInsets: EdgeInsets?
     var bounces = true
-    var additionalBottomSafeAreaInset: CGFloat? = nil
+    var additionalBottomSafeAreaInset: CGFloat?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -231,19 +231,19 @@ public struct ReaderWebView: View {
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
-    
+
     @State private var ebookURLSchemeHandler = EbookURLSchemeHandler()
     @State private var readerFileURLSchemeHandler = ReaderFileURLSchemeHandler()
-    
+
     @EnvironmentObject internal var readerContent: ReaderContent
     @EnvironmentObject internal var scriptCaller: WebViewScriptCaller
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
-    
-    @State private var handler: ReaderWebViewHandler? = nil
-    
+
+    @State private var handler: ReaderWebViewHandler?
+
     public init(
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
@@ -271,7 +271,7 @@ public struct ReaderWebView: View {
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
-    
+
     public var body: some View {
         // Initialize handler if nil, and update dependencies
         return Group {
@@ -325,6 +325,8 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
+            ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64
+            ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -333,11 +335,11 @@ public struct ReaderWebView: View {
     }
 }
 
-fileprivate struct ReaderWebViewInternal: View {
-    var persistentWebViewID: String? = nil
+private struct ReaderWebViewInternal: View {
+    var persistentWebViewID: String?
     let obscuredInsets: EdgeInsets?
     var bounces = true
-    var additionalBottomSafeAreaInset: CGFloat? = nil
+    var additionalBottomSafeAreaInset: CGFloat?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
     @Binding var textSelection: String?
@@ -350,11 +352,11 @@ fileprivate struct ReaderWebViewInternal: View {
     var handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
-    
+
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    
+
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
-#if os(iOS)
+        #if os(iOS)
         let insets = EdgeInsets(
             top: max(0, (obscuredInsets?.top ?? 0) + additionalInsets.top),
             leading: max(0, (obscuredInsets?.leading ?? 0) + additionalInsets.leading),
@@ -362,11 +364,11 @@ fileprivate struct ReaderWebViewInternal: View {
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
         return insets
-#else
+        #else
         EdgeInsets()
-#endif
+        #endif
     }
-    
+
     public var body: some View {
         WebView(
             config: WebViewConfig(
@@ -389,7 +391,7 @@ fileprivate struct ReaderWebViewInternal: View {
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
                 (readerFileURLSchemeHandler, "reader-file"),
-                (ebookURLSchemeHandler, "ebook"),
+                (ebookURLSchemeHandler, "ebook")
             ] + schemeHandlers,
             onNavigationCommitted: { state in
                 handler.onNavigationCommitted(state: state)

@@ -162,6 +162,10 @@ internal func preprocessEbookContent(doc: SwiftSoup.Document) -> SwiftSoup.Docum
     }
 }
 
+public enum EbookHTMLProcessingContext {
+    @TaskLocal public static var isEbookHTML: Bool = false
+}
+
 internal func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,
@@ -220,10 +224,12 @@ internal func ebookTextProcessor(
         var html = try doc.outerHtml()
         
         if let processHTML {
-            html = await processHTML(
-                html,
-                isCacheWarmer
-            )
+            html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
+                await processHTML(
+                    html,
+                    isCacheWarmer
+                )
+            }
         }
         
         return html

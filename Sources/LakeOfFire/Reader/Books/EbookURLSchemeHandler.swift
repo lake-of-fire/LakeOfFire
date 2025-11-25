@@ -9,7 +9,7 @@ fileprivate actor EBookProcessingActor {
     let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
     let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
     let processHTML: ((String, Bool) async -> String)?
-    
+
     init(
         ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?,
         ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
@@ -21,7 +21,7 @@ fileprivate actor EBookProcessingActor {
         self.processReadabilityContent = processReadabilityContent
         self.processHTML = processHTML
     }
-    
+
     func process(
         contentURL: URL,
         location: String,
@@ -36,7 +36,7 @@ fileprivate actor EBookProcessingActor {
             // Bail early if we are already cached
             return ""
         }
-        
+
         var respText = text
         if let ebookTextProcessor {
             do {
@@ -56,7 +56,7 @@ fileprivate actor EBookProcessingActor {
         return respText
     }
 }
-    
+
 fileprivate actor EBookLoadingActor {
     enum EbookLoadingError: Error {
         case failedToZip
@@ -65,10 +65,45 @@ fileprivate actor EBookLoadingActor {
     /// Returns an `HTTPURLResponse` and data for a bundled viewer HTML file at the given path.
     func loadViewerFile(
         at viewerHtmlPath: String,
-        originalURL: URL
+        originalURL: URL,
+        sharedFontCSSBase64: String?,
+        sharedFontCSSBase64Provider: (() async -> String?)?
     ) async throws -> (HTTPURLResponse, Data) {
         // Load HTML content from bundle path
-        let html = try String(contentsOfFile: viewerHtmlPath)
+        var html = try String(contentsOfFile: viewerHtmlPath)
+
+        // Inject shared font CSS payload as a single blob URL for all sections.
+        var base64 = sharedFontCSSBase64
+        if (base64 == nil || base64?.isEmpty == true), let provider = sharedFontCSSBase64Provider {
+            base64 = await provider()
+        }
+
+        if let base64, !base64.isEmpty {
+            let payload = """
+            <script id="manabi-font-css-base64" type="application/json">\(base64)</script>
+            <script>
+            (function() {
+                try {
+                    globalThis.manabiFontCSSBase64 = "\(base64)";
+                    const el = document.getElementById('manabi-font-css-base64');
+                    if (!el || globalThis.manabiFontCSSBlobURL) return;
+                    const css = atob(el.textContent || '');
+                    const blob = new Blob([css], { type: 'text/css' });
+                    const url = URL.createObjectURL(blob);
+                    globalThis.manabiFontCSSBlobURL = url;
+                } catch (err) {
+                    console.error('Failed to prepare font blob', err);
+                }
+            })();
+            </script>
+            """
+            if let range = html.range(of: "</body>", options: .caseInsensitive) {
+                html.replaceSubrange(range, with: payload + "</body>")
+            } else {
+                html.append(payload)
+            }
+        }
+
         guard let data = html.data(using: .utf8) else {
             throw EbookLoadingError.fileNotFound
         }
@@ -81,7 +116,7 @@ fileprivate actor EBookLoadingActor {
         )
         return (response, data)
     }
-    
+
     /// Returns an `HTTPURLResponse` and the corresponding data for the given ebook
     /// `fileURL`, handling both directories (which are zipped to .epub) and regular
     /// files.
@@ -96,7 +131,7 @@ fileprivate actor EBookLoadingActor {
             guard let epubData = await ZIPToEbookActor.shared.zipToEPub(directoryURL: localDirectoryURL) else {
                 throw EbookLoadingError.failedToZip
             }
-            
+
             let response = HTTPURLResponse(
                 url: fileURL,
                 mimeType: "application/epub+zip",
@@ -105,14 +140,14 @@ fileprivate actor EBookLoadingActor {
             )
             return (response, epubData)
         }
-        
+
         // Regular file → stream as‑is
         if try await readerFileManager.fileExists(fileURL: fileURL) {
             let localFileURL = try await readerFileManager.localFileURL(forReaderFileURL: fileURL)
             let data = try Data(contentsOf: localFileURL)
             let mimeType = UTType(filenameExtension: localFileURL.pathExtension)?.preferredMIMEType
-            ?? "application/octet-stream"
-            
+                ?? "application/octet-stream"
+
             let response = HTTPURLResponse(
                 url: originalURL,
                 mimeType: mimeType,
@@ -121,14 +156,14 @@ fileprivate actor EBookLoadingActor {
             )
             return (response, data)
         }
-        
+
         throw EbookLoadingError.fileNotFound
     }
 }
 
 fileprivate actor ZIPToEbookActor {
     static let shared = ZIPToEbookActor()
-    
+
     func zipToEPub(directoryURL: URL) -> Data? {
         return EPub.zipToEPub(directoryURL: directoryURL)
     }
@@ -137,7 +172,7 @@ fileprivate actor ZIPToEbookActor {
 @globalActor
 public actor EbookURLSchemeActor {
     public static var shared = EbookURLSchemeActor()
-    
+
     public init() { }
 }
 
@@ -148,32 +183,36 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)? = nil
-    var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)? = nil
-    var readerFileManager: ReaderFileManager? = nil
+    var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
+    var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
+    var readerFileManager: ReaderFileManager?
     var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
     var processHTML: ((String, Bool) async -> String)?
-    
+    /// Optional base64-encoded shared font CSS supplied by the host app to avoid adding a dependency here.
+    var sharedFontCSSBase64: String?
+    /// Optional provider to lazily supply the base64 CSS when not yet set.
+    var sharedFontCSSBase64Provider: (() async -> String?)?
+
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
-    
+
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
     }
-    
+
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
     }
-    
+
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
-        
+
         guard let url = urlSchemeTask.request.url else { return }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
             return
         }
-        
+
         Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
             let taskHash = urlSchemeTask.hash
@@ -188,7 +227,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             processHTML: processHTML
                         )
                         debugPrint("# EBOOKPERF process-text.recv", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "payloadLen:", payload.count)
-                        
+
                         //                        print("# ebook proc text endpoint", replacedTextLocation)
                         //                        if !isCacheWarmer {
                         //                            print("# ebook proc", replacedTextLocation, text)
@@ -261,26 +300,28 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 } else if urlSchemeTask.request.value(forHTTPHeaderField: "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST")?.lowercased() != "true",
                           let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js"), let mimeType = mimeType(ofFileAtUrl: url) {
                     // File viewer bundle file.
-                        do {
-                            let (response, data) = try await EBookLoadingActor().loadViewerFile(
-                                at: viewerHtmlPath,
-                                originalURL: url
-                            )
-                            await { @MainActor in
-                                if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                    urlSchemeTask.didReceive(response)
-                                    urlSchemeTask.didReceive(data)
-                                    urlSchemeTask.didFinish()
-                                    self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                                }
-                            }()
-                        } catch {
-                            print(error)
-                            await { @MainActor in
-                                urlSchemeTask.didFailWithError(error)
+                    do {
+                        let (response, data) = try await EBookLoadingActor().loadViewerFile(
+                            at: viewerHtmlPath,
+                            originalURL: url,
+                            sharedFontCSSBase64: self.sharedFontCSSBase64,
+                            sharedFontCSSBase64Provider: self.sharedFontCSSBase64Provider
+                        )
+                        await { @MainActor in
+                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                urlSchemeTask.didReceive(response)
+                                urlSchemeTask.didReceive(data)
+                                urlSchemeTask.didFinish()
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }()
-                        }
+                            }
+                        }()
+                    } catch {
+                        print(error)
+                        await { @MainActor in
+                            urlSchemeTask.didFailWithError(error)
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }()
+                    }
                 } else if
                     let path = loadPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
                     let fileURL = URL(string: "ebook://ebook/load\(path)"),
@@ -293,7 +334,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             originalURL: url,
                             readerFileManager: readerFileManager
                         )
-                        
+
                         await { @MainActor in
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                 urlSchemeTask.didReceive(response)
@@ -317,7 +358,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             }
         }
     }
-    
+
     private func bundleURLFromWebURL(_ url: URL) -> URL? {
         guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
         let assetName = url.deletingPathExtension().lastPathComponent
@@ -325,7 +366,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
         return Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
     }
-    
+
     private func mimeType(ofFileAtUrl url: URL) -> String? {
         return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }

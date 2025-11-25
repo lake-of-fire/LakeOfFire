@@ -15,23 +15,25 @@ fileprivate actor ReaderViewModelActor {
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    public var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)? = nil
-    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)? = nil
-    public var processHTML: ((String, Bool) async -> String)? = nil
+    public var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
+    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
+    public var processHTML: ((String, Bool) async -> String)?
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
+    public var sharedFontCSSBase64: String?
+    public var sharedFontCSSBase64Provider: (() async -> String?)?
     private var lastFallbackLoaderURL: URL?
     private var lastRenderedReadabilityURL: URL?
     private var expectedSyntheticReaderLoaderURL: URL?
     private var pendingReaderModeURL: URL?
     private var loadTraceRecords: [String: ReaderModeLoadTraceRecord] = [:]
-    
+
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
-    @Published var readabilityContent: String? = nil
-    @Published var readabilityContainerSelector: String? = nil
-    @Published var readabilityContainerFrameInfo: WKFrameInfo? = nil {
+    @Published var readabilityContent: String?
+    @Published var readabilityContainerSelector: String?
+    @Published var readabilityContainerFrameInfo: WKFrameInfo? {
         didSet {
             let oldURL = oldValue?.request.url?.absoluteString ?? "<nil>"
             let newURL = readabilityContainerFrameInfo?.request.url?.absoluteString ?? "<nil>"
@@ -44,8 +46,8 @@ public class ReaderModeViewModel: ObservableObject {
     }
     @Published var readabilityFrames = Set<WKFrameInfo>()
     var readabilityPublishedTime: String?
-    
-//    @Published var contentRules: String? = nil
+
+    //    @Published var contentRules: String? = nil
 
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
@@ -211,30 +213,37 @@ public class ReaderModeViewModel: ObservableObject {
             loadTraceRecords.removeValue(forKey: key)
         }
     }
-    
-//    private var contentRulesForReadabilityLoading = """
-//    [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
-//        """
-//        {
-//             "trigger": {
-//                 "url-filter": ".*",
-//                 "resource-type": ["\($0)"]
-//             },
-//             "action": {
-//                 "type": "block"
-//             }
-//         }
-//        """
-//    } .joined(separator: ", "))
-//    ]
-//    """
-    
+
+    //    private var contentRulesForReadabilityLoading = """
+    //    [\(["image", "style-sheet", "font", "media", "popup", "svg-document", "websocket", "other"].map {
+    //        """
+    //        {
+    //             "trigger": {
+    //                 "url-filter": ".*",
+    //                 "resource-type": ["\($0)"]
+    //             },
+    //             "action": {
+    //                 "type": "block"
+    //             }
+    //         }
+    //        """
+    //    } .joined(separator: ", "))
+    //    ]
+    //    """
+
     internal func readerModeLoading(_ isLoading: Bool) {
         if isLoading && !isReaderModeLoading {
             debugPrint(
                 "# READER readerMode.spinner",
                 "loading=true",
                 "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+            )
+            debugPrint(
+                "# READERPERF readerMode.spinner.set",
+                "ts=\(Date().timeIntervalSince1970)",
+                "value=true",
+                "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
             )
             isReaderModeLoading = true
         } else if !isLoading && isReaderModeLoading {
@@ -243,6 +252,13 @@ public class ReaderModeViewModel: ObservableObject {
                 "loading=false",
                 "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")"
             )
+            debugPrint(
+                "# READERPERF readerMode.spinner.set",
+                "ts=\(Date().timeIntervalSince1970)",
+                "value=false",
+                "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+            )
             isReaderModeLoading = false
         }
     }
@@ -250,6 +266,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
         let matchesRendered = urlMatchesLastRendered(url)
+        let start = Date()
 
         if matchesRendered,
            pendingReaderModeURL == nil,
@@ -279,6 +296,13 @@ public class ReaderModeViewModel: ObservableObject {
             "suppressSpinner=\(suppressSpinner)",
             "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
         )
+        debugPrint(
+            "# READERPERF readerMode.beginLoad",
+            "ts=\(start.timeIntervalSince1970)",
+            "url=\(trackedURL.absoluteString)",
+            "continuing=\(isContinuing)",
+            "suppressSpinner=\(suppressSpinner)"
+        )
         logTrace(
             .begin,
             url: trackedURL,
@@ -296,6 +320,13 @@ public class ReaderModeViewModel: ObservableObject {
             debugPrint(
                 "# READER readerMode.cancel",
                 "url=\(url?.absoluteString ?? "nil")",
+                "reason=noPending"
+            )
+            debugPrint(
+                "# READERPERF readerMode.cancel",
+                "ts=\(Date().timeIntervalSince1970)",
+                "url=\(url?.absoluteString ?? "nil")",
+                "pending=nil",
                 "reason=noPending"
             )
             logTrace(.cancel, url: url, details: "no pending load to cancel")
@@ -380,6 +411,11 @@ public class ReaderModeViewModel: ObservableObject {
             "# READER readerMode.complete",
             "url=\(traceURL.absoluteString)"
         )
+        debugPrint(
+            "# READERPERF readerMode.complete",
+            "ts=\(Date().timeIntervalSince1970)",
+            "url=\(traceURL.absoluteString)"
+        )
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         readerModeLoading(false)
         readerModeLoadCompletionHandler?(traceURL)
@@ -390,7 +426,7 @@ public class ReaderModeViewModel: ObservableObject {
         guard let pendingReaderModeURL else { return false }
         return pendingReaderModeURL.matchesReaderURL(url)
     }
-    
+
     func isReaderModeHandlingURL(_ url: URL) -> Bool {
         if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) {
             return true
@@ -401,26 +437,26 @@ public class ReaderModeViewModel: ObservableObject {
         return false
     }
 
-//    @MainActor
-//    public func invalidateLastRenderedReadabilityURL() {
-//        debugPrint("# FLASH ReaderModeViewModel.invalidateLastRenderedReadabilityURL clearing", lastRenderedReadabilityURL?.absoluteString ?? "nil")
-//        lastRenderedReadabilityURL = nil
-//        lastFallbackLoaderURL = nil
-//    }
-    
+    //    @MainActor
+    //    public func invalidateLastRenderedReadabilityURL() {
+    //        debugPrint("# FLASH ReaderModeViewModel.invalidateLastRenderedReadabilityURL clearing", lastRenderedReadabilityURL?.absoluteString ?? "nil")
+    //        lastRenderedReadabilityURL = nil
+    //        lastFallbackLoaderURL = nil
+    //    }
+
     public func isReaderModeButtonAvailable(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && content.isReaderModeAvailable && !content.isReaderModeByDefault
     }
-    
+
     public init() { }
-    
+
     func isReaderModeLoadPending(content: any ReaderContentProtocol) -> Bool {
         if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(content.url) {
             return true
         }
         return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
     }
-    
+
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# READER readerMode.showReaderView", readerContent.pageURL)
@@ -463,7 +499,7 @@ public class ReaderModeViewModel: ObservableObject {
             }
         }
     }
-    
+
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
     internal func showReadabilityContent(
@@ -478,6 +514,7 @@ public class ReaderModeViewModel: ObservableObject {
             cancelReaderModeLoad(for: readerContent.pageURL)
             return
         }
+        let renderStart = Date()
         if let frameInfo {
             debugPrint(
                 "# READER readability.targetFrame",
@@ -528,7 +565,7 @@ public class ReaderModeViewModel: ObservableObject {
         if lastFallbackLoaderURL != nil {
             self.lastFallbackLoaderURL = nil
         }
-        
+
         Task {
             do {
                 debugPrint("# READER readability.datasetFlag", "url=\(url.absoluteString)")
@@ -542,14 +579,14 @@ public class ReaderModeViewModel: ObservableObject {
                 debugPrint("# READER readability.datasetFlag.error", error.localizedDescription)
             }
         }
-        
+
         let asyncWriteStartedAt = Date()
         logTrace(.contentWriteStart, url: url, details: "marking reader defaults")
         try await content.asyncWrite { [weak self] _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
             if !url.isEBookURL && !url.isNativeReaderView {
-                if (content.html?.isEmpty ?? true) {
+                if content.html?.isEmpty ?? true {
                     if url.isSnippetURL {
                         guard let self else { return }
                         let oldPreview = snippetPreview(content.html ?? "")
@@ -572,13 +609,13 @@ public class ReaderModeViewModel: ObservableObject {
             content.refreshChangeMetadata(explicitlyModified: true)
         }
         logTrace(.contentWriteEnd, url: url, details: "duration=\(formattedInterval(Date().timeIntervalSince(asyncWriteStartedAt)))")
-        
+
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
-        
+
         await propagateReaderModeDefaults(
             for: url,
             primaryRecord: content,
@@ -589,7 +626,7 @@ public class ReaderModeViewModel: ObservableObject {
         if !isReaderMode {
             isReaderMode = true
         }
-        
+
         try await { @ReaderViewModelActor [weak self] in
             let parseStartedAt = Date()
             var doc: SwiftSoup.Document?
@@ -599,8 +636,7 @@ public class ReaderModeViewModel: ObservableObject {
                     readabilityContent,
                     url,
                     nil,
-                    false,
-                    { doc in
+                    false, { doc in
                         do {
                             return try await preprocessWebContentForReaderMode(
                                 doc: doc,
@@ -623,7 +659,7 @@ public class ReaderModeViewModel: ObservableObject {
                     doc?.outputSettings().escapeMode(.xhtml)
                 }
             }
-            
+
             guard let doc else {
                 print("Error: Unexpectedly failed to receive doc")
                 return
@@ -636,6 +672,12 @@ public class ReaderModeViewModel: ObservableObject {
             )
             await MainActor.run {
                 self?.logTrace(.readabilityProcessingFinish, url: url, details: "duration=\(parseSummary)")
+                debugPrint(
+                    "# READERPERF readerMode.pipeline",
+                    "stage=parseReadability",
+                    "url=\(url.absoluteString)",
+                    "elapsed=\(parseSummary)"
+                )
             }
 
             let transformStartedAt = Date()
@@ -657,6 +699,12 @@ public class ReaderModeViewModel: ObservableObject {
             let transformSummary = String(format: "%.3fs", transformDuration)
             await MainActor.run {
                 self?.logTrace(.processForReaderModeFinish, url: url, details: "duration=\(transformSummary)")
+                debugPrint(
+                    "# READERPERF readerMode.pipeline",
+                    "stage=processForReaderMode",
+                    "url=\(url.absoluteString)",
+                    "elapsed=\(transformSummary)"
+                )
             }
 
             var html = try doc.outerHtml()
@@ -699,7 +747,7 @@ public class ReaderModeViewModel: ObservableObject {
                             root = document.querySelector(renderToSelector)
                         }
                         var serialized = html
-                        
+
                         let xmlns = document.body?.getAttribute('xmlns')
                         if (xmlns) {
                             let parser = new DOMParser()
@@ -730,7 +778,7 @@ public class ReaderModeViewModel: ObservableObject {
                         } catch (error) {
                             try { console.log("snippetLoader.injected log error", error) } catch (_) {}
                         }
-                        
+
                         let style = document.createElement('style')
                         style.textContent = css
                         document.head.appendChild(style)
@@ -741,7 +789,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "renderToSelector": renderToSelector ?? "",
                             "html": transformedContent,
                             "insertBytes": transformedContent.utf8.count,
-                            "css": Readability.shared.css,
+                            "css": Readability.shared.css
                         ], in: frameInfo)
                     logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
                     markReaderModeLoadComplete(for: url)
@@ -767,6 +815,7 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                     logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedBytes)")
                     expectSyntheticReaderLoaderCommit(for: renderBaseURL)
+                    let loadDispatch = Date()
                     navigator.load(
                         htmlData,
                         mimeType: "text/html",
@@ -775,6 +824,14 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                     debugPrint(
                         "# READER readability.navigatorLoad.dispatched",
+                        "url=\(url.absoluteString)",
+                        "base=\(renderBaseURL.absoluteString)",
+                        "bytes=\(transformedBytes)",
+                        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadDispatch)))s"
+                    )
+                    debugPrint(
+                        "# READERPERF readerMode.navigatorLoad.readability",
+                        "ts=\(Date().timeIntervalSince1970)",
                         "url=\(url.absoluteString)",
                         "base=\(renderBaseURL.absoluteString)",
                         "bytes=\(transformedBytes)"
@@ -796,12 +853,19 @@ public class ReaderModeViewModel: ObservableObject {
                     cancelReaderModeLoad(for: url)
                 }
 
-//                try await { @MainActor in
-//                    readerModeLoading(false)
-//                }()
+                //                try await { @MainActor in
+                //                    readerModeLoading(false)
+                //                }()
             }()
             try await { @MainActor in
                 lastRenderedReadabilityURL = url
+                let totalRenderElapsed = Date().timeIntervalSince(renderStart)
+                debugPrint(
+                    "# READERPERF readerMode.render.total",
+                    "ts=\(Date().timeIntervalSince1970)",
+                    "url=\(url.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", totalRenderElapsed))s"
+                )
             }()
         }()
     }
@@ -847,7 +911,7 @@ public class ReaderModeViewModel: ObservableObject {
     ) {
         debugPrint("# READER readerMode.domSnapshot", "reason=\(reason)", "pageURL=\(pageURL.absoluteString)", "info=<swift-layer-only>")
     }
-    
+
     @MainActor
     private func injectSnippetLoaderProbe(
         scriptCaller: WebViewScriptCaller,
@@ -908,21 +972,29 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async throws {
         debugPrint("# READER readerMode.navCommit", "pageURL=\(newState.pageURL.absoluteString)")
+        debugPrint(
+            "# READERPERF readerMode.navCommit.detail",
+            "ts=\(Date().timeIntervalSince1970)",
+            "pageURL=\(newState.pageURL.absoluteString)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isReaderMode=\(isReaderMode)",
+            "isReaderModeLoading=\(isReaderModeLoading)"
+        )
         let pageURL = newState.pageURL
         // Provide a stable book key for JS tracking-size cache
         if !scriptCaller.hasAsyncCaller {
             debugPrint("# READER paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(pageURL.absoluteString)")
         } else {
             do {
-            try await scriptCaller.evaluateJavaScript(
-                "window.paginationTrackingBookKey = '" + pageURL.absoluteString + "';",
-                in: nil,
-                duplicateInMultiTargetFrames: true
-            )
-            debugPrint("# READER paginationBookKey.set", "key=\(pageURL.absoluteString.prefix(72))…")
-        } catch {
-            debugPrint("# READER paginationBookKey.set.error", error.localizedDescription)
-        }
+                try await scriptCaller.evaluateJavaScript(
+                    "window.paginationTrackingBookKey = '" + pageURL.absoluteString + "';",
+                    in: nil,
+                    duplicateInMultiTargetFrames: true
+                )
+                debugPrint("# READER paginationBookKey.set", "key=\(pageURL.absoluteString.prefix(72))…")
+            } catch {
+                debugPrint("# READER paginationBookKey.set.error", error.localizedDescription)
+            }
         }
         // Keep the current frame info during navigation; clear only if it points to a different page to avoid stale invalid frames.
         if let existingFrame = readabilityContainerFrameInfo {
@@ -935,9 +1007,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
         readabilityContent = nil
         readabilityContainerSelector = nil
-//        contentRules = nil
+        //        contentRules = nil
         try Task.checkCancellation()
-        
+
         guard let content = readerContent.content else {
             debugPrint("# READER readerMode.navCommit.missingContent", newState.pageURL)
             print("No content to display in ReaderModeViewModel onNavigationCommitted")
@@ -959,6 +1031,12 @@ public class ReaderModeViewModel: ObservableObject {
         let isLoaderNavigation = newState.pageURL.isReaderURLLoaderURL
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
+            debugPrint(
+                "# READERPERF readerMode.syntheticCommit.matched",
+                "ts=\(Date().timeIntervalSince1970)",
+                "loaderURL=\(newState.pageURL.absoluteString)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+            )
             if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(committedURL) {
                 markReaderModeLoadComplete(for: committedURL)
             }
@@ -1021,6 +1099,13 @@ public class ReaderModeViewModel: ObservableObject {
                 let htmlFetchStartedAt = Date()
                 var htmlResult = try await content.htmlToDisplay(readerFileManager: readerFileManager)
                 let fetchDuration = formattedInterval(Date().timeIntervalSince(htmlFetchStartedAt))
+                debugPrint(
+                    "# READERPERF readerMode.htmlFetch",
+                    "stage=end",
+                    "url=\(committedURL.absoluteString)",
+                    "source=readerFileManager",
+                    "elapsed=\(fetchDuration)"
+                )
                 let htmlByteCount = htmlResult?.utf8.count ?? 0
                 let htmlSource = content.rssContainsFullContent
                     ? "stored-html"
@@ -1184,11 +1269,19 @@ public class ReaderModeViewModel: ObservableObject {
                                     "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "<nil>")"
                                 )
                                 if let navigator {
+                                    let fallbackLoadStart = Date()
                                     navigator.load(
                                         htmlData,
                                         mimeType: "text/html",
                                         characterEncodingName: "UTF-8",
                                         baseURL: committedURL
+                                    )
+                                    debugPrint(
+                                        "# READERPERF readerMode.navigatorLoad.fallback",
+                                        "ts=\(Date().timeIntervalSince1970)",
+                                        "url=\(committedURL.absoluteString)",
+                                        "bytes=\(htmlData.count)",
+                                        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(fallbackLoadStart)))s"
                                     )
                                 } else {
                                     debugPrint("# READER navigator.missing", "url=\(committedURL.absoluteString)")
@@ -1219,23 +1312,31 @@ public class ReaderModeViewModel: ObservableObject {
                 expectSyntheticReaderLoaderCommit(for: nil)
                 navigator.load(URLRequest(url: committedURL))
             }
-//        } else {
-//            debugPrint("# nav commit mid 2..", newState.pageURL, content.isReaderModeAvailable)
-//            if content.isReaderModeByDefault, !content.isReaderModeAvailable {
-//                debugPrint("# on commit, read mode NOT avail, loading false")
-//                readerModeLoading(false)
-//            }
+            //        } else {
+            //            debugPrint("# nav commit mid 2..", newState.pageURL, content.isReaderModeAvailable)
+            //            if content.isReaderModeByDefault, !content.isReaderModeAvailable {
+            //                debugPrint("# on commit, read mode NOT avail, loading false")
+            //                readerModeLoading(false)
+            //            }
         } else {
             lastFallbackLoaderURL = nil
         }
     }
-    
+
     @MainActor
     public func onNavigationFinished(
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
         debugPrint("# READER readerMode.navFinished", "pageURL=\(newState.pageURL.absoluteString)")
+        debugPrint(
+            "# READERPERF readerMode.navFinished.detail",
+            "ts=\(Date().timeIntervalSince1970)",
+            "pageURL=\(newState.pageURL.absoluteString)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)"
+        )
         if let trackedURL = pendingReaderModeURL {
             logTrace(.navFinished, url: trackedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         } else if loadTraceRecords[traceKey(for: newState.pageURL)] != nil {
@@ -1255,7 +1356,7 @@ public class ReaderModeViewModel: ObservableObject {
         debugPrint("# READER readerMode.navFailed", newState.pageURL)
         cancelReaderModeLoad(for: newState.pageURL)
     }
-    
+
     @MainActor
     public func onNavigationError(
         pageURL: URL,
@@ -1362,13 +1463,13 @@ private func updateBylineSection(
     }
 }
 
-fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*?)(font-size:\s*[\d.]+px)([^"]*")"#
-fileprivate let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: readerFontSizeStylePattern, options: .caseInsensitive)
+private let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*?)(font-size:\s*[\d.]+px)([^"]*")"#
+private let readerFontSizeStyleRegex = try! NSRegularExpression(pattern: readerFontSizeStylePattern, options: .caseInsensitive)
 
-fileprivate let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
-fileprivate let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
+private let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
+private let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
 
-fileprivate let bodyInnerHTMLRegex = try! NSRegularExpression(pattern: #"(?is)<body[^>]*>(.*?)</body>"#)
+private let bodyInnerHTMLRegex = try! NSRegularExpression(pattern: #"(?is)<body[^>]*>(.*?)</body>"#)
 
 internal func bodyInnerHTML(from html: String) -> String? {
     let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
@@ -1474,7 +1575,7 @@ internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
 }
 
 @MainActor
-fileprivate func invalidateReaderModeCache(
+private func invalidateReaderModeCache(
     for content: any ReaderContentProtocol,
     url: URL,
     reason: String
@@ -1595,7 +1696,7 @@ internal func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSiz
     guard let html = String(bytes: htmlBytes, encoding: .utf8) else {
         return htmlBytes
     }
-    
+
     let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
     let nsHTML = html as NSString
     var updatedHtml: String
@@ -1619,11 +1720,10 @@ internal func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSiz
         let newContent = newFontSizeStr + "; " + content
         let replacement = prefix + newContent + suffix
         updatedHtml = nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
-    }
-    else {
+    } else {
         updatedHtml = html
     }
-    
+
     // Convert the updated HTML string back to UTF8 bytes.
     return Array(updatedHtml.utf8)
 }
@@ -1637,7 +1737,7 @@ public func preprocessWebContentForReaderMode(
     do {
         try wireViewOriginalLinks(doc: doc, url: url)
     } catch { }
-    
+
     if let fallbackTitle, !fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         if let titleElement = try doc.getElementById("reader-title") {
             let currentTitleText = try titleElement.text(trimAndNormaliseWhitespace: false)
@@ -1672,11 +1772,11 @@ public func processForReaderMode(
         try oldElement.attr("id", "reader-content")
         try oldElement.removeAttr("class")
     }
-    
+
     if isEBook {
         try doc.body()?.attr("data-is-ebook", "true")
     }
-    
+
     if !isCacheWarmer {
         if let bodyTag = doc.body() {
             // TODO: font size and theme set elsewhere already..?
@@ -1702,20 +1802,20 @@ public func processForReaderMode(
             _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
         }
-        
+
         if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
             let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
             do {
                 try existing.html(escapedTitle)
             } catch { }
         }
-        
+
         if !isEBook {
             do {
                 try fixAnnoyingTitlesWithPipes(doc: doc)
             } catch { }
         }
-        
+
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")

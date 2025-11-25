@@ -1093,6 +1093,10 @@ class View {
     #styleCache = new WeakMap()
     #isCacheWarmer = false
     cachedViewSize = null
+    getLastBodyRect() {
+        // Rounded body rect captured by the resize observer; avoids forcing layout reads elsewhere.
+        return this.#lastBodyRect
+    }
     #handleResize(newSize) {
         if (!newSize) return
         // Skip resize work while an expand is actively adjusting iframe dimensions; those
@@ -1258,13 +1262,19 @@ class View {
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+        // Hide iframe until we intentionally reveal for baking to avoid initial layout/paint cost
+        this.#iframe.style.display = 'none'
+        logEBookPerf('iframe-display-set', { state: 'hidden-before-src', src })
         return new Promise(async (resolve) => {
             if (this.#isCacheWarmer) {
                 console.log("Don't create View for cache warmers")
                 resolve()
             } else {
                 this.#iframe.addEventListener('load', async () => {
+                    try { await globalThis.manabiWaitForFontCSS?.() } catch {}
                     const doc = this.document
+
+                    try { globalThis.manabiEnsureCustomFonts?.(doc) } catch {}
 
                     await afterLoad?.(doc)
 
@@ -1456,102 +1466,111 @@ class View {
             cacheWarmer: this.#isCacheWarmer,
         })
         this.#inExpand = true
-        await this.onBeforeExpand()
+        try {
+            await this.onBeforeExpand()
+        } catch (error) {
+            this.#inExpand = false
+            throw error
+        }
         //        console.log("expand...")
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                //                console.log("expand... inside 0")
-                const documentElement = this.document?.documentElement
-                const side = this.#vertical ? 'height' : 'width'
-                const otherSide = this.#vertical ? 'width' : 'height'
-                const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
-                //                let contentSize = documentElement?.[scrollProp] ?? 0;
+                try {
+                    //                console.log("expand... inside 0")
+                    const documentElement = this.document?.documentElement
+                    const side = this.#vertical ? 'height' : 'width'
+                    const otherSide = this.#vertical ? 'width' : 'height'
+                    const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
+                    //                let contentSize = documentElement?.[scrollProp] ?? 0;
 
-                if (this.#column) {
-                    const contentRect = this.#contentRange.getBoundingClientRect()
-                    const rootRect = documentElement.getBoundingClientRect()
-                    // offset caused by column break at the start of the page
-                    // which seem to be supported only by WebKit and only for horizontal writing
-                    const contentStart = this.#vertical ? 0
-                        : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                    const contentSize = contentStart + contentRect[side]
-                    const pageCount = Math.ceil(contentSize / this.#size)
-                    const expandedSize = pageCount * this.#size
+                    if (this.#column) {
+                        const contentRect = this.#contentRange.getBoundingClientRect()
+                        const rootRect = documentElement.getBoundingClientRect()
+                        // offset caused by column break at the start of the page
+                        // which seem to be supported only by WebKit and only for horizontal writing
+                        const contentStart = this.#vertical ? 0
+                            : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                        const contentSize = contentStart + contentRect[side]
+                        const pageCount = Math.ceil(contentSize / this.#size)
+                        const expandedSize = pageCount * this.#size
 
-                    this.#element.style.padding = '0'
-                    this.#iframe.style[side] = `${expandedSize}px`
-                    this.#element.style[side] = `${expandedSize + this.#size * 2}px`
-                    this.#iframe.style[otherSide] = '100%'
-                    this.#element.style[otherSide] = '100%'
-                    if (documentElement) {
-                        documentElement.style[side] = `${this.#size}px`
-                    }
-                    if (this.#overlayer) {
-                        this.#overlayer.element.style.margin = '0'
-                        this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
-                        this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
-                        this.#overlayer.element.style[side] = `${expandedSize}px`
-                        this.#overlayer.redraw()
-                    }
-                } else {
-                    const contentSize = documentElement.getBoundingClientRect()[side]
-                    const expandedSize = contentSize
-                    const {
-                        topMargin,
-                        bottomMargin
-                    } = this.layout
-                    //                    const paddingTop = `${marginTop}px`
-                    //                    const paddingBottom = `${marginBottom}px`
-                    const paddingTop = `${topMargin}px`
-                    const paddingBottom = `${bottomMargin}px`
-                    if (this.#vertical) {
-                        this.#element.style.paddingLeft = paddingTop
-                        this.#element.style.paddingRight = paddingBottom
-                        this.#element.style.paddingTop = '0'
-                        this.#element.style.paddingBottom = '0'
-                    } else {
-                        this.#element.style.paddingLeft = '0'
-                        this.#element.style.paddingRight = '0'
-                        this.#element.style.paddingTop = paddingTop
-                        this.#element.style.paddingBottom = paddingBottom
-                    }
-                    this.#iframe.style[side] = `${expandedSize}px`
-                    this.#element.style[side] = `${expandedSize}px`
-                    this.#iframe.style[otherSide] = '100%'
-                    this.#element.style[otherSide] = '100%'
-                    if (this.#overlayer) {
-                        if (this.#vertical) {
-                            this.#overlayer.element.style.marginLeft = paddingTop
-                            this.#overlayer.element.style.marginRight = paddingBottom
-                            this.#overlayer.element.style.marginTop = '0'
-                            this.#overlayer.element.style.marginBottom = '0'
-                        } else {
-                            this.#overlayer.element.style.marginLeft = '0'
-                            this.#overlayer.element.style.marginRight = '0'
-                            this.#overlayer.element.style.marginTop = paddingTop
-                            this.#overlayer.element.style.marginBottom = paddingBottom
+                        this.#element.style.padding = '0'
+                        this.#iframe.style[side] = `${expandedSize}px`
+                        this.#element.style[side] = `${expandedSize + this.#size * 2}px`
+                        this.#iframe.style[otherSide] = '100%'
+                        this.#element.style[otherSide] = '100%'
+                        if (documentElement) {
+                            documentElement.style[side] = `${this.#size}px`
                         }
-                        this.#overlayer.element.style.left = '0'
-                        this.#overlayer.element.style.top = '0'
-                        this.#overlayer.element.style[side] = `${expandedSize}px`
-                        this.#overlayer.redraw()
+                        if (this.#overlayer) {
+                            this.#overlayer.element.style.margin = '0'
+                            this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
+                            this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
+                            this.#overlayer.element.style[side] = `${expandedSize}px`
+                            this.#overlayer.redraw()
+                        }
+                    } else {
+                        const contentSize = documentElement.getBoundingClientRect()[side]
+                        const expandedSize = contentSize
+                        const {
+                            topMargin,
+                            bottomMargin
+                        } = this.layout
+                        //                    const paddingTop = `${marginTop}px`
+                        //                    const paddingBottom = `${marginBottom}px`
+                        const paddingTop = `${topMargin}px`
+                        const paddingBottom = `${bottomMargin}px`
+                        if (this.#vertical) {
+                            this.#element.style.paddingLeft = paddingTop
+                            this.#element.style.paddingRight = paddingBottom
+                            this.#element.style.paddingTop = '0'
+                            this.#element.style.paddingBottom = '0'
+                        } else {
+                            this.#element.style.paddingLeft = '0'
+                            this.#element.style.paddingRight = '0'
+                            this.#element.style.paddingTop = paddingTop
+                            this.#element.style.paddingBottom = paddingBottom
+                        }
+                        this.#iframe.style[side] = `${expandedSize}px`
+                        this.#element.style[side] = `${expandedSize}px`
+                        this.#iframe.style[otherSide] = '100%'
+                        this.#element.style[otherSide] = '100%'
+                        if (this.#overlayer) {
+                            if (this.#vertical) {
+                                this.#overlayer.element.style.marginLeft = paddingTop
+                                this.#overlayer.element.style.marginRight = paddingBottom
+                                this.#overlayer.element.style.marginTop = '0'
+                                this.#overlayer.element.style.marginBottom = '0'
+                            } else {
+                                this.#overlayer.element.style.marginLeft = '0'
+                                this.#overlayer.element.style.marginRight = '0'
+                                this.#overlayer.element.style.marginTop = paddingTop
+                                this.#overlayer.element.style.marginBottom = paddingBottom
+                            }
+                            this.#overlayer.element.style.left = '0'
+                            this.#overlayer.element.style.top = '0'
+                            this.#overlayer.element.style[side] = `${expandedSize}px`
+                            this.#overlayer.redraw()
+                        }
                     }
+                    //                console.log("expand... call onexpand")
+                    logEBookPerf('expand-before-onexpand', {
+                        column: this.#column,
+                        vertical: this.#vertical,
+                        side,
+                        expandedSize: this.#iframe?.style?.[side] || null,
+                    })
+                    await this.onExpand()
+                    logEBookPerf('expand-complete', {
+                        column: this.#column,
+                        vertical: this.#vertical,
+                        size: this.#size,
+                    })
+                    //                console.log("expand... call'd onexpand")
+                } finally {
+                    this.#inExpand = false
+                    resolve()
                 }
-                //                console.log("expand... call onexpand")
-                logEBookPerf('expand-before-onexpand', {
-                    column: this.#column,
-                    vertical: this.#vertical,
-                    side,
-                    expandedSize: this.#iframe?.style?.[side] || null,
-                })
-                await this.onExpand()
-                logEBookPerf('expand-complete', {
-                    column: this.#column,
-                    vertical: this.#vertical,
-                    size: this.#size,
-                })
-                //                console.log("expand... call'd onexpand")
-                resolve()
             })
         })
     }
@@ -2026,26 +2045,28 @@ export class Paginator extends HTMLElement {
             }
             this.#trackingSizeLastObservedRect = rect
         } else {
-            // If no rect provided, derive from current body to coalesce duplicates.
-            const bodyRect = this.#view?.document?.body?.getBoundingClientRect?.()
-            if (bodyRect) {
-                const derived = {
-                    width: Math.round(bodyRect.width),
-                    height: Math.round(bodyRect.height),
-                    top: Math.round(bodyRect.top),
-                    left: Math.round(bodyRect.left),
-                }
-                const lastBaked = this.#lastTrackingSizeBakedRect
-                if (lastBaked &&
-                    derived.width === lastBaked.width &&
-                    derived.height === lastBaked.height &&
-                    derived.top === lastBaked.top &&
-                    derived.left === lastBaked.left) {
-                    logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'unchanged-derived' })
-                    return false
-                }
-                this.#trackingSizeLastObservedRect = derived
+            // Only respond to rects captured elsewhere (e.g., resize observer cache); avoid new layout reads here.
+            const cachedBodyRect = this.#view?.getLastBodyRect?.()
+            if (!cachedBodyRect) {
+                logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'no-cached-rect' })
+                return false
             }
+            const derived = {
+                width: Math.round(cachedBodyRect.width),
+                height: Math.round(cachedBodyRect.height),
+                top: Math.round(cachedBodyRect.top),
+                left: Math.round(cachedBodyRect.left),
+            }
+            const lastBaked = this.#lastTrackingSizeBakedRect
+            if (lastBaked &&
+                derived.width === lastBaked.width &&
+                derived.height === lastBaked.height &&
+                derived.top === lastBaked.top &&
+                derived.left === lastBaked.left) {
+                logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'unchanged-derived' })
+                return false
+            }
+            this.#trackingSizeLastObservedRect = derived
         }
 
         if (this.#trackingSizeBakeInFlight) {
@@ -2116,18 +2137,23 @@ export class Paginator extends HTMLElement {
             return
         }
 
+        // Reveal iframe itself right as we begin baking; body stays hidden until reveal step below.
+        if (this.#iframe?.style?.display === 'none') {
+            this.#iframe.style.display = 'block'
+            logEBookPerf('iframe-display-set', { state: 'shown-for-bake', reason, sectionIndex })
+        }
+
         logEBookPerf('tracking-size-bake-begin', {
             reason,
             sectionIndex,
             isCacheWarmer: this.#isCacheWarmer,
             hasDoc: !!doc,
-        })
-
-        this.#revealPreBakeContent()
+            })
 
         const activeView = this.#view
 
         this.#setLoading(true)
+        hideDocumentContentForPreBake(doc)
         try {
             await nextFrame()
             await bakeTrackingSectionSizes(doc, {
@@ -2141,13 +2167,13 @@ export class Paginator extends HTMLElement {
                 await this.#getSentinelVisibilities()
             } catch (error) {
             }
-            const bodyRect = doc.body?.getBoundingClientRect?.()
-            if (bodyRect) {
+            const cachedBodyRect = this.#view?.getLastBodyRect?.()
+            if (cachedBodyRect) {
                 this.#lastTrackingSizeBakedRect = {
-                    width: Math.round(bodyRect.width),
-                    height: Math.round(bodyRect.height),
-                    top: Math.round(bodyRect.top),
-                    left: Math.round(bodyRect.left),
+                    width: Math.round(cachedBodyRect.width),
+                    height: Math.round(cachedBodyRect.height),
+                    top: Math.round(cachedBodyRect.top),
+                    left: Math.round(cachedBodyRect.left),
                 }
             }
 
@@ -2171,6 +2197,7 @@ export class Paginator extends HTMLElement {
                 }
             }
         } finally {
+            this.#revealPreBakeContent()
             if (this.#view === activeView) {
                 this.#setLoading(false)
             }
@@ -3520,18 +3547,15 @@ export class Paginator extends HTMLElement {
                         location: src,
                     })
                 } else {
+                    hideDocumentContentForPreBake(doc)
                     if (doc.head) {
                         const $styleBefore = doc.createElement('style')
                         doc.head.prepend($styleBefore)
                         const $style = doc.createElement('style')
                         doc.head.append($style)
                         this.#styleMap.set(doc, [$styleBefore, $style])
+                        ensureTrackingSizeBakeStyles(doc)
                     }
-                    hideDocumentContentForPreBake(doc)
-                    // Defer injecting tracking-size bake styles until the actual
-                    // bake pass so we don't hide sections during initial display
-                    // (this caused page jumps when turning into the next section).
-                    //                    console.log("#display... await onLoad")
                     await onLoad?.({
                         doc,
                         location: doc.location.href,
