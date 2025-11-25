@@ -57,9 +57,17 @@ private class ReaderWebViewHandler {
         self.scriptCaller = scriptCaller
     }
 
-    func handleNewURL(state: WebViewState) async throws {
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating)
-        debugPrint("# READER webView.state", "url=\(state.pageURL.absoluteString)", "loading=\(state.isLoading)", "provisional=\(state.isProvisionallyNavigating)")
+    func handleNewURL(state: WebViewState, source: String) async throws {
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating, "source", source)
+        debugPrint(
+            "# READERPERF webView.state",
+            "ts=\(Date().timeIntervalSince1970)",
+            "url=\(state.pageURL.absoluteString)",
+            "loading=\(state.isLoading)",
+            "provisional=\(state.isProvisionallyNavigating)",
+            "source=\(source)",
+            "pendingReaderMode=\(readerModeViewModel.isReaderModeLoadPending(for: state.pageURL))"
+        )
 
         if state.pageURL.isReaderURLLoaderURL,
            let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: state.pageURL),
@@ -145,7 +153,7 @@ private class ReaderWebViewHandler {
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", state.pageURL)
         navigationTaskManager.startOnNavigationCommitted {
             do {
-                try await self.handleNewURL(state: state)
+                try await self.handleNewURL(state: state, source: "navigationCommitted")
             } catch {
                 if error is CancellationError {
                     print("onNavigationCommitted task was cancelled.")
@@ -208,7 +216,7 @@ private class ReaderWebViewHandler {
         debugPrint("# FLASH ReaderWebViewHandler.onURLChanged event", state.pageURL)
         navigationTaskManager.startOnURLChanged { @MainActor in
             do {
-                try await self.handleNewURL(state: state)
+                try await self.handleNewURL(state: state, source: "urlChanged")
             } catch is CancellationError {
                 //                print("onURLChanged task was cancelled.")
             } catch {

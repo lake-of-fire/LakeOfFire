@@ -210,7 +210,11 @@ public extension WebViewNavigator {
                     let trackingURL = loaderBaseURL ?? trackingContent.url
                     let shouldTriggerReaderMode = trackingContent.isReaderModeByDefault || loaderBaseURL != nil
                     if shouldTriggerReaderMode {
-                        readerModeViewModel.beginReaderModeLoad(for: trackingURL)
+                        readerModeViewModel.beginReaderModeLoad(
+                            for: trackingURL,
+                            suppressSpinner: false,
+                            reason: "webViewNavigator.load.prefetch"
+                        )
                     } else {
                         readerModeViewModel.cancelReaderModeLoad(for: trackingURL)
                     }

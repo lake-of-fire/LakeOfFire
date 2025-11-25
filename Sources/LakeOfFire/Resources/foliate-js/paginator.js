@@ -1264,12 +1264,12 @@ class View {
     get document() {
         return this.#iframe.contentDocument
     }
-    async load(src, afterLoad, beforeRender) {
+    async load(src, afterLoad, beforeRender, sectionIndex = null) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
-        // Hide iframe until we intentionally reveal for baking to avoid initial layout/paint cost
+        // Hide iframe completely until we intentionally reveal for baking to avoid initial layout/paint cost.
         this.#iframe.style.display = 'none'
         logEBookPerf('iframe-display-set', { state: 'hidden-before-src', src })
         return new Promise(async (resolve) => {
@@ -1277,7 +1277,7 @@ class View {
                 console.log("Don't create View for cache warmers")
                 resolve()
             } else {
-        this.#iframe.addEventListener('load', async () => {
+                this.#iframe.addEventListener('load', async () => {
                     try { await globalThis.manabiWaitForFontCSS?.() } catch {}
                     const doc = this.document
 
@@ -1302,17 +1302,23 @@ class View {
 
                     this.#contentRange.selectNodeContents(doc.body)
 
-                    //                    console.log("load()... beforerender call")
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
                     })
-                    //                    console.log("load()... beforerender call'd")
-                    //                    this.#iframe.style.display = 'block'
 
-                    //                    console.log("load()... render call")
-                    await this.render(layout)
-                    //                    console.log("load()... render call'd")
+                    // Allow layout/expand only when we're ready to bake: reveal iframe + document, render without expanding, bake, then expand.
+                    this.revealIframeForBake('initial-load')
+                    revealDocumentContentForBake(doc)
+
+                    // Set up layout styles but defer expand to keep bake first.
+                    await this.render(layout, { skipExpand: true })
+
+                    // First bake happens before any expand/page sizing.
+                    await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex)
+
+                    // Now expand/pages after bake.
+                    await this.expand()
 
                     this.#resizeObserver.observe(doc.body)
 
@@ -1324,7 +1330,7 @@ class View {
             }
         })
     }
-    async render(layout) {
+    async render(layout, { skipExpand = false } = {}) {
         //        console.log("render(layout)...")
         if (!layout) {
             //            console.log("render(layout)... return")
@@ -1350,7 +1356,7 @@ class View {
             //            console.log("render(layout)... await'd columnize(layout)")
         } else {
             //            console.log("render(layout)... await scrolled")
-            await this.scrolled(layout)
+            await this.scrolled(layout, { skipExpand })
             //            console.log("render(layout)... await'd scrolled")
         }
         logEBookPerf('render-complete', {
@@ -1362,7 +1368,7 @@ class View {
     async scrolled({
         gap,
         columnWidth
-    }) {
+    }, { skipExpand = false } = {}) {
         await this.#awaitDirection();
         const vertical = this.#vertical
         const doc = this.document
@@ -1403,7 +1409,9 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-        this.#debouncedExpand()
+        if (!skipExpand) {
+            this.#debouncedExpand()
+        }
         //        await this.expand()
     }
     async columnize({
@@ -1412,7 +1420,7 @@ class View {
         gap,
         columnWidth,
         divisor,
-    }) {
+    }, { skipExpand = false } = {}) {
         //        console.log("columnize...")
         await this.#awaitDirection();
         //        console.log("columnize... await'd direction")
@@ -1457,7 +1465,9 @@ class View {
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
-        await this.expand()
+        if (!skipExpand) {
+            await this.expand()
+        }
         //        console.log("columnize... await'd expand")
         //            //            this.#debouncedExpand()
         //        }
@@ -1696,6 +1706,7 @@ export class Paginator extends HTMLElement {
     #topMargin = 0
     #bottomMargin = 0
     #index = -1
+    get currentIndex() { return this.#index }
     #anchor = 0 // anchor view to a fraction (0-1), Range, or Element
     #justAnchored = false
     #isLoading = false
@@ -2128,6 +2139,24 @@ export class Paginator extends HTMLElement {
         revealDocumentContentForBake(this.#view.document)
     }
 
+    // Public helper for View to force an initial size bake before first expand.
+    async performInitialBakeFromView(sectionIndex) {
+        this.#trackingSizeBakeReady = true
+        this.#suppressBakeOnExpand = true
+        logEBookPerf('tracking-size-bake-initial-from-view', {
+            sectionIndex,
+            ready: this.#trackingSizeBakeReady,
+        })
+        try {
+            await this.#performTrackingSectionSizeBake({
+                reason: 'initial-load',
+                sectionIndex,
+            })
+        } finally {
+            this.#suppressBakeOnExpand = false
+        }
+    }
+
     async #performTrackingSectionSizeBake({
         reason = 'unspecified',
         sectionIndex = null,
@@ -2152,12 +2181,13 @@ export class Paginator extends HTMLElement {
             sectionIndex,
             isCacheWarmer: this.#isCacheWarmer,
             hasDoc: !!doc,
-            })
+        })
 
         const activeView = this.#view
 
         this.#setLoading(true)
         hideDocumentContentForPreBake(doc)
+        this.#trackingSizeBakeReady = false
         try {
             await nextFrame()
             await bakeTrackingSectionSizes(doc, {
@@ -2214,6 +2244,20 @@ export class Paginator extends HTMLElement {
                 durationMs,
                 stillActiveView: this.#view === activeView,
             })
+            // Ready flag must be explicitly re-enabled by callers after bake completes.
+            logEBookPerf('tracking-size-bake-ready-reset', {
+                reason,
+                sectionIndex,
+                ready: this.#trackingSizeBakeReady,
+            })
+            if (this.#view === activeView) {
+                this.#trackingSizeBakeReady = true
+                logEBookPerf('tracking-size-bake-ready-set', {
+                    reason,
+                    sectionIndex,
+                    ready: this.#trackingSizeBakeReady,
+                })
+            }
         }
     }
 
@@ -3587,7 +3631,7 @@ export class Paginator extends HTMLElement {
                 this.#scrolledToAnchorOnLoad = false
 
                 //                console.log("#display... await load")
-                await view.load(src, afterLoad, beforeRender)
+                await view.load(src, afterLoad, beforeRender, index)
                 //                console.log("#display... awaited load")
                 this.#view = view
 
