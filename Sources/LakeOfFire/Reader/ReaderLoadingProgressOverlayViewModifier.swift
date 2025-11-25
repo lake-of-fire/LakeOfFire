@@ -97,8 +97,27 @@ private struct ReaderLoadingOverlay: View {
     @MainActor
     private func syncStatusDisplay() {
         cancelShowWork()
+
+        // If loading just turned off, immediately clear any lingering status text
+        // to prevent heartbeats from logging stale “Loading reader mode…” messages.
+        if !isLoading {
+            cancelHideWork()
+            if displayedMessage != nil || isShowingStatus {
+                debugPrint(
+                    "# READER overlay.complete",
+                    "context=\(context)",
+                    "messageCleared",
+                    "isLoading=\(isLoading)"
+                )
+            }
+            displayedMessage = nil
+            isShowingStatus = false
+            stopHeartbeat()
+            return
+        }
+
         let trimmedMessage = statusMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasMessage = isLoading && !(trimmedMessage?.isEmpty ?? true)
+        let hasMessage = !(trimmedMessage?.isEmpty ?? true)
 
         if hasMessage, let message = trimmedMessage {
             cancelHideWork()

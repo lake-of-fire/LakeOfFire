@@ -176,6 +176,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         
         Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
+            let taskHash = urlSchemeTask.hash
             if url.path == "/process-text" {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                     if let ebookTextProcessor, let processReadabilityContent, let processHTML {
@@ -186,6 +187,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             processReadabilityContent: processReadabilityContent,
                             processHTML: processHTML
                         )
+                        debugPrint("# EBOOKPERF process-text.recv", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "payloadLen:", payload.count)
                         
                         //                        print("# ebook proc text endpoint", replacedTextLocation)
                         //                        if !isCacheWarmer {
@@ -197,6 +199,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             text: text,
                             isCacheWarmer: isCacheWarmer
                         )
+                        debugPrint("# EBOOKPERF process-text.processed", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "respLen:", respText.count)
                         if let respData = respText.data(using: .utf8) {
                             let resp = HTTPURLResponse(
                                 url: url,

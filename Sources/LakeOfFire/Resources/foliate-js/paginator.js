@@ -534,6 +534,9 @@ const bakeTrackingSectionSizes = async (doc, {
         safeLeft: Math.round((globalThis.manabiSafeAreaInsets?.left ?? 0) * 1000) / 1000,
         safeRight: Math.round((globalThis.manabiSafeAreaInsets?.right ?? 0) * 1000) / 1000,
     }
+    const initialViewportBlockTarget = vertical
+        ? Math.max(1, viewport.width + viewport.safeLeft + viewport.safeRight)
+        : Math.max(1, viewport.height + viewport.safeTop + viewport.safeBottom)
     let settingsKey = globalThis.paginationTrackingSettingsKey ?? ''
     if (!settingsKey) {
         try {
@@ -674,6 +677,9 @@ const bakeTrackingSectionSizes = async (doc, {
 
     let bakedCount = 0
     let multiColumnCount = 0
+    let coverageBlock = 0
+    let coverageCursor = 0
+    let initialViewportReleased = false
 
     const hideTrailing = startIndex => {
         for (let t = startIndex; t < sections.length; t++) {
@@ -721,6 +727,41 @@ const bakeTrackingSectionSizes = async (doc, {
         }
     }
 
+    const tryAdvanceInitialViewport = () => {
+        while (coverageCursor < sections.length) {
+            const el = sections[coverageCursor]
+            if (!el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR)) break
+
+            const entry = bakedEntryMap.get(el.id || '')
+            let blockSize = entry?.blockSize
+            if (!Number.isFinite(blockSize)) {
+                const styleBlock = parseFloat(el.style?.getPropertyValue?.('block-size')) || null
+                if (Number.isFinite(styleBlock)) blockSize = styleBlock
+            }
+            if (!Number.isFinite(blockSize)) break
+
+            coverageBlock += blockSize
+            coverageCursor++
+            if (coverageBlock >= initialViewportBlockTarget) break
+        }
+
+        if (!initialViewportReleased && coverageBlock >= initialViewportBlockTarget) {
+            initialViewportReleased = true
+            if (addedBodyClass && body.classList.contains(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)) {
+                body.classList.remove(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
+            }
+            seedInitialVisibility()
+            logEBookPerf('tracking-size-bake-viewport-ready', {
+                reason,
+                sectionIndex,
+                bakedCount,
+                coverageBlock,
+                target: initialViewportBlockTarget,
+                batchSize,
+            })
+        }
+    }
+
     try {
         const windowSize = vertical ? Math.max(3, batchSize) : batchSize
         for (let i = 0; i < sections.length; i += windowSize) {
@@ -730,6 +771,7 @@ const bakeTrackingSectionSizes = async (doc, {
             unhideWindow(i, windowSize)
             const windowSections = sections.slice(i, i + windowSize)
             const results = await Promise.all(windowSections.map(bakeSection))
+            tryAdvanceInitialViewport()
         }
     } finally {
         // unhide everything at end
@@ -1039,6 +1081,7 @@ const setStylesImportant = (el, styles) => {
 class View {
     #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
     #debouncedExpand
+    #inExpand = false
     #hasResizerObserverTriggered = false
     #lastResizerRect = null
     #lastBodyRect = null
@@ -1052,6 +1095,9 @@ class View {
     cachedViewSize = null
     #handleResize(newSize) {
         if (!newSize) return
+        // Skip resize work while an expand is actively adjusting iframe dimensions; those
+        // resizes are expected and immediately followed by the real layout pass.
+        if (this.#inExpand) return
         const roundRect = r => r ? {
             width: Math.round(r.width),
             height: Math.round(r.height),
@@ -1409,6 +1455,7 @@ class View {
             size: this.#size,
             cacheWarmer: this.#isCacheWarmer,
         })
+        this.#inExpand = true
         await this.onBeforeExpand()
         //        console.log("expand...")
         return new Promise(resolve => {
@@ -1619,6 +1666,7 @@ export class Paginator extends HTMLElement {
     #rtl = null
     #directionReadyResolve = null;
     #directionReady = new Promise(r => (this.#directionReadyResolve = r));
+    #column = true
     #topMargin = 0
     #bottomMargin = 0
     #index = -1
@@ -2671,6 +2719,7 @@ export class Paginator extends HTMLElement {
         const flow = this.getAttribute('flow') || 'paginated'
         const writingMode = vertical ? (verticalRTL ? 'vertical-rl' : 'vertical-lr') : 'horizontal-tb'
         const resolvedDir = this.bookDir || (rtl ? 'rtl' : 'ltr')
+        this.#column = flow !== 'scrolled'
 
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr

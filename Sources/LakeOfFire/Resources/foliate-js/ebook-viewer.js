@@ -153,6 +153,15 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (isCacheWarmer) {
         headers['X-Is-Cache-Warmer'] = 'true';
     }
+    const perfStart = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now();
+    logEBookPerf('replace-text-request', {
+        href,
+        isCacheWarmer,
+        mediaType,
+        bodyLength: text?.length ?? 0,
+    })
     const response = await fetch('ebook://ebook/process-text', {
         method: "POST",
         mode: "cors",
@@ -164,12 +173,30 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
         if (!response.ok) {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
+        const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? performance.now() - perfStart
+            : null
+        logEBookPerf('replace-text-response', {
+            href,
+            isCacheWarmer,
+            status: response.status,
+            durationMs,
+        })
         let html = await response.text()
         if (isCacheWarmer && html.replace) {
             html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ")
         }
         return html
     } catch (error) {
+        const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? performance.now() - perfStart
+            : null
+        logEBookPerf('replace-text-error', {
+            href,
+            isCacheWarmer,
+            message: error?.message || String(error),
+            durationMs,
+        })
         console.error("Error replacing text:", error)
         return text
     }
