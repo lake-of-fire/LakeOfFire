@@ -104,20 +104,6 @@ const MANABI_TRACKING_CACHE_HANDLER = 'trackingSizeCache'
 const MANABI_TRACKING_CACHE_VERSION = 'v1'
 const MANABI_SENTINEL_ROOT_MARGIN_PX = 64
 
-// Debug logger specifically for sentinel/visibility flows. Mirrors logEBook but
-// prefixes with `# EPUBSENTINEL` so native logs can be filtered easily.
-const logEPUBSentinel = (event, payload = {}) => {
-    let metadata = ''
-    try {
-        if (payload && Object.keys(payload).length > 0) metadata = ` ${JSON.stringify(payload)}`
-    } catch (error) {
-        metadata = ''
-    }
-    const line = `# EPUBSENTINEL ${event}${metadata}`
-    try { globalThis.webkit?.messageHandlers?.print?.postMessage?.(line) } catch {}
-    try { console.log(line) } catch {}
-}
-
 const trackingSizeCacheResolvers = new Map()
 let trackingSizeCacheRequestCounter = 0
 
@@ -263,7 +249,6 @@ const findPrevTrackingSectionSibling = section => {
 
 const applySentinelVisibilityToTrackingSections = (doc, {
     visibleSentinels = [],
-    logReason = 'sentinel-visibility',
     container = null,
     sectionsCache = null,
 } = {}) => {
@@ -272,18 +257,6 @@ const applySentinelVisibilityToTrackingSections = (doc, {
         ? sectionsCache
         : Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
     if (sections.length === 0) return
-
-    const containerRect = container?.getBoundingClientRect?.()
-    logEPUBSentinel('apply:start', {
-        reason: logReason,
-        visibleSentinels: Array.isArray(visibleSentinels) ? visibleSentinels.length : 0,
-        sectionCount: sections.length,
-        bodyClasses: Array.from(doc.body?.classList ?? []),
-        container: containerRect ? {
-            width: Math.round(containerRect.width * 1000) / 1000,
-            height: Math.round(containerRect.height * 1000) / 1000,
-        } : null,
-    })
 
     const visibleSections = new Set()
     const visibleCount = visibleSentinels instanceof Set
@@ -302,9 +275,6 @@ const applySentinelVisibilityToTrackingSections = (doc, {
 
     for (const sentinel of visibleSentinels) {
         const section = sentinel?.closest?.(MANABI_TRACKING_SECTION_SELECTOR)
-        if (!section) {
-            logEPUBSentinel('visible-sentinel-no-section', { id: sentinel?.id || '', tag: sentinel?.tagName || '' })
-        }
         markSectionVisible(section, { includeBuffer: true })
     }
 
@@ -313,11 +283,6 @@ const applySentinelVisibilityToTrackingSections = (doc, {
     if (visibleSections.size === 0 && visibleCount > 0) {
         const fallback = sections[0]
         markSectionVisible(fallback, { includeBuffer: true })
-        logEPUBSentinel('visible-sentinel-fallback', {
-            usedFallback: !!fallback,
-            fallbackId: fallback?.id || '',
-            sentinelCount: visibleCount,
-        })
     }
 
     if (visibleSections.size === 0) {
@@ -330,10 +295,8 @@ const applySentinelVisibilityToTrackingSections = (doc, {
         if (appliedForceVisible) {
             doc.body.classList.add(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
         }
-        logEPUBSentinel('force-visible', { reason: 'no-intersections', seeded, appliedForceVisible })
     } else if (doc.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS)) {
         doc.body.classList.remove(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
-        logEPUBSentinel('force-visible-clear', { reason: 'intersections-found', visibleSections: visibleSections.size })
     }
 
     for (const section of sections) {
@@ -343,12 +306,6 @@ const applySentinelVisibilityToTrackingSections = (doc, {
 
     // Disabled noisy tracking-visibility logs
 
-    logEPUBSentinel('apply:end', {
-        reason: logReason,
-        markedVisible: visibleSections.size,
-        forceVisible: doc.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS) ?? false,
-        sampleIds: Array.from(visibleSections).slice(0, 5).map(el => el?.id || ''),
-    })
 }
 
 const waitForStableSectionSize = (section, {
@@ -548,16 +505,6 @@ const bakeTrackingSectionSizes = async (doc, {
     const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
     if (sections.length === 0) return
 
-        reason,
-        vertical,
-        batchSize,
-        sectionIndex,
-        bookId,
-        sectionHref,
-        sectionCount: sections.length,
-        appliedFromCacheFlag: !!globalThis.manabiTrackingAppliedFromCache,
-    })
-
     const viewport = {
         width: Math.round(doc.documentElement?.clientWidth ?? 0),
         height: Math.round(doc.documentElement?.clientHeight ?? 0),
@@ -594,11 +541,6 @@ const bakeTrackingSectionSizes = async (doc, {
 
     // Try to hydrate from cache first
     const cachedEntries = await requestTrackingSizeCache({ command: 'get', key: cacheKey })
-        key: cacheKey,
-        hasResult: cachedEntries !== null && cachedEntries !== undefined,
-        resultCount: Array.isArray(cachedEntries) ? cachedEntries.length : null,
-        reason,
-    })
     if (cachedEntries === null || cachedEntries === undefined) {
         // treat null as miss, but avoid logging miss twice
     }
@@ -2442,11 +2384,6 @@ export class Paginator extends HTMLElement {
                 return await this.#getSentinelVisibilities({ allowRetry: false })
             }
             applyVisibility('sentinel-visibility:none')
-            logEPUBSentinel('observe:none', {
-                totalSentinels: 0,
-                docReady: !!doc,
-                bodyClasses,
-            })
             this.#resetSentinelObservers()
             return []
         }
@@ -2466,11 +2403,6 @@ export class Paginator extends HTMLElement {
         const groupCount = this.#sentinelGroups.length
         if (groupCount === 0) {
             applyVisibility('sentinel-visibility:none')
-            logEPUBSentinel('observe:none', {
-                totalSentinels: sentinelElements.length,
-                docReady: !!doc,
-                bodyClasses: Array.from(doc.body?.classList ?? []),
-            })
             return []
         }
 
@@ -2548,24 +2480,6 @@ export class Paginator extends HTMLElement {
 
         const logStart = snapshot.visibleIds.length > 0 ? minActive : 0
         const logEnd = snapshot.visibleIds.length > 0 ? maxActive : Math.max(0, groupCount - 1)
-
-            logEPUBSentinel('observe:complete', {
-                totalSentinels: sentinelElements.length,
-                visibleSentinels: visibleIds.length,
-                visibleIDs: visibleIds,
-                bodyClasses: Array.from(doc.body?.classList ?? []),
-                activeGroups: {
-                    start: logStart,
-                    end: logEnd,
-                },
-                minIndex,
-                maxIndex,
-                observedThisCall,
-                observedPct: sentinelElements.length > 0
-                    ? Math.round((observedThisCall / sentinelElements.length) * 100)
-                    : 0,
-                durationMs: perfStart ? Math.round((performance?.now?.() ?? 0) - perfStart) : null,
-            })
 
         // Stop observing after snapshot to avoid persistent overhead; groups will be reactivated on next call.
         this.#updateSentinelGroupActivation(null, null)
@@ -3326,12 +3240,6 @@ export class Paginator extends HTMLElement {
         await this.#awaitDirection();
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
         const visibleSentinelIDs = await this.#getSentinelVisibilities()
-        logEPUBSentinel('range', {
-            visibleSentinelIDs,
-            sentinelCount: visibleSentinelIDs.length,
-            bodyClasses: Array.from(this.#view?.document?.body?.classList ?? []),
-            forceVisible: this.#view?.document?.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS) ?? false,
-        })
         //            await new Promise(r => requestAnimationFrame(r));
 
         //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")

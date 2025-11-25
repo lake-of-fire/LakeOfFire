@@ -152,6 +152,27 @@ public class ReaderModeViewModel: ObservableObject {
         pendingReaderModeURL = newValue
     }
 
+    private func urlMatchesLastRendered(_ url: URL) -> Bool {
+        guard let lastRenderedReadabilityURL else { return false }
+
+        if lastRenderedReadabilityURL.matchesReaderURL(url) || urlsMatchWithoutHash(lastRenderedReadabilityURL, url) {
+            return true
+        }
+
+        if let loader = ReaderContentLoader.readerLoaderURL(for: lastRenderedReadabilityURL) {
+            if loader.matchesReaderURL(url) || urlsMatchWithoutHash(loader, url) {
+                return true
+            }
+        }
+
+        if let resolved = ReaderContentLoader.getContentURL(fromLoaderURL: url) {
+            if lastRenderedReadabilityURL.matchesReaderURL(resolved) || urlsMatchWithoutHash(lastRenderedReadabilityURL, resolved) {
+                return true
+            }
+        }
+
+        return false
+    }
 
     private func logTrace(
         _ stage: ReaderModeLoadStage,
@@ -228,14 +249,15 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func beginReaderModeLoad(for url: URL, suppressSpinner: Bool = false) {
-        if let lastRenderedReadabilityURL,
-           lastRenderedReadabilityURL.matchesReaderURL(url),
+        let matchesRendered = urlMatchesLastRendered(url)
+
+        if matchesRendered,
            pendingReaderModeURL == nil,
            isReaderMode {
             debugPrint(
                 "# READER readerMode.beginLoad.skipAlreadyRendered",
                 "url=\(url.absoluteString)",
-                "lastRendered=\(lastRenderedReadabilityURL.absoluteString)"
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
             )
             // We already rendered this URL, but the UI may still be showing a spinner
             // (e.g., when navigating back to the history item). Treat this as a
@@ -288,7 +310,7 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         if let url, !pendingReaderModeURL.matchesReaderURL(url) {
-            let matchesRendered = lastRenderedReadabilityURL?.matchesReaderURL(url) ?? false
+            let matchesRendered = urlMatchesLastRendered(url)
             debugPrint(
                 "# READER readerMode.cancel",
                 "url=\(url.absoluteString)",
@@ -318,8 +340,7 @@ public class ReaderModeViewModel: ObservableObject {
             let pendingDescription = self.pendingReaderModeURL?.absoluteString ?? "nil"
             let readabilityBytes = readabilityContent?.utf8.count ?? 0
             let pendingState = self.pendingReaderModeURL == nil ? "noPending" : "pendingMismatch"
-            let matchesRendered = lastRenderedReadabilityURL?.matchesReaderURL(url) ?? false
-            let matchesFallback = lastFallbackLoaderURL?.matchesReaderURL(url) ?? false
+            let matchesRendered = urlMatchesLastRendered(url)
             debugPrint(
                 "# READER readerMode.complete.skip",
                 "url=\(url.absoluteString)",
@@ -331,9 +352,16 @@ public class ReaderModeViewModel: ObservableObject {
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
                 "lastFallback=\(lastFallbackLoaderURL?.absoluteString ?? "nil")",
                 "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "matchesRendered=\(matchesRendered)",
-                "matchesFallback=\(matchesFallback)"
+                "matchesRendered=\(matchesRendered)"
             )
+
+            // If the content was already rendered (e.g., we navigated away and back to
+            // a reader-file loader URL), we still want to clear spinners even though
+            // the pending URL was cleared earlier.
+            if matchesRendered {
+                readerModeLoading(false)
+                readerModeLoadCompletionHandler?(url)
+            }
             return
         }
         let traceURL = pendingReaderModeURL
