@@ -121,54 +121,12 @@ const logEPUBSentinel = (event, payload = {}) => {
 const trackingSizeCacheResolvers = new Map()
 let trackingSizeCacheRequestCounter = 0
 
-const logEBook = (event, payload = {}) => {
-    let metadata = ''
-    try {
-        if (payload && Object.keys(payload).length > 0) {
-            metadata = ` ${JSON.stringify(payload)}`
-        }
-    } catch (error) {
-        metadata = ''
-    }
-    const line = `# EBOOK ${event}${metadata}`
-    try {
-        globalThis.webkit?.messageHandlers?.print?.postMessage?.(line)
-    } catch (error) {
-        // optional bridge
-    }
-    try {
-        console.log(line)
-    } catch (error) {
-        // optional console
-    }
-
-    // Mirror critical reader events into the EPUBSENTINEL channel so we can
-    // filter a single term in native logs when debugging reader issues.
-    if (event.startsWith('tracking-visibility') ||
-        event.startsWith('tracking-sentinel') ||
-        event.startsWith('tracking-size') ||
-        event.startsWith('EBOOKPAGE') ||
-        event.startsWith('EBOOKJUMP') ||
-        event.startsWith('paginate') ||
-        event.startsWith('readability')) {
-        const sentinelLine = `# EPUBSENTINEL mirror ${event}${metadata}`
-        try { globalThis.webkit?.messageHandlers?.print?.postMessage?.(sentinelLine) } catch {}
-        try { console.log(sentinelLine) } catch {}
-    }
-}
+// General logger disabled for noise reduction
+const logEBook = () => {}
 
 // Focused pagination diagnostics for tricky resume/relocate cases.
-const logEBookPagination = (event, payload = {}) => {
-    let metadata = ''
-    try {
-        if (payload && Object.keys(payload).length > 0) metadata = ` ${JSON.stringify(payload)}`
-    } catch (_error) {
-        metadata = ''
-    }
-    const line = `# EBOOKPAGINATION ${event}${metadata}`
-    try { globalThis.webkit?.messageHandlers?.print?.postMessage?.(line) } catch {}
-    try { console.log(line) } catch {}
-}
+// pagination logger disabled for noise reduction
+const logEBookPagination = () => {}
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -277,55 +235,11 @@ const logTrackingVisibility = (doc, { reason = 'unknown', container = null } = {
         } catch {}
     }
 
-    if (counts.total > 0 && counts.displayNone === counts.total) {
-        logEBook('tracking-visibility:all-hidden', { reason, total: counts.total })
-    }
-
-    const body = doc.body
-    const bodyStyle = body ? doc.defaultView?.getComputedStyle?.(body) : null
-    const containerStyle = container ? doc.defaultView?.getComputedStyle?.(container) : null
-    const containerRect = container?.getBoundingClientRect?.()
-
-    logEBook('tracking-visibility:summary', {
-        reason,
-        total: counts.total,
-        visibleClass: counts.visibleClass,
-        bakingClass: counts.bakingClass,
-        bakedClass: counts.bakedClass,
-        displayNone: counts.displayNone,
-        bodyClasses: body ? Array.from(body.classList) : [],
-        bodyVisibility: bodyStyle?.visibility,
-        bodyDisplay: bodyStyle?.display,
-        containerDisplay: containerStyle?.display,
-        containerPosition: containerStyle?.position,
-        containerSize: containerRect ? {
-            width: Math.round(containerRect.width * 1000) / 1000,
-            height: Math.round(containerRect.height * 1000) / 1000,
-        } : null,
-    })
+    // visibility logging suppressed
 }
 
-const logTrackingRectSamples = (doc, sections, count = 3, { reason = 'unknown' } = {}) => {
-    if (!doc || !sections?.length) return
-    const samples = []
-    for (let i = 0; i < Math.min(count, sections.length); i++) {
-        const el = sections[i]
-        const rect = el?.getBoundingClientRect?.()
-        const style = doc.defaultView?.getComputedStyle?.(el)
-        samples.push({
-            id: el?.id || '',
-            left: Math.round((rect?.left ?? 0) * 1000) / 1000,
-            top: Math.round((rect?.top ?? 0) * 1000) / 1000,
-            width: Math.round((rect?.width ?? 0) * 1000) / 1000,
-            height: Math.round((rect?.height ?? 0) * 1000) / 1000,
-            display: style?.display,
-            visibility: style?.visibility,
-            classes: Array.from(el?.classList ?? []),
-            isHTMLElement: el instanceof HTMLElement,
-        })
-    }
-    logEBook('tracking-visibility:samples', { reason, samples, total: sections.length })
-}
+// tracking rect samples logging removed for noise reduction
+const logTrackingRectSamples = () => {}
 
 const findNextTrackingSectionSibling = section => {
     if (!section) return null
@@ -416,11 +330,9 @@ const applySentinelVisibilityToTrackingSections = (doc, {
         if (appliedForceVisible) {
             doc.body.classList.add(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
         }
-        logEBook('tracking-sentinel:force-visible', { reason: 'no-intersections', seeded, appliedForceVisible })
         logEPUBSentinel('force-visible', { reason: 'no-intersections', seeded, appliedForceVisible })
     } else if (doc.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS)) {
         doc.body.classList.remove(MANABI_TRACKING_FORCE_VISIBLE_CLASS)
-        logEBook('tracking-sentinel:clear-force-visible', { reason: 'intersections-found', visibleSections: visibleSections.size })
         logEPUBSentinel('force-visible-clear', { reason: 'intersections-found', visibleSections: visibleSections.size })
     }
 
@@ -636,7 +548,6 @@ const bakeTrackingSectionSizes = async (doc, {
     const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
     if (sections.length === 0) return
 
-    logEBook('tracking-size:bake-context', {
         reason,
         vertical,
         batchSize,
@@ -656,7 +567,6 @@ const bakeTrackingSectionSizes = async (doc, {
         safeLeft: Math.round((globalThis.manabiSafeAreaInsets?.left ?? 0) * 1000) / 1000,
         safeRight: Math.round((globalThis.manabiSafeAreaInsets?.right ?? 0) * 1000) / 1000,
     }
-    logEBook('tracking-size:viewport', { ...viewport, reason })
     let settingsKey = globalThis.paginationTrackingSettingsKey ?? ''
     if (!settingsKey) {
         try {
@@ -666,7 +576,6 @@ const bakeTrackingSectionSizes = async (doc, {
             settingsKey = `fallback|font:${fontSize}|family:${fontFamily}`
         } catch {}
     }
-    logEBook('tracking-size:settings-key', { settingsKey, reason })
     const writingModeKey = globalThis.manabiTrackingWritingMode || (vertical ? 'vertical-rl' : 'horizontal-ltr')
     const cacheKey = [
         MANABI_TRACKING_CACHE_VERSION,
@@ -682,11 +591,9 @@ const bakeTrackingSectionSizes = async (doc, {
         `href:${sectionHref || ''}`,
     ].join('|')
 
-    logEBook('tracking-size:run', { candidates: sections.length, vertical, batchSize, reason, cacheKey })
 
     // Try to hydrate from cache first
     const cachedEntries = await requestTrackingSizeCache({ command: 'get', key: cacheKey })
-    logEBook('tracking-size:cache-request', {
         key: cacheKey,
         hasResult: cachedEntries !== null && cachedEntries !== undefined,
         resultCount: Array.isArray(cachedEntries) ? cachedEntries.length : null,
@@ -738,12 +645,10 @@ const bakeTrackingSectionSizes = async (doc, {
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
             el.classList.add(MANABI_TRACKING_SECTION_BAKED_CLASS)
             el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
-            logEBook('tracking-size:cache-apply-size', { id: entry.id || '', inlineSize, blockSize })
             if (MANABI_TRACKING_POSITION_BAKE_ENABLED && typeof entry.blockStart === 'number') {
                 el.style.setProperty(blockStartProp, formatPx(entry.blockStart), 'important')
                 el.style.setProperty(crossProp, '0px', 'important')
                 el.style.setProperty('position', 'absolute', 'important')
-                logEBook('tracking-size:cache-apply-position', { id: entry.id, blockStart: entry.blockStart })
             }
             bakedEntryMap.set(entry.id, {
                 id: entry.id,
@@ -784,76 +689,26 @@ const bakeTrackingSectionSizes = async (doc, {
     }
 
     const container = sections[0]?.parentElement
-    logEBook('tracking-size:container', {
-        exists: !!container,
-        tag: container?.tagName || '',
-        childCount: container?.children?.length || 0,
-        rect: container?.getBoundingClientRect ? inlineBlockSizesForWritingMode(container.getBoundingClientRect(), vertical) : null,
-        reason,
-    })
     const appliedFromCache = applyCachedEntries(cachedEntries, container)
-    logEBook('tracking-size:cache-result', {
-        hit: appliedFromCache > 0,
-        applied: appliedFromCache,
-        total: sections.length,
-        cacheKey,
-        reason,
-    })
-    logEBook('tracking-size:cache-debug', {
-        key: cacheKey,
-        requested: sections.length,
-        appliedFromCache,
-        hasContainer: !!container,
-    })
-    logEBook('tracking-size:cache-summary', {
-        hit: appliedFromCache > 0,
-        applied: appliedFromCache,
-        total: sections.length,
-        cacheKey,
-    })
 
     if (appliedFromCache !== sections.length) {
         const missingIds = sections
             .filter(el => !bakedEntryMap.has(el.id))
             .map(el => el.id || '')
-        logEBook('tracking-size:cache-missing', {
-            reason,
-            cacheKey,
-            missingCount: missingIds.length,
-            missingSample: missingIds.slice(0, 12),
-        })
     }
 
     const hasContainerCache = bakedEntryMap.has('__container__')
     if (appliedFromCache === sections.length) {
         applyAbsoluteLayout()
         seedInitialVisibility()
-        logTrackingRectSamples(doc, sections, 5, { reason: `${reason}-cache-shortcircuit` })
-        logTrackingVisibility(doc, { reason: `${reason}-cache-shortcircuit`, container })
+        // tracking visibility logs removed for noise reduction
         const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
         try { doc.manabiTrackingSectionIOApply?.(doc.manabiTrackingSectionIO?.takeRecords?.() ?? []) } catch {}
-        logEBook('tracking-size:cache-shortcircuit', {
-            reason,
-            cacheKey,
-            appliedFromCache,
-            total: sections.length,
-            containerHasRect: hasContainerCache,
-        })
         return
     }
 
-    // Diagnostics when cache does not short-circuit (helps explain rebakes even with hits).
-    logEBook('tracking-size:cache-shortcircuit-skip', {
-        reason,
-        cacheKey,
-        appliedFromCache,
-        total: sections.length,
-        missing: Math.max(0, sections.length - appliedFromCache),
-        hasContainerCache,
-    })
-
     if (addedBodyClass) body.classList.add(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
-    if (addedBodyClass) logEBook('tracking-size:baking-state', { state: 'begin', reason })
+    // logging removed
 
     let bakedCount = 0
     let multiColumnCount = 0
@@ -863,7 +718,6 @@ const bakeTrackingSectionSizes = async (doc, {
             const el = sections[t]
             if (!el.getAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) {
                 el.classList.add(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
-                logEBook('tracking-size:hide-trailing', { index: t, id: el.id || '' })
             }
         }
     }
@@ -871,7 +725,6 @@ const bakeTrackingSectionSizes = async (doc, {
     const unhideWindow = (startIndex, count) => {
         for (let t = startIndex; t < Math.min(sections.length, startIndex + count); t++) {
             sections[t].classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
-            logEBook('tracking-size:unhide', { index: t, id: sections[t].id || '' })
         }
     }
 
@@ -888,7 +741,6 @@ const bakeTrackingSectionSizes = async (doc, {
             const { inlineSize, blockSize, multiColumn } = sizes
             if (!Number.isFinite(blockSize) || blockSize <= 0) return null
             if (!Number.isFinite(inlineSize) || inlineSize <= 0) return null
-            logEBook('tracking-size:measured-rect', { id: el.id || '', inlineSize, blockSize, multiColumn, reason })
 
             el.style.setProperty('block-size', formatPx(blockSize), 'important')
             el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
@@ -901,7 +753,6 @@ const bakeTrackingSectionSizes = async (doc, {
             bakedCount++
             const entry = { id: el.id || '', inlineSize, blockSize }
             bakedEntryMap.set(entry.id, entry)
-            logEBook('tracking-size:measured', { id: entry.id, inlineSize, blockSize, reason })
             return sizes
         } finally {
             if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
@@ -915,26 +766,13 @@ const bakeTrackingSectionSizes = async (doc, {
             hideTrailing(i + windowSize)
             // unhide the active window
             unhideWindow(i, windowSize)
-            logEBook('tracking-size:batch-start', {
-                start: i,
-                count: Math.min(windowSize, sections.length - i),
-                total: sections.length,
-                reason,
-            })
             const windowSections = sections.slice(i, i + windowSize)
             const results = await Promise.all(windowSections.map(bakeSection))
-            logEBook('tracking-size:batch-done', {
-                start: i,
-                count: windowSections.length,
-                baked: results.filter(Boolean).length,
-                reason,
-            })
         }
     } finally {
         // unhide everything at end
         for (const el of sections) el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
         if (addedBodyClass) body.classList.remove(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
-        if (addedBodyClass) logEBook('tracking-size:baking-state', { state: 'end', reason })
     }
 
     function seedInitialVisibility() {
@@ -950,23 +788,19 @@ const bakeTrackingSectionSizes = async (doc, {
                 el.classList.remove(MANABI_TRACKING_SECTION_VISIBLE_CLASS)
             }
         }
-        logEBook('tracking-visibility:seed', { seeded, total: sections.length })
     }
 
     // After all sizes are known, position sections (and siblings) absolutely to avoid relayouts.
     function applyAbsoluteLayout() {
         if (!container) {
-            logEBook('tracking-size:absolute-layout-skip', { reason: 'no-container' })
             return null
         }
         if (!MANABI_TRACKING_POSITION_BAKE_ENABLED) {
-            logEBook('tracking-size:absolute-layout-passive', { reason: 'position-bake-disabled' })
         }
         const siblings = Array.from(container.children ?? []).filter(el =>
             el.classList?.contains?.(MANABI_TRACKING_SECTION_CLASS)
         )
         if (siblings.length === 0) {
-            logEBook('tracking-size:absolute-layout-skip', { reason: 'no-tracking-children' })
             return null
         }
         const shouldPosition = MANABI_TRACKING_POSITION_BAKE_ENABLED
@@ -997,7 +831,6 @@ const bakeTrackingSectionSizes = async (doc, {
             if (!el || el.nodeType !== 1) {
                 skipNonFiniteCount++
                 if (skipSamples.length < 5) skipSamples.push(el?.id || 'non-element')
-                logEBook('tracking-size:absolute-layout-skip', { reason: 'non-element', id: el?.id || '' })
                 continue
             }
             const id = el.id || ''
@@ -1023,14 +856,12 @@ const bakeTrackingSectionSizes = async (doc, {
                     inlineSize = styleInline
                     blockSize = styleBlock
                     styleFallbackCount++
-                    logEBook('tracking-size:style-fallback', { id, inlineSize, blockSize })
                 }
             }
 
             if (!Number.isFinite(inlineSize) || !Number.isFinite(blockSize)) {
                 skipNonFiniteCount++
                 if (skipSamples.length < 5) skipSamples.push(id)
-                logEBook('tracking-size:absolute-layout-skip', { reason: 'non-finite-size', id })
                 continue
             }
 
@@ -1075,63 +906,13 @@ const bakeTrackingSectionSizes = async (doc, {
             bakedEntryMap.set('__container__', { id: '__container__', inlineSize: maxInline, blockSize: blockCursor, blockStart: 0 })
         }
 
-        logEBook('tracking-size:absolute-layout', {
-            siblings: siblings.length,
-            laidOut: bakedEntryMap.size,
-            positioned: positionedCount,
-            blockExtent: blockCursor,
-            inlineExtent: maxInline,
-            vertical,
-            cachedSizeCount,
-            measuredSizeCount,
-            styleFallbackCount,
-            skipNonFiniteCount,
-            skipSamples,
-            orderSample: siblings
-                .slice(0, 5)
-                .map(el => ({ id: el.id || '', blockStart: bakedEntryMap.get(el.id || '')?.blockStart ?? null })),
-            positioningEnabled: shouldPosition,
-        })
-
-        // Inline tracking summary for easier grep.
-        logEBook('tracking-size:absolute-layout-summary', {
-            positioned: positionedCount,
-            total: siblings.length,
-            vertical,
-            blockExtent: blockCursor,
-            inlineExtent: maxInline,
-            cachedSizeCount,
-            measuredSizeCount,
-            styleFallbackCount,
-            skipNonFiniteCount,
-            positioningEnabled: shouldPosition,
-        })
     }
 
     applyAbsoluteLayout()
     seedInitialVisibility()
-    logTrackingRectSamples(doc, sections, 5, { reason: `${reason}-post-layout` })
-    logTrackingVisibility(doc, { reason: `${reason}-post-layout`, container })
+    // tracking visibility logs removed for noise reduction
 
     const durationMs = (performance?.now?.() ?? Date.now()) - startTs
-    const bakedStats = sections.reduce((acc, el) => {
-        if (el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR)) acc.tagged++
-        const style = el?.getAttribute?.('style') ?? ''
-        if (style.includes('block-size')) acc.blockSize++
-        if (style.includes('inline-size')) acc.inlineSize++
-        return acc
-    }, { tagged: 0, blockSize: 0, inlineSize: 0 })
-
-    logEBook('tracking-size:baked', {
-        sections: sections.length,
-        baked: bakedCount,
-        vertical,
-        bakedStats,
-        multiColumnCount,
-        sampleTags: bakedTags.slice(0, 3), // cap noise
-        durationMs,
-        reason,
-    })
 
         try {
             const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
@@ -1154,7 +935,6 @@ const bakeTrackingSectionSizes = async (doc, {
 const measureTrackingSection = _element => {}
 
 const bakeTrackingSectionGeometries = async (_doc, { reason = 'unknown' } = {}) => {
-    logEBook('tracking-geometry:skip', { reason, cause: 'disabled' })
     return { sections: 0, durationMs: 0, success: true, skipped: 'disabled' }
 }
 
@@ -1334,7 +1114,6 @@ class View {
         const bodyRect = roundRect(this.document?.body?.getBoundingClientRect?.())
         const containerRect = roundRect(this.container?.getBoundingClientRect?.())
         const seq = ++this.#resizeEventSeq
-        logEBook('tracking-resize:event', {
             seq,
             contentRect: newSize,
             bodyRect,
@@ -1347,7 +1126,6 @@ class View {
             this.#lastResizerRect = newSize;
             this.#lastBodyRect = bodyRect;
             this.#lastContainerRect = containerRect;
-            logEBook('tracking-resize:first', { size: newSize })
             return;
         }
 
@@ -1376,7 +1154,6 @@ class View {
             this.#lastContainerRect = containerRect;
 
             if (!changedBody && !changedContainer) {
-                logEBook('tracking-resize:ignored', {
                     reason: 'body-container-stable',
                     contentRect: newSize,
                     bodyRect,
@@ -1386,7 +1163,6 @@ class View {
             }
 
             this.cachedViewSize = null
-            logEBook('tracking-resize:changed', { old, new: newSize, bodyChanged: changedBody, containerChanged: changedContainer })
 
             // Only trigger size/geometry bake after the new size stays stable for one more frame.
             requestAnimationFrame(() => {
@@ -1405,11 +1181,9 @@ class View {
                     stableSize.left === this.#lastResizerRect?.left
 
                 if (!still) {
-                    logEBook('tracking-resize:unstable', { stableSize, last: this.#lastResizerRect })
                     return
                 }
 
-                logEBook('tracking-resize:rebake', { reason: 'iframe-resize', stableSize })
                 this.container?.requestTrackingSectionGeometryBake?.({
                     reason: 'iframe-resize',
                     restoreLocation: true
@@ -2186,18 +1960,15 @@ export class Paginator extends HTMLElement {
     } = {}) {
         if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
             this.#setLoading(false)
-            logEBook('tracking-size:request-skip', { reason, skip: 'bake-disabled' })
             return false
         }
         if (this.#isCacheWarmer) return false
         if (!this.#view?.document) {
             this.#pendingTrackingSizeBakeReason = reason
-            logEBook('tracking-size:request-skip', { reason, skip: 'no-document' })
             return false
         }
         if (!this.#trackingSizeBakeReady) {
             this.#pendingTrackingSizeBakeReason = reason
-            logEBook('tracking-size:request-skip', { reason, skip: 'not-ready' })
             return false
         }
 
@@ -2210,7 +1981,6 @@ export class Paginator extends HTMLElement {
                 rect.top === last.top &&
                 rect.left === last.left
             if (unchanged) {
-                logEBook('tracking-size:request-skip', { reason, skip: 'unchanged-rect' })
                 return false
             }
             this.#trackingSizeLastObservedRect = rect
@@ -2230,7 +2000,6 @@ export class Paginator extends HTMLElement {
                     derived.height === lastBaked.height &&
                     derived.top === lastBaked.top &&
                     derived.left === lastBaked.left) {
-                    logEBook('tracking-size:request-skip', { reason, skip: 'matches-last-baked' })
                     return false
                 }
                 this.#trackingSizeLastObservedRect = derived
@@ -2240,14 +2009,12 @@ export class Paginator extends HTMLElement {
         if (this.#trackingSizeBakeInFlight) {
             this.#trackingSizeBakeNeedsRerun = true
             this.#trackingSizeBakeQueuedReason = reason
-            logEBook('tracking-size:request-queued', { reason })
             return true
         }
 
         this.#trackingSizeBakeQueuedReason = null
         this.#trackingSizeBakeNeedsRerun = false
 
-        logEBook('tracking-size:request-start', {
             reason,
             sectionIndex: sectionIndex ?? this.#index,
         })
@@ -2256,7 +2023,6 @@ export class Paginator extends HTMLElement {
             reason,
             sectionIndex: sectionIndex ?? this.#index,
         }).catch(error => {
-            logEBook('tracking-size:error', {
                 message: error?.message ?? String(error),
                 name: error?.name,
                 stack: error?.stack,
@@ -2267,7 +2033,6 @@ export class Paginator extends HTMLElement {
             if (this.#trackingSizeBakeNeedsRerun) {
                 const queuedReason = this.#trackingSizeBakeQueuedReason || 'rerun'
                 this.#trackingSizeBakeNeedsRerun = false
-                logEBook('tracking-size:request-rerun', { reason: queuedReason })
                 this.requestTrackingSectionSizeBake({ reason: queuedReason })
             }
         })
@@ -2311,7 +2076,6 @@ export class Paginator extends HTMLElement {
 
         this.#revealPreBakeContent()
 
-        logEBook('tracking-size:bake-start', {
             reason,
             sectionIndex,
             vertical: this.#vertical,
@@ -2331,7 +2095,6 @@ export class Paginator extends HTMLElement {
                 bookId: this.bookDir,
                 sectionHref: this.sections?.[this.#index]?.href || this.sections?.[this.#index]?.url || null,
             })
-            logEBook('tracking-size:bake-finished', {
                 reason,
                 sectionIndex,
                 appliedFromCache: !!globalThis.manabiTrackingAppliedFromCache,
@@ -2340,7 +2103,6 @@ export class Paginator extends HTMLElement {
             try {
                 await this.#getSentinelVisibilities()
             } catch (error) {
-                logEBook('tracking-sentinel:update-error', { message: error?.message ?? String(error) })
             }
             const bodyRect = doc.body?.getBoundingClientRect?.()
             if (bodyRect) {
@@ -2356,31 +2118,19 @@ export class Paginator extends HTMLElement {
             // Guard against races where the user navigated away.
             if (!this.#isCacheWarmer && this.#view === activeView && sectionIndex === this.#index) {
                 try {
-                    logEBookPagination('post-bake:relocate:start', {
-                        reason,
-                        sectionIndex,
-                        bakedHeight: this.#lastTrackingSizeBakedRect?.height ?? null,
-                    })
                     // Re-render (columnize + expand) with the newly baked sizes without
                     // kicking off another bake loop from onExpand.
                     this.#suppressBakeOnExpand = true
                     if (typeof this.render === 'function') {
                         await this.render(this.layout)
                     } else {
-                        logEBookPagination('post-bake:render-missing', {})
                     }
                     this.#suppressBakeOnExpand = false
 
                     // Now recompute pagination/nav state.
                     await this.#afterScroll('bake')
-                    logEBookPagination('post-bake:relocate:end', {
-                        sectionIndex,
-                    })
                 } catch (error) {
                     this.#suppressBakeOnExpand = false
-                    logEBookPagination('post-bake:relocate:error', {
-                        message: error?.message ?? String(error),
-                    })
                 }
             }
         } finally {
@@ -2414,7 +2164,6 @@ export class Paginator extends HTMLElement {
             if (typeof range.cloneRange === 'function') return range.cloneRange()
             return range
         } catch (error) {
-            logEBook('tracking-geometry:capture-error', {
                 message: error?.message ?? String(error)
             })
             return null
@@ -2646,8 +2395,6 @@ export class Paginator extends HTMLElement {
         this.#setLoading(false)
         if (!this.#suppressBakeOnExpand) {
             this.requestTrackingSectionSizeBake({ reason: pendingReason || 'expand' })
-        } else {
-            logEBookPagination('expand:skip-bake', { pendingReason })
         }
     }
     async #awaitDirection() {
@@ -2690,10 +2437,6 @@ export class Paginator extends HTMLElement {
 
         if (sentinelElements.length === 0) {
             if (isBakingHidden && allowRetry && this.#trackingSizeBakeInFlight) {
-                logEBookPagination('sentinels:retry-after-bake', {
-                    index: this.#index,
-                    bodyClasses,
-                })
                 try { await this.#trackingSizeBakeInFlight } catch {}
                 // Retry once to avoid infinite loops
                 return await this.#getSentinelVisibilities({ allowRetry: false })
@@ -3453,12 +3196,6 @@ export class Paginator extends HTMLElement {
         //        console.log('#scrollToAnchor0...', anchor)
         this.#anchor = anchor
         try {
-            logEBookPagination('scrollToAnchor', {
-                reason,
-                anchor: summarizeAnchor(anchor),
-                scrolled: this.scrolled,
-                index: this.#index,
-            })
         } catch (_error) {
             // diagnostics best-effort
         }
@@ -3595,12 +3332,6 @@ export class Paginator extends HTMLElement {
             bodyClasses: Array.from(this.#view?.document?.body?.classList ?? []),
             forceVisible: this.#view?.document?.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS) ?? false,
         })
-        logEBookPagination('visible-range:sentinels', {
-            count: visibleSentinelIDs.length,
-            sample: visibleSentinelIDs.slice(0, 8),
-            hasForceVisible: this.#view?.document?.body?.classList?.contains?.(MANABI_TRACKING_FORCE_VISIBLE_CLASS) ?? false,
-            index: this.#index,
-        })
         //            await new Promise(r => requestAnimationFrame(r));
 
         //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
@@ -3655,12 +3386,6 @@ export class Paginator extends HTMLElement {
             range.selectNodeContents(doc.body);
             range.collapse(true);
         }
-        logEBookPagination('visible-range:computed', {
-            startTag: startNode?.nodeName ?? null,
-            endTag: endNode?.nodeName ?? null,
-            sentinelCount: visibleSentinelIDs.length,
-            index: this.#index,
-        })
         return range;
     }
     async #afterScroll(reason) {
@@ -3706,19 +3431,6 @@ export class Paginator extends HTMLElement {
                 this.size(),
                 this.viewSize(),
             ])
-            logEBookPagination('afterScroll', {
-                reason,
-                sectionIndex: index,
-                pageNumber,
-                pageCount,
-                fraction: detail.fraction ?? null,
-                startOffset,
-                pageSize,
-                viewSize,
-                scrolled: this.scrolled,
-                anchor: summarizeAnchor(this.#anchor),
-                justAnchored: !!this.#justAnchored,
-            })
         } catch (_error) {
             // diagnostics best-effort
         }
@@ -3853,22 +3565,11 @@ export class Paginator extends HTMLElement {
             // best-effort; do not fail display on logging issues
         }
         try {
-            const [startOffset, pageSize, viewSize] = await Promise.all([
+            await Promise.all([
                 this.start(),
                 this.size(),
                 this.viewSize(),
             ])
-            logEBookPagination('display:post-anchor', {
-                index,
-                reason,
-                anchor: summarizeAnchor(anchor),
-                pageNumber,
-                pageCount,
-                startOffset,
-                pageSize,
-                viewSize,
-                scrolled: this.scrolled,
-            })
         } catch (_error) {
             // best-effort; keep display flow unhindered
         }
@@ -3890,18 +3591,6 @@ export class Paginator extends HTMLElement {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const navigationReason = reason ?? (select ? 'selection' : 'navigation');
         const willLoadNewIndex = index !== this.#index;
-        try {
-            logEBookPagination('goTo', {
-                index,
-                currentIndex: this.#index,
-                willLoadNewIndex,
-                reason: navigationReason,
-                anchor: summarizeAnchor(anchor),
-                scrolled: this.scrolled,
-            })
-        } catch (_error) {
-            // diagnostics best-effort
-        }
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
         }))
@@ -4037,7 +3726,6 @@ export class Paginator extends HTMLElement {
         const prev = dir === -1
         const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
         if (!shouldGo) {
-            logEBook('paginate:turn-blocked', { dir, page: await this.page(), pages: await this.pages(), index: this.#index })
         }
         if (shouldGo) await this.#goTo({
             index: this.#adjacentIndex(dir),

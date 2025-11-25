@@ -7,17 +7,8 @@ import { NavigationHUD } from './ebook-viewer-nav.js'
 
 const DEFAULT_RUBY_FONT_STACK = `'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui`;
 
-const logEBookPagination = (event, payload = {}) => {
-    let metadata = '';
-    try {
-        if (payload && Object.keys(payload).length > 0) metadata = ` ${JSON.stringify(payload)}`;
-    } catch (_error) {
-        metadata = '';
-    }
-    const line = `# EBOOKPAGINATION ${event}${metadata}`;
-    try { globalThis.webkit?.messageHandlers?.print?.postMessage?.(line); } catch {}
-    try { console.log(line); } catch {}
-};
+// pagination logger disabled for noise reduction
+const logEBookPagination = () => {};
 
 window.onerror = function(msg, source, lineno, colno, error) {
     window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
@@ -958,16 +949,6 @@ class Reader {
                 iconPath.setAttribute('stroke', 'none');
             }
         }
-        logEBookPagination('nav:update', {
-            atSectionStart,
-            atSectionEnd,
-            hasPrevSection,
-            hasNextSection,
-            showingPrev: this.#isButtonVisible(this.buttons.prev),
-            showingNext: this.#isButtonVisible(this.buttons.next),
-            showingFinish: this.#isButtonVisible(this.buttons.finish),
-            showingRestart: this.#isButtonVisible(this.buttons.restart),
-        });
         this.navHUD?.setNavContext({
             atSectionStart,
             atSectionEnd,
@@ -1171,9 +1152,6 @@ class Reader {
             doc
         }
     }) {
-        logEBookPagination('viewer:doc-load', {
-            url: doc?.location?.href ?? null,
-        });
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         this.#ensureRubyFontOverride(doc)
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
@@ -1283,16 +1261,6 @@ class Reader {
         const relocateDirection = this.#deriveRelocateDirection(detail, {
             previousFraction,
             previousPageEstimate,
-        });
-        logEBookPagination('viewer:relocate', {
-            reason,
-            sectionIndex,
-            fraction,
-            pageCurrent: pageItem?.current ?? null,
-            pageTotal: pageItem?.total ?? null,
-            relocateDirection,
-            scrubbing,
-            hasLoadedLastPosition: this.hasLoadedLastPosition,
         });
         switch (normalizedReason) {
             case 'live-scroll':

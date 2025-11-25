@@ -3,17 +3,8 @@ import { TOCProgress, SectionProgress } from './progress.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
 
-const logEBookPagination = (event, payload = {}) => {
-    let metadata = ''
-    try {
-        if (payload && Object.keys(payload).length > 0) metadata = ` ${JSON.stringify(payload)}`
-    } catch (_error) {
-        metadata = ''
-    }
-    const line = `# EBOOKPAGINATION ${event}${metadata}`
-    try { globalThis.webkit?.messageHandlers?.print?.postMessage?.(line) } catch {}
-    try { console.log(line) } catch {}
-}
+// pagination logger disabled for noise reduction
+const logEBookPagination = () => {}
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -193,25 +184,15 @@ export class View extends HTMLElement {
     }
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
-        logEBookPagination('view:init', {
-            hasLastLocation: !!lastLocation,
-            showTextStart,
-            resolved: summarizeNavigationTarget(resolved),
-        })
         if (resolved) {
             await this.renderer.goTo(resolved)
             this.history.pushState(lastLocation)
-            logEBookPagination('view:init:restored', {
-                resolved: summarizeNavigationTarget(resolved),
-            })
         }
         else if (showTextStart) {
             await this.goToTextStart()
-            logEBookPagination('view:init:text-start', {})
         } else {
             this.history.pushState(0)
             await this.next()
-            logEBookPagination('view:init:default-next', {})
         }
     }
     #emit(name, detail, cancelable) {
@@ -222,14 +203,6 @@ export class View extends HTMLElement {
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
-        logEBookPagination('view:relocate', {
-            reason,
-            index,
-            fraction,
-            tocLabel: tocItem?.label ?? null,
-            pageCurrent: pageItem?.current ?? null,
-            pageTotal: pageItem?.total ?? null,
-        })
         this.lastLocation = { ...progress, tocItem, pageItem, cfi, range, reason }
         if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
