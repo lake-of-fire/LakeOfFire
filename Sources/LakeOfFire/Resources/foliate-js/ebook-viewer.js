@@ -66,13 +66,9 @@ const ensureCustomFontsForDoc = (doc) => {
             logEBookPerf('font-inline-insert', { bytes: css.length });
         }
 
-        // Log when the iframe's FontSet finishes loading the custom faces.
+        // Log when the iframe's FontSet finishes loading the custom faces without forcing additional font loads.
         const fontSet = doc.fonts;
         try {
-            const prime = fontSet?.load?.('1rem "YuKyokasho"') ?? Promise.resolve();
-            Promise.resolve(prime).catch(() => {}).finally(() => {
-                fontSet?.load?.('1rem "YuKyokasho Yoko"').catch(() => {});
-            });
             fontSet?.ready?.then?.(() => {
                 const size = fontSet?.size ?? null;
                 logEBookPerf('fontset-ready-iframe', {

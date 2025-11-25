@@ -679,7 +679,7 @@ const bakeTrackingSectionSizes = async (doc, {
     let multiColumnCount = 0
     let coverageBlock = 0
     let coverageCursor = 0
-    let initialViewportReleased = false
+    let initialViewportReleased = !addedBodyClass // if we never hid body, consider it already released
 
     const hideTrailing = startIndex => {
         for (let t = startIndex; t < sections.length; t++) {
@@ -1313,9 +1313,6 @@ class View {
 
                     // First bake happens before any expand/page sizing.
                     await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex, layout)
-
-                    // Now expand/pages after bake.
-                    await this.render(layout)
 
                     this.#resizeObserver.observe(doc.body)
 
@@ -2021,6 +2018,14 @@ export class Paginator extends HTMLElement {
         rect = null,
         sectionIndex = null,
     } = {}) {
+        if (reason === 'styles-applied' && !this.#trackingSizeBakeReady) {
+            logEBookPerf('tracking-size-bake-request', {
+                reason,
+                sectionIndex: sectionIndex ?? this.#index,
+                status: 'skip-not-ready-styles-applied'
+            })
+            return false
+        }
         const ctxBase = {
             reason,
             sectionIndex: sectionIndex ?? this.#index,

@@ -25,8 +25,8 @@ public class ReaderModeViewModel: ObservableObject {
     public var sharedFontCSSBase64Provider: (() async -> String?)?
     private var lastFallbackLoaderURL: URL?
     private var lastRenderedReadabilityURL: URL?
-    private var expectedSyntheticReaderLoaderURL: URL?
-    private var pendingReaderModeURL: URL?
+    public private(set) var expectedSyntheticReaderLoaderURL: URL?
+    public private(set) var pendingReaderModeURL: URL?
     private var loadTraceRecords: [String: ReaderModeLoadTraceRecord] = [:]
     private var loadStartTimes: [String: Date] = [:]
 
@@ -120,6 +120,11 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         expectedSyntheticReaderLoaderURL = baseURL
+        debugPrint(
+            "# READERPERF readerMode.expectedLoader.set",
+            "ts=\(Date().timeIntervalSince1970)",
+            "expected=\(baseURL.absoluteString)"
+        )
     }
 
     @discardableResult
@@ -135,6 +140,11 @@ public class ReaderModeViewModel: ObservableObject {
 
         if matchesLoaderURL(expectedSyntheticReaderLoaderURL, url) {
             self.expectedSyntheticReaderLoaderURL = nil
+            debugPrint(
+                "# READERPERF readerMode.expectedLoader.consume",
+                "ts=\(Date().timeIntervalSince1970)",
+                "url=\(url.absoluteString)"
+            )
             return true
         }
 
@@ -160,7 +170,11 @@ public class ReaderModeViewModel: ObservableObject {
             "from=\(oldDescription)",
             "to=\(newDescription)",
             "change=\(changeDescription)",
-            "reason=\(reason)"
+            "reason=\(reason)",
+            "ts=\(Date().timeIntervalSince1970)",
+            "isLoading=\(isReaderModeLoading)",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
         )
         pendingReaderModeURL = newValue
     }
@@ -323,6 +337,9 @@ public class ReaderModeViewModel: ObservableObject {
             "continuing=\(isContinuing)",
             "suppressSpinner=\(suppressSpinner)",
             "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isLoading=\(isReaderModeLoading)",
             "reason=\(reason ?? "unspecified")"
         )
         debugPrint(
@@ -333,6 +350,10 @@ public class ReaderModeViewModel: ObservableObject {
             "suppressSpinner=\(suppressSpinner)",
             "pendingMatches=\(pendingMatches)",
             "isSameAsLastRendered=\(isSameAsLastRendered)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isLoading=\(isReaderModeLoading)",
             "reason=\(reason ?? "unspecified")"
         )
         logPerfStack("beginLoad", url: trackedURL)
@@ -359,14 +380,21 @@ public class ReaderModeViewModel: ObservableObject {
             debugPrint(
                 "# READER readerMode.cancel",
                 "url=\(url?.absoluteString ?? "nil")",
-                "reason=noPending"
+                "reason=noPending",
+                "isLoading=\(isReaderModeLoading)",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                "readerMode=\(isReaderMode)"
             )
             debugPrint(
                 "# READERPERF readerMode.cancel",
                 "ts=\(Date().timeIntervalSince1970)",
                 "url=\(url?.absoluteString ?? "nil")",
                 "pending=nil",
-                "reason=noPending"
+                "reason=noPending",
+                "isLoading=\(isReaderModeLoading)",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
             )
             logPerfStack("cancel.noPending", url: url)
             logTrace(.cancel, url: url, details: "no pending load to cancel")
@@ -404,7 +432,10 @@ public class ReaderModeViewModel: ObservableObject {
             "# READER readerMode.cancel",
             "url=\(pendingReaderModeURL.absoluteString)",
             "reason=requested",
-            "caller=\(url?.absoluteString ?? "nil")"
+            "caller=\(url?.absoluteString ?? "nil")",
+            "isLoading=\(isReaderModeLoading)",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
         )
         let traceURL = pendingReaderModeURL
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
@@ -433,7 +464,8 @@ public class ReaderModeViewModel: ObservableObject {
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
                 "lastFallback=\(lastFallbackLoaderURL?.absoluteString ?? "nil")",
                 "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "matchesRendered=\(matchesRendered)"
+                "matchesRendered=\(matchesRendered)",
+                "ts=\(Date().timeIntervalSince1970)"
             )
             logPerfStack("complete.skip", url: url)
 
@@ -1435,6 +1467,7 @@ public class ReaderModeViewModel: ObservableObject {
             "isReaderModeLoading=\(isReaderModeLoading)",
             "isReaderMode=\(isReaderMode)"
         )
+        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
         if let trackedURL = pendingReaderModeURL {
             logTrace(.navFinished, url: trackedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         } else if loadTraceRecords[traceKey(for: newState.pageURL)] != nil {
@@ -1485,19 +1518,28 @@ public class ReaderModeViewModel: ObservableObject {
 @MainActor
 private extension ReaderModeViewModel {
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
-        guard !pageURL.isEBookURL else { return }
+        guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
+        guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
-        let base64 = sharedFontCSSBase64 ?? await sharedFontCSSBase64Provider?()
+        let base64: String?
+        if let inline = sharedFontCSSBase64 {
+            base64 = inline
+        } else if let provider = sharedFontCSSBase64Provider {
+            base64 = await provider()
+        } else {
+            base64 = nil
+        }
         guard let base64, !base64.isEmpty else { return }
         let js = """
         (function() {
             try {
-                if (document.getElementById('manabi-custom-fonts-inline')) { return; }
+                if (document.documentElement?.dataset?.manabiFontInjected === '1') { return; }
                 const css = atob('\(base64)');
                 const style = document.createElement('style');
                 style.id = 'manabi-custom-fonts-inline';
                 style.textContent = css;
                 (document.head || document.documentElement).appendChild(style);
+                document.documentElement.dataset.manabiFontInjected = '1';
             } catch (e) {
                 try { console.log('manabi font inject error', e); } catch (_) {}
             }
