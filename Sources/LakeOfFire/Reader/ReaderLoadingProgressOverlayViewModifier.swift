@@ -69,11 +69,7 @@ private struct ReaderLoadingOverlay: View {
                 "isLoading=\(newValue)",
                 "currentMessage=\(statusMessage ?? "nil")"
             )
-            if newValue {
-                startHeartbeat()
-            } else {
-                stopHeartbeat()
-            }
+            if newValue { startHeartbeat() } else { stopHeartbeat() }
             syncStatusDisplay()
         }
         .onChange(of: statusMessage) { _ in

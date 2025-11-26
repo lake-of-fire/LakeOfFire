@@ -81,13 +81,9 @@ const MANABI_TRACKING_SECTION_VISIBLE_CLASS = 'manabi-tracking-section-visible'
 const MANABI_TRACKING_PREBAKE_HIDDEN_CLASS = 'manabi-prebake-hidden'
 const MANABI_TRACKING_PREBAKE_HIDE_ENABLED = true
 // Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
-const MANABI_TRACKING_GEOMETRY_LOADING_CLASS = 'manabi-tracking-geometry-loading'
-const MANABI_TRACKING_GEOMETRY_REBAKE_DELAY_MS = 300
-const MANABI_TRACKING_GEOMETRY_BATCH_SIZE = 8
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
 const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
-const MANABI_TRACKING_POSITION_BAKE_ENABLED = false
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
 const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKING_BODY_CLASS = 'manabi-tracking-size-baking'
@@ -466,8 +462,6 @@ const inlineBlockSizesForWritingMode = (rect, vertical) => {
 }
 
 const measureSectionSizes = (el, vertical) => {
-    // Force a layout flush before measurement
-    void el.offsetHeight
     const rects = Array.from(el.getClientRects?.() ?? []).filter(r => r && (r.width || r.height))
     if (rects.length === 0) return null
 
@@ -610,11 +604,6 @@ const bakeTrackingSectionSizes = async (doc, {
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
             el.classList.add(MANABI_TRACKING_SECTION_BAKED_CLASS)
             el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
-            if (MANABI_TRACKING_POSITION_BAKE_ENABLED && typeof entry.blockStart === 'number') {
-                el.style.setProperty(blockStartProp, formatPx(entry.blockStart), 'important')
-                el.style.setProperty(crossProp, '0px', 'important')
-                el.style.setProperty('position', 'absolute', 'important')
-            }
             bakedEntryMap.set(entry.id, {
                 id: entry.id,
                 inlineSize,
@@ -636,7 +625,6 @@ const bakeTrackingSectionSizes = async (doc, {
                     container.style.setProperty('height', formatPx(blockSize), 'important')
                     container.style.setProperty('width', formatPx(inlineSize), 'important')
                 }
-                if (MANABI_TRACKING_POSITION_BAKE_ENABLED) container.style.setProperty('position', 'relative', 'important')
             }
             bakedEntryMap.set('__container__', {
                 id: '__container__',
@@ -763,16 +751,10 @@ const bakeTrackingSectionSizes = async (doc, {
     }
 
     try {
-        const windowSize = vertical ? Math.max(3, batchSize) : batchSize
-        for (let i = 0; i < sections.length; i += windowSize) {
-            // hide trailing unbaked sections after this window
-            hideTrailing(i + windowSize)
-            // unhide the active window
-            unhideWindow(i, windowSize)
-            const windowSections = sections.slice(i, i + windowSize)
-            const results = await Promise.all(windowSections.map(bakeSection))
-            tryAdvanceInitialViewport()
-        }
+        // Temporarily disable batching: bake all sections in one pass.
+        const windowSections = sections
+        await Promise.all(windowSections.map(bakeSection))
+        tryAdvanceInitialViewport()
     } finally {
         // unhide everything at end
         for (const el of sections) el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
@@ -794,12 +776,10 @@ const bakeTrackingSectionSizes = async (doc, {
         }
     }
 
-    // After all sizes are known, position sections (and siblings) absolutely to avoid relayouts.
+    // After all sizes are known, clear any stale absolute positioning and refresh cached sizes.
     function applyAbsoluteLayout() {
         if (!container) {
             return null
-        }
-        if (!MANABI_TRACKING_POSITION_BAKE_ENABLED) {
         }
         const siblings = Array.from(container.children ?? []).filter(el =>
             el.classList?.contains?.(MANABI_TRACKING_SECTION_CLASS)
@@ -807,18 +787,11 @@ const bakeTrackingSectionSizes = async (doc, {
         if (siblings.length === 0) {
             return null
         }
-        const shouldPosition = MANABI_TRACKING_POSITION_BAKE_ENABLED
-        if (shouldPosition) container.style.setProperty('position', 'relative', 'important')
-        else container.style.removeProperty('position')
+
+        container.style.removeProperty('position')
 
         let blockCursor = 0
         let maxInline = 0
-        let positionedCount = 0
-        let cachedSizeCount = 0
-        let measuredSizeCount = 0
-        let styleFallbackCount = 0
-        let skipNonFiniteCount = 0
-        const skipSamples = []
 
         const getMarginAfter = el => {
             try {
@@ -832,18 +805,12 @@ const bakeTrackingSectionSizes = async (doc, {
         }
 
         for (const el of siblings) {
-            if (!el || el.nodeType !== 1) {
-                skipNonFiniteCount++
-                if (skipSamples.length < 5) skipSamples.push(el?.id || 'non-element')
-                continue
-            }
+            if (!el || el.nodeType !== 1) continue
             const id = el.id || ''
             const bakedSize = bakedEntryMap.get(id)
             const logical = bakedSize ?? measureElementLogicalSize(el, vertical)
             let inlineSize = Number(logical?.inlineSize)
             let blockSize = Number(logical?.blockSize)
-            if (bakedSize) cachedSizeCount++
-            else measuredSizeCount++
 
             // Fallback to a fresh measurement if cached values aren't finite.
             if (!Number.isFinite(inlineSize) || !Number.isFinite(blockSize)) {
@@ -859,13 +826,10 @@ const bakeTrackingSectionSizes = async (doc, {
                 if (Number.isFinite(styleInline) && Number.isFinite(styleBlock)) {
                     inlineSize = styleInline
                     blockSize = styleBlock
-                    styleFallbackCount++
                 }
             }
 
             if (!Number.isFinite(inlineSize) || !Number.isFinite(blockSize)) {
-                skipNonFiniteCount++
-                if (skipSamples.length < 5) skipSamples.push(id)
                 continue
             }
 
@@ -873,40 +837,23 @@ const bakeTrackingSectionSizes = async (doc, {
 
             const blockProp = vertical ? (globalThis.manabiTrackingVerticalRTL ? 'right' : 'left') : 'top'
             const crossProp = vertical ? 'top' : 'left'
-            if (shouldPosition) {
-                el.style.setProperty('position', 'absolute', 'important')
-                el.style.setProperty(blockProp, formatPx(blockCursor), 'important')
-                el.style.setProperty(crossProp, '0px', 'important')
-            } else {
-                el.style.removeProperty('position')
-                el.style.removeProperty(blockProp)
-                el.style.removeProperty(crossProp)
-            }
+            el.style.removeProperty('position')
+            el.style.removeProperty(blockProp)
+            el.style.removeProperty(crossProp)
 
             const entry = bakedEntryMap.get(id)
             if (entry) entry.blockStart = blockCursor
 
             blockCursor += blockSize + getMarginAfter(el)
-            if (shouldPosition) positionedCount++
         }
 
         if (vertical) {
-            if (shouldPosition) {
-                container.style.setProperty('width', formatPx(blockCursor), 'important')
-                container.style.setProperty('height', formatPx(maxInline), 'important')
-            } else {
-                container.style.removeProperty('width')
-                container.style.removeProperty('height')
-            }
+            container.style.removeProperty('width')
+            container.style.removeProperty('height')
             bakedEntryMap.set('__container__', { id: '__container__', inlineSize: maxInline, blockSize: blockCursor, blockStart: 0 })
         } else {
-            if (shouldPosition) {
-                container.style.setProperty('height', formatPx(blockCursor), 'important')
-                container.style.setProperty('width', formatPx(maxInline), 'important')
-            } else {
-                container.style.removeProperty('height')
-                container.style.removeProperty('width')
-            }
+            container.style.removeProperty('height')
+            container.style.removeProperty('width')
             bakedEntryMap.set('__container__', { id: '__container__', inlineSize: maxInline, blockSize: blockCursor, blockStart: 0 })
         }
 

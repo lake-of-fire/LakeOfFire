@@ -319,6 +319,17 @@ public class ReaderModeViewModel: ObservableObject {
         let matchesRendered = urlMatchesLastRendered(url)
         let start = Date()
 
+        debugPrint(
+            "# READERPERF readerMode.beginLoad.request",
+            "ts=\(start.timeIntervalSince1970)",
+            "url=\(url.absoluteString)",
+            "reason=\(reason ?? "nil")",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+        )
         if let expected = expectedSyntheticReaderLoaderURL, !urlsMatchWithoutHash(expected, url) {
             debugPrint(
                 "# READERPERF readerMode.expectedLoader.reset",
@@ -343,6 +354,18 @@ public class ReaderModeViewModel: ObservableObject {
                 "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
             )
+            if let pending = pendingReaderModeURL {
+                debugPrint(
+                    "# READERPERF readerMode.beginLoad.skipped.detail",
+                    "pendingMatches=true",
+                    "pending=\(pending.absoluteString)",
+                    "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                    "isReaderModeLoading=\(isReaderModeLoading)",
+                    "isReaderMode=\(isReaderMode)",
+                    "isSameAsLastRendered=\(isSameAsLastRendered)",
+                    "reasonHint=\(reason ?? "nil")"
+                )
+            }
             logPerfStack("beginLoad.skipped", url: url)
             return
         }
