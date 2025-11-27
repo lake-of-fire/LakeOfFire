@@ -1137,8 +1137,12 @@ class View {
             top: Math.round(r.top),
             left: Math.round(r.left),
         } : null
-        const bodyRect = roundRect(this.document?.body?.getBoundingClientRect?.())
-        const containerRect = roundRect(this.container?.getBoundingClientRect?.())
+        const bodyRect = this.#hasResizerObserverTriggered && this.#lastBodyRect
+            ? this.#lastBodyRect
+            : roundRect(this.document?.body?.getBoundingClientRect?.())
+        const containerRect = this.#hasResizerObserverTriggered && this.#lastContainerRect
+            ? this.#lastContainerRect
+            : roundRect(this.container?.getBoundingClientRect?.())
         logEBookPerf('RECT.resize-read', {
             body: bodyRect,
             container: containerRect,
