@@ -1,6 +1,21 @@
 const MAX_RELOCATE_STACK = 50;
 const FRACTION_EPSILON = 0.000001;
 
+// Focused pagination/bake diagnostics (capped to avoid spam)
+let logEBookPageNumCounter = 0;
+const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
+const logEBookPageNumLimited = (event, detail = {}) => {
+    if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return;
+    logEBookPageNumCounter += 1;
+    const payload = { event, count: logEBookPageNumCounter, ...detail };
+    const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
     for (const item of items) {
@@ -131,6 +146,10 @@ export class NavigationHUD {
         }
         this.#logPageNumberDiagnostic('set-page-targets', {
             pageTargetCount: this.totalPageCount,
+        });
+        logEBookPageNumLimited('nav:set-page-targets', {
+            pageTargetCount: this.totalPageCount,
+            totalSource: this.lastTotalSource ?? null,
         });
         if (this.lastRelocateDetail) {
             this.#updatePrimaryLine(this.lastRelocateDetail);
@@ -777,6 +796,16 @@ export class NavigationHUD {
         if (isPaginated && total && total > 2) {
             const textTotal = Math.max(1, total - 2);
             const textCurrent = Math.max(1, Math.min(textTotal, current - 1));
+            logEBookPageNumLimited('nav:normalize', {
+                rawPage,
+                rawTotal,
+                currentBase,
+                total,
+                textCurrent,
+                textTotal,
+                scrolled: renderer?.scrolled ?? null,
+                rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+            });
             return {
                 current: textCurrent,
                 total: textTotal,
@@ -784,6 +813,15 @@ export class NavigationHUD {
                 rawTotal: total,
             };
         }
+        logEBookPageNumLimited('nav:normalize', {
+            rawPage,
+            rawTotal,
+            currentBase,
+            total,
+            current,
+            scrolled: renderer?.scrolled ?? null,
+            rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+        });
         return {
             current,
             total,
@@ -819,6 +857,18 @@ export class NavigationHUD {
                 rendererTotal: normalized.total,
                 rawRendererCurrent: normalized.rawCurrent,
                 rawRendererTotal: normalized.rawTotal,
+            });
+            logEBookPageNumLimited('nav:renderer-snapshot', {
+                rawPage: pageResult.value,
+                rawTotal: pagesResult.value,
+                normalizedCurrent: normalized.current,
+                normalizedTotal: normalized.total,
+                rawCurrent: normalized.rawCurrent,
+                rawTotal: normalized.rawTotal,
+                scrolled: renderer?.scrolled ?? null,
+                rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+                totalPageCount: this.totalPageCount,
+                totalSource: this.lastTotalSource ?? null,
             });
             return normalized;
         } catch (_error) {

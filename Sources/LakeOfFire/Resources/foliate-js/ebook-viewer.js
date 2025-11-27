@@ -1422,6 +1422,13 @@ class Reader {
     async #onRelocate({
         detail
     }) {
+        // Make sure any loading overlay from the previous navigation is cleared.
+        // In some navigation paths (e.g., swiping between sections) `didDisplay`
+        // can be skipped, leaving `body.loading` set and a full‑page overlay
+        // intercepting taps. Clearing it here guarantees the controls and content
+        // remain interactive once relocate fires.
+        this.setLoadingIndicator(false);
+
         const {
             fraction,
             location,

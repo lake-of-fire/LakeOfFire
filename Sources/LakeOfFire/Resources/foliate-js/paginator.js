@@ -125,6 +125,14 @@ const logEBookPageNum = (event, detail = {}) => {
     }
 }
 
+let logEBookPageNumCounter = 0
+const LOG_EBOOK_PAGE_NUM_LIMIT = 400
+const logEBookPageNumLimited = (event, detail = {}) => {
+    if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return
+    logEBookPageNumCounter += 1
+    logEBookPageNum(event, { count: logEBookPageNumCounter, ...detail })
+}
+
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
     if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
@@ -171,6 +179,10 @@ const hideDocumentContentForPreBake = doc => {
     preBakeDisplaySnapshots.set(doc, { target, snapshot })
     target.classList.add(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
     target.style.setProperty('display', 'none', 'important')
+    logEBookPageNumLimited('bake:hide-doc', {
+        url: doc?.URL || null,
+        targetId: target.id || null,
+    })
     logEBookPerf('prebake-hide', {
         url: doc?.URL || null,
         targetId: target.id || null,
@@ -189,6 +201,10 @@ const revealDocumentContentForBake = doc => {
         target.classList.remove(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
         restoreInlineStyleProperty(target, 'display', snapshot)
     }
+    logEBookPageNumLimited('bake:reveal-doc', {
+        url: doc?.URL || null,
+        targetId: target?.id || null,
+    })
     logEBookPerf('prebake-reveal', {
         url: doc?.URL || null,
         targetId: target?.id || null,
@@ -1306,6 +1322,10 @@ class View {
         if (this.#iframe?.style?.display === 'none') {
             this.#iframe.style.display = 'block'
             logEBookPerf('iframe-display-set', { state: 'shown-for-bake', reason })
+            logEBookPageNumLimited('bake:iframe-reveal', {
+                reason,
+                sectionIndex: this.container?.currentIndex ?? null,
+            })
         }
     }
     get element() {
@@ -2255,6 +2275,7 @@ export class Paginator extends HTMLElement {
             this.#trackingSizeBakeNeedsRerun = true
             this.#trackingSizeBakeQueuedReason = reason
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'queued-rerun' })
+            logEBookPageNumLimited('bake:request', { ...ctxBase, status: 'queued-rerun' })
             return true
         }
 
@@ -2262,6 +2283,7 @@ export class Paginator extends HTMLElement {
         this.#trackingSizeBakeNeedsRerun = false
 
         logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'start' })
+        logEBookPageNumLimited('bake:request', { ...ctxBase, status: 'start', rectProvided: !!rect })
         this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
             reason,
             sectionIndex: sectionIndex ?? this.#index,
@@ -2269,6 +2291,7 @@ export class Paginator extends HTMLElement {
         }).catch(error => {
             // swallow bake errors after reporting if needed
             console.error('tracking size bake error', error)
+            logEBookPageNumLimited('bake:error', { ...ctxBase, error: String(error) })
         }).finally(() => {
             this.#trackingSizeBakeInFlight = null
             if (this.#trackingSizeBakeNeedsRerun) {
@@ -2297,11 +2320,18 @@ export class Paginator extends HTMLElement {
         this.#cachedSentinelDoc = null
         this.#cachedSentinelElements = []
         this.#cachedTrackingSections = []
+
+        logEBookPageNumLimited('bake:reset-state', {
+            sectionIndex: this.#index ?? null,
+        })
     }
 
     #revealPreBakeContent() {
         if (!this.#view?.document) return
         revealDocumentContentForBake(this.#view.document)
+        logEBookPageNumLimited('bake:reveal-prebake-content', {
+            sectionIndex: this.#index ?? null,
+        })
     }
 
     // Public helper for View to force an initial size bake before first expand.
@@ -2309,6 +2339,11 @@ export class Paginator extends HTMLElement {
         // Lock expands and reset readiness before pre-bake render.
         this.#suppressBakeOnExpand = true
         this.#trackingSizeBakeReady = false
+        logEBookPageNumLimited('bake:initial:start', {
+            sectionIndex,
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            readyFlag: this.#trackingSizeBakeReady,
+        })
 
         // Apply layout styles (without expanding) so bake measures correct flow.
         await this.#view?.render(layout, { skipExpand: true, source: 'initial-bake-pre-render' })
@@ -2348,6 +2383,11 @@ export class Paginator extends HTMLElement {
             ready: this.#trackingSizeBakeReady,
             bodyHidden: this.view?.document?.body?.classList?.contains?.(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS) ?? null,
         })
+        logEBookPageNumLimited('bake:initial:done', {
+            sectionIndex,
+            ready: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+        })
     }
 
     async #performTrackingSectionSizeBake({
@@ -2359,6 +2399,11 @@ export class Paginator extends HTMLElement {
         const doc = this.#view?.document
         if (!doc) {
             logEBookPerf('tracking-size-bake-begin', {
+                reason,
+                sectionIndex,
+                status: 'no-doc',
+            })
+            logEBookPageNumLimited('bake:begin', {
                 reason,
                 sectionIndex,
                 status: 'no-doc',
@@ -2376,12 +2421,24 @@ export class Paginator extends HTMLElement {
             isCacheWarmer: this.#isCacheWarmer,
             hasDoc: !!doc,
         })
+        logEBookPageNumLimited('bake:begin', {
+            reason,
+            sectionIndex,
+            isCacheWarmer: this.#isCacheWarmer,
+            hasDoc: !!doc,
+            readyFlag: this.#trackingSizeBakeReady,
+            pendingReason: this.#pendingTrackingSizeBakeReason ?? null,
+        })
 
         const activeView = this.#view
 
         this.#setLoading(true)
         hideDocumentContentForPreBake(doc)
         this.#trackingSizeBakeReady = false
+        logEBookPageNumLimited('bake:flag-reset-false', {
+            reason,
+            sectionIndex,
+        })
         try {
             await nextFrame()
             await bakeTrackingSectionSizes(doc, {
@@ -2403,6 +2460,10 @@ export class Paginator extends HTMLElement {
                     top: Math.round(cachedBodyRect.top),
                     left: Math.round(cachedBodyRect.left),
                 }
+                logEBookPageNumLimited('bake:last-baked-rect', {
+                    sectionIndex,
+                    rect: this.#lastTrackingSizeBakedRect,
+                })
             }
 
             // After bake completes, refresh layout & relocate once the full layout is known.
@@ -2455,6 +2516,15 @@ export class Paginator extends HTMLElement {
                     reason,
                     sectionIndex,
                     ready: this.#trackingSizeBakeReady,
+                })
+                logEBookPageNumLimited('bake:ready-set', {
+                    reason,
+                    sectionIndex,
+                    durationMs,
+                    stillActiveView: this.#view === activeView,
+                    lastBakedRect: this.#lastTrackingSizeBakedRect ?? null,
+                    lastObservedRect: this.#trackingSizeLastObservedRect ?? null,
+                    readyFlag: this.#trackingSizeBakeReady,
                 })
             }
         }
@@ -2725,6 +2795,12 @@ export class Paginator extends HTMLElement {
             vertical: this.#vertical,
             column: this.#column,
         })
+        logEBookPageNumLimited('bake:on-expand', {
+            sectionIndex: this.#index ?? null,
+            pendingReason: pendingReason || null,
+            suppressBake: this.#suppressBakeOnExpand,
+            readyFlag: this.#trackingSizeBakeReady,
+        })
         if (shouldBake) {
             this.requestTrackingSectionSizeBake({ reason: pendingReason || 'expand' })
         }
@@ -2752,6 +2828,12 @@ export class Paginator extends HTMLElement {
         }
 
         const sentinelElements = this.#cachedSentinelElements
+        logEBookPageNumLimited('bake:sentinels:init', {
+            sectionIndex: this.#index ?? null,
+            sentinelCount: sentinelElements.length,
+            trackingSections: this.#cachedTrackingSections?.length ?? null,
+            allowRetry,
+        })
 
         const applyVisibility = reason => {
             if (this.#cachedTrackingSections.length === 0) return
@@ -2875,6 +2957,14 @@ export class Paginator extends HTMLElement {
         this.#updateSentinelGroupActivation(null, null)
         this.#visibleSentinelElements.clear?.()
 
+        logEBookPageNumLimited('bake:sentinels:snapshot', {
+            sectionIndex: this.#index ?? null,
+            visibleCount: visibleIds.length,
+            minIndex,
+            maxIndex,
+            observedThisCall,
+            totalGroups: this.#sentinelGroups?.length ?? null,
+        })
         return visibleIds
     }
     #disconnectElementVisibilityObserver() {
@@ -3120,6 +3210,16 @@ export class Paginator extends HTMLElement {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
                     }
+                    logEBookPageNumLimited('sizes', {
+                        sectionIndex: this.#index ?? null,
+                        width: this.#cachedSizes.width,
+                        height: this.#cachedSizes.height,
+                        scrollWidth: this.#container.scrollWidth,
+                        scrollHeight: this.#container.scrollHeight,
+                        scrolled: this.scrolled,
+                        vertical: this.#vertical,
+                        rtl: this.#rtl,
+                    })
                     resolve(this.#cachedSizes)
                 })
             })
@@ -3135,7 +3235,15 @@ export class Paginator extends HTMLElement {
         return this.#cachedSizes
     }
     async size() {
-        return (await this.sizes())[await this.sideProp()]
+        const s = (await this.sizes())[await this.sideProp()]
+        logEBookPageNumLimited('size', {
+            sectionIndex: this.#index ?? null,
+            size: s,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+        })
+        return s
     }
     async viewSize() {
         if (this.#isCacheWarmer) return 0
@@ -3156,11 +3264,54 @@ export class Paginator extends HTMLElement {
                         resolve(0)
                         return
                     }
+                    // Capture container/parent geometry to diagnose runaway sizes
+                    const parent = this.#container
+                    const parentRect = parent?.getBoundingClientRect?.()
+                    const elemRect = element.getBoundingClientRect?.()
+                    const parentStyleHeight = parent?.style?.height ?? null
+                    const elemStyleHeight = element?.style?.height ?? null
+                    const elemStyleDisplay = element?.style?.display ?? null
+                    const parentOverflow = parent && typeof getComputedStyle === 'function'
+                        ? getComputedStyle(parent).overflow
+                        : null
+
                     view.cachedViewSize = {
                         width: element.clientWidth,
                         height: element.clientHeight,
                     }
-                    resolve(view.cachedViewSize[await this.sideProp()])
+                    const side = await this.sideProp()
+                    const scrollWidth = element.scrollWidth
+                    const scrollHeight = element.scrollHeight
+                    const val = view.cachedViewSize[side]
+                    logEBookPageNumLimited('viewSize', {
+                        sectionIndex: this.#index ?? null,
+                        side,
+                        clientWidth: element.clientWidth,
+                        clientHeight: element.clientHeight,
+                        scrollWidth,
+                        scrollHeight,
+                        returned: val,
+                        scrolled: this.scrolled,
+                        vertical: this.#vertical,
+                        rtl: this.#rtl,
+                        elemRect: elemRect ? {
+                            width: Math.round(elemRect.width),
+                            height: Math.round(elemRect.height),
+                            top: Math.round(elemRect.top),
+                            left: Math.round(elemRect.left),
+                        } : null,
+                        parentRect: parentRect ? {
+                            width: Math.round(parentRect.width),
+                            height: Math.round(parentRect.height),
+                            top: Math.round(parentRect.top),
+                            left: Math.round(parentRect.left),
+                        } : null,
+                        elemStyleHeight,
+                        elemStyleDisplay,
+                        parentStyleHeight,
+                        parentOverflow,
+                    })
+                    resolve(val)
                 })
             })
         }
@@ -3171,8 +3322,19 @@ export class Paginator extends HTMLElement {
             //        return new Promise(resolve => {
             //            requestAnimationFrame(async () => {
             //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
-            const start = Math.abs(this.#container[await this.scrollProp()])
+            const scrollProp = await this.scrollProp()
+            const raw = this.#container[scrollProp]
+            const start = Math.abs(raw)
             this.#cachedStart = start
+            logEBookPageNumLimited('start', {
+                sectionIndex: this.#index ?? null,
+                scrollProp,
+                rawScrollValue: raw,
+                start,
+                scrolled: this.scrolled,
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+            })
             //        return start
             //                resolve(start)
             //            })
@@ -3185,10 +3347,38 @@ export class Paginator extends HTMLElement {
         return (await this.start()) + (await this.size())
     }
     async page() {
-        return Math.floor(((await this.start() + await this.end()) / 2) / (await this.size()))
+        const start = await this.start()
+        const end = await this.end()
+        const size = await this.size()
+        const raw = (start + end) / 2
+        const page = Math.floor(raw / size)
+        logEBookPageNumLimited('page', {
+            sectionIndex: this.#index ?? null,
+            start,
+            end,
+            rawMidpoint: raw,
+            size,
+            page,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+        })
+        return page
     }
     async pages() {
-        return Math.round((await this.viewSize()) / (await this.size()))
+        const viewSize = await this.viewSize()
+        const size = await this.size()
+        const pages = Math.round(viewSize / size)
+        logEBookPageNumLimited('pages', {
+            sectionIndex: this.#index ?? null,
+            viewSize,
+            size,
+            pages,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+        })
+        return pages
     }
     async scrollBy(dx, dy) {
         await new Promise(resolve => {
@@ -3495,7 +3685,7 @@ export class Paginator extends HTMLElement {
     async #scrollToPage(page, reason, smooth) {
         const size = await this.size()
         const offset = size * (this.#rtl ? -page : page)
-        logEBookPageNum('scrollToPage', {
+        logEBookPageNumLimited('scrollToPage', {
             targetPage: page,
             reason,
             smooth: !!smooth,
@@ -3520,7 +3710,7 @@ export class Paginator extends HTMLElement {
         } catch (_error) {
             // diagnostics best-effort
         }
-        logEBookPageNum('scrollToAnchor:start', {
+        logEBookPageNumLimited('scrollToAnchor:start', {
             reason,
             sectionIndex: this.#index ?? null,
             anchorType: anchor?.nodeType ?? (typeof anchor),
@@ -3545,7 +3735,7 @@ export class Paginator extends HTMLElement {
         if (!pages) return
         const textPages = await this.pages() - 2
         const newPage = Math.round(anchor * (textPages - 1))
-        logEBookPageNum('scrollToAnchor:fraction', {
+        logEBookPageNumLimited('scrollToAnchor:fraction', {
             reason,
             sectionIndex: this.#index ?? null,
             anchorFraction: anchor,
@@ -3766,7 +3956,7 @@ export class Paginator extends HTMLElement {
                 this.size(),
                 this.viewSize(),
             ])
-            logEBookPageNum('afterScroll:metrics', {
+            logEBookPageNumLimited('afterScroll:metrics', {
                 ...detailForLog,
                 pageNumber,
                 pageCount,
@@ -3775,7 +3965,7 @@ export class Paginator extends HTMLElement {
                 viewSize,
             })
         } catch (_error) {
-            logEBookPageNum('afterScroll:metrics-error', {
+            logEBookPageNumLimited('afterScroll:metrics-error', {
                 ...detailForLog,
                 error: String(_error),
             })
@@ -3904,14 +4094,14 @@ export class Paginator extends HTMLElement {
         let pageCount = null
         try {
             [pageNumber, pageCount] = await Promise.all([this.page(), this.pages()]);
-            logEBookPageNum('display:initial', {
+            logEBookPageNumLimited('display:initial', {
                 index,
                 reason,
                 pageNumber,
                 pageCount,
             })
         } catch (_error) {
-            logEBookPageNum('display:initial-error', {
+            logEBookPageNumLimited('display:initial-error', {
                 index,
                 reason,
                 error: String(_error),
@@ -4077,17 +4267,23 @@ export class Paginator extends HTMLElement {
         if (this.#locked) return
 
         this.#locked = true
-        const prev = dir === -1
-        const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
-        if (!shouldGo) {
+        try {
+            const prev = dir === -1
+            const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+            if (shouldGo) {
+                await this.#goTo({
+                    index: this.#adjacentIndex(dir),
+                    anchor: prev ? () => 1 : () => 0,
+                    reason: 'page',
+                })
+            }
+            if (shouldGo || !this.hasAttribute('animated')) {
+                await wait(100)
+            }
+        } finally {
+            // Never leave the paginator locked if navigation threw/cancelled.
+            this.#locked = false
         }
-        if (shouldGo) await this.#goTo({
-            index: this.#adjacentIndex(dir),
-            anchor: prev ? () => 1 : () => 0,
-            reason: 'page',
-        })
-        if (shouldGo || !this.hasAttribute('animated')) await wait(100)
-        this.#locked = false
     }
     async prev(distance) {
         return await this.#turnPage(-1, distance)
