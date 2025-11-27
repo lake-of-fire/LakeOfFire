@@ -220,6 +220,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const perfStart = (typeof performance !== 'undefined' && typeof performance.now === 'function')
         ? performance.now()
         : Date.now();
+    console.log('# EBOOKPROCESS replaceText start', { href, isCacheWarmer, mediaType, bodyLength: text?.length ?? 0 })
     logEBookPerf('replace-text-request', {
         href,
         isCacheWarmer,
@@ -240,6 +241,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
     ? performance.now() - perfStart
     : null
+    console.log('# EBOOKPROCESS replaceText response', { href, isCacheWarmer, status: response.status, durationMs })
     logEBookPerf('replace-text-response', {
     href,
     isCacheWarmer,
@@ -255,6 +257,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
     ? performance.now() - perfStart
     : null
+    console.log('# EBOOKPROCESS replaceText error', { href, isCacheWarmer, durationMs, message: error?.message || String(error) })
     logEBookPerf('replace-text-error', {
     href,
     isCacheWarmer,

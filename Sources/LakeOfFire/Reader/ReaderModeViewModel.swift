@@ -34,6 +34,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
+    public var hasRenderedReadabilityContent: Bool { lastRenderedReadabilityURL != nil }
     @Published var readabilityContent: String?
     @Published var readabilityContainerSelector: String?
     @Published var readabilityContainerFrameInfo: WKFrameInfo? {
@@ -345,14 +346,31 @@ public class ReaderModeViewModel: ObservableObject {
         let alreadyLoadingSame = pendingMatches && isReaderModeLoading
         let isSameAsLastRendered = lastRenderedReadabilityURL?.matchesReaderURL(url) == true
 
+        if let pending = pendingReaderModeURL, !pending.matchesReaderURL(url) {
+            let stack = Thread.callStackSymbols.prefix(6).joined(separator: " | ")
+            debugPrint(
+                "# READERPERF readerMode.beginLoad.pendingMismatch",
+                "ts=\(start.timeIntervalSince1970)",
+                "url=\(url.absoluteString)",
+                "pending=\(pending.absoluteString)",
+                "reason=\(reason ?? "nil")",
+                "isReaderModeLoading=\(isReaderModeLoading)",
+                "isReaderMode=\(isReaderMode)",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "stack=\(stack)"
+            )
+        }
+
         if alreadyLoadingSame {
+            let stack = Thread.callStackSymbols.prefix(6).joined(separator: " | ")
             debugPrint(
                 "# READERPERF readerMode.beginLoad.skipped",
                 "ts=\(start.timeIntervalSince1970)",
                 "url=\(url.absoluteString)",
                 "reason=alreadyLoadingPending",
                 "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "stack=\(stack)"
             )
             if let pending = pendingReaderModeURL {
                 debugPrint(
@@ -466,16 +484,19 @@ public class ReaderModeViewModel: ObservableObject {
             // If a caller asks us to cancel but we no longer have a pending URL,
             // still force the spinner off so the UI cannot get stuck in a loading state.
             readerModeLoading(false)
-            debugPrint(
-                "# READER readerMode.spinner.forceOff",
-                "reason=noPendingCancel",
-                "requestedURL=\(url?.absoluteString ?? "nil")"
-            )
-            if let handler = readerModeLoadCompletionHandler {
-                let completedURL = url
-                    ?? lastRenderedReadabilityURL
-                    ?? lastFallbackLoaderURL
-                    ?? URL(string: "about:blank")!
+        debugPrint(
+            "# READER readerMode.spinner.forceOff",
+            "reason=noPendingCancel",
+            "requestedURL=\(url?.absoluteString ?? "nil")"
+        )
+        // Clear stale loader state so it can't leak into the next navigation.
+        expectedSyntheticReaderLoaderURL = nil
+        lastRenderedReadabilityURL = nil
+        if let handler = readerModeLoadCompletionHandler {
+            let completedURL = url
+                ?? lastRenderedReadabilityURL
+                ?? lastFallbackLoaderURL
+                ?? URL(string: "about:blank")!
                 handler(completedURL)
             }
             return
@@ -508,6 +529,8 @@ public class ReaderModeViewModel: ObservableObject {
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
         logTrace(.cancel, url: traceURL, details: "cancelReaderModeLoad invoked")
         readerModeLoading(false)
+        expectedSyntheticReaderLoaderURL = nil
+        lastRenderedReadabilityURL = nil
         if let handler = readerModeLoadCompletionHandler {
             handler(traceURL ?? url ?? URL(string: "about:blank")!)
         }
@@ -555,8 +578,16 @@ public class ReaderModeViewModel: ObservableObject {
                 "pending=\(pendingReaderModeURL.absoluteString)",
                 "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
                 "isReaderModeLoading=\(isReaderModeLoading)",
-                "ts=\(Date().timeIntervalSince1970)"
+                "ts=\(Date().timeIntervalSince1970)",
+                "stack=\(Thread.callStackSymbols.prefix(5).joined(separator: " | "))"
             )
+            // Treat empty readability (e.g., EPUB native view or script-only pages) as
+            // a terminal state so spinners do not linger indefinitely.
+            logStateSnapshot("complete.emptyReadability", url: pendingReaderModeURL)
+            updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
+            lastFallbackLoaderURL = url
+            readerModeLoading(false)
+            readerModeLoadCompletionHandler?(url)
             return
         }
         let traceURL = pendingReaderModeURL

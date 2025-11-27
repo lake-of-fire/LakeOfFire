@@ -364,6 +364,13 @@ const waitForStableSectionSize = (section, {
 
     const initialRect = section.getBoundingClientRect?.()
     if (initialRect) {
+        logEBookPerf('RECT.wait-stable-section-initial', {
+            id: section?.id || null,
+            width: Math.round(initialRect.width * 1000) / 1000,
+            height: Math.round(initialRect.height * 1000) / 1000,
+        })
+    }
+    if (initialRect) {
         lastRect = {
             width: Math.round(initialRect.width * 1000) / 1000,
             height: Math.round(initialRect.height * 1000) / 1000,
@@ -419,6 +426,12 @@ const waitForStableDocumentSize = (doc, {
 
     const initialRect = body.getBoundingClientRect?.()
     if (initialRect) {
+        logEBookPerf('RECT.wait-stable-doc-initial', {
+            width: Math.round(initialRect.width * 1000) / 1000,
+            height: Math.round(initialRect.height * 1000) / 1000,
+        })
+    }
+    if (initialRect) {
         lastRect = {
             width: Math.round(initialRect.width * 1000) / 1000,
             height: Math.round(initialRect.height * 1000) / 1000,
@@ -462,6 +475,10 @@ const inlineBlockSizesForWritingMode = (rect, vertical) => {
 }
 
 const measureSectionSizes = (el, vertical) => {
+    logEBookPerf('RECT.before-measure', {
+        id: el?.id || null,
+        baked: el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR) || false,
+    })
     const rects = Array.from(el.getClientRects?.() ?? []).filter(r => r && (r.width || r.height))
     if (rects.length === 0) return null
 
@@ -490,6 +507,10 @@ const measureSectionSizes = (el, vertical) => {
 
 const measureElementLogicalSize = (el, vertical) => {
     if (!(el instanceof Element)) return null
+    logEBookPerf('RECT.getBoundingClientRect', {
+        id: el?.id || null,
+        baked: el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR) || false,
+    })
     const rect = el.getBoundingClientRect?.()
     if (!rect) return null
     return inlineBlockSizesForWritingMode(rect, vertical)
@@ -558,6 +579,11 @@ const bakeTrackingSectionSizes = async (doc, {
 
     // Try to hydrate from cache first
     const cachedEntries = await requestTrackingSizeCache({ command: 'get', key: cacheKey })
+    logEBookPerf('tracking-size-cache-fetched', {
+        key: cacheKey,
+        status: cachedEntries === null || cachedEntries === undefined ? 'miss' : 'hit',
+        entries: Array.isArray(cachedEntries) ? cachedEntries.length : null,
+    })
     if (cachedEntries === null || cachedEntries === undefined) {
         // treat null as miss, but avoid logging miss twice
     }
@@ -599,6 +625,11 @@ const bakeTrackingSectionSizes = async (doc, {
             const inlineSize = Number(entry.inlineSize)
             const blockSize = Number(entry.blockSize)
             if (!Number.isFinite(inlineSize) || !Number.isFinite(blockSize)) continue
+            logEBookPerf('RECT.cache-apply', {
+                id: el.id || null,
+                inlineSize,
+                blockSize,
+            })
             el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
             el.style.setProperty('block-size', formatPx(blockSize), 'important')
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
@@ -643,6 +674,12 @@ const bakeTrackingSectionSizes = async (doc, {
 
     const container = sections[0]?.parentElement
     const appliedFromCache = applyCachedEntries(cachedEntries, container)
+    logEBookPerf('tracking-size-cache-apply', {
+        key: cacheKey,
+        applied: appliedFromCache,
+        total: sections.length,
+        missing: Math.max(0, sections.length - appliedFromCache),
+    })
 
     if (appliedFromCache !== sections.length) {
         const missingIds = sections
@@ -651,12 +688,12 @@ const bakeTrackingSectionSizes = async (doc, {
     }
 
     const hasContainerCache = bakedEntryMap.has('__container__')
-    if (appliedFromCache === sections.length) {
-        applyAbsoluteLayout()
-        seedInitialVisibility()
-        // tracking visibility logs removed for noise reduction
-        const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
-        try { doc.manabiTrackingSectionIOApply?.(doc.manabiTrackingSectionIO?.takeRecords?.() ?? []) } catch {}
+        if (appliedFromCache === sections.length) {
+            applyAbsoluteLayout()
+            seedInitialVisibility()
+            // tracking visibility logs removed for noise reduction
+            const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
+            try { doc.manabiTrackingSectionIOApply?.(doc.manabiTrackingSectionIO?.takeRecords?.() ?? []) } catch {}
         return
     }
 
@@ -687,7 +724,13 @@ const bakeTrackingSectionSizes = async (doc, {
     const bakeSection = async section => {
         if (!section || section.nodeType !== 1) return null
         const el = section
-        if (el.hasAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) return null
+        if (el.hasAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)) {
+            logEBookPerf('tracking-size-measure-skip', {
+                id: el.id || null,
+                reason: 'already-baked',
+            })
+            return null
+        }
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.add(MANABI_TRACKING_SECTION_BAKING_CLASS)
 
         try {
@@ -709,6 +752,12 @@ const bakeTrackingSectionSizes = async (doc, {
             bakedCount++
             const entry = { id: el.id || '', inlineSize, blockSize }
             bakedEntryMap.set(entry.id, entry)
+            logEBookPerf('tracking-size-measured', {
+                id: entry.id,
+                inlineSize,
+                blockSize,
+                multiColumn,
+            })
             return sizes
         } finally {
             if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
@@ -750,10 +799,17 @@ const bakeTrackingSectionSizes = async (doc, {
         }
     }
 
+    // Batching previously used windowed slices; keep the code here for easy re-enable if needed.
+    // const windowSize = vertical ? Math.max(3, batchSize) : batchSize
+    // for (let i = 0; i < sections.length; i += windowSize) {
+    //     hideTrailing(i + windowSize)
+    //     unhideWindow(i, windowSize)
+    //     const windowSections = sections.slice(i, i + windowSize)
+    //     const results = await Promise.all(windowSections.map(bakeSection))
+    //     tryAdvanceInitialViewport()
+    // }
     try {
-        // Temporarily disable batching: bake all sections in one pass.
-        const windowSections = sections
-        await Promise.all(windowSections.map(bakeSection))
+        await Promise.all(sections.map(bakeSection))
         tryAdvanceInitialViewport()
     } finally {
         // unhide everything at end
@@ -1057,6 +1113,11 @@ class View {
         } : null
         const bodyRect = roundRect(this.document?.body?.getBoundingClientRect?.())
         const containerRect = roundRect(this.container?.getBoundingClientRect?.())
+        logEBookPerf('RECT.resize-read', {
+            body: bodyRect,
+            container: containerRect,
+            seq: this.#resizeEventSeq,
+        })
         ++this.#resizeEventSeq
 
         if (!this.#hasResizerObserverTriggered) {
@@ -1099,7 +1160,7 @@ class View {
 
             // Only trigger size/geometry bake after the new size stays stable for one more frame.
             requestAnimationFrame(() => {
-                const bodyRect = this.document?.body?.getBoundingClientRect?.()
+        const bodyRect = this.document?.body?.getBoundingClientRect?.()
                 if (!bodyRect) return
                 const stableSize = {
                     width: Math.round(bodyRect.width),
@@ -1107,6 +1168,10 @@ class View {
                     top: Math.round(bodyRect.top),
                     left: Math.round(bodyRect.left),
                 }
+                logEBookPerf('RECT.resize-stable-check', {
+                    stableSize,
+                    lastResizer: this.#lastResizerRect,
+                })
                 const still =
                     stableSize.width === this.#lastResizerRect?.width &&
                     stableSize.height === this.#lastResizerRect?.height &&
@@ -1510,6 +1575,10 @@ class View {
                     if (this.#column) {
                         const contentRect = this.#contentRange.getBoundingClientRect()
                         const rootRect = documentElement.getBoundingClientRect()
+                        logEBookPerf('RECT.expand-content', {
+                            contentRect: { width: contentRect?.width ?? null, height: contentRect?.height ?? null, left: contentRect?.left ?? null, right: contentRect?.right ?? null },
+                            rootRect: { width: rootRect?.width ?? null, height: rootRect?.height ?? null, left: rootRect?.left ?? null, right: rootRect?.right ?? null },
+                        })
                         // offset caused by column break at the start of the page
                         // which seem to be supported only by WebKit and only for horizontal writing
                         const contentStart = this.#vertical ? 0
@@ -1543,7 +1612,12 @@ class View {
                             this.#overlayer.redraw()
                         }
                     } else {
-                        const contentSize = documentElement.getBoundingClientRect()[side]
+                        const docRect = documentElement.getBoundingClientRect()
+                        logEBookPerf('RECT.expand-doc', {
+                            width: docRect?.width ?? null,
+                            height: docRect?.height ?? null,
+                        })
+                        const contentSize = docRect[side]
                         const expandedSize = contentSize
                         const {
                             topMargin,
@@ -1693,6 +1767,15 @@ export class Paginator extends HTMLElement {
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
             requestAnimationFrame(() => {
                 const r = this.#container?.getBoundingClientRect?.()
+                logEBookPerf('RECT.container-resize-check', {
+                    rect: r ? {
+                        width: Math.round(r.width),
+                        height: Math.round(r.height),
+                        top: Math.round(r.top),
+                        left: Math.round(r.left),
+                    } : null,
+                    last: this.#lastResizerRect,
+                })
                 if (!r) return
                 const stable = {
                     width: Math.round(r.width),
@@ -3141,6 +3224,12 @@ export class Paginator extends HTMLElement {
             if (sel && !sel.isCollapsed && sel.rangeCount) {
                 const range = sel.getRangeAt(0);
                 const rect = range.getBoundingClientRect();
+                logEBookPerf('RECT.selection-range', {
+                    width: rect?.width ?? null,
+                    height: rect?.height ?? null,
+                    left: rect?.left ?? null,
+                    top: rect?.top ?? null,
+                })
                 const x = touch.clientX,
                     y = touch.clientY;
                 const hitTolerance = 30;
