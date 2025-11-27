@@ -542,6 +542,95 @@ const percentFormat = new Intl.NumberFormat(locales, {
 style: 'percent'
 })
 
+class SideNavChevronAnimator {
+    #icons = {
+        l: null,
+        r: null,
+    };
+    #hideTimers = {
+        l: null,
+        r: null,
+    };
+
+    constructor() {
+        this.#icons = {
+            l: document.querySelector('#btn-scroll-left .icon'),
+            r: document.querySelector('#btn-scroll-right .icon'),
+        };
+    }
+
+    #normalizeKey(key) {
+        if (key === 'l' || key === 'left') return 'l';
+        if (key === 'r' || key === 'right') return 'r';
+        return null;
+    }
+
+    isHolding(key) {
+        const k = this.#normalizeKey(key);
+        if (!k) return false;
+        return !!this.#hideTimers[k];
+    }
+
+    set({ leftOpacity = null, rightOpacity = null, holdMs = 0, fadeMs = 200 } = {}) {
+        this.#apply('l', leftOpacity, holdMs, fadeMs);
+        this.#apply('r', rightOpacity, holdMs, fadeMs);
+    }
+
+    flash(direction, { holdMs = 280, fadeMs = 200 } = {}) {
+        const isLeft = direction === 'left';
+        this.set({
+            leftOpacity: isLeft ? 1 : 0,
+            rightOpacity: isLeft ? 0 : 1,
+            holdMs,
+            fadeMs,
+        });
+    }
+
+    reset() {
+        ['l', 'r'].forEach(key => this.#fadeIcon(key, 0));
+    }
+
+    #apply(key, value, holdMs, fadeMs) {
+        if (value == null) return;
+        const icon = this.#icons[key];
+        if (!icon) return;
+
+        clearTimeout(this.#hideTimers[key]);
+        this.#hideTimers[key] = null;
+
+        const numeric = Number(value);
+        const shouldHide = value === '' || (!Number.isNaN(numeric) && numeric <= 0);
+        if (shouldHide) {
+            this.#fadeIcon(key, fadeMs);
+            return;
+        }
+
+        const targetOpacity = Number.isNaN(numeric) ? 0 : Math.min(1, numeric);
+        icon.style.transitionDuration = `${fadeMs}ms`;
+        if (targetOpacity >= 1) {
+            icon.classList.add('chevron-visible');
+            icon.style.removeProperty('opacity');
+        } else {
+            icon.classList.remove('chevron-visible');
+            icon.style.opacity = targetOpacity;
+        }
+
+        if (holdMs > 0) {
+            this.#hideTimers[key] = setTimeout(() => this.#fadeIcon(key, fadeMs), holdMs);
+        }
+    }
+
+    #fadeIcon(key, fadeMs = 200) {
+        const icon = this.#icons[key];
+        if (!icon) return;
+        clearTimeout(this.#hideTimers[key]);
+        this.#hideTimers[key] = null;
+        icon.style.transitionDuration = `${fadeMs}ms`;
+        icon.classList.remove('chevron-visible');
+        icon.style.opacity = '0';
+    }
+}
+
 class Reader {
     #logScrubDiagnostic(_event, _payload = {}) {}
     #logChevronDiagnostic(event, payload = {}) {
@@ -579,10 +668,7 @@ class Reader {
         document.body.classList.toggle('loading', !!visible);
     }
     #tocView
-    #chevronFadeTimers = {
-    l: null,
-    r: null
-    }
+    #chevronAnimator = null;
     #progressSlider = null
     #progressScrubState = null
     #handleProgressSliderPointerDown = (event) => {
@@ -673,6 +759,7 @@ class Reader {
     getRenderer: () => this.view?.renderer,
     onJumpRequest: descriptor => this.#goToDescriptor(descriptor),
     });
+    this.#chevronAnimator = new SideNavChevronAnimator();
     $('#side-bar-close-button').addEventListener('click', () => {
     this.closeSideBar()
     })
@@ -780,6 +867,20 @@ class Reader {
     const rightSideBtn = document.getElementById('btn-scroll-right');
     if (rightSideBtn) rightSideBtn.addEventListener('click', async () => await this.view.goRight());
 
+    const flashSideNav = (direction) => {
+    this.view?.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+    detail: {
+    leftOpacity: direction === 'left' ? 1 : 0,
+    rightOpacity: direction === 'right' ? 1 : 0,
+    holdMs: 180,
+    fadeMs: 180,
+    source: 'button:pointer',
+    }
+    }));
+    };
+    leftSideBtn?.addEventListener('pointerdown', () => flashSideNav('left'));
+    rightSideBtn?.addEventListener('pointerdown', () => flashSideNav('right'));
+
     // Immediate tap feedback for side-nav chevrons on iOS/touch
     document.querySelectorAll('.side-nav').forEach(nav => {
     nav.addEventListener('touchstart', () => {
@@ -797,64 +898,22 @@ class Reader {
 
         // Side-nav opacity wiring
         this.view.addEventListener('sideNavChevronOpacity', e => {
-            const l = document.querySelector('#btn-scroll-left .icon');
-            const r = document.querySelector('#btn-scroll-right .icon');
-
-            const FADER_DELAY = 180;
-            const logChevronState = (phase, key) => {
-                const elem = key === 'l' ? l : r;
-                if (!elem) return;
-                this.#logChevronDiagnostic('chevron:state', {
-                    phase,
-                    key,
-                    classVisible: elem.classList.contains('chevron-visible'),
-                    inlineOpacity: elem.style.opacity || null,
-                });
-            };
-            const fadeWithHold = (elem, value, key) => {
-                if (!elem) return;
-
-                clearTimeout(this.#chevronFadeTimers[key]);
-                this.#chevronFadeTimers[key] = null;
-
-                // Show chevron at full opacity
-                if (Number(value) >= 1) {
-                    elem.style.removeProperty('opacity');
-                    elem.classList.add('chevron-visible');
-                    this.#logChevronDiagnostic('chevron:fadeWithHold:full', { key, value });
-                    logChevronState('full', key);
-                    return;
-                }
-
-                // Show chevron at partial opacity
-                if (Number(value) > 0) {
-                    elem.classList.remove('chevron-visible');
-                    elem.style.opacity = value;
-                    this.#logChevronDiagnostic('chevron:fadeWithHold:partial', { key, opacity: value });
-                    logChevronState('partial', key);
-                    return;
-                }
-
-                // Hide chevron, but only after a delay and only if currently visible
-                if (elem.classList.contains('chevron-visible')) {
-                    this.#chevronFadeTimers[key] = setTimeout(() => {
-                        elem.classList.remove('chevron-visible');
-                        elem.style.removeProperty('opacity');
-                        this.#chevronFadeTimers[key] = null;
-                        this.#logChevronDiagnostic('chevron:fadeWithHold:hide', { key });
-                        logChevronState('hide', key);
-                    }, FADER_DELAY);
-                    this.#logChevronDiagnostic('chevron:fadeWithHold:scheduledHide', { key, delayMs: FADER_DELAY });
-                    logChevronState('hideScheduled', key);
-                } else {
-                    // Already hidden: do nothing
-                    elem.style.removeProperty('opacity');
-                    elem.classList.remove('chevron-visible');
-                }
-            };
-
-            fadeWithHold(l, e.detail.leftOpacity, 'l');
-            fadeWithHold(r, e.detail.rightOpacity, 'r');
+            const detail = e?.detail ?? {};
+            const holdMs = typeof detail.holdMs === 'number' ? detail.holdMs : 0;
+            const fadeMs = typeof detail.fadeMs === 'number' ? detail.fadeMs : 200;
+            this.#chevronAnimator?.set({
+                leftOpacity: detail.leftOpacity,
+                rightOpacity: detail.rightOpacity,
+                holdMs,
+                fadeMs,
+            });
+            this.#logChevronDiagnostic('chevron:event', {
+                source: detail?.source ?? null,
+                holdMs,
+                fadeMs,
+                left: detail.leftOpacity ?? null,
+                right: detail.rightOpacity ?? null,
+            });
         });
     // Listen for resetSideNavChevrons custom event to reset chevrons
     document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
@@ -1147,39 +1206,38 @@ class Reader {
     return !button.hidden && button.style.display !== 'none';
     }
     #setForwardChevronHint(shouldShow) {
-    const forwardBtn = document.getElementById(this.isRTL ? 'btn-scroll-left' : 'btn-scroll-right');
-    if (!forwardBtn) return;
-    forwardBtn.classList.toggle('show-next', !!shouldShow);
-    const icon = forwardBtn.querySelector('.icon');
-    if (!icon) return;
-    const isHovered = typeof forwardBtn.matches === 'function' ? forwardBtn.matches(':hover') : false;
-    this.#logChevronDiagnostic('chevron:forwardHint', {
-    shouldShow,
-    isHovered,
-    isPressed: forwardBtn.classList.contains('pressed'),
-    iconVisible: icon.classList.contains('chevron-visible'),
-    inlineOpacity: icon.style.opacity || null,
-    });
-    if (shouldShow) {
-    icon.classList.add('chevron-visible');
-    icon.style.opacity = '1';
-    } else if (!forwardBtn.classList.contains('pressed') && !isHovered) {
-    icon.classList.remove('chevron-visible');
-    icon.style.opacity = '';
-    }
+        const forwardBtn = document.getElementById(this.isRTL ? 'btn-scroll-left' : 'btn-scroll-right');
+        if (!forwardBtn) return;
+        forwardBtn.classList.toggle('show-next', !!shouldShow);
+        const icon = forwardBtn.querySelector('.icon');
+        if (!icon) return;
+        const isHovered = typeof forwardBtn.matches === 'function' ? forwardBtn.matches(':hover') : false;
+        const isHeld = this.#chevronAnimator?.isHolding(forwardBtn.id === 'btn-scroll-left' ? 'l' : 'r') ?? false;
+        this.#logChevronDiagnostic('chevron:forwardHint', {
+        shouldShow,
+        isHovered,
+        isHeld,
+        isPressed: forwardBtn.classList.contains('pressed'),
+        iconVisible: icon.classList.contains('chevron-visible'),
+        inlineOpacity: icon.style.opacity || null,
+        });
+        if (shouldShow) {
+        icon.classList.add('chevron-visible');
+        icon.style.opacity = '1';
+        } else if (!forwardBtn.classList.contains('pressed') && !isHovered && !isHeld) {
+        icon.classList.remove('chevron-visible');
+        icon.style.opacity = '';
+        }
     }
     #flashChevron(left) {
     this.#logChevronDiagnostic('chevron:flash', { direction: left ? 'left' : 'right' });
     this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
     detail: {
-    leftOpacity: left ? '1' : '',
-    rightOpacity: left ? '' : '1'
-    }
-    }))
-    this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-    detail: {
-    leftOpacity: left ? '0' : '',
-    rightOpacity: left ? '' : '0'
+    leftOpacity: left ? 1 : 0,
+    rightOpacity: left ? 0 : 1,
+    holdMs: 260,
+    fadeMs: 200,
+    source: 'keyboard'
     }
     }))
     }
@@ -1370,17 +1428,7 @@ class Reader {
     }
 
     #resetSideNavChevrons() {
-        // Clear any fade timers
-        clearTimeout(this.#chevronFadeTimers.l);
-        clearTimeout(this.#chevronFadeTimers.r);
-        // Remove visible class & reset opacity immediately
-        const leftIcon = document.querySelector('#btn-scroll-left .icon');
-        const rightIcon = document.querySelector('#btn-scroll-right .icon');
-        [leftIcon, rightIcon].forEach(icon => {
-            if (!icon) return;
-            icon.classList.remove('chevron-visible');
-            icon.style.opacity = '';
-        });
+        this.#chevronAnimator?.reset();
     }
 
     #deriveRelocateDirection(detail, { previousFraction = null, previousPageEstimate = null } = {}) {

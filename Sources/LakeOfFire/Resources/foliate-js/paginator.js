@@ -133,6 +133,9 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     logEBookPageNum(event, { count: logEBookPageNumCounter, ...detail })
 }
 
+const logEBookWritingMode = (event, detail = {}) =>
+    logEBookPageNumLimited(`WRITINGMODE ${event}`, detail)
+
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
     if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
@@ -589,6 +592,7 @@ const bakeTrackingSectionSizes = async (doc, {
 
     const sections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
     if (sections.length === 0) return
+    // No shared writing-mode map; detection is per-section to ensure overrides are caught reliably.
 
     const viewport = {
         width: Math.round(doc.documentElement?.clientWidth ?? 0),
@@ -672,6 +676,10 @@ const bakeTrackingSectionSizes = async (doc, {
         for (const entry of cached) {
             const el = doc.getElementById(entry?.id)
             if (!el) continue
+            if (hasWritingModeOverride(el, vertical)) {
+                // Skip cached sizes for mixed writing-mode sections to avoid hardcoding.
+                continue
+            }
             const inlineSize = Number(entry.inlineSize)
             const blockSize = Number(entry.blockSize)
             if (!Number.isFinite(inlineSize) || !Number.isFinite(blockSize)) continue
@@ -786,6 +794,53 @@ const bakeTrackingSectionSizes = async (doc, {
             return null
         }
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.add(MANABI_TRACKING_SECTION_BAKING_CLASS)
+
+        logEBookWritingMode('SECTION-BAKE-ENTER', {
+            id: el.id || null,
+            vertical,
+        })
+
+        const yokoDescendant = el.querySelector?.('.yoko')
+        if (yokoDescendant) {
+            logEBookWritingMode('YOKO-FOUND', {
+                id: el.id || null,
+                yokoId: yokoDescendant.id || null,
+            })
+        }
+
+        const skipForWritingMode = yokoDescendant ? true : hasWritingModeOverride(el, vertical)
+        logEBookWritingMode('SECTION-BAKE-MISMATCH-RESULT', {
+            id: el.id || null,
+            skip: skipForWritingMode,
+            hasYoko: !!yokoDescendant,
+        })
+        if (skipForWritingMode) {
+            // Leave natural layout untouched; mark as baked for flow accounting but don't freeze sizes or cache.
+            const logical = measureElementLogicalSize(el, vertical)
+            const inlineSize = Number(logical?.inlineSize) || 0
+            const blockSize = Number(logical?.blockSize) || 0
+            el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'skip-writing-mode')
+            el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
+            bakedEntryMap.set(el.id || '', {
+                id: el.id || '',
+                inlineSize,
+                blockSize,
+                skipCache: true,
+            })
+            bakedCount++
+            logEBookPerf('tracking-size-skip-writing-mode', {
+                id: el.id || null,
+                inlineSize,
+                blockSize,
+            })
+            logEBookPageNumLimited('EBOOK WRITINGMODE SECTION SKIP', {
+                id: el.id || null,
+                reason: 'writing-mode mismatch',
+                hasYokoDescendant: !!yokoDescendant,
+                skipViaYokoShortCircuit: !!yokoDescendant,
+            })
+            return { inlineSize, blockSize, multiColumn: false }
+        }
 
         try {
             await waitForStableSectionSize(el)
@@ -996,7 +1051,7 @@ const bakeTrackingSectionSizes = async (doc, {
 
         try {
             const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
-            const entriesForCache = Array.from(bakedEntryMap.values())
+            const entriesForCache = Array.from(bakedEntryMap.values()).filter(e => !e.skipCache)
             if (handler?.postMessage && entriesForCache.length > 0) {
                 handler.postMessage({
                     command: 'set',
@@ -1046,6 +1101,196 @@ const {
     FILTER_REJECT,
     FILTER_SKIP
 } = NF
+
+const hasWritingModeOverride = (section, vertical, { maxNodes = Infinity } = {}) => {
+    if (!(section instanceof Element)) return false
+    logEBookWritingMode('FUNC-ENTER', {
+        sectionId: section.id || null,
+        vertical,
+    })
+    let rootMode = 'horizontal-tb'
+    try {
+        const cs = section.ownerDocument?.defaultView?.getComputedStyle?.(section)
+        const mode =
+            cs?.writingMode ||
+            cs?.webkitWritingMode ||
+            cs?.getPropertyValue?.('writing-mode') ||
+            cs?.getPropertyValue?.('-webkit-writing-mode') ||
+            ''
+        if (mode) rootMode = mode
+        logEBookWritingMode('ROOT', {
+            id: section.id || null,
+            mode: rootMode,
+            vertical,
+        })
+    } catch (error) {
+        logEBookWritingMode('ROOT ERROR', {
+            id: section.id || null,
+            message: error?.message || String(error),
+        })
+    }
+    const rootVertical = rootMode ? rootMode.startsWith('vertical') : vertical
+
+    // Targeted probe: directly inspect first yoko descendant (common mixed-mode culprit).
+    const yokoProbe = section.querySelector?.('.yoko')
+    logEBookWritingMode('PROBE-SEARCH', {
+        sectionId: section.id || null,
+        hasYoko: !!yokoProbe,
+        vertical,
+    })
+    if (yokoProbe) {
+        let yokoMode = ''
+        let yokoInlineStyle = ''
+        let yokoAttrStyle = ''
+        try {
+            const cs = yokoProbe.ownerDocument?.defaultView?.getComputedStyle?.(yokoProbe)
+            yokoMode =
+                cs?.writingMode ||
+                cs?.webkitWritingMode ||
+                cs?.getPropertyValue?.('writing-mode') ||
+                cs?.getPropertyValue?.('-webkit-writing-mode') ||
+                ''
+        } catch (error) {
+            logEBookWritingMode('YOKO-PROBE-ERROR', {
+                id: yokoProbe.id || null,
+                message: error?.message || String(error),
+            })
+        }
+        try { yokoInlineStyle = yokoProbe.style?.getPropertyValue?.('writing-mode') || yokoProbe.style?.writingMode || '' } catch {}
+        try { yokoAttrStyle = yokoProbe.getAttribute?.('style') || '' } catch {}
+
+        const yokoIsVertical = yokoMode ? yokoMode.startsWith('vertical') : false
+        const yokoOrientationMismatch = yokoIsVertical !== vertical
+        const yokoStringMismatch = rootMode && yokoMode && yokoMode !== rootMode
+
+        logEBookWritingMode('YOKO-PROBE', {
+            id: yokoProbe.id || null,
+            tag: yokoProbe.tagName || null,
+            mode: yokoMode || null,
+            inlineStyle: yokoInlineStyle || null,
+            attrStyle: yokoAttrStyle || null,
+            rootMode,
+            sectionVertical: vertical,
+            yokoIsVertical,
+            yokoOrientationMismatch,
+            yokoStringMismatch,
+            ancestorCount: (function countAncestors(node) {
+                let c = 0; let cur = node?.parentElement
+                while (cur && c < 50) { c++; cur = cur.parentElement }
+                return c
+            })(yokoProbe),
+            siblings: yokoProbe.parentElement ? yokoProbe.parentElement.children.length : null,
+        })
+
+        if (yokoStringMismatch || yokoOrientationMismatch || yokoIsVertical !== rootVertical) {
+            logEBookWritingMode('YOKO-MISMATCH', {
+                id: yokoProbe.id || null,
+                mode: yokoMode || null,
+                rootMode,
+                sectionVertical: vertical,
+                yokoIsVertical,
+            })
+            return true
+        }
+    }
+
+    const nodes = section.querySelectorAll('*')
+    logEBookWritingMode('NODECOUNT', {
+        sectionId: section.id || null,
+        count: nodes.length,
+        hasYoko: !!yokoProbe,
+        rootMode,
+        rootVertical,
+    })
+    let visited = 0
+    for (const el of nodes) {
+        if (!(el instanceof Element)) continue
+        visited++
+        if (visited > maxNodes) break
+        let mode = ''
+        let rawMode = ''
+        try {
+            const cs = el.ownerDocument?.defaultView?.getComputedStyle?.(el)
+            rawMode =
+                cs?.writingMode ||
+                cs?.webkitWritingMode ||
+                cs?.getPropertyValue?.('writing-mode') ||
+                cs?.getPropertyValue?.('-webkit-writing-mode') ||
+                ''
+            mode = rawMode
+        } catch (error) {
+            logEBookWritingMode('CHILD ERROR', {
+                id: el.id || null,
+                message: error?.message || String(error),
+            })
+        }
+
+        const isYoko = el.classList?.contains?.('yoko') || false
+        if (isYoko) {
+            logEBookWritingMode('YOKO-RAW', {
+                id: el.id || null,
+                rawMode: rawMode || null,
+                rootMode,
+                sectionVertical: vertical,
+                tag: el.tagName || null,
+            })
+        }
+
+        if (isYoko && !mode) mode = 'horizontal-tb'
+        if (!mode) continue
+
+        const isVertical = mode.startsWith('vertical')
+        const orientationMismatch = isVertical !== vertical
+        const stringMismatch = rootMode && mode && mode !== rootMode
+        // Hack: if any descendant reports a different writing mode than the section/pagination,
+        // skip baking this section to avoid hardcoding wrong inline/block sizes. Mixed vertical/horizontal
+        // islands (like EPUB "yoko" callouts) otherwise overmeasure and blow pagination.
+        if (isYoko) {
+            logEBookWritingMode('YOKO', {
+                id: el.id || null,
+                mode: mode || null,
+                rootMode,
+                vertical,
+                isVertical,
+                orientationMismatch,
+                stringMismatch,
+            })
+        }
+        if (stringMismatch || orientationMismatch || isVertical !== rootVertical) {
+            logEBookWritingMode('MISMATCH', {
+                id: el.id || null,
+                mode,
+                rootMode,
+                sectionVertical: vertical,
+                isVertical,
+                stringMismatch,
+                orientationMismatch,
+                isYoko,
+            })
+            return true
+        } else if (isYoko) {
+            // yoko present but did not trigger mismatch; log to see why
+            logEBookWritingMode('YOKO-NO-MISMATCH', {
+                id: el.id || null,
+                mode: mode || null,
+                rootMode,
+                sectionVertical: vertical,
+                isVertical,
+                stringMismatch,
+                orientationMismatch,
+                tag: el.tagName || null,
+                yokoRawMode: rawMode || null,
+            })
+        }
+    }
+
+    logEBookWritingMode('FUNC-END', {
+        sectionId: section.id || null,
+        vertical,
+        result: false,
+    })
+    return false
+}
 
 /**
  * Creates a hidden iframe with a cloned document (head and empty body) to compute computed style.
@@ -1893,31 +2138,45 @@ export class Paginator extends HTMLElement {
         }
     }
     #emitChevronOpacity(detail, source) {
+        const nextLeft = detail?.leftOpacity ?? null;
+        const nextRight = detail?.rightOpacity ?? null;
+        if (this.#lastChevronEmit.left === nextLeft && this.#lastChevronEmit.right === nextRight) {
+            this.#logChevronDispatch('sideNavChevronOpacity:ignoredDuplicate', {
+                source: source ?? null,
+                leftOpacity: nextLeft,
+                rightOpacity: nextRight,
+                bookDir: this.bookDir ?? null,
+                rtl: this.#rtl,
+            });
+            return;
+        }
+        this.#lastChevronEmit = { left: nextLeft, right: nextRight };
+        const payload = { ...detail };
+        if (source !== undefined) payload.source = source;
         const shouldLog = (
-            detail?.leftOpacity === '' ||
-            detail?.rightOpacity === '' ||
-            Number(detail?.leftOpacity) >= 1 ||
-            Number(detail?.rightOpacity) >= 1 ||
+            payload?.leftOpacity === '' ||
+            payload?.rightOpacity === '' ||
+            Number(payload?.leftOpacity) >= 1 ||
+            Number(payload?.rightOpacity) >= 1 ||
             (typeof source === 'string' && source.includes('reset'))
         );
         if (shouldLog) {
             this.#logChevronDispatch('sideNavChevronOpacity:emit', {
-                source: source ?? null,
-                leftOpacity: detail?.leftOpacity ?? null,
-                rightOpacity: detail?.rightOpacity ?? null,
+                source: payload?.source ?? null,
+                leftOpacity: payload?.leftOpacity ?? null,
+                rightOpacity: payload?.rightOpacity ?? null,
                 bookDir: this.bookDir ?? null,
                 rtl: this.#rtl,
                 touchTriggeredNav: this.#touchTriggeredNav,
                 touchHasShownChevron: this.#touchHasShownChevron,
                 maxLeft: this.#maxChevronLeft,
                 maxRight: this.#maxChevronRight,
-                pendingResetSource: this.#pendingChevronResetSource ?? null,
             });
         }
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
-            detail,
+            detail: payload,
         }));
     }
     #root = this.attachShadow({
@@ -3690,11 +3949,11 @@ export class Paginator extends HTMLElement {
             this.#touchState = null;
             return;
         }
+        this.#clearPendingChevronReset();
         this.#touchHasShownChevron = false;
         this.#touchTriggeredNav = false;
         this.#maxChevronLeft = 0;
         this.#maxChevronRight = 0;
-        this.#cancelPendingChevronReset('touchStart');
         this.#touchState = {
             startX: touch?.screenX,
             startY: touch?.screenY,
@@ -3753,44 +4012,44 @@ export class Paginator extends HTMLElement {
 
         if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
             state.triggered = true;
+            const navDetail = dx < 0 ? {
+                direction: this.bookDir === 'rtl' ? 'backward' : 'forward',
+                leftOpacity: this.bookDir === 'rtl' ? 0 : 1,
+                rightOpacity: this.bookDir === 'rtl' ? 1 : 0,
+                navigate: this.bookDir === 'rtl' ? () => this.prev() : () => this.next(),
+            } : {
+                direction: this.bookDir === 'rtl' ? 'forward' : 'backward',
+                leftOpacity: this.bookDir === 'rtl' ? 1 : 0,
+                rightOpacity: this.bookDir === 'rtl' ? 0 : 1,
+                navigate: this.bookDir === 'rtl' ? () => this.next() : () => this.prev(),
+            };
 
-            if (dx < 0) {
-                this.#lastSwipeNavAt = Date.now();
-                this.#lastSwipeNavDirection = this.bookDir === 'rtl' ? 'backward' : 'forward';
-                this.#touchTriggeredNav = true;
-                this.#logChevronDispatch('swipeNav:trigger', {
-                    dx,
-                    dy,
-                    direction: this.#lastSwipeNavDirection,
-                    bookDir: this.bookDir ?? null,
-                    rtl: this.#rtl,
-                });
-                (this.bookDir === 'rtl') ? await this.prev() : await this.next();
-            } else {
-                this.#lastSwipeNavAt = Date.now();
-                this.#lastSwipeNavDirection = this.bookDir === 'rtl' ? 'forward' : 'backward';
-                this.#touchTriggeredNav = true;
+            this.#lastSwipeNavAt = Date.now();
+            this.#lastSwipeNavDirection = navDetail.direction;
+            this.#touchTriggeredNav = true;
+            this.#emitChevronOpacity({
+                leftOpacity: navDetail.leftOpacity,
+                rightOpacity: navDetail.rightOpacity,
+                holdMs: this.#chevronTriggerHoldMs,
+                fadeMs: this.#chevronFadeMs,
+            }, 'swipe:navImmediate');
             this.#logChevronDispatch('swipeNav:trigger', {
                 dx,
                 dy,
-                direction: this.#lastSwipeNavDirection,
+                direction: navDetail.direction,
                 bookDir: this.bookDir ?? null,
                 rtl: this.#rtl,
             });
-            (this.bookDir === 'rtl') ? await this.next() : await this.prev();
+            await navDetail.navigate();
+            this.#scheduleChevronHide(this.#chevronTriggerHoldMs + 80);
+        } else {
+            this.#updateSwipeChevron(dx, minSwipe, 'swipe');
         }
-        this.#updateSwipeChevron(dx, minSwipe, 'swipe')
-        this.#scheduleSwipeChevronReset();
-    } else if (!state.triggered) {
-        this.#updateSwipeChevron(dx, minSwipe, 'swipe');
-    } else {
-        this.#updateSwipeChevron(dx, minSwipe, 'swipe');
-    }
     }
     #onTouchEnd(e) {
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
-        if (this.#skipTouchEndOpacity) {
+        if (this.#skipTouchEndOpacity && !this.#touchTriggeredNav) {
             this.#logChevronDispatch('sideNavChevronOpacity:touchEnd:skipReset', { reason: 'skipTouchEndOpacity' });
             this.#skipTouchEndOpacity = false
             this.#touchHasShownChevron = false;
@@ -3798,14 +4057,8 @@ export class Paginator extends HTMLElement {
         }
         // If swipe never triggered navigation but showed the chevron, fade it out now.
         if (!this.#touchTriggeredNav && this.#touchHasShownChevron) {
-            this.#cancelPendingChevronReset('touchEnd:cancel');
-            this.#pendingChevronResetTimer = setTimeout(() => {
-                this.#pendingChevronResetTimer = null;
-                this.#emitChevronOpacity({
-                    leftOpacity: '',
-                    rightOpacity: ''
-                }, 'touchEnd:cancel');
-            }, 120);
+            this.#clearPendingChevronReset();
+            this.#scheduleChevronHide(0);
         }
         this.#touchHasShownChevron = false;
         this.#touchTriggeredNav = false;
@@ -3864,37 +4117,26 @@ export class Paginator extends HTMLElement {
     #touchTriggeredNav = false;
     #maxChevronLeft = 0;
     #maxChevronRight = 0;
-    #resetDelayMs = 320;
-    #cancelPendingChevronReset(reason) {
+    #lastChevronEmit = { left: null, right: null };
+    #chevronTriggerHoldMs = 420;
+    #chevronFadeMs = 180;
+    #pendingChevronResetTimer = null;
+    #clearPendingChevronReset() {
         if (!this.#pendingChevronResetTimer) return;
         clearTimeout(this.#pendingChevronResetTimer);
         this.#pendingChevronResetTimer = null;
-        this.#pendingChevronResetSource = null;
-        this.#logChevronDispatch('sideNavChevronOpacity:resetCancelled', {
-            reason,
-            bookDir: this.bookDir ?? null,
-            rtl: this.#rtl,
-        });
     }
-    #scheduleSwipeChevronReset(delayMs = this.#resetDelayMs) {
-        this.#cancelPendingChevronReset('reschedule');
-        this.#pendingChevronResetSource = 'swipe:reset:scheduled';
+    #scheduleChevronHide(delayMs = this.#chevronTriggerHoldMs) {
+        this.#clearPendingChevronReset();
         this.#pendingChevronResetTimer = setTimeout(() => {
             this.#pendingChevronResetTimer = null;
-            this.#pendingChevronResetSource = null;
             this.#emitChevronOpacity({
                 leftOpacity: '',
-                rightOpacity: ''
-            }, 'swipe:reset:scheduled');
+                rightOpacity: '',
+                fadeMs: this.#chevronFadeMs,
+            }, 'chevron:autoHide');
         }, delayMs);
-        this.#logChevronDispatch('sideNavChevronOpacity:scheduledReset', {
-            delayMs,
-            bookDir: this.bookDir ?? null,
-            rtl: this.#rtl,
-        });
     }
-    #pendingChevronResetTimer = null;
-    #pendingChevronResetSource = null;
     async #onWheel(e) {
         if (this.scrolled) return;
         e.preventDefault();
@@ -3920,9 +4162,9 @@ export class Paginator extends HTMLElement {
 
         if (this.#wheelArmed) {
             if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
-                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:reveal', { allowReset: false });
+                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:reveal');
             } else {
-                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD, 'wheel:resetReveal', { allowReset: false });
+                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD, 'wheel:resetReveal');
             }
         }
 
@@ -3934,7 +4176,7 @@ export class Paginator extends HTMLElement {
             } else {
                 await this.next();
             }
-            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:triggered', { allowReset: true })
+            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:triggered')
             setTimeout(() => {
                 this.#wheelCooldown = false;
             }, 100);
@@ -4308,11 +4550,19 @@ export class Paginator extends HTMLElement {
 
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (await this.isAtSectionStart()) {
-            this.#skipTouchEndOpacity = true
-            this.#emitChevronOpacity({
-                leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
-                rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
-            }, 'afterScroll:startOfSection');
+            if (this.#touchTriggeredNav) {
+                this.#logChevronDispatch('sideNavChevronOpacity:startOfSection:skip', {
+                    reason: 'navTriggered',
+                    bookDir: this.bookDir ?? null,
+                    rtl: this.#rtl,
+                });
+            } else {
+                this.#skipTouchEndOpacity = true
+                this.#emitChevronOpacity({
+                    leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
+                    rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
+                }, 'afterScroll:startOfSection');
+            }
         }
     }
 
@@ -4324,43 +4574,12 @@ export class Paginator extends HTMLElement {
         if (leftOpacity > 0 || rightOpacity > 0) {
             this.#touchHasShownChevron = true;
         }
-        // Ignore dimmer updates within the same gesture; only allow monotonic brightening
-        const dimmerThanMax = leftOpacity < this.#maxChevronLeft && rightOpacity <= this.#maxChevronRight;
-        if (dimmerThanMax) {
-            this.#logChevronDispatch('sideNavChevronOpacity:ignoredDimmerUpdate', {
-                source,
-                dx,
-                minSwipe,
-                leftOpacity,
-                rightOpacity,
-                maxLeft: this.#maxChevronLeft,
-                maxRight: this.#maxChevronRight,
-                bookDir: this.bookDir ?? null,
-                rtl: this.#rtl,
-            });
-            return;
-        }
-        if (this.#touchTriggeredNav) {
-            if (leftOpacity < 1 && rightOpacity < 1) {
-                this.#logChevronDispatch('sideNavChevronOpacity:ignoredPostNavUpdate', {
-                    source,
-                    dx,
-                    minSwipe,
-                    leftOpacity,
-                    rightOpacity,
-                    bookDir: this.bookDir ?? null,
-                    rtl: this.#rtl,
-                });
-                return;
-            }
-            leftOpacity = 1;
-            rightOpacity = rightOpacity === 0 ? 0 : 1;
-        }
         this.#maxChevronLeft = Math.max(this.#maxChevronLeft, Number(leftOpacity) || 0);
         this.#maxChevronRight = Math.max(this.#maxChevronRight, Number(rightOpacity) || 0);
         this.#emitChevronOpacity({
             leftOpacity,
-            rightOpacity
+            rightOpacity,
+            fadeMs: this.#chevronFadeMs,
         }, source);
     }
     async #display(promise) {

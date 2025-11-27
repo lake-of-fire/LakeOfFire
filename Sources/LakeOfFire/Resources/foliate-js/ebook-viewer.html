@@ -760,29 +760,21 @@
                 }
                 .side-nav .icon {
                     opacity: 0;
-                    transition: opacity 0.25s ease-out;
+                    transition: opacity 180ms ease-out, filter 180ms ease-out;
                     /*pointer-events: none;*/
-                    
+
                     width: 18px;
                     height: 48px;
                     stroke-width: 4px;
                     stroke: var(--secondary-color);
                 }
-                .side-nav .icon {
-                    opacity: 0;
-                }
                 .side-nav .icon.chevron-visible {
-                    transition: opacity 0.02s ease-in, filter 0.2s ease-in 0.1s;
+                    opacity: 1 !important;
+                    filter: brightness(1.05);
+                    transition: opacity 90ms ease-in, filter 160ms ease;
                 }
                 .side-nav:active .icon,
-                .side-nav.pressed .icon,
-                .side-nav:active .icon.chevron-visible,
-                .side-nav.pressed .icon.chevron-visible {
-                    transition: opacity 0.02s ease-in, filter ease-in 0.03s;
-                }
-                .side-nav:active .icon,
-                .side-nav.pressed .icon,
-                .side-nav .icon.chevron-visible {
+                .side-nav.pressed .icon {
                     opacity: 1 !important;
                     stroke: CanvasText;
                 }
