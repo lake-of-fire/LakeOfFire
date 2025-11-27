@@ -696,6 +696,13 @@ class Reader {
     } = this.view
     this.bookDir = book.dir || 'ltr';
     this.isRTL = this.bookDir === 'rtl';
+    try {
+    const line = `# EBOOKCHEVRON_VIEW bookDir=${this.bookDir} isRTL=${this.isRTL}`;
+    window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    console.log(line);
+    } catch (_err) {
+    // best-effort diagnostics
+    }
     document.body.dir = this.bookDir;
     this.navHUD?.setIsRTL(this.isRTL);
     this.navHUD?.setPageTargets(book.pageList ?? []);
@@ -790,67 +797,65 @@ class Reader {
 
         // Side-nav opacity wiring
         this.view.addEventListener('sideNavChevronOpacity', e => {
-        const l = document.querySelector('#btn-scroll-left .icon');
-        const r = document.querySelector('#btn-scroll-right .icon');
+            const l = document.querySelector('#btn-scroll-left .icon');
+            const r = document.querySelector('#btn-scroll-right .icon');
 
-        this.#logChevronDiagnostic('sideNavChevronOpacity:event', {
-        leftOpacity: e?.detail?.leftOpacity ?? null,
-        rightOpacity: e?.detail?.rightOpacity ?? null,
-        leftHasIcon: !!l,
-        rightHasIcon: !!r,
+            const FADER_DELAY = 180;
+            const logChevronState = (phase, key) => {
+                const elem = key === 'l' ? l : r;
+                if (!elem) return;
+                this.#logChevronDiagnostic('chevron:state', {
+                    phase,
+                    key,
+                    classVisible: elem.classList.contains('chevron-visible'),
+                    inlineOpacity: elem.style.opacity || null,
+                });
+            };
+            const fadeWithHold = (elem, value, key) => {
+                if (!elem) return;
+
+                clearTimeout(this.#chevronFadeTimers[key]);
+                this.#chevronFadeTimers[key] = null;
+
+                // Show chevron at full opacity
+                if (Number(value) >= 1) {
+                    elem.style.removeProperty('opacity');
+                    elem.classList.add('chevron-visible');
+                    this.#logChevronDiagnostic('chevron:fadeWithHold:full', { key, value });
+                    logChevronState('full', key);
+                    return;
+                }
+
+                // Show chevron at partial opacity
+                if (Number(value) > 0) {
+                    elem.classList.remove('chevron-visible');
+                    elem.style.opacity = value;
+                    this.#logChevronDiagnostic('chevron:fadeWithHold:partial', { key, opacity: value });
+                    logChevronState('partial', key);
+                    return;
+                }
+
+                // Hide chevron, but only after a delay and only if currently visible
+                if (elem.classList.contains('chevron-visible')) {
+                    this.#chevronFadeTimers[key] = setTimeout(() => {
+                        elem.classList.remove('chevron-visible');
+                        elem.style.removeProperty('opacity');
+                        this.#chevronFadeTimers[key] = null;
+                        this.#logChevronDiagnostic('chevron:fadeWithHold:hide', { key });
+                        logChevronState('hide', key);
+                    }, FADER_DELAY);
+                    this.#logChevronDiagnostic('chevron:fadeWithHold:scheduledHide', { key, delayMs: FADER_DELAY });
+                    logChevronState('hideScheduled', key);
+                } else {
+                    // Already hidden: do nothing
+                    elem.style.removeProperty('opacity');
+                    elem.classList.remove('chevron-visible');
+                }
+            };
+
+            fadeWithHold(l, e.detail.leftOpacity, 'l');
+            fadeWithHold(r, e.detail.rightOpacity, 'r');
         });
-
-        const FADER_DELAY = 180;
-        const fadeWithHold = (elem, value, key) => {
-        if (!elem) return;
-
-        const hadPendingFade = !!this.#chevronFadeTimers[key];
-        clearTimeout(this.#chevronFadeTimers[key]);
-        this.#chevronFadeTimers[key] = null;
-        this.#logChevronDiagnostic('chevron:fadeWithHold:start', {
-        key,
-        value,
-        hadPendingFade,
-        isVisible: elem.classList.contains('chevron-visible'),
-        inlineOpacity: elem.style.opacity || null,
-        });
-
-        // Show chevron at full opacity
-        if (Number(value) >= 1) {
-        elem.style.removeProperty('opacity');
-        elem.classList.add('chevron-visible');
-        this.#logChevronDiagnostic('chevron:fadeWithHold:full', { key });
-        return;
-        }
-
-        // Show chevron at partial opacity
-        if (Number(value) > 0) {
-        elem.classList.remove('chevron-visible');
-        elem.style.opacity = value;
-        this.#logChevronDiagnostic('chevron:fadeWithHold:partial', { key, opacity: value });
-        return;
-        }
-
-        // Hide chevron, but only after a delay and only if currently visible
-        if (elem.classList.contains('chevron-visible')) {
-        this.#chevronFadeTimers[key] = setTimeout(() => {
-        elem.classList.remove('chevron-visible');
-        elem.style.removeProperty('opacity');
-        this.#chevronFadeTimers[key] = null;
-        this.#logChevronDiagnostic('chevron:fadeWithHold:hide', { key });
-        }, FADER_DELAY);
-        this.#logChevronDiagnostic('chevron:fadeWithHold:scheduledHide', { key, delayMs: FADER_DELAY });
-        } else {
-        // Already hidden: do nothing
-        elem.style.removeProperty('opacity');
-        elem.classList.remove('chevron-visible');
-        this.#logChevronDiagnostic('chevron:fadeWithHold:alreadyHidden', { key });
-        }
-        };
-
-        fadeWithHold(l, e.detail.leftOpacity, 'l');
-        fadeWithHold(r, e.detail.rightOpacity, 'r');
-    });
     // Listen for resetSideNavChevrons custom event to reset chevrons
     document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
 

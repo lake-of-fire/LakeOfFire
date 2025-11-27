@@ -126,7 +126,7 @@ const logEBookPageNum = (event, detail = {}) => {
 }
 
 let logEBookPageNumCounter = 0
-const LOG_EBOOK_PAGE_NUM_LIMIT = 400
+const LOG_EBOOK_PAGE_NUM_LIMIT = 1200
 const logEBookPageNumLimited = (event, detail = {}) => {
     if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return
     logEBookPageNumCounter += 1
@@ -177,11 +177,21 @@ const hideDocumentContentForPreBake = doc => {
 
     const snapshot = snapshotInlineStyleProperty(target, 'display')
     preBakeDisplaySnapshots.set(doc, { target, snapshot })
+    const beforeRect = target.getBoundingClientRect?.()
     target.classList.add(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
     target.style.setProperty('display', 'none', 'important')
+    const afterRect = target.getBoundingClientRect?.()
     logEBookPageNumLimited('bake:hide-doc', {
         url: doc?.URL || null,
         targetId: target.id || null,
+        beforeRect: beforeRect ? {
+            width: Math.round(beforeRect.width),
+            height: Math.round(beforeRect.height),
+        } : null,
+        afterRect: afterRect ? {
+            width: Math.round(afterRect.width),
+            height: Math.round(afterRect.height),
+        } : null,
     })
     logEBookPerf('prebake-hide', {
         url: doc?.URL || null,
@@ -197,13 +207,23 @@ const revealDocumentContentForBake = doc => {
     if (!entry) return
 
     const { target, snapshot } = entry
+    const beforeRect = target?.getBoundingClientRect?.()
     if (target instanceof HTMLElement) {
         target.classList.remove(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
         restoreInlineStyleProperty(target, 'display', snapshot)
     }
+    const afterRect = target?.getBoundingClientRect?.()
     logEBookPageNumLimited('bake:reveal-doc', {
         url: doc?.URL || null,
         targetId: target?.id || null,
+        beforeRect: beforeRect ? {
+            width: Math.round(beforeRect.width),
+            height: Math.round(beforeRect.height),
+        } : null,
+        afterRect: afterRect ? {
+            width: Math.round(afterRect.width),
+            height: Math.round(afterRect.height),
+        } : null,
     })
     logEBookPerf('prebake-reveal', {
         url: doc?.URL || null,
@@ -678,6 +698,13 @@ const bakeTrackingSectionSizes = async (doc, {
         if (containerEntry && container instanceof HTMLElement) {
             const inlineSize = Number(containerEntry.inlineSize)
             const blockSize = Number(containerEntry.blockSize)
+
+            logEBookPageNumLimited('cache:container-apply', {
+                inlineSize,
+                blockSize,
+                vertical,
+            })
+
             if (Number.isFinite(inlineSize) && Number.isFinite(blockSize)) {
                 if (vertical) {
                     container.style.setProperty('width', formatPx(blockSize), 'important')
@@ -687,6 +714,7 @@ const bakeTrackingSectionSizes = async (doc, {
                     container.style.setProperty('width', formatPx(inlineSize), 'important')
                 }
             }
+
             bakedEntryMap.set('__container__', {
                 id: '__container__',
                 inlineSize,
@@ -1260,6 +1288,8 @@ class View {
     #directionReady = new Promise(r => (this.#directionReadyResolve = r));
     #column = true
     #size
+    #lastElementStyleHeight = null
+    #elementStyleObserver = null
     layout = {}
     constructor({
         container,
@@ -1285,6 +1315,29 @@ class View {
             justifyContent: 'center',
             alignItems: 'center',
         })
+        // Watch for unexpected inline height mutations on the view wrapper, which can cause page spikes.
+        this.#lastElementStyleHeight = this.#element.style.height || null
+        this.#elementStyleObserver = new MutationObserver(mutations => {
+            for (const m of mutations) {
+                if (m.attributeName !== 'style') continue
+                const current = this.#element.style.height || null
+                if (current === this.#lastElementStyleHeight) continue
+                const prevNumeric = parseFloat(this.#lastElementStyleHeight ?? 'NaN')
+                const currentNumeric = parseFloat(current ?? 'NaN')
+                const isSpike = Number.isFinite(currentNumeric) && currentNumeric > 4000
+                if (isSpike || current !== this.#lastElementStyleHeight) {
+                    logEBookPageNumLimited('element-style-height', {
+                        previous: this.#lastElementStyleHeight,
+                        next: current,
+                        isSpike,
+                    })
+                }
+                this.#lastElementStyleHeight = current
+            }
+        })
+        try {
+            this.#elementStyleObserver.observe(this.#element, { attributes: true, attributeFilter: ['style'] })
+        } catch (_) {}
         Object.assign(this.#iframe.style, {
             overflow: 'hidden',
             border: '0',
@@ -1607,6 +1660,16 @@ class View {
             pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
             inExpand: this.#inExpand || false,
         })
+        logEBookPageNumLimited('expand:entry', {
+            column: this.#column,
+            vertical: this.#vertical,
+            size: this.#size,
+            cacheWarmer: this.#isCacheWarmer,
+            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+            trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
+            pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
+            inExpand: this.#inExpand || false,
+        })
         this.#inExpand = true
         try {
             await this.onBeforeExpand()
@@ -1647,6 +1710,16 @@ class View {
                             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
                         })
+                        logEBookPageNumLimited('expand:metrics', {
+                            mode: 'column',
+                            side,
+                            size: this.#size,
+                            contentSize,
+                            pageCount,
+                            expandedSize: pageCount * this.#size,
+                            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+                        })
                         const expandedSize = pageCount * this.#size
 
                         this.#element.style.padding = '0'
@@ -1681,6 +1754,16 @@ class View {
                             side,
                             size: this.#size,
                             contentSize,
+                            suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                            ready: this.container?.trackingSizeBakeReadyPublic ?? null,
+                        })
+                        logEBookPageNumLimited('expand:metrics', {
+                            mode: 'scrolled',
+                            side,
+                            size: this.#size,
+                            contentSize,
+                            pageCount: null,
+                            expandedSize,
                             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
                         })
@@ -1728,6 +1811,16 @@ class View {
                         side,
                         expandedSize: this.#iframe?.style?.[side] || null,
                     })
+                    logEBookPageNumLimited('expand:set-styles', {
+                        column: this.#column,
+                        vertical: this.#vertical,
+                        side,
+                        iframe: this.#iframe?.style?.[side] || null,
+                        element: this.#element?.style?.[side] || null,
+                        otherSide,
+                        iframeOther: this.#iframe?.style?.[otherSide] || null,
+                        elementOther: this.#element?.style?.[otherSide] || null,
+                    })
                 await this.onExpand()
                 logEBookPerf('expand-complete', {
                     column: this.#column,
@@ -1739,6 +1832,14 @@ class View {
                     trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
                     pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
                     inExpand: this.#inExpand || false,
+                })
+                logEBookPageNumLimited('expand:complete', {
+                    column: this.#column,
+                    vertical: this.#vertical,
+                    size: this.#size,
+                    suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                    trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
+                    pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
                 })
                     //                console.log("expand... call'd onexpand")
                 } finally {
@@ -1769,6 +1870,56 @@ export class Paginator extends HTMLElement {
         'flow', 'gap', 'marginTop', 'marginBottom',
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
+    #logChevronDispatch(event, payload = {}) {
+        const base = {
+            event,
+            timestamp: Date.now(),
+            rtl: this.#rtl ?? null,
+            vertical: this.#vertical ?? null,
+            scrolled: this.scrolled ?? null,
+            ...payload,
+        };
+        const cleaned = Object.fromEntries(Object.entries(base).filter(([, v]) => v !== undefined));
+        const line = `# EBOOKCHEVRON_EMIT ${JSON.stringify(cleaned)}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional native logger
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
+            // optional console
+        }
+    }
+    #emitChevronOpacity(detail, source) {
+        const shouldLog = (
+            detail?.leftOpacity === '' ||
+            detail?.rightOpacity === '' ||
+            Number(detail?.leftOpacity) >= 1 ||
+            Number(detail?.rightOpacity) >= 1 ||
+            (typeof source === 'string' && source.includes('reset'))
+        );
+        if (shouldLog) {
+            this.#logChevronDispatch('sideNavChevronOpacity:emit', {
+                source: source ?? null,
+                leftOpacity: detail?.leftOpacity ?? null,
+                rightOpacity: detail?.rightOpacity ?? null,
+                bookDir: this.bookDir ?? null,
+                rtl: this.#rtl,
+                touchTriggeredNav: this.#touchTriggeredNav,
+                touchHasShownChevron: this.#touchHasShownChevron,
+                maxLeft: this.#maxChevronLeft,
+                maxRight: this.#maxChevronRight,
+                pendingResetSource: this.#pendingChevronResetSource ?? null,
+            });
+        }
+        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+            bubbles: true,
+            composed: true,
+            detail,
+        }));
+    }
     #root = this.attachShadow({
         mode: 'closed'
     })
@@ -2833,6 +2984,10 @@ export class Paginator extends HTMLElement {
             sentinelCount: sentinelElements.length,
             trackingSections: this.#cachedTrackingSections?.length ?? null,
             allowRetry,
+            containerClientWidth: this.#container?.clientWidth ?? null,
+            containerClientHeight: this.#container?.clientHeight ?? null,
+            containerScrollWidth: this.#container?.scrollWidth ?? null,
+            containerScrollHeight: this.#container?.scrollHeight ?? null,
         })
 
         const applyVisibility = reason => {
@@ -2997,7 +3152,7 @@ export class Paginator extends HTMLElement {
     }) {
         this.#vertical = vertical
         this.#verticalRTL = verticalRTL
-        this.#rtl = rtl
+        this.#rtl = typeof rtl === 'boolean' ? rtl : (this.bookDir === 'rtl')
         this.#top.classList.toggle('vertical', vertical)
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
 
@@ -3210,6 +3365,11 @@ export class Paginator extends HTMLElement {
                         width: this.#container.clientWidth,
                         height: this.#container.clientHeight,
                     }
+                    const rect = this.#container.getBoundingClientRect?.()
+                    const styleHeight = this.#container?.style?.height ?? null
+                    const overflow = typeof getComputedStyle === 'function'
+                        ? getComputedStyle(this.#container).overflow
+                        : null
                     logEBookPageNumLimited('sizes', {
                         sectionIndex: this.#index ?? null,
                         width: this.#cachedSizes.width,
@@ -3219,6 +3379,14 @@ export class Paginator extends HTMLElement {
                         scrolled: this.scrolled,
                         vertical: this.#vertical,
                         rtl: this.#rtl,
+                        rect: rect ? {
+                            width: Math.round(rect.width),
+                            height: Math.round(rect.height),
+                            top: Math.round(rect.top),
+                            left: Math.round(rect.left),
+                        } : null,
+                        styleHeight,
+                        overflow,
                     })
                     resolve(this.#cachedSizes)
                 })
@@ -3243,6 +3411,30 @@ export class Paginator extends HTMLElement {
             vertical: this.#vertical,
             rtl: this.#rtl,
         })
+        // Detect collapses or missing layout that can cascade into bogus page counts.
+        const container = this.#container
+        const containerClientW = container?.clientWidth ?? null
+        const containerClientH = container?.clientHeight ?? null
+        if (!Number.isFinite(s) || s === 0 || containerClientW === 0 || containerClientH === 0) {
+            const rect = container?.getBoundingClientRect?.()
+            logEBookPageNumLimited('size:anomaly', {
+                sectionIndex: this.#index ?? null,
+                size: s,
+                clientWidth: containerClientW,
+                clientHeight: containerClientH,
+                scrollWidth: container?.scrollWidth ?? null,
+                scrollHeight: container?.scrollHeight ?? null,
+                scrolled: this.scrolled,
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+                rect: rect ? {
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                    top: Math.round(rect.top),
+                    left: Math.round(rect.left),
+                } : null,
+            })
+        }
         return s
     }
     async viewSize() {
@@ -3283,6 +3475,7 @@ export class Paginator extends HTMLElement {
                     const scrollWidth = element.scrollWidth
                     const scrollHeight = element.scrollHeight
                     const val = view.cachedViewSize[side]
+
                     logEBookPageNumLimited('viewSize', {
                         sectionIndex: this.#index ?? null,
                         side,
@@ -3311,6 +3504,52 @@ export class Paginator extends HTMLElement {
                         parentStyleHeight,
                         parentOverflow,
                     })
+                    // Extra drill-down for vertical sections: log container chain metrics once per call.
+                    if (this.#index === 1 || this.#vertical) {
+                        const c = this.#container
+                        const p = c?.parentElement
+                        logEBookPageNumLimited('viewSize:container-metrics', {
+                            sectionIndex: this.#index ?? null,
+                            containerClientWidth: c?.clientWidth ?? null,
+                            containerClientHeight: c?.clientHeight ?? null,
+                            containerScrollWidth: c?.scrollWidth ?? null,
+                            containerScrollHeight: c?.scrollHeight ?? null,
+                            parentClientWidth: p?.clientWidth ?? null,
+                            parentClientHeight: p?.clientHeight ?? null,
+                            parentScrollWidth: p?.scrollWidth ?? null,
+                            parentScrollHeight: p?.scrollHeight ?? null,
+                        })
+                    }
+
+                    // Extra spike diagnostics: only log when a single call returns an unusually large value.
+                    const SPIKE_THRESHOLD = 4000
+                    if (Number.isFinite(val) && val > SPIKE_THRESHOLD) {
+                        const containerRect = this.#container?.getBoundingClientRect?.()
+                        let containerOverflow = null
+                        try {
+                            containerOverflow = this.#container ? getComputedStyle(this.#container).overflow : null
+                        } catch (_) {}
+
+                        logEBookPageNumLimited('viewSize:spike', {
+                            sectionIndex: this.#index ?? null,
+                            side,
+                            val,
+                            containerClientWidth: this.#container?.clientWidth ?? null,
+                            containerClientHeight: this.#container?.clientHeight ?? null,
+                            containerScrollWidth: this.#container?.scrollWidth ?? null,
+                            containerScrollHeight: this.#container?.scrollHeight ?? null,
+                            containerRect: containerRect ? {
+                                width: Math.round(containerRect.width),
+                                height: Math.round(containerRect.height),
+                                top: Math.round(containerRect.top),
+                                left: Math.round(containerRect.left),
+                            } : null,
+                            containerOverflow,
+                            elemStyleHeight,
+                            elemStyleDisplay,
+                            parentOverflow,
+                        })
+                    }
                     resolve(val)
                 })
             })
@@ -3378,6 +3617,27 @@ export class Paginator extends HTMLElement {
             vertical: this.#vertical,
             rtl: this.#rtl,
         })
+        // If we ever report a single page while text pages likely exceed 1, log extra context.
+        if (pages === 1 && this.#index !== null) {
+            logEBookPageNumLimited('pages:single-page', {
+                sectionIndex: this.#index,
+                viewSize,
+                size,
+                scrolled: this.scrolled,
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+                containerClientWidth: this.#container?.clientWidth ?? null,
+                containerClientHeight: this.#container?.clientHeight ?? null,
+                containerScrollHeight: this.#container?.scrollHeight ?? null,
+                containerScrollWidth: this.#container?.scrollWidth ?? null,
+                viewCachedWidth: this.#view?.cachedViewSize?.width ?? null,
+                viewCachedHeight: this.#view?.cachedViewSize?.height ?? null,
+                cachedSizes: this.#cachedSizes ? { ...this.#cachedSizes } : null,
+                viewClientHeight: this.#view?.element?.clientHeight ?? null,
+                viewScrollHeight: this.#view?.element?.scrollHeight ?? null,
+                scrollHeightEqualsClientHeight: this.#view?.element ? this.#view.element.scrollHeight === this.#view.element.clientHeight : null,
+            })
+        }
         return pages
     }
     async scrollBy(dx, dy) {
@@ -3430,6 +3690,11 @@ export class Paginator extends HTMLElement {
             this.#touchState = null;
             return;
         }
+        this.#touchHasShownChevron = false;
+        this.#touchTriggeredNav = false;
+        this.#maxChevronLeft = 0;
+        this.#maxChevronRight = 0;
+        this.#cancelPendingChevronReset('touchStart');
         this.#touchState = {
             startX: touch?.screenX,
             startY: touch?.screenY,
@@ -3486,34 +3751,66 @@ export class Paginator extends HTMLElement {
         const dy = state.y - state.startY;
         const minSwipe = 36; // px threshold
 
-        this.#updateSwipeChevron(dx, minSwipe);
-
         if (!state.triggered && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > minSwipe) {
             state.triggered = true;
 
             if (dx < 0) {
+                this.#lastSwipeNavAt = Date.now();
+                this.#lastSwipeNavDirection = this.bookDir === 'rtl' ? 'backward' : 'forward';
+                this.#touchTriggeredNav = true;
+                this.#logChevronDispatch('swipeNav:trigger', {
+                    dx,
+                    dy,
+                    direction: this.#lastSwipeNavDirection,
+                    bookDir: this.bookDir ?? null,
+                    rtl: this.#rtl,
+                });
                 (this.bookDir === 'rtl') ? await this.prev() : await this.next();
             } else {
-                (this.bookDir === 'rtl') ? await this.next() : await this.prev();
-            }
-            this.#updateSwipeChevron(dx, minSwipe)
+                this.#lastSwipeNavAt = Date.now();
+                this.#lastSwipeNavDirection = this.bookDir === 'rtl' ? 'forward' : 'backward';
+                this.#touchTriggeredNav = true;
+            this.#logChevronDispatch('swipeNav:trigger', {
+                dx,
+                dy,
+                direction: this.#lastSwipeNavDirection,
+                bookDir: this.bookDir ?? null,
+                rtl: this.#rtl,
+            });
+            (this.bookDir === 'rtl') ? await this.next() : await this.prev();
         }
+        this.#updateSwipeChevron(dx, minSwipe, 'swipe')
+        this.#scheduleSwipeChevronReset();
+    } else if (!state.triggered) {
+        this.#updateSwipeChevron(dx, minSwipe, 'swipe');
+    } else {
+        this.#updateSwipeChevron(dx, minSwipe, 'swipe');
+    }
     }
     #onTouchEnd(e) {
         this.#touchState = null;
         // If we just loaded a new section, skip the opacity reset
         if (this.#skipTouchEndOpacity) {
+            this.#logChevronDispatch('sideNavChevronOpacity:touchEnd:skipReset', { reason: 'skipTouchEndOpacity' });
             this.#skipTouchEndOpacity = false
+            this.#touchHasShownChevron = false;
             return
         }
-        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-            bubbles: true,
-            composed: true,
-            detail: {
-                leftOpacity: '',
-                rightOpacity: ''
-            }
-        }))
+        // If swipe never triggered navigation but showed the chevron, fade it out now.
+        if (!this.#touchTriggeredNav && this.#touchHasShownChevron) {
+            this.#cancelPendingChevronReset('touchEnd:cancel');
+            this.#pendingChevronResetTimer = setTimeout(() => {
+                this.#pendingChevronResetTimer = null;
+                this.#emitChevronOpacity({
+                    leftOpacity: '',
+                    rightOpacity: ''
+                }, 'touchEnd:cancel');
+            }, 120);
+        }
+        this.#touchHasShownChevron = false;
+        this.#touchTriggeredNav = false;
+        this.#maxChevronLeft = 0;
+        this.#maxChevronRight = 0;
     }
     // allows one to process rects as if they were LTR and horizontal
     async #getRectMapper() {
@@ -3561,6 +3858,43 @@ export class Paginator extends HTMLElement {
     }
     #wheelCooldown = false;
     #lastWheelDeltaX = 0;
+    #lastSwipeNavAt = null;
+    #lastSwipeNavDirection = null; // 'forward' | 'backward'
+    #touchHasShownChevron = false;
+    #touchTriggeredNav = false;
+    #maxChevronLeft = 0;
+    #maxChevronRight = 0;
+    #resetDelayMs = 320;
+    #cancelPendingChevronReset(reason) {
+        if (!this.#pendingChevronResetTimer) return;
+        clearTimeout(this.#pendingChevronResetTimer);
+        this.#pendingChevronResetTimer = null;
+        this.#pendingChevronResetSource = null;
+        this.#logChevronDispatch('sideNavChevronOpacity:resetCancelled', {
+            reason,
+            bookDir: this.bookDir ?? null,
+            rtl: this.#rtl,
+        });
+    }
+    #scheduleSwipeChevronReset(delayMs = this.#resetDelayMs) {
+        this.#cancelPendingChevronReset('reschedule');
+        this.#pendingChevronResetSource = 'swipe:reset:scheduled';
+        this.#pendingChevronResetTimer = setTimeout(() => {
+            this.#pendingChevronResetTimer = null;
+            this.#pendingChevronResetSource = null;
+            this.#emitChevronOpacity({
+                leftOpacity: '',
+                rightOpacity: ''
+            }, 'swipe:reset:scheduled');
+        }, delayMs);
+        this.#logChevronDispatch('sideNavChevronOpacity:scheduledReset', {
+            delayMs,
+            bookDir: this.bookDir ?? null,
+            rtl: this.#rtl,
+        });
+    }
+    #pendingChevronResetTimer = null;
+    #pendingChevronResetSource = null;
     async #onWheel(e) {
         if (this.scrolled) return;
         e.preventDefault();
@@ -3576,23 +3910,19 @@ export class Paginator extends HTMLElement {
             Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
             Math.abs(e.deltaX) < TRIGGER_THRESHOLD
         ) {
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: '',
-                    rightOpacity: ''
-                }
-            }));
+            this.#emitChevronOpacity({
+                leftOpacity: '',
+                rightOpacity: ''
+            }, 'wheel:momentumFalling');
             this.#lastWheelDeltaX = e.deltaX;
             return;
         }
 
         if (this.#wheelArmed) {
             if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
-                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD);
+                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:reveal', { allowReset: false });
             } else {
-                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD);
+                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD, 'wheel:resetReveal', { allowReset: false });
             }
         }
 
@@ -3604,7 +3934,7 @@ export class Paginator extends HTMLElement {
             } else {
                 await this.next();
             }
-            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD)
+            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:triggered', { allowReset: true })
             setTimeout(() => {
                 this.#wheelCooldown = false;
             }, 100);
@@ -3714,6 +4044,8 @@ export class Paginator extends HTMLElement {
             reason,
             sectionIndex: this.#index ?? null,
             anchorType: anchor?.nodeType ?? (typeof anchor),
+            containerHeight: this.#container?.clientHeight ?? null,
+            containerWidth: this.#container?.clientWidth ?? null,
         })
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
@@ -3728,6 +4060,7 @@ export class Paginator extends HTMLElement {
         }
         // if anchor is a fraction
         if (this.scrolled) {
+            const viewSize = await this.viewSize()
             await this.#scrollTo(anchor * (await this.viewSize()), reason)
             return
         }
@@ -3741,6 +4074,7 @@ export class Paginator extends HTMLElement {
             anchorFraction: anchor,
             textPages,
             targetPage: newPage + 1,
+            viewSize: await this.viewSize(),
         })
         await this.#scrollToPage(newPage + 1, reason)
     }
@@ -3975,41 +4309,59 @@ export class Paginator extends HTMLElement {
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (await this.isAtSectionStart()) {
             this.#skipTouchEndOpacity = true
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
-                    rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
-                }
-            }));
+            this.#emitChevronOpacity({
+                leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
+                rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
+            }, 'afterScroll:startOfSection');
         }
     }
 
-    #updateSwipeChevron(dx, minSwipe) {
+    #updateSwipeChevron(dx, minSwipe, source = 'swipe') {
         let leftOpacity = 0,
             rightOpacity = 0;
         if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
         else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
-        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-            bubbles: true,
-            composed: true,
-            detail: {
-                leftOpacity,
-                rightOpacity
-            }
-        }));
-        if (Math.abs(dx) > minSwipe) {
-            // Enqueue the reset after meeting threshold
-            this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                    leftOpacity: '',
-                    rightOpacity: ''
-                }
-            }))
+        if (leftOpacity > 0 || rightOpacity > 0) {
+            this.#touchHasShownChevron = true;
         }
+        // Ignore dimmer updates within the same gesture; only allow monotonic brightening
+        const dimmerThanMax = leftOpacity < this.#maxChevronLeft && rightOpacity <= this.#maxChevronRight;
+        if (dimmerThanMax) {
+            this.#logChevronDispatch('sideNavChevronOpacity:ignoredDimmerUpdate', {
+                source,
+                dx,
+                minSwipe,
+                leftOpacity,
+                rightOpacity,
+                maxLeft: this.#maxChevronLeft,
+                maxRight: this.#maxChevronRight,
+                bookDir: this.bookDir ?? null,
+                rtl: this.#rtl,
+            });
+            return;
+        }
+        if (this.#touchTriggeredNav) {
+            if (leftOpacity < 1 && rightOpacity < 1) {
+                this.#logChevronDispatch('sideNavChevronOpacity:ignoredPostNavUpdate', {
+                    source,
+                    dx,
+                    minSwipe,
+                    leftOpacity,
+                    rightOpacity,
+                    bookDir: this.bookDir ?? null,
+                    rtl: this.#rtl,
+                });
+                return;
+            }
+            leftOpacity = 1;
+            rightOpacity = rightOpacity === 0 ? 0 : 1;
+        }
+        this.#maxChevronLeft = Math.max(this.#maxChevronLeft, Number(leftOpacity) || 0);
+        this.#maxChevronRight = Math.max(this.#maxChevronRight, Number(rightOpacity) || 0);
+        this.#emitChevronOpacity({
+            leftOpacity,
+            rightOpacity
+        }, source);
     }
     async #display(promise) {
         //            console.log("#display...")

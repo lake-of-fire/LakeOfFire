@@ -793,18 +793,27 @@ export class NavigationHUD {
         if (!Number.isFinite(current)) return null;
         // Foliate paginator inserts two sentinel “pages” (lead/trail). Adjust so UI shows text pages only.
         const isPaginated = renderer && renderer.scrolled === false;
+        const snapshotBeforeAdjust = {
+            rawPage,
+            rawTotal,
+            numericPage,
+            numericTotal,
+            totalBase: total,
+            currentBase,
+            clampedCurrent: current,
+            scrolled: renderer?.scrolled ?? null,
+            rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+        };
         if (isPaginated && total && total > 2) {
             const textTotal = Math.max(1, total - 2);
             const textCurrent = Math.max(1, Math.min(textTotal, current - 1));
-            logEBookPageNumLimited('nav:normalize', {
-                rawPage,
-                rawTotal,
-                currentBase,
-                total,
+            logEBookPageNumLimited('nav:normalize:calc', {
+                ...snapshotBeforeAdjust,
+                mode: 'text-only',
                 textCurrent,
                 textTotal,
-                scrolled: renderer?.scrolled ?? null,
-                rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+                returnedCurrent: textCurrent,
+                returnedTotal: textTotal,
             });
             return {
                 current: textCurrent,
@@ -813,14 +822,11 @@ export class NavigationHUD {
                 rawTotal: total,
             };
         }
-        logEBookPageNumLimited('nav:normalize', {
-            rawPage,
-            rawTotal,
-            currentBase,
-            total,
-            current,
-            scrolled: renderer?.scrolled ?? null,
-            rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+        logEBookPageNumLimited('nav:normalize:calc', {
+            ...snapshotBeforeAdjust,
+            mode: 'raw',
+            returnedCurrent: current,
+            returnedTotal: total,
         });
         return {
             current,
@@ -852,6 +858,19 @@ export class NavigationHUD {
             if (!normalized) return null;
             this.rendererPageSnapshot = normalized;
             this.#updateFallbackTotalPages(normalized.total);
+            logEBookPageNumLimited('nav:renderer-snapshot:inputs', {
+                rawPage: pageResult.value,
+                rawTotal: pagesResult.value,
+                normalizedCurrent: normalized.current,
+                normalizedTotal: normalized.total,
+                rawCurrent: normalized.rawCurrent,
+                rawTotal: normalized.rawTotal,
+                isPaginated: renderer?.scrolled === false,
+                scrolled: renderer?.scrolled ?? null,
+                rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
+                currentBase: normalized.rawCurrent,
+                totalBase: normalized.rawTotal,
+            });
             this.#logPageNumberDiagnostic('renderer-snapshot', {
                 rendererCurrent: normalized.current,
                 rendererTotal: normalized.total,
