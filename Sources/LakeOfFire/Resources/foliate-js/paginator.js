@@ -474,11 +474,19 @@ const inlineBlockSizesForWritingMode = (rect, vertical) => {
     }
 }
 
-const measureSectionSizes = (el, vertical) => {
+const measureSectionSizes = (el, vertical, preMeasuredRects) => {
     logEBookPerf('RECT.before-measure', {
         id: el?.id || null,
         baked: el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR) || false,
     })
+    const id = el?.id
+    const preRects = preMeasuredRects?.get(id)
+    // If we already baked or captured this element in the batch map, avoid any fresh DOM reads.
+    if (preMeasuredRects && (el?.hasAttribute?.(MANABI_TRACKING_SIZE_BAKED_ATTR) || preRects)) {
+        if (!preRects || preRects.length === 0) return null
+        return summarizeRects(preRects, vertical)
+    }
+
     const rects = Array.from(el.getClientRects?.() ?? []).filter(r => r && (r.width || r.height))
     if (rects.length === 0) return null
 
@@ -489,6 +497,10 @@ const measureSectionSizes = (el, vertical) => {
         gap = parseFloat(cs?.columnGap) || 0
     } catch {}
 
+    return summarizeRects(rects, vertical, gap)
+}
+
+const summarizeRects = (rects, vertical, gap = 0) => {
     // Axis-aware aggregation:
     // Horizontal writing: inline = max column width; block = sum of column heights + gaps.
     // Vertical writing:   inline = max column height; block = sum of column widths + gaps.
@@ -497,7 +509,6 @@ const measureSectionSizes = (el, vertical) => {
     const inlineSize = Math.max(...inlineLengths)
     const blockSize = blockLengths.reduce((acc, v) => acc + v, 0) + gap * Math.max(0, rects.length - 1)
 
-    // Minimal diagnostics
     return {
         inlineSize,
         blockSize,
@@ -681,19 +692,15 @@ const bakeTrackingSectionSizes = async (doc, {
         missing: Math.max(0, sections.length - appliedFromCache),
     })
 
-    if (appliedFromCache !== sections.length) {
-        const missingIds = sections
-            .filter(el => !bakedEntryMap.has(el.id))
-            .map(el => el.id || '')
-    }
+    let preMeasuredRects = null
 
     const hasContainerCache = bakedEntryMap.has('__container__')
-        if (appliedFromCache === sections.length) {
-            applyAbsoluteLayout()
-            seedInitialVisibility()
-            // tracking visibility logs removed for noise reduction
-            const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
-            try { doc.manabiTrackingSectionIOApply?.(doc.manabiTrackingSectionIO?.takeRecords?.() ?? []) } catch {}
+    if (appliedFromCache === sections.length) {
+        applyAbsoluteLayout()
+        seedInitialVisibility()
+        // tracking visibility logs removed for noise reduction
+        const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
+        try { doc.manabiTrackingSectionIOApply?.(doc.manabiTrackingSectionIO?.takeRecords?.() ?? []) } catch {}
         return
     }
 
@@ -735,7 +742,7 @@ const bakeTrackingSectionSizes = async (doc, {
 
         try {
             await waitForStableSectionSize(el)
-            const sizes = measureSectionSizes(el, vertical)
+            const sizes = measureSectionSizes(el, vertical, preMeasuredRects)
             if (!sizes) return null
             const { inlineSize, blockSize, multiColumn } = sizes
             if (!Number.isFinite(blockSize) || blockSize <= 0) return null
@@ -797,6 +804,25 @@ const bakeTrackingSectionSizes = async (doc, {
                 batchSize,
             })
         }
+    }
+
+    // Pre-collect rects in a single layout pass to avoid repeated reflows per section.
+    try {
+        // one forced layout upfront
+        doc?.body?.getBoundingClientRect?.()
+        const map = new Map()
+        for (const el of sections) {
+            const id = el?.id
+            if (!id) continue
+            const rects = Array.from(el.getClientRects?.() ?? []).filter(r => r && (r.width || r.height))
+            if (rects.length > 0) {
+                map.set(id, rects)
+            }
+        }
+        preMeasuredRects = map
+        logEBookPerf('RECT.batch-collected', { count: preMeasuredRects.size })
+    } catch (error) {
+        // fall back silently
     }
 
     // Batching previously used windowed slices; keep the code here for easy re-enable if needed.
