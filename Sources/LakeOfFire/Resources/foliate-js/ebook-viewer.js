@@ -10,16 +10,8 @@ const DEFAULT_RUBY_FONT_STACK = `'Hiragino Kaku Gothic ProN', 'Hiragino Sans', s
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {};
 
-const logEBookPerf = (event, detail = {}) => {
-const ts = (typeof performance !== 'undefined' && typeof performance.now === 'function')
-? performance.now()
-: Date.now();
-const payload = { event, ts, ...detail };
-const line = `# EBOOKPERF ${event} ${JSON.stringify(payload)}`;
-try { window.webkit?.messageHandlers?.print?.postMessage?.(line); } catch (_err) {}
-try { console.debug?.(line); } catch (_err) {}
-return payload;
-};
+// Perf logger (disabled)
+const logEBookPerf = (event, detail = {}) => ({ event, ...detail });
 
 // Shared font blob support: the native viewer injects base64 CSS into the shell once.
 const getSharedFontCSSText = () => {
@@ -220,7 +212,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const perfStart = (typeof performance !== 'undefined' && typeof performance.now === 'function')
         ? performance.now()
         : Date.now();
-    console.log('# EBOOKPROCESS replaceText start', { href, isCacheWarmer, mediaType, bodyLength: text?.length ?? 0 })
+    // console.log('# EBOOKPROCESS replaceText start', { href, isCacheWarmer, mediaType, bodyLength: text?.length ?? 0 })
     logEBookPerf('replace-text-request', {
         href,
         isCacheWarmer,
@@ -241,7 +233,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
     ? performance.now() - perfStart
     : null
-    console.log('# EBOOKPROCESS replaceText response', { href, isCacheWarmer, status: response.status, durationMs })
+    // console.log('# EBOOKPROCESS replaceText response', { href, isCacheWarmer, status: response.status, durationMs })
     logEBookPerf('replace-text-response', {
     href,
     isCacheWarmer,
@@ -257,7 +249,7 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     const durationMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
     ? performance.now() - perfStart
     : null
-    console.log('# EBOOKPROCESS replaceText error', { href, isCacheWarmer, durationMs, message: error?.message || String(error) })
+    // console.log('# EBOOKPROCESS replaceText error', { href, isCacheWarmer, durationMs, message: error?.message || String(error) })
     logEBookPerf('replace-text-error', {
     href,
     isCacheWarmer,
@@ -1306,11 +1298,11 @@ class Reader {
         const stack = hostVar && hostVar.length > 0 ? hostVar : DEFAULT_RUBY_FONT_STACK;
         doc.documentElement?.style?.setProperty('--manabi-ruby-font', stack);
         } catch (error) {
-        window.webkit?.messageHandlers?.print?.postMessage?.({
-        message: 'RUBY_FONT_OVERRIDE_ERROR',
-        error: String(error),
-        pageURL: doc.location?.href ?? null
-        });
+        // window.webkit?.messageHandlers?.print?.postMessage?.({
+        // message: 'RUBY_FONT_OVERRIDE_ERROR',
+        // error: String(error),
+        // pageURL: doc.location?.href ?? null
+        // });
         }
     }
 
@@ -1464,15 +1456,9 @@ class Reader {
     async #goToDescriptor(descriptor) {
         if (!descriptor) return;
         const fraction = typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
-        const line = fraction != null
-        ? `# JUMPBACK goToDescriptor ${JSON.stringify({ fraction })}`
-        : `# JUMPBACK goToDescriptor ${JSON.stringify({ hasCFI: !!descriptor.cfi })}`;
-        try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-        // optional logger
-        }
-        try { console.log(line); } catch (_error) {}
+        // const line = fraction != null
+        // ? `# JUMPBACK goToDescriptor ${JSON.stringify({ fraction })}`
+        // : `# JUMPBACK goToDescriptor ${JSON.stringify({ hasCFI: !!descriptor.cfi })}`;
         if (descriptor.cfi) {
             await this.view.goTo(descriptor.cfi);
             return;
@@ -1485,11 +1471,7 @@ class Reader {
     async #onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
-        try {
-        const line = `# EBOOK nav:click ${JSON.stringify({ type })}`;
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        console.log(line);
-        } catch (_) {}
+        // const line = `# EBOOK nav:click ${JSON.stringify({ type })}`;
         // For spinner placement
         const icon = btn.querySelector('svg');
         const label = btn.querySelector('.button-label');
@@ -1556,7 +1538,7 @@ class Reader {
         }
         Promise.resolve(nav).catch(err => {
             const line = `# EBOOK nav:error ${JSON.stringify({ type, message: err?.message ?? String(err) })}`;
-            try { window.webkit?.messageHandlers?.print?.postMessage?.(line); console.log(line); } catch (_) {}
+            // try { window.webkit?.messageHandlers?.print?.postMessage?.(line); console.log(line); } catch (_) {}
         }).finally(() => {
             // Keep spinner for 'finish' or 'restart' – Swift layer will handle refresh
             if (type === 'finish' || type === 'restart') return;

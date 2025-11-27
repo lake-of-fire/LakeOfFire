@@ -110,17 +110,8 @@ const logEBook = () => {}
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {}
 
-// Perf logger for targeted instrumentation
-const logEBookPerf = (event, detail = {}) => {
-    const ts = (typeof performance !== 'undefined' && typeof performance.now === 'function')
-        ? performance.now()
-        : Date.now()
-    const payload = { event, ts, ...detail }
-    const line = `# EBOOKPERF ${event} ${JSON.stringify(payload)}`
-    try { window.webkit?.messageHandlers?.print?.postMessage?.(line) } catch {}
-    try { console.debug?.(line) } catch {}
-    return payload
-}
+// Perf logger for targeted instrumentation (disabled)
+const logEBookPerf = (event, detail = {}) => ({ event, ...detail })
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -3859,7 +3850,7 @@ export class Paginator extends HTMLElement {
         let pageCount = null
         try {
             [pageNumber, pageCount] = await Promise.all([this.page(), this.pages()]);
-            window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKPAGE display ${JSON.stringify({ index, pageNumber, pageCount, reason })}`);
+            // window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKPAGE display ${JSON.stringify({ index, pageNumber, pageCount, reason })}`);
         } catch (_error) {
             // best-effort; do not fail display on logging issues
         }
