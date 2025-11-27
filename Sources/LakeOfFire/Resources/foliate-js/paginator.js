@@ -91,6 +91,7 @@ const MANABI_TRACKING_FORCE_VISIBLE_CLASS = 'manabi-tracking-force-visible'
 const MANABI_TRACKING_SECTION_BAKING_CLASS = 'manabi-tracking-section-baking'
 const MANABI_TRACKING_SECTION_HIDDEN_CLASS = 'manabi-tracking-section-hidden'
 const MANABI_TRACKING_SECTION_BAKED_CLASS = 'manabi-tracking-section-baked'
+const MANABI_TRACKING_SECTION_BAKE_SKIPPED_CLASS = 'manabi-tracking-section-bake-skipped'
 const MANABI_TRACKING_SIZE_BAKE_STYLE_ID = 'manabi-tracking-size-bake-style'
 const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
 const MANABI_TRACKING_SIZE_STABLE_REQUIRED_STREAK = 2
@@ -132,9 +133,6 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     logEBookPageNumCounter += 1
     logEBookPageNum(event, { count: logEBookPageNumCounter, ...detail })
 }
-
-const logEBookWritingMode = (event, detail = {}) =>
-    logEBookPageNumLimited(`WRITINGMODE ${event}`, detail)
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -252,7 +250,8 @@ const ensureTrackingSizeBakeStyles = doc => {
     style.textContent = `body.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS} { visibility: hidden !important; }
 .${MANABI_TRACKING_SECTION_CLASS} { contain: paint style !important; }
 .${MANABI_TRACKING_SECTION_HIDDEN_CLASS} { display: none !important; }
-${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKED_CLASS} { contain: layout style !important; }
+${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKED_CLASS},
+${MANABI_TRACKING_SECTION_SELECTOR}.${MANABI_TRACKING_SECTION_BAKE_SKIPPED_CLASS} { contain: layout style !important; }
 body:not(.${MANABI_TRACKING_SIZE_BAKING_BODY_CLASS}):not(.${MANABI_TRACKING_FORCE_VISIBLE_CLASS}) ${MANABI_TRACKING_SECTION_SELECTOR}:not(.${MANABI_TRACKING_SECTION_VISIBLE_CLASS}) { display: none !important; }
 body.${MANABI_TRACKING_FORCE_VISIBLE_CLASS} ${MANABI_TRACKING_SECTION_SELECTOR} { display: block !important; visibility: visible !important; }`
     doc.head.append(style)
@@ -654,6 +653,7 @@ const bakeTrackingSectionSizes = async (doc, {
     for (const el of sections) {
         el.removeAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR)
         el.classList.remove(MANABI_TRACKING_SECTION_BAKED_CLASS)
+        el.classList.remove(MANABI_TRACKING_SECTION_BAKE_SKIPPED_CLASS)
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.remove(MANABI_TRACKING_SECTION_BAKING_CLASS)
         el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
         el.style.removeProperty('block-size')
@@ -795,25 +795,8 @@ const bakeTrackingSectionSizes = async (doc, {
         }
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED) el.classList.add(MANABI_TRACKING_SECTION_BAKING_CLASS)
 
-        logEBookWritingMode('SECTION-BAKE-ENTER', {
-            id: el.id || null,
-            vertical,
-        })
-
         const yokoDescendant = el.querySelector?.('.yoko')
-        if (yokoDescendant) {
-            logEBookWritingMode('YOKO-FOUND', {
-                id: el.id || null,
-                yokoId: yokoDescendant.id || null,
-            })
-        }
-
         const skipForWritingMode = yokoDescendant ? true : hasWritingModeOverride(el, vertical)
-        logEBookWritingMode('SECTION-BAKE-MISMATCH-RESULT', {
-            id: el.id || null,
-            skip: skipForWritingMode,
-            hasYoko: !!yokoDescendant,
-        })
         if (skipForWritingMode) {
             // Leave natural layout untouched; mark as baked for flow accounting but don't freeze sizes or cache.
             const logical = measureElementLogicalSize(el, vertical)
@@ -821,6 +804,7 @@ const bakeTrackingSectionSizes = async (doc, {
             const blockSize = Number(logical?.blockSize) || 0
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'skip-writing-mode')
             el.classList.remove(MANABI_TRACKING_SECTION_HIDDEN_CLASS)
+            el.classList.add(MANABI_TRACKING_SECTION_BAKE_SKIPPED_CLASS)
             bakedEntryMap.set(el.id || '', {
                 id: el.id || '',
                 inlineSize,
@@ -832,12 +816,6 @@ const bakeTrackingSectionSizes = async (doc, {
                 id: el.id || null,
                 inlineSize,
                 blockSize,
-            })
-            logEBookPageNumLimited('EBOOK WRITINGMODE SECTION SKIP', {
-                id: el.id || null,
-                reason: 'writing-mode mismatch',
-                hasYokoDescendant: !!yokoDescendant,
-                skipViaYokoShortCircuit: !!yokoDescendant,
             })
             return { inlineSize, blockSize, multiColumn: false }
         }
@@ -1104,10 +1082,7 @@ const {
 
 const hasWritingModeOverride = (section, vertical, { maxNodes = Infinity } = {}) => {
     if (!(section instanceof Element)) return false
-    logEBookWritingMode('FUNC-ENTER', {
-        sectionId: section.id || null,
-        vertical,
-    })
+
     let rootMode = 'horizontal-tb'
     try {
         const cs = section.ownerDocument?.defaultView?.getComputedStyle?.(section)
@@ -1118,30 +1093,12 @@ const hasWritingModeOverride = (section, vertical, { maxNodes = Infinity } = {})
             cs?.getPropertyValue?.('-webkit-writing-mode') ||
             ''
         if (mode) rootMode = mode
-        logEBookWritingMode('ROOT', {
-            id: section.id || null,
-            mode: rootMode,
-            vertical,
-        })
-    } catch (error) {
-        logEBookWritingMode('ROOT ERROR', {
-            id: section.id || null,
-            message: error?.message || String(error),
-        })
-    }
+    } catch {}
     const rootVertical = rootMode ? rootMode.startsWith('vertical') : vertical
 
-    // Targeted probe: directly inspect first yoko descendant (common mixed-mode culprit).
     const yokoProbe = section.querySelector?.('.yoko')
-    logEBookWritingMode('PROBE-SEARCH', {
-        sectionId: section.id || null,
-        hasYoko: !!yokoProbe,
-        vertical,
-    })
     if (yokoProbe) {
         let yokoMode = ''
-        let yokoInlineStyle = ''
-        let yokoAttrStyle = ''
         try {
             const cs = yokoProbe.ownerDocument?.defaultView?.getComputedStyle?.(yokoProbe)
             yokoMode =
@@ -1150,145 +1107,43 @@ const hasWritingModeOverride = (section, vertical, { maxNodes = Infinity } = {})
                 cs?.getPropertyValue?.('writing-mode') ||
                 cs?.getPropertyValue?.('-webkit-writing-mode') ||
                 ''
-        } catch (error) {
-            logEBookWritingMode('YOKO-PROBE-ERROR', {
-                id: yokoProbe.id || null,
-                message: error?.message || String(error),
-            })
-        }
-        try { yokoInlineStyle = yokoProbe.style?.getPropertyValue?.('writing-mode') || yokoProbe.style?.writingMode || '' } catch {}
-        try { yokoAttrStyle = yokoProbe.getAttribute?.('style') || '' } catch {}
-
+        } catch {}
         const yokoIsVertical = yokoMode ? yokoMode.startsWith('vertical') : false
         const yokoOrientationMismatch = yokoIsVertical !== vertical
         const yokoStringMismatch = rootMode && yokoMode && yokoMode !== rootMode
-
-        logEBookWritingMode('YOKO-PROBE', {
-            id: yokoProbe.id || null,
-            tag: yokoProbe.tagName || null,
-            mode: yokoMode || null,
-            inlineStyle: yokoInlineStyle || null,
-            attrStyle: yokoAttrStyle || null,
-            rootMode,
-            sectionVertical: vertical,
-            yokoIsVertical,
-            yokoOrientationMismatch,
-            yokoStringMismatch,
-            ancestorCount: (function countAncestors(node) {
-                let c = 0; let cur = node?.parentElement
-                while (cur && c < 50) { c++; cur = cur.parentElement }
-                return c
-            })(yokoProbe),
-            siblings: yokoProbe.parentElement ? yokoProbe.parentElement.children.length : null,
-        })
-
         if (yokoStringMismatch || yokoOrientationMismatch || yokoIsVertical !== rootVertical) {
-            logEBookWritingMode('YOKO-MISMATCH', {
-                id: yokoProbe.id || null,
-                mode: yokoMode || null,
-                rootMode,
-                sectionVertical: vertical,
-                yokoIsVertical,
-            })
             return true
         }
     }
 
     const nodes = section.querySelectorAll('*')
-    logEBookWritingMode('NODECOUNT', {
-        sectionId: section.id || null,
-        count: nodes.length,
-        hasYoko: !!yokoProbe,
-        rootMode,
-        rootVertical,
-    })
     let visited = 0
     for (const el of nodes) {
         if (!(el instanceof Element)) continue
         visited++
         if (visited > maxNodes) break
         let mode = ''
-        let rawMode = ''
         try {
             const cs = el.ownerDocument?.defaultView?.getComputedStyle?.(el)
-            rawMode =
+            mode =
                 cs?.writingMode ||
                 cs?.webkitWritingMode ||
                 cs?.getPropertyValue?.('writing-mode') ||
                 cs?.getPropertyValue?.('-webkit-writing-mode') ||
                 ''
-            mode = rawMode
-        } catch (error) {
-            logEBookWritingMode('CHILD ERROR', {
-                id: el.id || null,
-                message: error?.message || String(error),
-            })
-        }
+        } catch {}
 
-        const isYoko = el.classList?.contains?.('yoko') || false
-        if (isYoko) {
-            logEBookWritingMode('YOKO-RAW', {
-                id: el.id || null,
-                rawMode: rawMode || null,
-                rootMode,
-                sectionVertical: vertical,
-                tag: el.tagName || null,
-            })
-        }
-
-        if (isYoko && !mode) mode = 'horizontal-tb'
+        if (el.classList?.contains?.('yoko') && !mode) mode = 'horizontal-tb'
         if (!mode) continue
 
         const isVertical = mode.startsWith('vertical')
         const orientationMismatch = isVertical !== vertical
         const stringMismatch = rootMode && mode && mode !== rootMode
-        // Hack: if any descendant reports a different writing mode than the section/pagination,
-        // skip baking this section to avoid hardcoding wrong inline/block sizes. Mixed vertical/horizontal
-        // islands (like EPUB "yoko" callouts) otherwise overmeasure and blow pagination.
-        if (isYoko) {
-            logEBookWritingMode('YOKO', {
-                id: el.id || null,
-                mode: mode || null,
-                rootMode,
-                vertical,
-                isVertical,
-                orientationMismatch,
-                stringMismatch,
-            })
-        }
         if (stringMismatch || orientationMismatch || isVertical !== rootVertical) {
-            logEBookWritingMode('MISMATCH', {
-                id: el.id || null,
-                mode,
-                rootMode,
-                sectionVertical: vertical,
-                isVertical,
-                stringMismatch,
-                orientationMismatch,
-                isYoko,
-            })
             return true
-        } else if (isYoko) {
-            // yoko present but did not trigger mismatch; log to see why
-            logEBookWritingMode('YOKO-NO-MISMATCH', {
-                id: el.id || null,
-                mode: mode || null,
-                rootMode,
-                sectionVertical: vertical,
-                isVertical,
-                stringMismatch,
-                orientationMismatch,
-                tag: el.tagName || null,
-                yokoRawMode: rawMode || null,
-            })
         }
     }
 
-    logEBookWritingMode('FUNC-END', {
-        sectionId: section.id || null,
-        vertical,
-        result: false,
-    })
     return false
 }
 
@@ -2546,6 +2401,10 @@ export class Paginator extends HTMLElement {
         this.#isCacheWarmer = isCacheWarmer
         this.bookDir = book.dir
         this.sections = book.sections
+
+        // Keep chevron emitter state aligned with any external resets
+        document.removeEventListener('resetSideNavChevrons', this.#handleChevronResetEvent);
+        document.addEventListener('resetSideNavChevrons', this.#handleChevronResetEvent);
 
         if (!this.#isCacheWarmer) {
             const opts = {
@@ -4121,6 +3980,18 @@ export class Paginator extends HTMLElement {
     #chevronTriggerHoldMs = 420;
     #chevronFadeMs = 180;
     #pendingChevronResetTimer = null;
+    #handleChevronResetEvent = () => {
+        this.#lastChevronEmit = { left: null, right: null };
+        this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                leftOpacity: '',
+                rightOpacity: '',
+                source: 'reset:event',
+            },
+        }));
+    };
     #clearPendingChevronReset() {
         if (!this.#pendingChevronResetTimer) return;
         clearTimeout(this.#pendingChevronResetTimer);
