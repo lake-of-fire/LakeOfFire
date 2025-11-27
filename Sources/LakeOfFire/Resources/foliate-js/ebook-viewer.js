@@ -13,6 +13,18 @@ const logEBookPagination = () => {};
 // Perf logger (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail });
 
+const logEBookPageNum = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail };
+        const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`;
+        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (error) {
+        try {
+            console.log('# EBOOKK PAGENUM fallback', event, detail, error);
+        } catch (_) {}
+    }
+};
+
 // Shared font blob support: the native viewer injects base64 CSS into the shell once.
 const getSharedFontCSSText = () => {
     if (globalThis.manabiFontCSSText) return globalThis.manabiFontCSSText;
@@ -1332,6 +1344,10 @@ class Reader {
         topWindowURL: window.top.location.href,
         currentPageURL: doc.location.href,
         })
+        logEBookPageNum('onLoad:updateCurrentContentPage', {
+            topWindowURL: window.top?.location?.href ?? null,
+            currentPageURL: doc?.location?.href ?? null,
+        });
     }
 
     #ensureRubyFontOverride(doc) {
@@ -1488,6 +1504,24 @@ class Reader {
         if (pageEstimate) {
             this.lastPageEstimate = pageEstimate;
         }
+        logEBookPageNum('relocate', {
+            reason: detail.reason ?? null,
+            relocateDirection,
+            sectionIndex,
+            fraction,
+            pageItemCurrent: pageItem?.current ?? null,
+            pageItemTotal: pageItem?.total ?? null,
+            locationCurrent: location?.current ?? null,
+            locationTotal: location?.total ?? null,
+            tocHref: tocItem?.href ?? null,
+            pageEstimateCurrent: pageEstimate?.current ?? null,
+            pageEstimateTotal: pageEstimate?.total ?? null,
+            previousPageEstimateCurrent: previousPageEstimate?.current ?? null,
+            previousPageEstimateTotal: previousPageEstimate?.total ?? null,
+            previousFraction,
+            lastPercentValue: this.lastPercentValue ?? null,
+            scrubbing,
+        });
         this.#updateJumpUnitAvailability();
         this.#syncJumpInputWithState();
         if (percentButton) {

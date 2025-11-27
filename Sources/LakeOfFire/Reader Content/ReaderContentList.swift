@@ -75,7 +75,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
             .onChange(of: readerContentListModalsModel.confirmDelete) { newValue in
                 debugPrint("# DELETEMODAL confirmDelete changed -> \(newValue) isActive=\(isActive)")
             }
-            .onChange(of: readerContentListModalsModel.confirmDeletionOf) { newValue in
+            .onReceive(readerContentListModalsModel.$confirmDeletionOf) { newValue in
                 debugPrint("# DELETEMODAL confirmDeletionOf updated count=\(newValue?.count ?? 0)")
             }
             .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
@@ -93,7 +93,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                     }
                 }
             }, message: {
-                return Text(readerContentListModalsModel.deletionConfirmationMessage)
+                Text(readerContentListModalsModel.deletionConfirmationMessage)
             })
             .onAppear {
                 debugPrint("# DELETEMODAL sheets modifier appear isActive=\(isActive)")

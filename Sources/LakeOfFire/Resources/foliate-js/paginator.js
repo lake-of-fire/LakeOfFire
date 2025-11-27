@@ -113,6 +113,18 @@ const logEBookPagination = () => {}
 // Perf logger for targeted instrumentation (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail })
 
+const logEBookPageNum = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail }
+        const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`
+        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line)
+    } catch (error) {
+        try {
+            console.log('# EBOOKK PAGENUM fallback', event, detail, error)
+        } catch (_) {}
+    }
+}
+
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
     if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
@@ -3483,6 +3495,16 @@ export class Paginator extends HTMLElement {
     async #scrollToPage(page, reason, smooth) {
         const size = await this.size()
         const offset = size * (this.#rtl ? -page : page)
+        logEBookPageNum('scrollToPage', {
+            targetPage: page,
+            reason,
+            smooth: !!smooth,
+            sectionIndex: this.#index ?? null,
+            size,
+            offset,
+            rtl: this.#rtl,
+            vertical: this.#vertical,
+        })
         return await this.#scrollTo(offset, reason, smooth)
     }
     async scrollToAnchor(anchor, select, reasonOverride) {
@@ -3498,6 +3520,11 @@ export class Paginator extends HTMLElement {
         } catch (_error) {
             // diagnostics best-effort
         }
+        logEBookPageNum('scrollToAnchor:start', {
+            reason,
+            sectionIndex: this.#index ?? null,
+            anchorType: anchor?.nodeType ?? (typeof anchor),
+        })
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
         if (rects) {
@@ -3518,6 +3545,13 @@ export class Paginator extends HTMLElement {
         if (!pages) return
         const textPages = await this.pages() - 2
         const newPage = Math.round(anchor * (textPages - 1))
+        logEBookPageNum('scrollToAnchor:fraction', {
+            reason,
+            sectionIndex: this.#index ?? null,
+            anchorFraction: anchor,
+            textPages,
+            targetPage: newPage + 1,
+        })
         await this.#scrollToPage(newPage + 1, reason)
     }
     async #NscrollToAnchor(anchor, reason = 'anchor') {
@@ -3712,6 +3746,14 @@ export class Paginator extends HTMLElement {
             detail.size = 1 / (pages - 2)
         }
 
+        const detailForLog = {
+            reason,
+            sectionIndex: index,
+            scrolled: this.scrolled,
+            fraction: detail.fraction ?? null,
+            sizeFraction: detail.size ?? null,
+        }
+
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
@@ -3724,7 +3766,19 @@ export class Paginator extends HTMLElement {
                 this.size(),
                 this.viewSize(),
             ])
+            logEBookPageNum('afterScroll:metrics', {
+                ...detailForLog,
+                pageNumber,
+                pageCount,
+                startOffset,
+                pageSize,
+                viewSize,
+            })
         } catch (_error) {
+            logEBookPageNum('afterScroll:metrics-error', {
+                ...detailForLog,
+                error: String(_error),
+            })
             // diagnostics best-effort
         }
 
@@ -3850,8 +3904,18 @@ export class Paginator extends HTMLElement {
         let pageCount = null
         try {
             [pageNumber, pageCount] = await Promise.all([this.page(), this.pages()]);
-            // window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKPAGE display ${JSON.stringify({ index, pageNumber, pageCount, reason })}`);
+            logEBookPageNum('display:initial', {
+                index,
+                reason,
+                pageNumber,
+                pageCount,
+            })
         } catch (_error) {
+            logEBookPageNum('display:initial-error', {
+                index,
+                reason,
+                error: String(_error),
+            })
             // best-effort; do not fail display on logging issues
         }
         try {
