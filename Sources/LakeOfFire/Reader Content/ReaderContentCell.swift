@@ -621,6 +621,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                             Button(role: .destructive) {
                                                 readerContentListModalsModel.confirmDeletionOf = [deletable]
                                                 readerContentListModalsModel.confirmDelete = true
+                                                debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(String(describing: readerContentListModalsModel))")
                                             } label: {
                                                 Label(deletable.deleteActionTitle, systemImage: "trash")
                                             }

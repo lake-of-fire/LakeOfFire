@@ -72,12 +72,20 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
+            .onChange(of: readerContentListModalsModel.confirmDelete) { newValue in
+                debugPrint("# DELETEMODAL confirmDelete changed -> \(newValue) isActive=\(isActive)")
+            }
+            .onChange(of: readerContentListModalsModel.confirmDeletionOf) { newValue in
+                debugPrint("# DELETEMODAL confirmDeletionOf updated count=\(newValue?.count ?? 0)")
+            }
             .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
                 Button("Cancel", role: .cancel) {
+                    debugPrint("# DELETEMODAL cancel tapped")
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
                 Button(readerContentListModalsModel.deletionConfirmationActionTitle, role: .destructive) {
                     guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
+                    debugPrint("# DELETEMODAL delete confirmed items=\(items.count)")
                     Task { @MainActor in
                         for item in items {
                             try await item.delete()
@@ -87,6 +95,9 @@ struct ReaderContentListSheetsModifier: ViewModifier {
             }, message: {
                 return Text(readerContentListModalsModel.deletionConfirmationMessage)
             })
+            .onAppear {
+                debugPrint("# DELETEMODAL sheets modifier appear isActive=\(isActive)")
+            }
     }
 }
 

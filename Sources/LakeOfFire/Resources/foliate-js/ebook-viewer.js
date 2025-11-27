@@ -480,23 +480,17 @@ aside[epub|type~="rearnote"] {
 display: none;
 }
 
-body *:not(manabi-segment, manabi-segment *, .manabi-tracking-container *) {
-background: inherit !important;
-color: inherit !important;
-}
-
 .manabi-tracking-section {
 contain: initial !important;
 }
 
-body *:not(rt) {
-font-family: inherit !important;
-font-weight: inherit !important;
-}
-
 body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-container):not(manabi-sentence, manabi-sentence *):not(#manabi-tracking-section-subscription-preview-inline-notice) {
-/* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
-height: inherit !important;
+    font-family: inherit !important;
+    font-weight: inherit !important;
+    background: inherit !important;
+    color: inherit !important;
+    /* prevent height: 100% type values from breaking getBoundingClientRect layout in paginator */
+    height: inherit !important;
 }
 body.reader-is-single-media-element-without-text *:not(.manabi-tracking-container *):not(manabi-segment *) {
 max-height: 99vh;
@@ -538,6 +532,26 @@ style: 'percent'
 
 class Reader {
     #logScrubDiagnostic(_event, _payload = {}) {}
+    #logChevronDiagnostic(event, payload = {}) {
+        const base = {
+            event,
+            timestamp: Date.now(),
+            isRTL: this.isRTL ?? null,
+            ...payload,
+        };
+        const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
+        const line = `# EBOOKCHEVRON ${JSON.stringify(cleaned)}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional native logger
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
+            // optional console logger
+        }
+    }
     #show(btn, show = true) {
         if (show) {
             btn.hidden = false;
@@ -760,50 +774,70 @@ class Reader {
     nav.addEventListener('touchcancel', () => {
     nav.classList.remove('pressed');
     });
-    });
+        });
 
-    // Side-nav opacity wiring
-    this.view.addEventListener('sideNavChevronOpacity', e => {
-    const l = document.querySelector('#btn-scroll-left .icon');
-    const r = document.querySelector('#btn-scroll-right .icon');
+        // Side-nav opacity wiring
+        this.view.addEventListener('sideNavChevronOpacity', e => {
+        const l = document.querySelector('#btn-scroll-left .icon');
+        const r = document.querySelector('#btn-scroll-right .icon');
 
-    const FADER_DELAY = 180;
-    const fadeWithHold = (elem, value, key) => {
-    if (!elem) return;
+        this.#logChevronDiagnostic('sideNavChevronOpacity:event', {
+        leftOpacity: e?.detail?.leftOpacity ?? null,
+        rightOpacity: e?.detail?.rightOpacity ?? null,
+        leftHasIcon: !!l,
+        rightHasIcon: !!r,
+        });
 
-    clearTimeout(this.#chevronFadeTimers[key]);
-    this.#chevronFadeTimers[key] = null;
+        const FADER_DELAY = 180;
+        const fadeWithHold = (elem, value, key) => {
+        if (!elem) return;
 
-    // Show chevron at full opacity
-    if (Number(value) >= 1) {
-    elem.style.removeProperty('opacity');
-    elem.classList.add('chevron-visible');
-    return;
-    }
+        const hadPendingFade = !!this.#chevronFadeTimers[key];
+        clearTimeout(this.#chevronFadeTimers[key]);
+        this.#chevronFadeTimers[key] = null;
+        this.#logChevronDiagnostic('chevron:fadeWithHold:start', {
+        key,
+        value,
+        hadPendingFade,
+        isVisible: elem.classList.contains('chevron-visible'),
+        inlineOpacity: elem.style.opacity || null,
+        });
 
-    // Show chevron at partial opacity
-    if (Number(value) > 0) {
-    elem.classList.remove('chevron-visible');
-    elem.style.opacity = value;
-    return;
-    }
+        // Show chevron at full opacity
+        if (Number(value) >= 1) {
+        elem.style.removeProperty('opacity');
+        elem.classList.add('chevron-visible');
+        this.#logChevronDiagnostic('chevron:fadeWithHold:full', { key });
+        return;
+        }
 
-    // Hide chevron, but only after a delay and only if currently visible
-    if (elem.classList.contains('chevron-visible')) {
-    this.#chevronFadeTimers[key] = setTimeout(() => {
-    elem.classList.remove('chevron-visible');
-    elem.style.removeProperty('opacity');
-    this.#chevronFadeTimers[key] = null;
-    }, FADER_DELAY);
-    } else {
-    // Already hidden: do nothing
-    elem.style.removeProperty('opacity');
-    elem.classList.remove('chevron-visible');
-    }
-    };
+        // Show chevron at partial opacity
+        if (Number(value) > 0) {
+        elem.classList.remove('chevron-visible');
+        elem.style.opacity = value;
+        this.#logChevronDiagnostic('chevron:fadeWithHold:partial', { key, opacity: value });
+        return;
+        }
 
-    fadeWithHold(l, e.detail.leftOpacity, 'l');
-    fadeWithHold(r, e.detail.rightOpacity, 'r');
+        // Hide chevron, but only after a delay and only if currently visible
+        if (elem.classList.contains('chevron-visible')) {
+        this.#chevronFadeTimers[key] = setTimeout(() => {
+        elem.classList.remove('chevron-visible');
+        elem.style.removeProperty('opacity');
+        this.#chevronFadeTimers[key] = null;
+        this.#logChevronDiagnostic('chevron:fadeWithHold:hide', { key });
+        }, FADER_DELAY);
+        this.#logChevronDiagnostic('chevron:fadeWithHold:scheduledHide', { key, delayMs: FADER_DELAY });
+        } else {
+        // Already hidden: do nothing
+        elem.style.removeProperty('opacity');
+        elem.classList.remove('chevron-visible');
+        this.#logChevronDiagnostic('chevron:fadeWithHold:alreadyHidden', { key });
+        }
+        };
+
+        fadeWithHold(l, e.detail.leftOpacity, 'l');
+        fadeWithHold(r, e.detail.rightOpacity, 'r');
     });
     // Listen for resetSideNavChevrons custom event to reset chevrons
     document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
@@ -1102,6 +1136,13 @@ class Reader {
     const icon = forwardBtn.querySelector('.icon');
     if (!icon) return;
     const isHovered = typeof forwardBtn.matches === 'function' ? forwardBtn.matches(':hover') : false;
+    this.#logChevronDiagnostic('chevron:forwardHint', {
+    shouldShow,
+    isHovered,
+    isPressed: forwardBtn.classList.contains('pressed'),
+    iconVisible: icon.classList.contains('chevron-visible'),
+    inlineOpacity: icon.style.opacity || null,
+    });
     if (shouldShow) {
     icon.classList.add('chevron-visible');
     icon.style.opacity = '1';
@@ -1111,6 +1152,7 @@ class Reader {
     }
     }
     #flashChevron(left) {
+    this.#logChevronDiagnostic('chevron:flash', { direction: left ? 'left' : 'right' });
     this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
     detail: {
     leftOpacity: left ? '1' : '',
