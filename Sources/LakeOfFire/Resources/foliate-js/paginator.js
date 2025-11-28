@@ -4413,15 +4413,38 @@ export class Paginator extends HTMLElement {
                 pageNumberForDetail = Math.max(1, Math.min(pageCountForDetail, Math.floor(frac * pageCountForDetail) + 1))
             }
         } else if ((await this.pages()) > 0) {
-            const page = await this.page()
-            const pages = await this.pages()
+            const [page, pages, pageSize, startOffset] = await Promise.all([
+                this.page(),
+                this.pages(),
+                this.size(),
+                this.start(),
+            ])
             this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
-            // Paginated mode uses two sentinel pages (lead/trail). Strip them for UI totals.
+            // Paginated mode uses two sentinel pages (lead/trail). Report text pages only.
             if (pages > 2) {
                 pageCountForDetail = pages - 2
-                pageNumberForDetail = Math.max(1, Math.min(pageCountForDetail, page - 1))
-                detail.fraction = (page - 1) / (pages - 2)
-                detail.size = 1 / (pages - 2)
+                const leadSentinel = pageSize // one lead sentinel page
+                const normalizedOffset = Math.max(0, startOffset - leadSentinel)
+                const pageNumberFromOffset = pageCountForDetail > 0
+                    ? Math.min(pageCountForDetail, Math.floor(normalizedOffset / pageSize) + 1)
+                    : 1
+                pageNumberForDetail = pageNumberFromOffset
+                detail.fraction = (pageCountForDetail > 0)
+                    ? normalizedOffset / (pageSize * pageCountForDetail)
+                    : null
+                detail.size = pageCountForDetail > 0 ? 1 / pageCountForDetail : null
+                logEBookPageNumLimited('relocate:detail:calc', {
+                    reason,
+                    sectionIndex: index,
+                    rawPage: page,
+                    rawPages: pages,
+                    pageSize,
+                    startOffset,
+                    normalizedOffset,
+                    pageCountForDetail,
+                    pageNumberForDetail,
+                    fractionUsed: detail.fraction,
+                })
             } else {
                 pageCountForDetail = pages
                 pageNumberForDetail = page

@@ -71,21 +71,33 @@ struct ReaderContentListSheetsModifier: ViewModifier {
     @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
     
     func body(content: Content) -> some View {
+        let hostID = ObjectIdentifier(readerContentListModalsModel)
         content
             .onChange(of: readerContentListModalsModel.confirmDelete) { newValue in
-                debugPrint("# DELETEMODAL confirmDelete changed -> \(newValue) isActive=\(isActive)")
+                debugPrint("# DELETEMODAL confirmDelete changed -> \(newValue) isActive=\(isActive) host=\(hostID)")
             }
             .onReceive(readerContentListModalsModel.$confirmDeletionOf) { newValue in
-                debugPrint("# DELETEMODAL confirmDeletionOf updated count=\(newValue?.count ?? 0)")
+                debugPrint("# DELETEMODAL confirmDeletionOf updated count=\(newValue?.count ?? 0) host=\(hostID)")
             }
-            .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: $readerContentListModalsModel.confirmDelete.gatedBy(isActive), actions: {
+            .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: Binding<Bool>(
+                get: {
+                    readerContentListModalsModel.confirmDelete && isActive
+                },
+                set: { newValue in
+                    if isActive {
+                        readerContentListModalsModel.confirmDelete = newValue
+                    } else {
+                        debugPrint("# DELETEMODAL ignoring set newValue=\(newValue) because isActive=false host=\(hostID)")
+                    }
+                }
+            ), actions: {
                 Button("Cancel", role: .cancel) {
-                    debugPrint("# DELETEMODAL cancel tapped")
+                    debugPrint("# DELETEMODAL cancel tapped host=\(hostID)")
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
                 Button(readerContentListModalsModel.deletionConfirmationActionTitle, role: .destructive) {
                     guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
-                    debugPrint("# DELETEMODAL delete confirmed items=\(items.count)")
+                    debugPrint("# DELETEMODAL delete confirmed items=\(items.count) host=\(hostID)")
                     Task { @MainActor in
                         for item in items {
                             try await item.delete()
@@ -96,7 +108,7 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                 Text(readerContentListModalsModel.deletionConfirmationMessage)
             })
             .onAppear {
-                debugPrint("# DELETEMODAL sheets modifier appear isActive=\(isActive)")
+                debugPrint("# DELETEMODAL sheets modifier appear isActive=\(isActive) host=\(hostID)")
             }
     }
 }

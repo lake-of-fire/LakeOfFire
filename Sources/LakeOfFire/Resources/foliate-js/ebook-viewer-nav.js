@@ -333,6 +333,8 @@ export class NavigationHUD {
     
     async handleRelocate(detail) {
         if (!detail) return;
+        // Prefer the renderer's live snapshot, but prime it from detail when available
+        this.#updateRendererSnapshotFromDetail(detail);
         await this.#refreshRendererSnapshot();
         this.lastRelocateDetail = detail;
         this.#handleRelocateHistory(detail);
@@ -355,6 +357,33 @@ export class NavigationHUD {
             label: this.latestPrimaryLabel ?? '',
             ...(this.lastPrimaryLabelDiagnostics ?? {}),
         });
+    }
+
+    #updateRendererSnapshotFromDetail(detail) {
+        const scrolled = detail?.scrolled;
+        const pageNumber = typeof detail?.pageNumber === 'number' ? detail.pageNumber : null;
+        const pageCount = typeof detail?.pageCount === 'number' ? detail.pageCount : null;
+        // Only trust detail counts when renderer is paginated (scrolled === false) and counts are positive.
+        if (scrolled === false && pageNumber != null && pageNumber > 0 && pageCount != null && pageCount > 0) {
+            const normalized = {
+                current: Math.min(pageCount, Math.max(1, Math.round(pageNumber))),
+                total: Math.max(1, Math.round(pageCount)),
+                rawCurrent: Math.round(pageNumber),
+                rawTotal: Math.round(pageCount),
+                scrolled,
+            };
+            this.rendererPageSnapshot = normalized;
+            this.#updateFallbackTotalPages(normalized.total);
+            logEBookPageNumLimited('nav:renderer-snapshot:detail', {
+                detailPage: pageNumber,
+                detailTotal: pageCount,
+                normalizedCurrent: normalized.current,
+                normalizedTotal: normalized.total,
+                scrolled,
+                totalPageCount: this.totalPageCount,
+                totalSource: this.lastTotalSource ?? null,
+            });
+        }
     }
     
     #updatePrimaryLine(detail) {
@@ -900,8 +929,8 @@ export class NavigationHUD {
             rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
         };
         if (isPaginated && total && total > 2) {
-            const textTotal = Math.max(1, total - 2);
-            const textCurrent = Math.max(1, Math.min(textTotal, current - 1));
+            const textTotal = Math.max(1, total - 2); // strip lead/trail sentinels
+            const textCurrent = Math.max(1, Math.min(textTotal, current)); // clamp without subtracting so page 2 -> text page 2
             logEBookPageNumLimited('nav:normalize:calc', {
                 ...snapshotBeforeAdjust,
                 mode: 'text-only',

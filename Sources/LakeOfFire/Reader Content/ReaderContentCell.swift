@@ -241,6 +241,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     // Using AnyView avoids templating this struct with another generic.
     var customMenuOptions: ((C) -> AnyView)? = nil
     
+    @State private var resolvedContentFile: ContentFile?
+    @State private var contentFileLookupStarted = false
+    
     static var buttonSize: CGFloat {
         return 26
     }
@@ -621,9 +624,19 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                             Button(role: .destructive) {
                                                 readerContentListModalsModel.confirmDeletionOf = [deletable]
                                                 readerContentListModalsModel.confirmDelete = true
-                                                debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(String(describing: readerContentListModalsModel))")
+                                                debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
                                             } label: {
                                                 Label(deletable.deleteActionTitle, systemImage: "trash")
+                                            }
+                                            .task { kickOffContentFileLookupIfNeeded() }
+                                        }
+                                        
+                                        if let contentFile = resolvedContentFile {
+                                            Button(role: .destructive) {
+                                                readerContentListModalsModel.confirmDeletionOf = [contentFile]
+                                                readerContentListModalsModel.confirmDelete = true
+                                            } label: {
+                                                Label(contentFile.deleteActionTitle, systemImage: "trash")
                                             }
                                         }
                                     } label: {
@@ -665,6 +678,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 )
             }
         }
+        .onChange(of: item.compoundKey) { _ in
+            resolvedContentFile = nil
+            contentFileLookupStarted = false
+        }
         .onChange(of: item.imageUrl) { newImageURL in
             guard newImageURL != viewModel.imageURL else { return }
             Task { @MainActor in
@@ -674,6 +691,35 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         // No provider-based onReceive; lists refresh via Realm publishers.
     }
 
+    private var shouldAttemptContentFileLookup: Bool {
+        guard !(item is ContentFile) else { return false }
+        return item.url.isReaderFileURL || item.url.isEBookURL
+    }
+
+    private func kickOffContentFileLookupIfNeeded() {
+        guard shouldAttemptContentFileLookup, !contentFileLookupStarted else { return }
+        contentFileLookupStarted = true
+        Task { @MainActor in
+            resolvedContentFile = try? await lookupContentFile(for: item.url)
+        }
+    }
+
+    @MainActor
+    private func lookupContentFile(for url: URL) async throws -> ContentFile? {
+        if let files = ReaderFileManager.shared.files,
+           let match = files.first(where: { !$0.isDeleted && $0.url == url }) {
+            let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+            if let live = realm.object(ofType: ContentFile.self, forPrimaryKey: match.compoundKey), !live.isDeleted {
+                return live
+            }
+        }
+
+        let primaryKey = try await ReaderFileManager.contentFilePrimaryKey(for: url)
+        guard let primaryKey else { return nil }
+        let realm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: MainActor.shared)
+        let object = realm.object(ofType: ContentFile.self, forPrimaryKey: primaryKey)
+        return (object?.isDeleted ?? true) ? nil : object
+    }
 }
 
 struct BookCoverImageView: View {
