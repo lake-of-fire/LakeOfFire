@@ -1481,6 +1481,21 @@ class Reader {
             reason,
             index: sectionIndex
         } = detail
+        // Normalize section index so downstream HUD can aggregate page counts reliably.
+        const inferredSectionIndex = (() => {
+            if (typeof detail?.sectionIndex === 'number') return detail.sectionIndex
+            if (typeof sectionIndex === 'number') return sectionIndex
+            const rendererIndex = this.view?.renderer?.currentIndex
+            if (typeof rendererIndex === 'number') return rendererIndex
+            return null
+        })()
+        const normalizedDetail = {
+            ...detail,
+            sectionIndex: inferredSectionIndex,
+            index: typeof detail?.index === 'number'
+                ? detail.index
+                : (typeof sectionIndex === 'number' ? sectionIndex : inferredSectionIndex),
+        }
         const previousFraction = typeof this.lastKnownFraction === 'number' ? this.lastKnownFraction : null;
         const previousPageEstimate = this.lastPageEstimate;
         const percent = percentFormat.format(fraction)
@@ -1529,8 +1544,8 @@ class Reader {
         }
 
         await this.updateNavButtons();
-        await this.navHUD?.handleRelocate(detail);
-        const navLabel = this.navHUD?.getPrimaryDisplayLabel(detail);
+        await this.navHUD?.handleRelocate(normalizedDetail);
+        const navLabel = this.navHUD?.getPrimaryDisplayLabel(normalizedDetail);
         const tooltipParts = [];
         if (navLabel) {
             tooltipParts.push(navLabel);
@@ -1550,7 +1565,7 @@ class Reader {
         const percentButton = this.#jumpButton ?? document.getElementById('percent-jump-button');
         if (!this.#jumpInput && percentInput) this.#jumpInput = percentInput;
         if (!this.#jumpButton && percentButton) this.#jumpButton = percentButton;
-        const pageEstimate = this.navHUD?.getPageEstimate(detail);
+        const pageEstimate = this.navHUD?.getPageEstimate(normalizedDetail);
         if (pageEstimate) {
             this.lastPageEstimate = pageEstimate;
         }

@@ -82,7 +82,10 @@ const MANABI_TRACKING_PREBAKE_HIDDEN_CLASS = 'manabi-prebake-hidden'
 const MANABI_TRACKING_PREBAKE_HIDE_ENABLED = true
 // Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
-const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
+// Size baking enabled (original behavior). Uses cached block/inline sizes when available.
+const MANABI_TRACKING_SIZE_BAKE_ENABLED = false
+// Foliate upstream inserts lead/trail sentinel pages in paginated mode; keep adjustment on.
+const MANABI_RENDERER_SENTINEL_ADJUST_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
 const MANABI_TRACKING_SIZE_BAKING_OPTIMIZED = true
 const MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED = true
@@ -114,14 +117,26 @@ const logEBookPagination = () => {}
 // Perf logger for targeted instrumentation (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail })
 
+// Default whitelist keeps logs focused; set global `manabiPageNumVerbose = true`
+// to re‑enable all pagination geometry noise when debugging.
 const MANABI_PAGE_NUM_WHITELIST = new Set([
+    // Core pagination signals
     'nav:set-page-targets',
     'nav:total-pages-source',
     'nav:page-metrics',
     'relocate',
     'relocate:label',
-    'afterScroll:metrics',
     'relocate:detail',
+    'afterScroll:metrics',
+    // Bake/cache checkpoints (still useful but low volume)
+    'bake:reset-state',
+    'bake:reveal-prebake-content',
+    'cache:apply',
+    'cache:container-apply',
+    'tracking-size-skip-writing-mode',
+    // Paging outcomes (omit per-frame size churn)
+    'pages',
+    'size:anomaly',
 ]);
 
 const logEBookPageNum = (event, detail = {}) => {
@@ -701,6 +716,12 @@ const bakeTrackingSectionSizes = async (doc, {
                 inlineSize,
                 blockSize,
             })
+            logEBookPageNumLimited('cache:apply', {
+                id: el.id || null,
+                inlineSize,
+                blockSize,
+                vertical,
+            })
             el.style.setProperty('inline-size', formatPx(inlineSize), 'important')
             el.style.setProperty('block-size', formatPx(blockSize), 'important')
             el.setAttribute(MANABI_TRACKING_SIZE_BAKED_ATTR, 'true')
@@ -829,6 +850,12 @@ const bakeTrackingSectionSizes = async (doc, {
                 id: el.id || null,
                 inlineSize,
                 blockSize,
+            })
+            logEBookPageNumLimited('tracking-size-skip-writing-mode', {
+                id: el.id || null,
+                inlineSize,
+                blockSize,
+                vertical,
             })
             return { inlineSize, blockSize, multiColumn: false }
         }
@@ -1288,6 +1315,13 @@ class View {
     }
     #handleResize(newSize) {
         if (!newSize) return
+        // When baking is off, keep the resize path simple to avoid stale cached rects.
+        if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            if (this.#inExpand || this.#isCacheWarmer) return
+            this.cachedViewSize = null
+            this.expand().catch(() => {})
+            return
+        }
         // Skip resize work while an expand is actively adjusting iframe dimensions; those
         // resizes are expected and immediately followed by the real layout pass.
         if (this.#inExpand) return
@@ -1350,7 +1384,7 @@ class View {
 
             // Only trigger size/geometry bake after the new size stays stable for one more frame.
             requestAnimationFrame(() => {
-        const bodyRect = this.document?.body?.getBoundingClientRect?.()
+                const bodyRect = this.document?.body?.getBoundingClientRect?.()
                 if (!bodyRect) return
                 const stableSize = {
                     width: Math.round(bodyRect.width),
@@ -1505,9 +1539,13 @@ class View {
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
-        // Hide iframe completely until we intentionally reveal for baking to avoid initial layout/paint cost.
-        this.#iframe.style.display = 'none'
-        logEBookPerf('iframe-display-set', { state: 'hidden-before-src', src })
+        // When size baking is enabled, keep the iframe hidden until we're ready to bake/reveal.
+        if (MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            this.#iframe.style.display = 'none'
+            logEBookPerf('iframe-display-set', { state: 'hidden-before-src', src })
+        } else {
+            this.#iframe.style.display = 'block'
+        }
         return new Promise(async (resolve) => {
             if (this.#isCacheWarmer) {
                 console.log("Don't create View for cache warmers")
@@ -1566,18 +1604,7 @@ class View {
             //            console.log("render(layout)... return")
             return
         }
-        const suppressingEarlyExpand = (this.container?.suppressBakeOnExpandPublic && !this.container?.trackingSizeBakeReadyPublic)
-        if (source === 'unknown' && suppressingEarlyExpand) {
-            logEBookPerf('EXPAND.render-skip', {
-                reason: 'suppressing-early-render',
-                source,
-                skipExpand,
-                suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
-                ready: this.container?.trackingSizeBakeReadyPublic ?? null,
-                inExpand: this.#inExpand || false,
-            })
-            return
-        }
+        // Always allow the first render/expand pass; early suppression was causing under-measured layouts.
         logEBookPerf('render-start', {
             flow: layout.flow,
             column: layout.flow !== 'scrolled',
@@ -1672,9 +1699,9 @@ class View {
             [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
             'margin': 'auto',
         })
-        const canExpand = !skipExpand && !(this.container?.suppressBakeOnExpandPublic && !this.container?.trackingSizeBakeReadyPublic)
+        const canExpand = !skipExpand
         if (canExpand) {
-            this.#debouncedExpand()
+            await this.expand()
         } else if (!skipExpand) {
             logEBookPerf('EXPAND.expand-skip', {
                 source: 'scrolled',
@@ -1682,7 +1709,6 @@ class View {
                 ready: this.container?.trackingSizeBakeReadyPublic ?? null,
             })
         }
-        //        await this.expand()
     }
     async columnize({
         width,
@@ -1743,7 +1769,7 @@ class View {
         // Don't infinite loop.
         //        if (!this.needsRenderForMutation) {
         //        console.log("columnize... await expand")
-        const canExpand = !skipExpand && !(this.container?.suppressBakeOnExpandPublic && !this.container?.trackingSizeBakeReadyPublic)
+        const canExpand = !skipExpand
         if (canExpand) {
             await this.expand()
         } else if (!skipExpand) {
@@ -2189,6 +2215,9 @@ export class Paginator extends HTMLElement {
         end: null,
     }
     #sentinelsInitialized = false
+    #hasSentinels = false
+    #lastSizesSnapshot = null
+    #lastViewSizeSnapshot = null
 
     #elementVisibilityObserver = null
     #elementMutationObserver = null
@@ -2597,6 +2626,18 @@ export class Paginator extends HTMLElement {
 
     // Public helper for View to force an initial size bake before first expand.
     async performInitialBakeFromView(sectionIndex, layout) {
+        if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            // When baking is off, we still need a first render+expand so pagination works.
+            this.#suppressBakeOnExpand = false
+            this.#trackingSizeBakeReady = true
+            logEBookPageNumLimited('bake:initial:skipped', {
+                sectionIndex,
+                suppressBakeOnExpand: this.#suppressBakeOnExpand,
+                readyFlag: this.#trackingSizeBakeReady,
+            })
+            await this.#view?.render(layout, { source: 'initial-bake-disabled' })
+            return
+        }
         // Lock expands and reset readiness before pre-bake render.
         this.#suppressBakeOnExpand = true
         this.#trackingSizeBakeReady = false
@@ -2656,6 +2697,15 @@ export class Paginator extends HTMLElement {
         sectionIndex = null,
         skipPostBakeRefresh = false,
     } = {}) {
+        if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            logEBookPageNumLimited('bake:begin', {
+                reason,
+                sectionIndex,
+                status: 'disabled',
+            })
+            this.#setLoading(false)
+            return
+        }
         const perfStart = performance?.now?.() ?? null
         const doc = this.#view?.document
         if (!doc) {
@@ -2908,6 +2958,7 @@ export class Paginator extends HTMLElement {
     }
     #syncSentinelGroups(doc, sentinelElements, groupSize) {
         const total = sentinelElements?.length ?? 0
+        this.#hasSentinels = total > 0
         if (this.#sentinelGroupsDoc !== doc || this.#sentinelGroupsTotal !== total) {
             this.#resetSentinelObservers()
             this.#sentinelGroupsDoc = doc
@@ -3457,60 +3508,38 @@ export class Paginator extends HTMLElement {
             scrolled ? 'height' : 'width'
     }
     async sizes() {
-        //        await this.#awaitDirection();
-
-        if (this.#isCacheWarmer) return 0
-        if (/*true || */this.#cachedSizes === null) {
-            return new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    //                    const r = this.#container.getBoundingClientRect()
-                    //                    this.#cachedSizes = {
-                    //                        width: r.width,
-                    //                        height: r.height,
-                    //                    }
-                    //                    resolve(this.#cachedSizes)
-                    //                    return ;
-
-                    this.#cachedSizes = {
-                        width: this.#container.clientWidth,
-                        height: this.#container.clientHeight,
-                    }
-                    const rect = this.#container.getBoundingClientRect?.()
-                    const styleHeight = this.#container?.style?.height ?? null
-                    const overflow = typeof getComputedStyle === 'function'
-                        ? getComputedStyle(this.#container).overflow
-                        : null
-                    logEBookPageNumLimited('sizes', {
-                        sectionIndex: this.#index ?? null,
-                        width: this.#cachedSizes.width,
-                        height: this.#cachedSizes.height,
-                        scrollWidth: this.#container.scrollWidth,
-                        scrollHeight: this.#container.scrollHeight,
-                        scrolled: this.scrolled,
-                        vertical: this.#vertical,
-                        rtl: this.#rtl,
-                        rect: rect ? {
-                            width: Math.round(rect.width),
-                            height: Math.round(rect.height),
-                            top: Math.round(rect.top),
-                            left: Math.round(rect.left),
-                        } : null,
-                        styleHeight,
-                        overflow,
-                    })
-                    resolve(this.#cachedSizes)
-                })
-            })
-            //        } else {
-            //                                const r = this.#container.getBoundingClientRect()
-            //            console.log("sizes() cached/real", this.#cachedSizes, r)
-            //            requestAnimationFrame(() => {
-            //                                const r = this.#container.getBoundingClientRect()
-            //            console.log("sizes() FRAME cached/real", this.#cachedSizes, r)
-            //            })
-
+        // Avoid cached measurements; the iframe can be hidden during load which would
+        // record zeros and break pagination. Always read current client sizes.
+        const sizes = {
+            width: this.#container.clientWidth,
+            height: this.#container.clientHeight,
         }
-        return this.#cachedSizes
+        this.#logSizesOnce({
+            event: 'sizes',
+            sectionIndex: this.#index ?? null,
+            width: sizes.width,
+            height: sizes.height,
+            scrollWidth: this.#container.scrollWidth,
+            scrollHeight: this.#container.scrollHeight,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            rect: this.#container.getBoundingClientRect ? {
+                width: Math.round(this.#container.getBoundingClientRect().width),
+                height: Math.round(this.#container.getBoundingClientRect().height),
+                top: Math.round(this.#container.getBoundingClientRect().top),
+                left: Math.round(this.#container.getBoundingClientRect().left),
+            } : null,
+            styleHeight: this.#container?.style?.height ?? null,
+            overflow: typeof getComputedStyle === 'function'
+                ? getComputedStyle(this.#container).overflow
+                : null,
+            bakeReady: this.#trackingSizeBakeReady,
+            pendingBakeReason: this.#pendingTrackingSizeBakeReason ?? null,
+            bakeInFlight: !!this.#trackingSizeBakeInFlight,
+            usingCache: false,
+        })
+        return sizes
     }
     async size() {
         const s = (await this.sizes())[await this.sideProp()]
@@ -3551,145 +3580,98 @@ export class Paginator extends HTMLElement {
         if (this.#isCacheWarmer) return 0
         const view = this.#view
         if (!view || !view.element) return 0
-        if (typeof view.cachedViewSize === 'undefined') {
-            view.cachedViewSize = null
-        }
-        if (/*true ||*/ view.cachedViewSize === null) {
-            return new Promise(resolve => {
-                requestAnimationFrame(async () => {
-                    const element = view.element
-                    if (!element) {
-                        view.cachedViewSize = {
-                            width: 0,
-                            height: 0,
-                        }
-                        resolve(0)
-                        return
-                    }
-                    // Capture container/parent geometry to diagnose runaway sizes
-                    const parent = this.#container
-                    const parentRect = parent?.getBoundingClientRect?.()
-                    const elemRect = element.getBoundingClientRect?.()
-                    const parentStyleHeight = parent?.style?.height ?? null
-                    const elemStyleHeight = element?.style?.height ?? null
-                    const elemStyleDisplay = element?.style?.display ?? null
-                    const parentOverflow = parent && typeof getComputedStyle === 'function'
-                        ? getComputedStyle(parent).overflow
-                        : null
+        const element = view.element
+        const side = await this.sideProp()
+        const scrollWidth = element.scrollWidth
+        const scrollHeight = element.scrollHeight
+        const val = (!this.scrolled)
+            ? (side === 'width' ? scrollWidth : scrollHeight)
+            : (side === 'width' ? element.clientWidth : element.clientHeight)
 
-                    view.cachedViewSize = {
-                        width: element.clientWidth,
-                        height: element.clientHeight,
-                    }
-                    const side = await this.sideProp()
-                    const scrollWidth = element.scrollWidth
-                    const scrollHeight = element.scrollHeight
-                    const val = view.cachedViewSize[side]
+        this.#logViewSizeOnce({
+            event: 'viewSize',
+            sectionIndex: this.#index ?? null,
+            side,
+            clientWidth: element.clientWidth,
+            clientHeight: element.clientHeight,
+            scrollWidth,
+            scrollHeight,
+            returned: val,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+            elemRect: element.getBoundingClientRect ? {
+                width: Math.round(element.getBoundingClientRect().width),
+                height: Math.round(element.getBoundingClientRect().height),
+                top: Math.round(element.getBoundingClientRect().top),
+                left: Math.round(element.getBoundingClientRect().left),
+            } : null,
+            parentRect: this.#container?.getBoundingClientRect ? {
+                width: Math.round(this.#container.getBoundingClientRect().width),
+                height: Math.round(this.#container.getBoundingClientRect().height),
+                top: Math.round(this.#container.getBoundingClientRect().top),
+                left: Math.round(this.#container.getBoundingClientRect().left),
+            } : null,
+            elemStyleHeight: element?.style?.height ?? null,
+            elemStyleDisplay: element?.style?.display ?? null,
+            parentStyleHeight: this.#container?.style?.height ?? null,
+            parentOverflow: typeof getComputedStyle === 'function'
+                ? getComputedStyle(this.#container).overflow
+                : null,
+            bakeReady: this.#trackingSizeBakeReady,
+            pendingBakeReason: this.#pendingTrackingSizeBakeReason ?? null,
+            bakeInFlight: !!this.#trackingSizeBakeInFlight,
+            usingCache: false,
+        })
 
-                    logEBookPageNumLimited('viewSize', {
-                        sectionIndex: this.#index ?? null,
-                        side,
-                        clientWidth: element.clientWidth,
-                        clientHeight: element.clientHeight,
-                        scrollWidth,
-                        scrollHeight,
-                        returned: val,
-                        scrolled: this.scrolled,
-                        vertical: this.#vertical,
-                        rtl: this.#rtl,
-                        elemRect: elemRect ? {
-                            width: Math.round(elemRect.width),
-                            height: Math.round(elemRect.height),
-                            top: Math.round(elemRect.top),
-                            left: Math.round(elemRect.left),
-                        } : null,
-                        parentRect: parentRect ? {
-                            width: Math.round(parentRect.width),
-                            height: Math.round(parentRect.height),
-                            top: Math.round(parentRect.top),
-                            left: Math.round(parentRect.left),
-                        } : null,
-                        elemStyleHeight,
-                        elemStyleDisplay,
-                        parentStyleHeight,
-                        parentOverflow,
-                    })
-                    // Extra drill-down for vertical sections: log container chain metrics once per call.
-                    if (this.#index === 1 || this.#vertical) {
-                        const c = this.#container
-                        const p = c?.parentElement
-                        logEBookPageNumLimited('viewSize:container-metrics', {
-                            sectionIndex: this.#index ?? null,
-                            containerClientWidth: c?.clientWidth ?? null,
-                            containerClientHeight: c?.clientHeight ?? null,
-                            containerScrollWidth: c?.scrollWidth ?? null,
-                            containerScrollHeight: c?.scrollHeight ?? null,
-                            parentClientWidth: p?.clientWidth ?? null,
-                            parentClientHeight: p?.clientHeight ?? null,
-                            parentScrollWidth: p?.scrollWidth ?? null,
-                            parentScrollHeight: p?.scrollHeight ?? null,
-                        })
-                    }
+        return val
+    }
+    #logSizesOnce(payload) {
+        const key = JSON.stringify({
+            width: payload.width,
+            height: payload.height,
+            scrolled: payload.scrolled,
+            vertical: payload.vertical,
+            rtl: payload.rtl,
+            bakeReady: payload.bakeReady,
+            usingCache: payload.usingCache,
+            pending: payload.pendingBakeReason ?? null,
+        })
+        if (this.#lastSizesSnapshot === key) return
+        this.#lastSizesSnapshot = key
+        logEBookPageNumLimited(payload.event, payload)
+    }
 
-                    // Extra spike diagnostics: only log when a single call returns an unusually large value.
-                    const SPIKE_THRESHOLD = 4000
-                    if (Number.isFinite(val) && val > SPIKE_THRESHOLD) {
-                        const containerRect = this.#container?.getBoundingClientRect?.()
-                        let containerOverflow = null
-                        try {
-                            containerOverflow = this.#container ? getComputedStyle(this.#container).overflow : null
-                        } catch (_) {}
-
-                        logEBookPageNumLimited('viewSize:spike', {
-                            sectionIndex: this.#index ?? null,
-                            side,
-                            val,
-                            containerClientWidth: this.#container?.clientWidth ?? null,
-                            containerClientHeight: this.#container?.clientHeight ?? null,
-                            containerScrollWidth: this.#container?.scrollWidth ?? null,
-                            containerScrollHeight: this.#container?.scrollHeight ?? null,
-                            containerRect: containerRect ? {
-                                width: Math.round(containerRect.width),
-                                height: Math.round(containerRect.height),
-                                top: Math.round(containerRect.top),
-                                left: Math.round(containerRect.left),
-                            } : null,
-                            containerOverflow,
-                            elemStyleHeight,
-                            elemStyleDisplay,
-                            parentOverflow,
-                        })
-                    }
-                    resolve(val)
-                })
-            })
-        }
-        return view.cachedViewSize[await this.sideProp()]
+    #logViewSizeOnce(payload) {
+        const key = JSON.stringify({
+            side: payload.side,
+            width: payload.cachedWidth ?? payload.clientWidth,
+            height: payload.cachedHeight ?? payload.clientHeight,
+            scrolled: payload.scrolled,
+            vertical: payload.vertical,
+            rtl: payload.rtl,
+            bakeReady: payload.bakeReady,
+            usingCache: payload.usingCache,
+            pending: payload.pendingBakeReason ?? null,
+        })
+        if (this.#lastViewSizeSnapshot === key) return
+        this.#lastViewSizeSnapshot = key
+        logEBookPageNumLimited(payload.event, payload)
     }
     async start() {
-        if (this.#cachedStart === null) {
-            //        return new Promise(resolve => {
-            //            requestAnimationFrame(async () => {
-            //                    this.#cachedStart = Math.abs(this.#container[await this.scrollProp()])
-            const scrollProp = await this.scrollProp()
-            const raw = this.#container[scrollProp]
-            const start = Math.abs(raw)
-            this.#cachedStart = start
-            logEBookPageNumLimited('start', {
-                sectionIndex: this.#index ?? null,
-                scrollProp,
-                rawScrollValue: raw,
-                start,
-                scrolled: this.scrolled,
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-            })
-            //        return start
-            //                resolve(start)
-            //            })
-            //        })
-        }
-        return this.#cachedStart
+        const scrollProp = await this.scrollProp()
+        const raw = this.#container[scrollProp]
+        const start = Math.abs(raw)
+        logEBookPageNumLimited('start', {
+            sectionIndex: this.#index ?? null,
+            scrollProp,
+            rawScrollValue: raw,
+            start,
+            scrolled: this.scrolled,
+            vertical: this.#vertical,
+            rtl: this.#rtl,
+        })
+        return start
     }
     async end() {
         //        await this.#awaitDirection();
@@ -3718,11 +3700,19 @@ export class Paginator extends HTMLElement {
         const viewSize = await this.viewSize()
         const size = await this.size()
         const pages = Math.round(viewSize / size)
+        const sentinelAdjusted = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
+            && this.#hasSentinels
+            && !this.scrolled
+            && !this.#vertical
+            && pages > 2;
+        const textPages = sentinelAdjusted ? Math.max(1, pages - 2) : pages
         logEBookPageNumLimited('pages', {
             sectionIndex: this.#index ?? null,
             viewSize,
             size,
             pages,
+            textPages,
+            sentinelAdjusted,
             scrolled: this.scrolled,
             vertical: this.#vertical,
             rtl: this.#rtl,
@@ -4393,7 +4383,8 @@ export class Paginator extends HTMLElement {
         const detail = {
             reason,
             range,
-            index
+            index,
+            sectionIndex: index,
         }
 
         let pageNumberForDetail = null
@@ -4413,43 +4404,89 @@ export class Paginator extends HTMLElement {
                 pageNumberForDetail = Math.max(1, Math.min(pageCountForDetail, Math.floor(frac * pageCountForDetail) + 1))
             }
         } else if ((await this.pages()) > 0) {
-            const [page, pages, pageSize, startOffset] = await Promise.all([
-                this.page(),
-                this.pages(),
-                this.size(),
-                this.start(),
-            ])
-            this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
-            // Paginated mode uses two sentinel pages (lead/trail). Report text pages only.
-            if (pages > 2) {
-                pageCountForDetail = pages - 2
-                const leadSentinel = pageSize // one lead sentinel page
-                const normalizedOffset = Math.max(0, startOffset - leadSentinel)
-                const pageNumberFromOffset = pageCountForDetail > 0
-                    ? Math.min(pageCountForDetail, Math.floor(normalizedOffset / pageSize) + 1)
+            const computePaginatedDetail = async () => {
+                const [page, pages, pageSize, startOffset] = await Promise.all([
+                    this.page(),
+                    this.pages(),
+                    this.size(),
+                    this.start(),
+                ])
+            const adjustForSentinels = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
+                && this.#hasSentinels
+                && !this.scrolled
+                && !this.#vertical
+                && pages > 2
+                const textPages = adjustForSentinels ? Math.max(1, pages - 2) : pages
+                const normalizedOffset = adjustForSentinels
+                    ? Math.max(0, startOffset - pageSize) // drop lead sentinel
+                    : startOffset
+                const textPageNumber = textPages > 0
+                    ? Math.min(textPages, Math.floor(normalizedOffset / pageSize) + 1)
                     : 1
-                pageNumberForDetail = pageNumberFromOffset
-                detail.fraction = (pageCountForDetail > 0)
-                    ? normalizedOffset / (pageSize * pageCountForDetail)
+                const fractionUsed = textPages > 0
+                    ? normalizedOffset / (pageSize * textPages)
                     : null
-                detail.size = pageCountForDetail > 0 ? 1 / pageCountForDetail : null
-                logEBookPageNumLimited('relocate:detail:calc', {
-                    reason,
-                    sectionIndex: index,
+
+                return {
                     rawPage: page,
                     rawPages: pages,
                     pageSize,
                     startOffset,
                     normalizedOffset,
-                    pageCountForDetail,
-                    pageNumberForDetail,
-                    fractionUsed: detail.fraction,
-                })
-            } else {
-                pageCountForDetail = pages
-                pageNumberForDetail = page
-                detail.fraction = (pageCountForDetail > 0) ? (page - 1) / pageCountForDetail : null
+                    textPages,
+                    textPageNumber: adjustForSentinels ? textPageNumber : Math.max(1, page + 1),
+                    fractionUsed,
+                    sizeFraction: textPages > 0 ? 1 / textPages : null,
+                    adjustForSentinels,
+                }
             }
+
+            let pagedDetail = await computePaginatedDetail()
+            this.#header.style.visibility = pagedDetail.rawPage > 1 ? 'visible' : 'hidden'
+
+            // If layout wasn’t settled yet (common when iframe was hidden pre‑bake),
+            // force one re-measure to pick up the real page count.
+            if (!this.scrolled && pagedDetail.textPages <= 1) {
+                if (this.#view) {
+                    this.#view.cachedViewSize = null
+                }
+                await new Promise(resolve => requestAnimationFrame(resolve))
+                const retryDetail = await computePaginatedDetail()
+                if (retryDetail.textPages > pagedDetail.textPages) {
+                    pagedDetail = retryDetail
+                    logEBookPageNumLimited('relocate:detail:retry', {
+                        reason,
+                        sectionIndex: index,
+                        rawPage: pagedDetail.rawPage,
+                        rawPages: pagedDetail.rawPages,
+                        pageSize: pagedDetail.pageSize,
+                        startOffset: pagedDetail.startOffset,
+                        pageCountForDetail: pagedDetail.textPages,
+                        pageNumberForDetail: pagedDetail.textPageNumber,
+                        fractionUsed: pagedDetail.fractionUsed,
+                        sentinelAdjusted: pagedDetail.adjustForSentinels,
+                    })
+                }
+            }
+
+            pageCountForDetail = pagedDetail.textPages
+            pageNumberForDetail = pagedDetail.textPageNumber
+            detail.fraction = pagedDetail.fractionUsed
+            detail.size = pagedDetail.sizeFraction
+
+            logEBookPageNumLimited('relocate:detail:calc', {
+                reason,
+                sectionIndex: index,
+                rawPage: pagedDetail.rawPage,
+                rawPages: pagedDetail.rawPages,
+                pageSize: pagedDetail.pageSize,
+                startOffset: pagedDetail.startOffset,
+                normalizedOffset: pagedDetail.normalizedOffset,
+                pageCountForDetail,
+                pageNumberForDetail,
+                fractionUsed: detail.fraction,
+                sentinelAdjusted: pagedDetail.adjustForSentinels,
+            })
         }
         if (pageNumberForDetail != null) detail.pageNumber = pageNumberForDetail
         if (pageCountForDetail != null) detail.pageCount = pageCountForDetail
@@ -4470,17 +4507,28 @@ export class Paginator extends HTMLElement {
         }))
 
         try {
-            const [pageNumber, pageCount, startOffset, pageSize, viewSize] = await Promise.all([
+            const [pageNumberRaw, pageCountRaw, startOffset, pageSize, viewSize] = await Promise.all([
                 this.page(),
                 this.pages(),
                 this.start(),
                 this.size(),
                 this.viewSize(),
             ])
+            const sentinelAdjusted = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
+                && !this.scrolled
+                && !this.#vertical
+                && pageCountRaw > 2;
+            const pageCountText = sentinelAdjusted ? Math.max(1, pageCountRaw - 2) : pageCountRaw;
+            const pageNumberText = sentinelAdjusted
+                ? Math.max(1, Math.min(pageCountText, pageNumberRaw)) // raw is 0-based; text pages shift by one lead sentinel
+                : Math.max(1, pageNumberRaw);
             logEBookPageNumLimited('afterScroll:metrics', {
                 ...detailForLog,
-                pageNumber,
-                pageCount,
+                pageNumber: pageNumberText,
+                pageCount: pageCountText,
+                pageNumberRaw,
+                pageCountRaw,
+                sentinelAdjusted,
                 startOffset,
                 pageSize,
                 viewSize,

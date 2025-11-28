@@ -4,10 +4,12 @@ const FRACTION_EPSILON = 0.000001;
 // Focused pagination/bake diagnostics (capped to avoid spam)
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
+const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
     'nav:page-metrics',
+    'nav:relocate:input',
     'relocate',
     'relocate:label',
     'ui:primary-label',
@@ -89,6 +91,8 @@ export class NavigationHUD {
         this.totalPageCount = 0;
         this.pageTargets = [];
         this.pageTargetIndexByKey = new Map();
+        this.sectionPageCounts = new Map();
+        this.lastSectionIndexSeen = null;
         this.currentLocationDescriptor = null;
         this.lastRelocateDetail = null;
         this.isProcessingRelocateJump = false;
@@ -144,8 +148,10 @@ export class NavigationHUD {
         this.#applyRelocateButtonEdges();
         this.#updateSectionProgress();
     }
-    
+
     setPageTargets(pageList) {
+        this.sectionPageCounts.clear?.();
+        this.lastSectionIndexSeen = null;
         this.pageTargets = flattenPageTargets(pageList ?? []);
         this.pageTargetIndexByKey = new Map();
         this.pageTargets.forEach((item, index) => {
@@ -333,6 +339,38 @@ export class NavigationHUD {
     
     async handleRelocate(detail) {
         if (!detail) return;
+        // Ensure section index is preserved for per-section totals/offsets
+        const rendererIndex = (() => {
+            try {
+                const r = this.getRenderer?.();
+                return typeof r?.currentIndex === 'number' ? r.currentIndex : null;
+            } catch (_) { return null }
+        })();
+        const inferredSectionIndex = (() => {
+            if (typeof detail.sectionIndex === 'number') return detail.sectionIndex;
+            if (typeof detail.index === 'number') return detail.index;
+            if (typeof rendererIndex === 'number') return rendererIndex;
+            if (typeof this.lastRelocateDetail?.sectionIndex === 'number') return this.lastRelocateDetail.sectionIndex;
+            if (typeof this.lastRelocateDetail?.index === 'number') return this.lastRelocateDetail.index;
+            if (typeof this.lastSectionIndexSeen === 'number') return this.lastSectionIndexSeen;
+            return null;
+        })();
+        if (typeof inferredSectionIndex === 'number') {
+            detail.sectionIndex = inferredSectionIndex;
+            this.lastSectionIndexSeen = inferredSectionIndex;
+        }
+        if (typeof detail.sectionIndex === 'number' && typeof detail.pageCount === 'number' && detail.pageCount > 0) {
+            this.sectionPageCounts.set(detail.sectionIndex, detail.pageCount);
+        }
+        logEBookPageNumLimited('nav:relocate:input', {
+            sectionIndex: typeof detail.sectionIndex === 'number' ? detail.sectionIndex : null,
+            index: typeof detail.index === 'number' ? detail.index : null,
+            pageNumber: typeof detail.pageNumber === 'number' ? detail.pageNumber : null,
+            pageCount: typeof detail.pageCount === 'number' ? detail.pageCount : null,
+            scrolled: detail.scrolled ?? null,
+            sectionPageCountsSize: this.sectionPageCounts.size,
+            rendererIndex,
+        });
         // Prefer the renderer's live snapshot, but prime it from detail when available
         this.#updateRendererSnapshotFromDetail(detail);
         await this.#refreshRendererSnapshot();
@@ -599,6 +637,9 @@ export class NavigationHUD {
             this.sectionPageCounts.set(sectionIndex, detailPageCount);
         }
         const sectionOffset = sectionIndex != null ? this.#sectionOffset(sectionIndex) : 0;
+        const sectionsTotal = this.sectionPageCounts.size > 0
+            ? Array.from(this.sectionPageCounts.values()).reduce((acc, value) => acc + (typeof value === 'number' && value > 0 ? value : 0), 0)
+            : null;
 
         const adjustedCurrent = sectionPageNumber != null ? sectionPageNumber + sectionOffset : null;
         const adjustedTotal = totalPagesRaw != null
@@ -643,6 +684,7 @@ export class NavigationHUD {
             totalPageCount: this.totalPageCount,
             rendererTotal: this.rendererPageSnapshot?.total ?? null,
             fallbackTotalPageCount: this.fallbackTotalPageCount,
+            sectionsTotal,
             locationTotal,
             detailPageNumber,
             detailPageCount,
@@ -726,6 +768,15 @@ export class NavigationHUD {
 
     
     async #calculatePagesLeftInSection({ refreshSnapshot = true } = {}) {
+        // Prefer relocate detail (already normalized to text pages) when available in paginated mode.
+        const detail = this.lastRelocateDetail;
+        if (detail?.scrolled === false) {
+            const current = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
+            const total = typeof detail.pageCount === 'number' ? detail.pageCount : null;
+            if (current != null && current > 0 && total != null && total > 0) {
+                return Math.max(0, total - current);
+            }
+        }
         if (refreshSnapshot) {
             await this.#refreshRendererSnapshot();
         }
@@ -928,7 +979,8 @@ export class NavigationHUD {
             scrolled,
             rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
         };
-        if (isPaginated && total && total > 2) {
+        const shouldAdjustForSentinels = MANABI_NAV_SENTINEL_ADJUST_ENABLED && isPaginated && total && total > 2;
+        if (shouldAdjustForSentinels) {
             const textTotal = Math.max(1, total - 2); // strip lead/trail sentinels
             const textCurrent = Math.max(1, Math.min(textTotal, current)); // clamp without subtracting so page 2 -> text page 2
             logEBookPageNumLimited('nav:normalize:calc', {
@@ -1145,6 +1197,13 @@ export class NavigationHUD {
         if (this.totalPageCount > 0) {
             candidates.push({ source: 'page-targets', total: this.totalPageCount });
         }
+        if (this.sectionPageCounts.size > 0) {
+            const sectionSum = Array.from(this.sectionPageCounts.values())
+                .reduce((acc, value) => acc + (typeof value === 'number' && value > 0 ? value : 0), 0);
+            if (sectionSum > 0) {
+                candidates.push({ source: 'sections', total: sectionSum });
+            }
+        }
         if (typeof detailPageCount === 'number' && detailPageCount > 0) {
             candidates.push({ source: 'detail', total: detailPageCount });
         }
@@ -1165,7 +1224,7 @@ export class NavigationHUD {
             this.lastTotalSource = null;
             return null;
         }
-        const precedence = ['page-targets', 'renderer', 'detail', 'fallback', 'location'];
+        const precedence = ['page-targets', 'sections', 'renderer', 'detail', 'fallback', 'location'];
         const best = candidates
             .sort((a, b) => {
                 const pa = precedence.indexOf(a.source);
