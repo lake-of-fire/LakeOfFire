@@ -527,7 +527,8 @@ display: none;
 }
 
 .manabi-tracking-section {
-contain: initial !important;
+/*contain: initial !important;*/
+contain: style layout !important;
 }
 
 body *:not([class^="manabi-"]):not(manabi-segment, manabi-segment *):not(manabi-container):not(manabi-sentence, manabi-sentence *):not(#manabi-tracking-section-subscription-preview-inline-notice) {

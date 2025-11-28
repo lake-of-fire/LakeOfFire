@@ -82,8 +82,8 @@ const MANABI_TRACKING_PREBAKE_HIDDEN_CLASS = 'manabi-prebake-hidden'
 const MANABI_TRACKING_PREBAKE_HIDE_ENABLED = true
 // Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
-// Size baking enabled (original behavior). Uses cached block/inline sizes when available.
-const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
+// Size baking temporarily disabled.
+const MANABI_TRACKING_SIZE_BAKE_ENABLED = false
 // Foliate upstream inserts lead/trail sentinel pages in paginated mode; keep adjustment on.
 const MANABI_RENDERER_SENTINEL_ADJUST_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
@@ -612,7 +612,7 @@ const bakeTrackingSectionSizes = async (doc, {
 
     revealDocumentContentForBake(doc)
 
-    ensureTrackingSizeBakeStyles(doc)
+    if (MANABI_TRACKING_SIZE_BAKE_ENABLED) ensureTrackingSizeBakeStyles(doc)
 
     // Wait for fonts to settle to reduce post-bake growth
     try { await doc.fonts?.ready } catch {}
@@ -4502,7 +4502,7 @@ export class Paginator extends HTMLElement {
         //            console.log("#display...awaited promise")
         this.#index = index
         if (src) {
-            const afterLoad = async (doc) => {
+    const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
                     await onLoad?.({
                         location: src,
@@ -4515,7 +4515,7 @@ export class Paginator extends HTMLElement {
                         const $style = doc.createElement('style')
                         doc.head.append($style)
                         this.#styleMap.set(doc, [$styleBefore, $style])
-                        ensureTrackingSizeBakeStyles(doc)
+                        if (MANABI_TRACKING_SIZE_BAKE_ENABLED) ensureTrackingSizeBakeStyles(doc)
                     }
                     await onLoad?.({
                         doc,
