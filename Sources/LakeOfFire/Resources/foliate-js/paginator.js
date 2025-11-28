@@ -83,7 +83,7 @@ const MANABI_TRACKING_PREBAKE_HIDE_ENABLED = true
 // Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
 // Size baking enabled (original behavior). Uses cached block/inline sizes when available.
-const MANABI_TRACKING_SIZE_BAKE_ENABLED = false
+const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
 // Foliate upstream inserts lead/trail sentinel pages in paginated mode; keep adjustment on.
 const MANABI_RENDERER_SENTINEL_ADJUST_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
@@ -1315,113 +1315,16 @@ class View {
     }
     #handleResize(newSize) {
         if (!newSize) return
-        // When baking is off, keep the resize path simple to avoid stale cached rects.
-        if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
-            if (this.#inExpand || this.#isCacheWarmer) return
-            this.cachedViewSize = null
-            this.expand().catch(() => {})
-            return
-        }
-        // Skip resize work while an expand is actively adjusting iframe dimensions; those
-        // resizes are expected and immediately followed by the real layout pass.
-        if (this.#inExpand) return
-        const roundRect = r => r ? {
-            width: Math.round(r.width),
-            height: Math.round(r.height),
-            top: Math.round(r.top),
-            left: Math.round(r.left),
-        } : null
-        const bodyRect = this.#hasResizerObserverTriggered && this.#lastBodyRect
-            ? this.#lastBodyRect
-            : roundRect(this.document?.body?.getBoundingClientRect?.())
-        const containerRect = this.#hasResizerObserverTriggered && this.#lastContainerRect
-            ? this.#lastContainerRect
-            : roundRect(this.container?.getBoundingClientRect?.())
-        logEBookPerf('RECT.resize-read', {
-            body: bodyRect,
-            container: containerRect,
-            seq: this.#resizeEventSeq,
-        })
-        ++this.#resizeEventSeq
-
-        if (!this.#hasResizerObserverTriggered) {
-            this.#hasResizerObserverTriggered = true;
-            this.#lastResizerRect = newSize;
-            this.#lastBodyRect = bodyRect;
-            this.#lastContainerRect = containerRect;
-            return;
-        }
-
-        const old = this.#lastResizerRect;
-        const oldBody = this.#lastBodyRect;
-        const oldContainer = this.#lastContainerRect;
-        const changedContent =
-            !old ||
-            newSize.width !== old.width ||
-            newSize.height !== old.height ||
-            newSize.top !== old.top ||
-            newSize.left !== old.left;
-        const eps = 1; // px tolerance
-        const sameRect = (a, b) =>
-            a && b &&
-            Math.abs(a.width - b.width) <= eps &&
-            Math.abs(a.height - b.height) <= eps &&
-            Math.abs(a.top - b.top) <= eps &&
-            Math.abs(a.left - b.left) <= eps;
-        const changedBody = !sameRect(bodyRect, oldBody);
-        const changedContainer = !sameRect(containerRect, oldContainer);
-
-        if (changedContent) {
-            this.#lastResizerRect = newSize
-            this.#lastBodyRect = bodyRect;
-            this.#lastContainerRect = containerRect;
-
-            if (!changedBody && !changedContainer) {
-                return
-            }
-
-            this.cachedViewSize = null
-
-            // Only trigger size/geometry bake after the new size stays stable for one more frame.
-            requestAnimationFrame(() => {
-                const bodyRect = this.document?.body?.getBoundingClientRect?.()
-                if (!bodyRect) return
-                const stableSize = {
-                    width: Math.round(bodyRect.width),
-                    height: Math.round(bodyRect.height),
-                    top: Math.round(bodyRect.top),
-                    left: Math.round(bodyRect.left),
-                }
-                logEBookPerf('RECT.resize-stable-check', {
-                    stableSize,
-                    lastResizer: this.#lastResizerRect,
-                })
-                const still =
-                    stableSize.width === this.#lastResizerRect?.width &&
-                    stableSize.height === this.#lastResizerRect?.height &&
-                    stableSize.top === this.#lastResizerRect?.top &&
-                    stableSize.left === this.#lastResizerRect?.left
-
-                if (!still) {
-                    return
-                }
-
-                logEBookPerf('EXPAND.callsite', {
-                    source: 'view-resize-stable',
-                    suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
-                    ready: this.container?.trackingSizeBakeReadyPublic ?? null,
-                })
-                this.container?.requestTrackingSectionGeometryBake?.({
-                    reason: 'iframe-resize',
-                    restoreLocation: true
-                })
-                if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
-                    this.container?.requestTrackingSectionSizeBake?.({
-                        reason: 'iframe-resize',
-                        rect: stableSize,
-                    })
-                }
+        // Keep resize lightweight: invalidate cached sizes and ask container to re-bake when enabled.
+        if (this.#inExpand || this.#isCacheWarmer) return
+        this.cachedViewSize = null
+        if (MANABI_TRACKING_SIZE_BAKE_ENABLED) {
+            this.container?.requestTrackingSectionSizeBakeDebounced?.({
+                reason: 'iframe-resize',
+                rect: newSize,
             })
+        } else {
+            this.expand().catch(() => {})
         }
     }
     #element = document.createElement('div')
@@ -2172,6 +2075,14 @@ export class Paginator extends HTMLElement {
     #isCacheWarmer = false
     #prefetchTimer = null
     #prefetchCache = new Map()
+    #schedulePrefetchLoad(index) {
+        const start = () => this.sections[index].load().catch(() => { });
+        const ric = globalThis.requestIdleCallback;
+        const promise = typeof ric === 'function'
+            ? new Promise(resolve => ric(() => resolve(start()), { timeout: 500 }))
+            : new Promise(resolve => setTimeout(() => resolve(start()), 50));
+        this.#prefetchCache.set(index, promise);
+    }
     #skipTouchEndOpacity = false
     #isAdjustingSelectionHandle = false
     #trackingGeometryRebakeTimer = null
@@ -2187,6 +2098,7 @@ export class Paginator extends HTMLElement {
     #trackingSizeBakeInFlight = null
     #trackingSizeBakeNeedsRerun = false
     #trackingSizeBakeQueuedReason = null
+    requestTrackingSectionSizeBakeDebounced = (args) => this.requestTrackingSectionSizeBake(args)
     #trackingSizeBakeReady = false
     #trackingSizeLastObservedRect = null
     #pendingTrackingSizeBakeReason = null
@@ -4770,8 +4682,7 @@ export class Paginator extends HTMLElement {
                         this.sections[i].linear !== 'no' &&
                         !this.#prefetchCache.has(i)
                     ) {
-                        const p = this.sections[i].load().catch(() => { });
-                        this.#prefetchCache.set(i, p);
+                        this.#schedulePrefetchLoad(i)
                     }
                 });
             }, 500);

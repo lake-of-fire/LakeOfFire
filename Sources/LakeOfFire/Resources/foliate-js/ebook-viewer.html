@@ -446,6 +446,7 @@
                     -moz-user-select: none;
                     -ms-user-select: none;
                     transition: opacity 375ms ease-out;
+                    position: relative;
                 }
                 #progress-slider {
                     flex-grow: 1;
@@ -456,6 +457,23 @@
                     -webkit-user-select: none;
                     -moz-user-select: none;
                     -ms-user-select: none;
+                }
+                #progress-ticks {
+                    position: absolute;
+                    left: calc(var(--thumb-size) * 0.5);
+                    right: calc(var(--thumb-size) * 0.5);
+                    bottom: -2px;
+                    height: 4px;
+                    pointer-events: none;
+                }
+                #progress-ticks .tick {
+                    position: absolute;
+                    bottom: 0;
+                    width: 1px;
+                    height: 3px;
+                    background: currentColor;
+                    opacity: 0.35;
+                    transform: translateX(-0.5px);
                 }
                 #nav-hidden-buttons {
                     position: absolute;
@@ -817,13 +835,14 @@
                     height: 20px;
                     -webkit-appearance: none;
                     background: transparent;
+                    --thumb-size: 24px;
                 }
                 input[type=range].styled-slider:focus {
                     outline: none;
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb {
                     -webkit-appearance: none;
-                    width: 24px;
+                    width: var(--thumb-size);
                     height: 14px;
                     border-radius: 14px;
                     background: var(--theme-background-color);
@@ -860,7 +879,7 @@
                 input[type=range].styled-slider.slider-progress {
                     --range: calc(var(--max) - var(--min));
                     --ratio: calc((var(--value) - var(--min)) / var(--range));
-                    --sx: calc(0.5 * 14px + var(--ratio) * (100% - 14px));
+                    --sx: calc(0.5 * var(--thumb-size) + var(--ratio) * (100% - var(--thumb-size)));
                     accent-color: #ffffff;
                 }
                 
@@ -986,8 +1005,8 @@
                 </div>
                 <div id="nav-bottom-row">
                     <div id="progress-wrapper">
-                        <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
-                        <datalist id="tick-marks"></datalist>
+                        <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any">
+                        <div id="progress-ticks" aria-hidden="true"></div>
                     </div>
                 </div>
             </div>

@@ -19,6 +19,31 @@ const VIEWER_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
 ]);
 
+const logFix = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail };
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKFIX1 ${JSON.stringify(payload)}`);
+    } catch (_err) {
+        try { console.log('# EBOOKFIX1', event, detail); } catch (_) {}
+    }
+};
+
+const getBookCacheKey = () => {
+    try {
+        return globalThis.reader?.view?.book?.id
+            || new URL(globalThis.reader?.view?.ownerDocument?.defaultView?.location?.href || '').pathname
+            || globalThis.reader?.view?.book?.dir
+            || null;
+    } catch (_) { return null; }
+};
+
+const getCacheWarmerSectionPageCounts = () => {
+    const map = globalThis.cacheWarmerPageCounts;
+    if (map instanceof Map) return map;
+    if (Array.isArray(map)) return new Map(map);
+    return null;
+};
+
 const logEBookPageNum = (event, detail = {}) => {
     const verbose = !!globalThis.manabiPageNumVerbose;
     const allow = verbose || VIEWER_PAGE_NUM_WHITELIST.has(event);
@@ -656,10 +681,15 @@ class Reader {
     }
     setLoadingIndicator(visible) {
         document.body.classList.toggle('loading', !!visible);
+        const tick = document.getElementById('progress-ticks');
+        const slider = document.getElementById('progress-slider');
+        if (tick) tick.style.visibility = visible ? 'hidden' : '';
+        if (slider) slider.style.visibility = visible ? 'hidden' : '';
     }
     #tocView
     #chevronAnimator = null;
     #progressSlider = null
+    #tickContainer = null
     #progressScrubState = null
     #handleProgressSliderPointerDown = (event) => {
     if (!this.#progressSlider) return;
@@ -667,14 +697,17 @@ class Reader {
     if (this.#progressScrubState) {
     this.#finalizeProgressScrubSession({ cancel: true });
     }
-    this.#progressSlider.setPointerCapture?.(event.pointerId);
     const originDescriptor = this.navHUD?.getCurrentDescriptor();
+    const originFraction = originDescriptor?.fraction ?? Number(this.#progressSlider?.value ?? NaN);
+    this.#progressSlider.setPointerCapture?.(event.pointerId);
     this.#progressScrubState = {
     pointerId: event.pointerId,
     pendingEnd: false,
     cancelRequested: false,
     timeoutId: null,
     releaseFraction: null,
+    originDescriptor,
+    originFraction: Number.isFinite(originFraction) ? originFraction : null,
     };
     this.navHUD?.beginProgressScrubSession(originDescriptor);
     this.#logScrubDiagnostic('pointer-down', {
@@ -924,69 +957,43 @@ class Reader {
 
     const slider = $('#progress-slider')
     this.#progressSlider = slider
+    this.#tickContainer = document.getElementById('progress-ticks')
     slider.dir = book.dir
-    const debouncedGoToFraction = debounce(e => {
+    const goToFractionImmediate = e => {
     this.view.goToFraction(parseFloat(e.target.value))
-    }, 250);
-    slider.addEventListener('input', debouncedGoToFraction)
+    };
+    slider.addEventListener('input', goToFractionImmediate)
     slider.addEventListener('pointerdown', this.#handleProgressSliderPointerDown)
     slider.addEventListener('pointerup', this.#handleProgressSliderPointerUp)
     slider.addEventListener('pointercancel', this.#handleProgressSliderPointerCancel)
 
-    // Section ticks
-    const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
-    const total = sizes.reduce((a, b) => a + b, 0)
-    let sum = 0
-    // Calculate all tick positions as fractions
-    let ticks = [];
-    for (const size of sizes.slice(0, -1)) {
-    sum += size;
-    ticks.push(sum / total);
+    this.book = book;
+    const initialCounts = getCacheWarmerSectionPageCounts();
+    if (initialCounts) {
+        this.navHUD?.setSectionPageCountsFromCache(initialCounts);
+        logFix('pagecount:init', { size: initialCounts.size, total: Array.from(initialCounts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0) });
     }
-    if (sizes.length >= 50) {
-    // Collapse ticks that are close to each other, never collapse more than those within that window.
-    const THRESHOLD = 0.01;
-    let collapsed = [];
-    let group = [];
-    for (let i = 0; i < ticks.length; ++i) {
-    group.push(ticks[i]);
-    // If next tick is far enough, close group
-    if (i === ticks.length - 1 || Math.abs(ticks[i + 1] - ticks[i]) > THRESHOLD) {
-    // Collapse group if there's more than one tick in threshold
-    if (group.length > 1) {
-    // Pick the tick closest to the middle of the group
-    const avg = group.reduce((a, b) => a + b, 0) / group.length;
-    let closest = group[0];
-    let minDist = Math.abs(avg - closest);
-    for (const t of group) {
-    const dist = Math.abs(avg - t);
-    if (dist < minDist) {
-    minDist = dist;
-    closest = t;
-    }
-    }
-    collapsed.push(closest);
-    } else {
-    collapsed.push(group[0]);
-    }
-    group = [];
-    }
-    }
-    ticks = collapsed;
-    }
-    // Clear any previous ticks
-    const tickMarks = $('#tick-marks');
-    tickMarks.innerHTML = '';
-    for (const tick of ticks) {
-    const option = document.createElement('option');
-    option.value = tick;
-    tickMarks.append(option);
-    }
+    const pageCountUpdate = e => {
+        const map = new Map(e?.detail?.counts ?? []);
+        const linearCount = Array.isArray(this.book?.sections)
+            ? this.book.sections.filter(s => s.linear !== 'no').length
+            : null;
+        const sum = Array.from(map.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0);
+        if (map.size > 0 && (linearCount == null || map.size === linearCount) && sum > 0) {
+            this.navHUD?.setSectionPageCountsFromCache(map);
+            this.#renderSectionTicks(map);
+            logFix('cachewarmer:update', { size: map.size, total: e?.detail?.total ?? null, linearCount, sum });
+        }
+    };
+    document.addEventListener('cachewarmer:pagecounts', pageCountUpdate);
 
     slider.style.setProperty('--value', slider.value);
     slider.style.setProperty('--min', slider.min == '' ? '0' : slider.min);
     slider.style.setProperty('--max', slider.max == '' ? '100' : slider.max);
     slider.addEventListener('input', () => slider.style.setProperty('--value', slider.value));
+
+    const tickFractions = this.#computeSectionTicks(initialCounts);
+    this.#renderSectionTicks(initialCounts, tickFractions);
 
     // Percent jump input/button wiring
     const percentInput = document.getElementById('percent-jump-input');
@@ -1235,6 +1242,7 @@ class Reader {
     if (!this.#progressScrubState) return;
     this.#progressScrubState.pendingEnd = true;
     this.#progressScrubState.cancelRequested = !!cancelRequested;
+    this.#progressScrubState.pendingCommit = true; // mark origin fixed for next relocate
     if (this.#progressScrubState.timeoutId) {
     clearTimeout(this.#progressScrubState.timeoutId);
     }
@@ -1255,6 +1263,8 @@ class Reader {
     this.navHUD?.endProgressScrubSession(descriptor, {
     cancel,
     releaseFraction: this.#progressScrubState.releaseFraction,
+    originDescriptor: this.#progressScrubState.originDescriptor ?? null,
+    originFraction: this.#progressScrubState.originFraction ?? null,
     });
     this.#logScrubDiagnostic('finalize-scrub-session', {
     cancel,
@@ -1275,6 +1285,70 @@ class Reader {
     if (typeof currentPage === 'number' && value === currentPage) return false;
     }
     return typeof total === 'number' && total > 0;
+    }
+
+    #computeSectionTicks(pageCountsMap) {
+        if (!this.book || !Array.isArray(this.book.sections)) return [];
+        const ticks = [];
+        const counts = [];
+        this.book.sections.forEach((section, idx) => {
+            if (section?.linear === 'no') return;
+            const pageCount = pageCountsMap instanceof Map ? pageCountsMap.get(idx) : null;
+            const size = (typeof pageCount === 'number' && pageCount > 0)
+                ? pageCount
+                : (typeof section?.size === 'number' && section.size > 0 ? section.size : null);
+            if (size != null) counts.push(size);
+        });
+        if (!counts.length) return ticks;
+        const total = counts.reduce((a, b) => a + b, 0);
+        let sum = 0;
+        for (const size of counts.slice(0, -1)) {
+            sum += size;
+            ticks.push(sum / total);
+        }
+        if (counts.length >= 50) {
+            const THRESHOLD = 0.01;
+            const collapsed = [];
+            let group = [];
+            for (let i = 0; i < ticks.length; ++i) {
+                group.push(ticks[i]);
+                if (i === ticks.length - 1 || Math.abs(ticks[i + 1] - ticks[i]) > THRESHOLD) {
+                    if (group.length > 1) {
+                        const avg = group.reduce((a, b) => a + b, 0) / group.length;
+                        let closest = group[0];
+                        let minDist = Math.abs(avg - closest);
+                        for (const t of group) {
+                            const dist = Math.abs(avg - t);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closest = t;
+                            }
+                        }
+                        collapsed.push(closest);
+                    } else {
+                        collapsed.push(group[0]);
+                    }
+                    group = [];
+                }
+            }
+            return collapsed;
+        }
+        return ticks;
+    }
+
+    #renderSectionTicks(pageCountsMap, precomputedTicks) {
+        if (!this.#tickContainer) return;
+        const ticks = precomputedTicks ?? this.#computeSectionTicks(pageCountsMap);
+        this.#tickContainer.innerHTML = '';
+        const isRTL = this.isRTL;
+        for (const tick of ticks) {
+            if (!Number.isFinite(tick)) continue;
+            const pos = Math.max(0, Math.min(1, tick)) * 100;
+            const mark = document.createElement('div');
+            mark.className = 'tick';
+            mark.style[isRTL ? 'right' : 'left'] = `${pos}%`;
+            this.#tickContainer.append(mark);
+        }
     }
 
     #fractionFromPage(pageNumber, totalPages) {
@@ -1501,6 +1575,8 @@ class Reader {
         const percent = percentFormat.format(fraction)
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
+        const ticks = document.getElementById('progress-ticks');
+        if (ticks) ticks.style.visibility = 'visible'
         slider.value = fraction
         slider.style.setProperty('--value', slider.value); // keep slider progress updated
         // (removed: setting tocView currentHref here)
@@ -1524,15 +1600,15 @@ class Reader {
             postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
             break;
         case 'page':
-            if (relocateDirection === 'forward') {
-                postNavigationChromeVisibility(true, { source: 'relocate', direction: 'forward' });
-            } else if (relocateDirection === 'backward') {
-                postNavigationChromeVisibility(false, { source: 'relocate', direction: 'backward' });
-            }
+            // Keep nav visible on page turns to avoid stuck hidden state.
+            postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
             break;
         default:
             break;
         }
+
+        // Force nav visible after every relocate to prevent desync between HTML and Swift layer.
+        postNavigationChromeVisibility(false, { source: 'relocate-reset' });
 
         if (this.hasLoadedLastPosition) {
             this.#postUpdateReadingProgressMessage({
@@ -1699,10 +1775,14 @@ class Reader {
 class CacheWarmer {
     constructor() {
         this.view
+        this.pageCounts = new Map()
+        globalThis.cacheWarmerPageCounts = this.pageCounts
+        globalThis.cacheWarmerTotalPages = 0
     }
     async open(file) {
     this.view = await getView(file, true)
     this.view.addEventListener('load', this.#onLoad.bind(this))
+    this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
     const {
     book
@@ -1730,6 +1810,42 @@ class CacheWarmer {
         } else {
             //            this.view.remove()
         }
+    }
+
+    #broadcastPageCounts() {
+        const total = Array.from(this.pageCounts.values()).reduce((acc, v) => acc + (Number.isFinite(v) ? v : 0), 0)
+        globalThis.cacheWarmerTotalPages = total
+        try {
+            const key = getBookCacheKey();
+            if (key) {
+                const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER];
+                handler?.postMessage?.({
+                    command: 'set',
+                    key: `${key}::pageCounts`,
+                    entries: Array.from(this.pageCounts.entries()),
+                    reason: 'page-counts',
+                });
+                logFix('cachewarmer:store', { key, total, size: this.pageCounts.size });
+            }
+        } catch (error) {
+            logFix('cachewarmer:store:error', { error: String(error) });
+        }
+        document.dispatchEvent(new CustomEvent('cachewarmer:pagecounts', {
+            detail: {
+                counts: Array.from(this.pageCounts.entries()),
+                total,
+            }
+        }))
+    }
+
+    #onRelocate({ detail }) {
+        const sectionIndex = typeof detail?.sectionIndex === 'number'
+            ? detail.sectionIndex
+            : (typeof this.view?.renderer?.currentIndex === 'number' ? this.view.renderer.currentIndex : null)
+        const pageCount = typeof detail?.pageCount === 'number' && detail.pageCount > 0 ? detail.pageCount : null
+        if (sectionIndex == null || pageCount == null) return
+        this.pageCounts.set(sectionIndex, pageCount)
+        this.#broadcastPageCounts()
     }
 
     //    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
@@ -1834,6 +1950,17 @@ window.loadNextCacheWarmerSection = async () => {
     await window.cacheWarmer.view.renderer.nextSection()
 }
 
+const throttle = (fn, intervalMs = 200) => {
+    let last = 0;
+    return (...args) => {
+        const now = Date.now();
+        if (now - last >= intervalMs) {
+            last = now;
+            return fn(...args);
+        }
+    };
+};
+
 window.loadEBook = ({
     url,
     layoutMode,
@@ -1882,8 +2009,48 @@ window.loadLastPosition = async ({
     }
     globalThis.reader.hasLoadedLastPosition = true
 
+    // Seed page counts from persisted bake cache if available
+    try {
+        const key = getBookCacheKey();
+        const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER];
+        if (key && handler?.postMessage) {
+            handler.postMessage({ command: 'get', key: `${key}::pageCounts` });
+        }
+    } catch (error) {
+        logFix('pagecount:restore:error', { error: String(error) });
+    }
+
     // Don't overlap cache warming with initial page load
     await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+}
+
+globalThis.manabiResolveTrackingSizeCache = function (requestId, entries) {
+    // Also reuse as page-count cache channel
+    if (typeof requestId === 'string' && requestId.endsWith('::pageCounts')) {
+        try {
+            const map = new Map(entries ?? []);
+            if (map.size > 0) {
+                globalThis.cacheWarmerPageCounts = map;
+                globalThis.cacheWarmerTotalPages = Array.from(map.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0);
+                document.dispatchEvent(new CustomEvent('cachewarmer:pagecounts', {
+                    detail: {
+                        counts: Array.from(map.entries()),
+                        total: globalThis.cacheWarmerTotalPages,
+                        source: 'cache',
+                    }
+                }));
+                logFix('pagecount:restored', { size: map.size, total: globalThis.cacheWarmerTotalPages });
+            }
+        } catch (error) {
+            logFix('pagecount:restore:handler:error', { error: String(error) });
+        }
+    }
+    if (typeof globalThis.manabiResolveTrackingSizeCacheOriginal === 'function') {
+        return globalThis.manabiResolveTrackingSizeCacheOriginal(requestId, entries);
+    }
+}
+if (!globalThis.manabiResolveTrackingSizeCacheOriginal) {
+    globalThis.manabiResolveTrackingSizeCacheOriginal = globalThis.manabiResolveTrackingSizeCache;
 }
 
 window.refreshBookReadingProgress = async (articleReadingProgress) => {

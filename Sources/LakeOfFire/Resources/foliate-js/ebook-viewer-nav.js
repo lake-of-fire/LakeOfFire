@@ -149,6 +149,29 @@ export class NavigationHUD {
         this.#updateSectionProgress();
     }
 
+    setSectionPageCountsFromCache(counts) {
+        if (!(counts instanceof Map) || counts.size === 0) return;
+        const linearCount = Array.isArray(this.navContext?.sections)
+            ? this.navContext.sections.filter(s => s.linear !== 'no').length
+            : null;
+        if (typeof linearCount === 'number' && linearCount > 0 && counts.size < linearCount) {
+            // Don't overwrite until all linear sections are known.
+            return;
+        }
+        this.sectionPageCounts = new Map(counts);
+        const total = Array.from(counts.values()).reduce((acc, v) => acc + (Number.isFinite(v) && v > 0 ? v : 0), 0);
+        if (total > 0) {
+            this.fallbackTotalPageCount = total;
+            this.lastTotalSource = 'cachewarmer';
+        }
+        if (this.lastRelocateDetail) {
+            this.#updateRendererSnapshotFromDetail(this.lastRelocateDetail);
+            this.#updatePrimaryLine(this.lastRelocateDetail);
+        }
+        this.#updateSectionProgress({ refreshSnapshot: false });
+        this.#updateRelocateButtons();
+    }
+
     setPageTargets(pageList) {
         this.sectionPageCounts.clear?.();
         this.lastSectionIndexSeen = null;
@@ -627,14 +650,19 @@ export class NavigationHUD {
         const locationIndex = locationCurrent != null ? locationCurrent : null;
         const rendererIndex = this.#rendererSnapshotIndex();
         const detailIndex = detailPageNumber != null ? detailPageNumber - 1 : null;
-        // Prefer explicit page target, then detail-provided pageNumber, then renderer, then fraction
-        const candidateIndex = [pageIndex, detailIndex, rendererIndex, approxIndexFromFraction, locationIndex]
+        // Prefer relocate detail first, then explicit page target, then renderer, then fraction
+        const candidateIndex = [detailIndex, pageIndex, rendererIndex, approxIndexFromFraction, locationIndex]
             .find(index => typeof index === 'number' && index >= 0);
         const sectionPageNumber = candidateIndex != null ? candidateIndex + 1 : null;
 
         // Track per-section counts and compute cross-section offset
         if (sectionIndex != null && detailPageCount != null) {
             this.sectionPageCounts.set(sectionIndex, detailPageCount);
+            logFix('pagecount:section:set', {
+                sectionIndex,
+                pageCount: detailPageCount,
+                totalTracked: this.sectionPageCounts.size,
+            });
         }
         const sectionOffset = sectionIndex != null ? this.#sectionOffset(sectionIndex) : 0;
         const sectionsTotal = this.sectionPageCounts.size > 0
@@ -645,6 +673,19 @@ export class NavigationHUD {
         const adjustedTotal = totalPagesRaw != null
             ? totalPagesRaw
             : (sectionOffset + (detailPageCount ?? 0) || null);
+        logFix('pagemetrics', {
+            sectionIndex,
+            sectionOffset,
+            sectionPageNumber,
+            sectionPageCount: detailPageCount,
+            detailPageNumber,
+            detailPageCount,
+            totalPagesRaw,
+            adjustedCurrent,
+            adjustedTotal,
+            candidateIndex,
+            fraction,
+        });
         const diag = {
             fraction,
             pageItemKey,
@@ -787,6 +828,17 @@ export class NavigationHUD {
     #handleRelocateHistory(detail) {
         const descriptor = this.#makeLocationDescriptor(detail);
         if (!descriptor) return;
+        const lastOrigin = this.scrubSession?.originDescriptor;
+        // If the relocate matches the scrub origin immediately after a jump, don't clobber history yet.
+        if (this.scrubSession?.pendingCommit && lastOrigin && this.#isSameDescriptor(lastOrigin, descriptor)) {
+            logFix('jumpback:skip-origin-relocate', {
+                reason: detail?.reason ?? null,
+                fraction: descriptor?.fraction ?? null,
+            });
+            this.scrubSession.pendingCommit = false;
+            this.currentLocationDescriptor = descriptor;
+            return;
+        }
         if (this.isProcessingRelocateJump) {
             this.currentLocationDescriptor = descriptor;
             this.#finalizePendingRelocateJump(descriptor);
@@ -803,6 +855,7 @@ export class NavigationHUD {
         const liveScrollPhase = detail?.liveScrollPhase ?? null;
         const isLiveScrollReason = reason === 'live-scroll';
         const isJumpReason = isLiveScrollReason || reason === 'navigation';
+        const isPageTurn = reason === 'page';
         const previousDescriptor = this.currentLocationDescriptor;
         let descriptorChanged = previousDescriptor && !this.#isSameDescriptor(previousDescriptor, descriptor);
         const isScrubbing = !!this.scrubSession?.active;
@@ -821,7 +874,23 @@ export class NavigationHUD {
         if (isJumpReason && descriptorChanged && !isLiveScrollReason) {
             if (!isScrubbing && previousDescriptor) {
                 this.#pushBackStack(previousDescriptor);
+                logFix('jumpback:push', {
+                    reason,
+                    liveScrollPhase,
+                    backDepth: this.relocateStacks.back.length,
+                    descriptorFraction: descriptor?.fraction ?? null,
+                    prevFraction: previousDescriptor?.fraction ?? null,
+                });
             }
+        } else if (isPageTurn && descriptorChanged && !isScrubbing && previousDescriptor) {
+            this.#pushBackStack(previousDescriptor);
+            logFix('jumpback:push:pageturn', {
+                reason,
+                backDepth: this.relocateStacks.back.length,
+                descriptorFraction: descriptor?.fraction ?? null,
+                prevFraction: previousDescriptor?.fraction ?? null,
+                sectionIndex: detail?.sectionIndex ?? null,
+            });
         } else if (!isScrubbing && descriptorChanged) {
             this.relocateStacks.forward.length = 0;
             this.#logStackSnapshot('forward-clear');
@@ -849,6 +918,10 @@ export class NavigationHUD {
             if (session.originFraction == null && typeof descriptor?.fraction === 'number') {
                 session.originFraction = descriptor.fraction;
             }
+            logFix('scrub:origin-set', {
+                originFraction: session.originFraction ?? null,
+                descriptorFraction: descriptor?.fraction ?? null,
+            });
         }
         const fractionFromDescriptor = typeof descriptor?.fraction === 'number' ? descriptor.fraction : null;
         const previewFraction = fractionFromDescriptor ?? detailFraction ?? null;
