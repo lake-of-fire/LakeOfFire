@@ -198,16 +198,52 @@ export class View extends HTMLElement {
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
-    #onRelocate({ reason, range, index, fraction, size }) {
+    #onRelocate(detail) {
+        if (!detail) return
+        const {
+            reason,
+            range,
+            index,
+            fraction,
+            size,
+            pageNumber,
+            pageCount,
+            scrolled,
+            sizeFraction,
+            startOffset,
+            pageSize,
+            viewSize,
+        } = detail
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
-        this.lastLocation = { ...progress, tocItem, pageItem, cfi, range, reason }
-        if (reason === 'snap' || reason === 'page' || reason === 'scroll')
+
+        // Preserve the original relocate payload so downstream consumers (NavigationHUD, native layer)
+        // can compute accurate page metrics instead of relying on derived estimates.
+        this.lastLocation = {
+            ...progress,
+            tocItem,
+            pageItem,
+            cfi,
+            range,
+            reason,
+            fraction,
+            size,
+            pageNumber,
+            pageCount,
+            scrolled,
+            sizeFraction,
+            startOffset,
+            pageSize,
+            viewSize,
+        }
+
+        if (reason === 'snap' || reason === 'page' || reason === 'scroll') {
             this.history.replaceState(cfi)
-            this.#emit('relocate', this.lastLocation)
-            }
+        }
+        this.#emit('relocate', this.lastLocation)
+    }
     #onLoad({ doc, location, index }) {
         if (!this.#isCacheWarmer) {
             // set language and dir if not already set

@@ -4,7 +4,19 @@ const FRACTION_EPSILON = 0.000001;
 // Focused pagination/bake diagnostics (capped to avoid spam)
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
+const NAV_PAGE_NUM_WHITELIST = new Set([
+    'nav:set-page-targets',
+    'nav:total-pages-source',
+    'nav:page-metrics',
+    'relocate',
+    'relocate:label',
+    'ui:primary-label',
+    'ui:section-progress',
+]);
 const logEBookPageNumLimited = (event, detail = {}) => {
+    const verbose = !!globalThis.manabiPageNumVerbose;
+    const allow = verbose || NAV_PAGE_NUM_WHITELIST.has(event);
+    if (!allow) return;
     if (logEBookPageNumCounter >= LOG_EBOOK_PAGE_NUM_LIMIT) return;
     logEBookPageNumCounter += 1;
     const payload = { event, count: logEBookPageNumCounter, ...detail };
@@ -96,6 +108,8 @@ export class NavigationHUD {
         this.lastPrimaryLabelDiagnostics = null;
         this.fallbackTotalPageCount = null;
         this.lastTotalSource = null;
+        this.lastTotalPagesSnapshot = null;
+        this.lastPageMetricsSnapshot = null;
         if (this.pendingScrubCommit) {
             this.#logPageScrub('pending-commit-reset', {
                 reason: 'new-scrub',
@@ -144,11 +158,17 @@ export class NavigationHUD {
         if (this.totalPageCount > 0) {
             this.fallbackTotalPageCount = this.totalPageCount;
         }
+        const pageKeyPreview = this.pageTargets.slice(0, 5).map((item, index) => ({
+            idx: index,
+            key: ensurePageKey(item, index),
+            label: item?.label ?? null,
+        }));
         this.#logPageNumberDiagnostic('set-page-targets', {
             pageTargetCount: this.totalPageCount,
         });
         logEBookPageNumLimited('nav:set-page-targets', {
             pageTargetCount: this.totalPageCount,
+            preview: pageKeyPreview,
             totalSource: this.lastTotalSource ?? null,
         });
         if (this.lastRelocateDetail) {
@@ -342,20 +362,26 @@ export class NavigationHUD {
         const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
         if (!fullLabelTarget || !compactLabelTarget) return;
 
-        if (this.scrubSession?.active && this.scrubSession.frozenLabel != null) {
-            fullLabelTarget.textContent = this.scrubSession.frozenLabel;
-            compactLabelTarget.textContent = this.scrubSession.frozenLabel;
-            return;
-        }
-
-        const fullLabel = this.formatPrimaryLabel(detail);
-        const compactLabel = this.formatPrimaryLabel(detail, { allowRendererFallback: true, condensedOnly: true });
+        const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
+        const fullLabelCandidate = this.formatPrimaryLabel(detail);
+        const compactLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: true, condensedOnly: true });
+        const fullLabel = fullLabelCandidate || scrubFrozenLabel || '';
+        const compactLabel = compactLabelCandidate
+            || (fullLabelCandidate ? this.#condensePrimaryLabel(fullLabelCandidate) : null)
+            || scrubFrozenLabel
+            || fullLabel;
+        const shouldRequestRenderer = !fullLabelCandidate;
 
         if (fullLabel) {
             fullLabelTarget.textContent = fullLabel;
-            this.latestPrimaryLabel = fullLabel;
+            if (fullLabelCandidate) {
+                this.latestPrimaryLabel = fullLabelCandidate;
+            }
         } else {
             fullLabelTarget.textContent = '';
+        }
+
+        if (shouldRequestRenderer) {
             this.#requestRendererPrimaryLine();
         }
 
@@ -364,6 +390,20 @@ export class NavigationHUD {
         } else {
             compactLabelTarget.textContent = fullLabelTarget.textContent;
         }
+
+        // UI surface logging: what the user actually sees on the nav bar.
+        logEBookPageNumLimited('ui:primary-label', {
+            label: fullLabelTarget.textContent || '',
+            compactLabel: compactLabelTarget.textContent || '',
+            source: this.lastPrimaryLabelDiagnostics?.source ?? null,
+            current: this.lastPrimaryLabelDiagnostics?.candidateIndex != null
+                ? this.lastPrimaryLabelDiagnostics.candidateIndex + 1
+                : null,
+            total: this.lastPrimaryLabelDiagnostics?.effectiveTotalPages ?? null,
+            rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
+            rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+        });
     }
 
     #applyRelocateButtonEdges() {
@@ -508,15 +548,33 @@ export class NavigationHUD {
         const pageItemLabel = typeof pageItem?.label === 'string' ? pageItem.label : null;
         const pageItemKey = pageItem ? ensurePageKey(pageItem) : null;
         const pageIndex = this.#resolvePageIndex(pageItem);
+        const sectionIndex = typeof detail.sectionIndex === 'number'
+            ? detail.sectionIndex
+            : (typeof detail.index === 'number' ? detail.index : null);
         const locationCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
         const locationTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
-        const totalPages = this.#currentTotalPages(detail);
-        const approxIndexFromFraction = this.#pageIndexFromFraction(fraction, totalPages);
+        const detailPageNumber = typeof detail.pageNumber === 'number' ? detail.pageNumber : null;
+        const detailPageCount = typeof detail.pageCount === 'number' ? detail.pageCount : null;
+        const totalPagesRaw = this.#currentTotalPages(detail, detailPageCount);
+        const approxIndexFromFraction = this.#pageIndexFromFraction(fraction, detailPageCount ?? totalPagesRaw);
         const locationIndex = locationCurrent != null ? locationCurrent : null;
         const rendererIndex = this.#rendererSnapshotIndex();
-        const candidateIndex = [pageIndex, approxIndexFromFraction, locationIndex, rendererIndex]
+        const detailIndex = detailPageNumber != null ? detailPageNumber - 1 : null;
+        // Prefer explicit page target, then detail-provided pageNumber, then renderer, then fraction
+        const candidateIndex = [pageIndex, detailIndex, rendererIndex, approxIndexFromFraction, locationIndex]
             .find(index => typeof index === 'number' && index >= 0);
-        const currentPageNumber = candidateIndex != null ? candidateIndex + 1 : null;
+        const sectionPageNumber = candidateIndex != null ? candidateIndex + 1 : null;
+
+        // Track per-section counts and compute cross-section offset
+        if (sectionIndex != null && detailPageCount != null) {
+            this.sectionPageCounts.set(sectionIndex, detailPageCount);
+        }
+        const sectionOffset = sectionIndex != null ? this.#sectionOffset(sectionIndex) : 0;
+
+        const adjustedCurrent = sectionPageNumber != null ? sectionPageNumber + sectionOffset : null;
+        const adjustedTotal = totalPagesRaw != null
+            ? totalPagesRaw
+            : (sectionOffset + (detailPageCount ?? 0) || null);
         const diag = {
             fraction,
             pageItemKey,
@@ -526,17 +584,45 @@ export class NavigationHUD {
             locationCurrent,
             locationTotal,
             candidateIndex,
+            sectionIndex,
+            sectionOffset,
+            sectionPageNumber,
+            sectionPageCount: detailPageCount,
+            detailPageNumber,
+            detailPageCount,
             totalPageCount: this.totalPageCount,
             fallbackTotalPageCount: this.fallbackTotalPageCount,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
             rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
-            effectiveTotalPages: totalPages ?? null,
+            effectiveTotalPages: adjustedTotal ?? null,
             totalSource: this.lastTotalSource ?? null,
         };
+        this.#logPageMetrics({
+            fraction: fraction != null ? Number(fraction.toFixed(6)) : null,
+            pageItemKey,
+            pageItemLabel,
+            pageIndexFromItem: pageIndex,
+            approxIndexFromFraction,
+            locationIndex: locationCurrent,
+            rendererIndex,
+            candidateIndex,
+            sectionIndex,
+            sectionOffset,
+            currentPageNumber: adjustedCurrent,
+            totalPages: adjustedTotal,
+            totalPageCount: this.totalPageCount,
+            rendererTotal: this.rendererPageSnapshot?.total ?? null,
+            fallbackTotalPageCount: this.fallbackTotalPageCount,
+            locationTotal,
+            detailPageNumber,
+            detailPageCount,
+            totalSource: this.lastTotalSource ?? null,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+        });
         return {
-            currentPageNumber,
-            totalPages,
+            currentPageNumber: adjustedCurrent,
+            totalPages: adjustedTotal,
             pageItemLabel,
             diag,
         };
@@ -596,6 +682,14 @@ export class NavigationHUD {
                 : `${pagesLeft} pages left in chapter`;
             target.textContent = label;
             target.hidden = false;
+            logEBookPageNumLimited('ui:section-progress', {
+                label,
+                pagesLeft,
+                target: targetKey,
+                rendererCurrent: this.rendererPageSnapshot?.current ?? null,
+                rendererTotal: this.rendererPageSnapshot?.total ?? null,
+                hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            });
         } catch (error) {
             console.error('Failed to update section progress', error);
         }
@@ -759,7 +853,7 @@ export class NavigationHUD {
             if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
                 return;
             }
-            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value);
+            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
             if (!normalized) {
                 return;
             }
@@ -792,7 +886,8 @@ export class NavigationHUD {
         const current = total ? Math.max(1, Math.min(total, currentBase)) : currentBase;
         if (!Number.isFinite(current)) return null;
         // Foliate paginator inserts two sentinel “pages” (lead/trail). Adjust so UI shows text pages only.
-        const isPaginated = renderer && renderer.scrolled === false;
+        const scrolled = renderer?.scrolled ?? null;
+        const isPaginated = renderer && scrolled === false;
         const snapshotBeforeAdjust = {
             rawPage,
             rawTotal,
@@ -801,7 +896,7 @@ export class NavigationHUD {
             totalBase: total,
             currentBase,
             clampedCurrent: current,
-            scrolled: renderer?.scrolled ?? null,
+            scrolled,
             rtl: renderer?.isRTL ?? renderer?.bookDir === 'rtl' ?? null,
         };
         if (isPaginated && total && total > 2) {
@@ -820,6 +915,7 @@ export class NavigationHUD {
                 total: textTotal,
                 rawCurrent: current,
                 rawTotal: total,
+                scrolled,
             };
         }
         logEBookPageNumLimited('nav:normalize:calc', {
@@ -833,6 +929,7 @@ export class NavigationHUD {
             total,
             rawCurrent: current,
             rawTotal: total,
+            scrolled,
         };
     }
     
@@ -993,18 +1090,39 @@ export class NavigationHUD {
     }
 
     #rendererSnapshotIndex() {
+        const scrolled = this.rendererPageSnapshot?.scrolled;
+        if (scrolled !== false) return null; // only trust renderer index in paginated mode
         const current = this.rendererPageSnapshot?.current;
         if (typeof current !== 'number') return null;
         return Math.max(0, current - 1);
     }
 
-    #currentTotalPages(detail) {
+    #sectionOffset(sectionIndex) {
+        if (sectionIndex == null || sectionIndex <= 0) return 0;
+        let sum = 0;
+        for (let i = 0; i < sectionIndex; i += 1) {
+            const count = this.sectionPageCounts.get(i);
+            if (typeof count === 'number' && count > 0) {
+                sum += count;
+            } else {
+                break; // stop at first gap to avoid overstating
+            }
+        }
+        return sum;
+    }
+
+    #currentTotalPages(detail, detailPageCount) {
         const candidates = [];
         if (this.totalPageCount > 0) {
             candidates.push({ source: 'page-targets', total: this.totalPageCount });
         }
+        if (typeof detailPageCount === 'number' && detailPageCount > 0) {
+            candidates.push({ source: 'detail', total: detailPageCount });
+        }
         const rendererTotal = typeof this.rendererPageSnapshot?.total === 'number' ? this.rendererPageSnapshot.total : null;
-        if (rendererTotal && rendererTotal > 0) {
+        const rendererScrolled = this.rendererPageSnapshot?.scrolled ?? null;
+        // Renderer totals are only trustworthy in paginated mode.
+        if (rendererTotal && rendererTotal > 0 && rendererScrolled === false) {
             candidates.push({ source: 'renderer', total: rendererTotal });
         }
         if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
@@ -1018,7 +1136,7 @@ export class NavigationHUD {
             this.lastTotalSource = null;
             return null;
         }
-        const precedence = ['page-targets', 'renderer', 'fallback', 'location'];
+        const precedence = ['page-targets', 'renderer', 'detail', 'fallback', 'location'];
         const best = candidates
             .sort((a, b) => {
                 const pa = precedence.indexOf(a.source);
@@ -1030,7 +1148,51 @@ export class NavigationHUD {
         if (best?.total && best.source !== 'page-targets') {
             this.#updateFallbackTotalPages(best.total);
         }
+        const summary = candidates.map(({ source, total }) => ({ source, total }));
+        const changed = !this.lastTotalPagesSnapshot
+            || this.lastTotalPagesSnapshot.source !== (best?.source ?? null)
+            || this.lastTotalPagesSnapshot.total !== (best?.total ?? null)
+            || this.lastTotalPagesSnapshot.candidateCount !== summary.length;
+        if (changed) {
+            logEBookPageNumLimited('nav:total-pages-source', {
+                chosenSource: best?.source ?? null,
+                chosenTotal: best?.total ?? null,
+                candidates: summary,
+            });
+            this.lastTotalPagesSnapshot = {
+                source: best?.source ?? null,
+                total: best?.total ?? null,
+                candidateCount: summary.length,
+            };
+        }
         return best?.total ?? null;
+    }
+
+    #logPageMetrics(payload) {
+        const epsilon = 0.00001;
+        const prev = this.lastPageMetricsSnapshot;
+        const hasChanged =
+            !prev ||
+            prev.currentPageNumber !== payload.currentPageNumber ||
+            prev.totalPages !== payload.totalPages ||
+            prev.candidateIndex !== payload.candidateIndex ||
+            prev.totalSource !== payload.totalSource ||
+            prev.sectionOffset !== payload.sectionOffset ||
+            prev.sectionIndex !== payload.sectionIndex ||
+            (typeof payload.fraction === 'number' && typeof prev?.fraction === 'number'
+                ? Math.abs(payload.fraction - prev.fraction) > epsilon
+                : payload.fraction !== prev?.fraction);
+        if (!hasChanged) return;
+        this.lastPageMetricsSnapshot = {
+            currentPageNumber: payload.currentPageNumber,
+            totalPages: payload.totalPages,
+            candidateIndex: payload.candidateIndex,
+            totalSource: payload.totalSource ?? null,
+            sectionOffset: payload.sectionOffset ?? null,
+            sectionIndex: payload.sectionIndex ?? null,
+            fraction: payload.fraction ?? null,
+        };
+        logEBookPageNumLimited('nav:page-metrics', payload);
     }
 
     #updateFallbackTotalPages(total) {

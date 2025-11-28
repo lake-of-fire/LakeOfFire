@@ -13,7 +13,16 @@ const logEBookPagination = () => {};
 // Perf logger (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail });
 
+const VIEWER_PAGE_NUM_WHITELIST = new Set([
+    'relocate',
+    'relocate:label',
+    'nav:set-page-targets',
+]);
+
 const logEBookPageNum = (event, detail = {}) => {
+    const verbose = !!globalThis.manabiPageNumVerbose;
+    const allow = verbose || VIEWER_PAGE_NUM_WHITELIST.has(event);
+    if (!allow) return;
     try {
         const payload = { event, ...detail };
         const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`;
@@ -633,26 +642,7 @@ class SideNavChevronAnimator {
 
 class Reader {
     #logScrubDiagnostic(_event, _payload = {}) {}
-    #logChevronDiagnostic(event, payload = {}) {
-        const base = {
-            event,
-            timestamp: Date.now(),
-            isRTL: this.isRTL ?? null,
-            ...payload,
-        };
-        const cleaned = Object.fromEntries(Object.entries(base).filter(([, value]) => value !== undefined));
-        const line = `# EBOOKCHEVRON ${JSON.stringify(cleaned)}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional native logger
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console logger
-        }
-    }
+    #logChevronDiagnostic(_event, _payload = {}) {}
     #show(btn, show = true) {
         if (show) {
             btn.hidden = false;
@@ -1564,6 +1554,14 @@ class Reader {
         if (pageEstimate) {
             this.lastPageEstimate = pageEstimate;
         }
+        logEBookPageNum('relocate:label', {
+            label: navLabel ?? '',
+            fraction,
+            sectionIndex,
+            pageEstimateCurrent: pageEstimate?.current ?? null,
+            pageEstimateTotal: pageEstimate?.total ?? null,
+            lastPercentValue: this.lastPercentValue ?? null,
+        });
         logEBookPageNum('relocate', {
             reason: detail.reason ?? null,
             relocateDirection,

@@ -114,11 +114,24 @@ const logEBookPagination = () => {}
 // Perf logger for targeted instrumentation (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail })
 
+const MANABI_PAGE_NUM_WHITELIST = new Set([
+    'nav:set-page-targets',
+    'nav:total-pages-source',
+    'nav:page-metrics',
+    'relocate',
+    'relocate:label',
+    'afterScroll:metrics',
+    'relocate:detail',
+]);
+
 const logEBookPageNum = (event, detail = {}) => {
     try {
-        const payload = { event, ...detail }
-        const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`
-        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line)
+        const verbose = !!globalThis.manabiPageNumVerbose;
+        const allow = verbose || MANABI_PAGE_NUM_WHITELIST.has(event);
+        if (!allow) return;
+        const payload = { event, ...detail };
+        const line = `# EBOOKK PAGENUM ${JSON.stringify(payload)}`;
+        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line);
     } catch (error) {
         try {
             console.log('# EBOOKK PAGENUM fallback', event, detail, error)
@@ -1970,28 +1983,7 @@ export class Paginator extends HTMLElement {
         'flow', 'gap', 'marginTop', 'marginBottom',
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
-    #logChevronDispatch(event, payload = {}) {
-        const base = {
-            event,
-            timestamp: Date.now(),
-            rtl: this.#rtl ?? null,
-            vertical: this.#vertical ?? null,
-            scrolled: this.scrolled ?? null,
-            ...payload,
-        };
-        const cleaned = Object.fromEntries(Object.entries(base).filter(([, v]) => v !== undefined));
-        const line = `# EBOOKCHEVRON_EMIT ${JSON.stringify(cleaned)}`;
-        try {
-            window.webkit?.messageHandlers?.print?.postMessage?.(line);
-        } catch (_error) {
-            // optional native logger
-        }
-        try {
-            console.log(line);
-        } catch (_error) {
-            // optional console
-        }
-    }
+    #logChevronDispatch(_event, _payload = {}) {}
     #emitChevronOpacity(detail, source) {
         const nextLeft = detail?.leftOpacity ?? null;
         const nextRight = detail?.rightOpacity ?? null;
@@ -3901,6 +3893,9 @@ export class Paginator extends HTMLElement {
             });
             await navDetail.navigate();
             this.#scheduleChevronHide(this.#chevronTriggerHoldMs + 80);
+            // After navigation triggered via swipe, proactively reset any stale chevron state.
+            this.#logResetNeed('postSwipeNav');
+            this.#emitChevronReset('reset:postSwipeNav');
         } else {
             this.#updateSwipeChevron(dx, minSwipe, 'swipe');
         }
@@ -3917,6 +3912,7 @@ export class Paginator extends HTMLElement {
         // If swipe never triggered navigation but showed the chevron, fade it out now.
         if (!this.#touchTriggeredNav && this.#touchHasShownChevron) {
             this.#clearPendingChevronReset();
+            this.#logResetNeed('touchEnd:noNav');
             this.#scheduleChevronHide(0);
         }
         this.#touchHasShownChevron = false;
@@ -3980,7 +3976,25 @@ export class Paginator extends HTMLElement {
     #chevronTriggerHoldMs = 420;
     #chevronFadeMs = 180;
     #pendingChevronResetTimer = null;
+    #resetLoopGuard = false;
+    #logResetNeed(reason, extra = {}) {
+        try {
+            const line = `# EBOOK CHEVRESET NEED ${JSON.stringify({ reason, ...extra })}`;
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+            console.log(line);
+        } catch (_err) {}
+    }
     #handleChevronResetEvent = () => {
+        if (this.#resetLoopGuard) return;
+        this.#logResetNeed('external-resetSideNavChevrons');
+        this.#emitChevronReset('reset:event');
+    };
+    #emitChevronReset(source = 'reset:auto') {
+        try {
+            const line = `# EBOOK CHEVRESET ${JSON.stringify({ source })}`;
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+            console.log(line);
+        } catch (_err) {}
         this.#lastChevronEmit = { left: null, right: null };
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
@@ -3988,10 +4002,17 @@ export class Paginator extends HTMLElement {
             detail: {
                 leftOpacity: '',
                 rightOpacity: '',
-                source: 'reset:event',
+                source,
             },
         }));
-    };
+        // Fan out to outer shell while preventing self-reentry
+        this.#resetLoopGuard = true;
+        try {
+            document.dispatchEvent(new CustomEvent('resetSideNavChevrons', { detail: { source } }));
+        } finally {
+            setTimeout(() => { this.#resetLoopGuard = false; }, 0);
+        }
+    }
     #clearPendingChevronReset() {
         if (!this.#pendingChevronResetTimer) return;
         clearTimeout(this.#pendingChevronResetTimer);
@@ -3999,6 +4020,7 @@ export class Paginator extends HTMLElement {
     }
     #scheduleChevronHide(delayMs = this.#chevronTriggerHoldMs) {
         this.#clearPendingChevronReset();
+        this.#logResetNeed('scheduleHide', { delayMs });
         this.#pendingChevronResetTimer = setTimeout(() => {
             this.#pendingChevronResetTimer = null;
             this.#emitChevronOpacity({
@@ -4006,6 +4028,7 @@ export class Paginator extends HTMLElement {
                 rightOpacity: '',
                 fadeMs: this.#chevronFadeMs,
             }, 'chevron:autoHide');
+            this.#emitChevronReset('reset:autoHide');
         }, delayMs);
     }
     async #onWheel(e) {
@@ -4373,15 +4396,40 @@ export class Paginator extends HTMLElement {
             index
         }
 
+        let pageNumberForDetail = null
+        let pageCountForDetail = null
         if (this.scrolled) {
-            detail.fraction = (await this.start()) / (await this.viewSize())
+            const [startOffset, totalScrollSize, pageSize] = await Promise.all([
+                this.start(),
+                this.viewSize(),
+                this.size(),
+            ])
+            pageCountForDetail = (Number.isFinite(totalScrollSize) && Number.isFinite(pageSize) && pageSize > 0)
+                ? Math.max(1, Math.round(totalScrollSize / pageSize))
+                : null
+            detail.fraction = totalScrollSize ? startOffset / totalScrollSize : null
+            if (pageCountForDetail != null) {
+                const frac = detail.fraction ?? 0
+                pageNumberForDetail = Math.max(1, Math.min(pageCountForDetail, Math.floor(frac * pageCountForDetail) + 1))
+            }
         } else if ((await this.pages()) > 0) {
             const page = await this.page()
             const pages = await this.pages()
             this.#header.style.visibility = page > 1 ? 'visible' : 'hidden'
-            detail.fraction = (page - 1) / (pages - 2)
-            detail.size = 1 / (pages - 2)
+            // Paginated mode uses two sentinel pages (lead/trail). Strip them for UI totals.
+            if (pages > 2) {
+                pageCountForDetail = pages - 2
+                pageNumberForDetail = Math.max(1, Math.min(pageCountForDetail, page - 1))
+                detail.fraction = (page - 1) / (pages - 2)
+                detail.size = 1 / (pages - 2)
+            } else {
+                pageCountForDetail = pages
+                pageNumberForDetail = page
+                detail.fraction = (pageCountForDetail > 0) ? (page - 1) / pageCountForDetail : null
+            }
         }
+        if (pageNumberForDetail != null) detail.pageNumber = pageNumberForDetail
+        if (pageCountForDetail != null) detail.pageCount = pageCountForDetail
 
         const detailForLog = {
             reason,
@@ -4389,7 +4437,10 @@ export class Paginator extends HTMLElement {
             scrolled: this.scrolled,
             fraction: detail.fraction ?? null,
             sizeFraction: detail.size ?? null,
+            pageNumber: pageNumberForDetail,
+            pageCount: pageCountForDetail,
         }
+        logEBookPageNumLimited('relocate:detail', detailForLog)
 
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
