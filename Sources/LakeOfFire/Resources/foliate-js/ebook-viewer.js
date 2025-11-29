@@ -1025,7 +1025,7 @@ class Reader {
     this.#jumpInput = percentInput;
     this.#jumpButton = percentButton;
     this.#jumpUnitSelect = jumpUnitSelect;
-    this.jumpUnit = jumpUnitSelect?.value === 'page' ? 'page' : 'percent';
+    this.jumpUnit = jumpUnitSelect?.value === 'loc' ? 'loc' : 'percent';
     this.lastPageEstimate = null;
     this.#updateJumpUnitAvailability();
     this.#syncJumpInputWithState();
@@ -1037,7 +1037,7 @@ class Reader {
     percentInput.addEventListener('input', handleJumpInputChange);
 
     jumpUnitSelect?.addEventListener('change', () => {
-    const nextUnit = jumpUnitSelect.value === 'page' ? 'page' : 'percent';
+    const nextUnit = jumpUnitSelect.value === 'loc' ? 'loc' : 'percent';
     if (this.jumpUnit === nextUnit) return;
     const previousUnit = this.jumpUnit;
     const currentValue = parseFloat(percentInput.value);
@@ -1056,8 +1056,8 @@ class Reader {
     percentButton.disabled = true;
     this.view.goToFraction(value / 100);
     } else {
-    const totalPages = this.lastPageEstimate?.total;
-    const fraction = this.#fractionFromPage(value, totalPages);
+    const totalLocs = this.lastPageEstimate?.total;
+    const fraction = this.#fractionFromLocation(value, totalLocs);
     if (fraction == null) return;
     this.lastPercentValue = Math.round(fraction * 100);
     this.lastKnownFraction = fraction;
@@ -1374,30 +1374,30 @@ class Reader {
         }
     }
 
-    #fractionFromPage(pageNumber, totalPages) {
-    if (typeof pageNumber !== 'number' || isNaN(pageNumber)) return null;
-    if (typeof totalPages !== 'number' || totalPages <= 0) return null;
-    if (totalPages === 1) return 0;
-    const clamped = Math.max(1, Math.min(totalPages, Math.round(pageNumber)));
-    return (clamped - 1) / (totalPages - 1);
+    #fractionFromLocation(locNumber, totalLocs) {
+    if (typeof locNumber !== 'number' || isNaN(locNumber)) return null;
+    if (typeof totalLocs !== 'number' || totalLocs <= 0) return null;
+    if (totalLocs === 1) return 0;
+    const clamped = Math.max(1, Math.min(totalLocs, Math.round(locNumber)));
+    return (clamped - 1) / (totalLocs - 1);
     }
 
     #convertJumpInputValue(value, fromUnit, toUnit) {
     if (typeof value !== 'number' || isNaN(value)) return null;
     if (fromUnit === toUnit) return value;
-    const totalPages = this.lastPageEstimate?.total;
-    if (fromUnit === 'percent' && toUnit === 'page') {
-    if (!totalPages || totalPages <= 0) return null;
-    if (totalPages === 1) return 1;
+    const totalLocs = this.lastPageEstimate?.total;
+    if (fromUnit === 'percent' && toUnit === 'loc') {
+    if (!totalLocs || totalLocs <= 0) return null;
+    if (totalLocs === 1) return 1;
     const fraction = value / 100;
     if (!isFinite(fraction)) return null;
-    const page = Math.round(fraction * (totalPages - 1)) + 1;
-    return Math.max(1, Math.min(totalPages, page));
+    const loc = Math.round(fraction * (totalLocs - 1)) + 1;
+    return Math.max(1, Math.min(totalLocs, loc));
     }
-    if (fromUnit === 'page' && toUnit === 'percent') {
-    if (!totalPages || totalPages <= 1) return null;
-    const clamped = Math.max(1, Math.min(totalPages, Math.round(value)));
-    const fraction = (clamped - 1) / (totalPages - 1);
+    if (fromUnit === 'loc' && toUnit === 'percent') {
+    if (!totalLocs || totalLocs <= 1) return null;
+    const clamped = Math.max(1, Math.min(totalLocs, Math.round(value)));
+    const fraction = (clamped - 1) / (totalLocs - 1);
     return Math.max(0, Math.min(100, Math.round(fraction * 100)));
     }
     return null;
@@ -1439,12 +1439,12 @@ class Reader {
     const select = this.#jumpUnitSelect ?? document.getElementById('jump-unit-select');
     if (!select) return;
     if (!this.#jumpUnitSelect) this.#jumpUnitSelect = select;
-    const pageOption = Array.from(select.options).find(option => option.value === 'page');
-    const hasPages = typeof this.lastPageEstimate?.total === 'number' && this.lastPageEstimate.total > 0;
-    if (pageOption) {
-    pageOption.disabled = !hasPages;
+    const locOption = Array.from(select.options).find(option => option.value === 'loc');
+    const hasLocs = typeof this.lastPageEstimate?.total === 'number' && this.lastPageEstimate.total > 0;
+    if (locOption) {
+    locOption.disabled = !hasLocs;
     }
-    if (!hasPages && this.jumpUnit === 'page') {
+    if (!hasLocs && this.jumpUnit === 'loc') {
     this.jumpUnit = 'percent';
     select.value = 'percent';
     this.#syncJumpInputWithState();

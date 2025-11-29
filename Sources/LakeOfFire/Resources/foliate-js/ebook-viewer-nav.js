@@ -500,8 +500,8 @@ export class NavigationHUD {
         const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
         const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
         const fullLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        // Use the same value for compact so it remains visible when nav is compacted/hidden
-        const compactLabel = fullLabel;
+        // Compact form should strip "Loc " prefix and any " of …"
+        const compactLabel = fullLabel ? this.#condensePrimaryLabel(fullLabel.replace(/^Loc\\s+/i, '')) : '';
         if (fullLabel) {
             fullLabelTarget.textContent = fullLabel;
             if (fullLabelCandidate) {
@@ -521,7 +521,7 @@ export class NavigationHUD {
             current: this.lastPrimaryLabelDiagnostics?.candidateIndex != null
                 ? this.lastPrimaryLabelDiagnostics.candidateIndex + 1
                 : null,
-            total: this.lastPrimaryLabelDiagnostics?.effectiveTotalPages ?? null,
+            total: null, // never report totals to UI log to avoid confusion with Loc
             rendererSnapshotCurrent: this.rendererPageSnapshot?.current ?? null,
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
@@ -1431,6 +1431,7 @@ export class NavigationHUD {
         }
         // Derive a location-style label from fraction + last known location total if available.
         const derivedTotal = this.lastPrimaryLabelDiagnostics?.locationTotal
+            ?? this.navContext?.sections?.length
             ?? this.rendererPageSnapshot?.total
             ?? this.fallbackTotalPageCount
             ?? this.totalPageCount

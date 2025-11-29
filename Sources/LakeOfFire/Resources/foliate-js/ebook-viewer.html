@@ -491,11 +491,15 @@
                     left: -9999px;
                 }
                 #side-bar {
+                    visibility: hidden;
+                    box-sizing: border-box;
+                    position: absolute;
                     position: fixed;
                     top: 0;
                     left: 0;
                     height: 100dvh;
-                    width: 0;
+                    width: 320px;
+                    /*transform: translateX(-320px);*/
                     pointer-events: none;
                     z-index: 4;
                     contain: layout paint style;
@@ -958,7 +962,7 @@
                     <input type="number" id="percent-jump-input" min="0" max="100" style="width: 2.2em; font-size: small;" />
                     <select id="jump-unit-select" style="font-size: small;">
                         <option value="percent">%</option>
-                        <option value="page">Page</option>
+                        <option value="loc">Loc</option>
                     </select>
                     <button id="percent-jump-button" disabled style="font-size: small;">Go</button>
                 </div>
