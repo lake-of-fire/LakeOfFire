@@ -210,10 +210,11 @@ logEBookPerf('fontset-ready', { status: fontSet.status, size: fontSet.size })
 installFontDiagnostics()
 
 let pendingHideNavigationState = null;
-const applyLocalHideNavigationDueToScroll = (shouldHide) => {
+const applyLocalHideNavigationDueToScroll = (shouldHide, source = 'unknown') => {
     pendingHideNavigationState = !!shouldHide;
     if (globalThis.reader?.setHideNavigationDueToScroll) {
-        globalThis.reader.setHideNavigationDueToScroll(pendingHideNavigationState);
+        logBug('nav-apply-local', { shouldHide: pendingHideNavigationState, source });
+        globalThis.reader.setHideNavigationDueToScroll(pendingHideNavigationState, source);
         pendingHideNavigationState = null;
     }
 };
@@ -237,21 +238,23 @@ const updateNavHiddenClass = (shouldHide) => {
     }
 };
 
-const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
-    logBug('nav-visibility', { shouldHide, source, direction });
-    // Temporarily force nav to stay visible while diagnosing hide desync.
-    const effectiveHide = false;
-    applyLocalHideNavigationDueToScroll(effectiveHide);
+const postNavigationChromeVisibility = (shouldHide, { source, direction, scrubbing = false } = {}) => {
+    const appliedHide = !!shouldHide && direction === 'forward' && !scrubbing;
+    if (appliedHide) {
+        globalThis.reader?.allowForwardNavHide();
+    }
+    logBug('nav-visibility', { shouldHide, appliedHide, source, direction, scrubbing });
+    applyLocalHideNavigationDueToScroll(appliedHide, source ?? 'nav-visibility');
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
-            hideNavigationDueToScroll: effectiveHide,
+            hideNavigationDueToScroll: appliedHide,
             source: source ?? null,
             direction: direction ?? null,
         });
     } catch (error) {
         console.error('Failed to notify native navigation chrome visibility', error);
     }
-    updateNavHiddenClass(effectiveHide);
+    updateNavHiddenClass(appliedHide);
 };
 
 // Factory for replaceText with isCacheWarmer support
@@ -679,6 +682,7 @@ class SideNavChevronAnimator {
 }
 
 class Reader {
+    #allowForwardNavHide = false;
     #logScrubDiagnostic(_event, _payload = {}) {}
     #logChevronDiagnostic(_event, _payload = {}) {}
     #show(btn, show = true) {
@@ -696,9 +700,8 @@ class Reader {
         document.body.classList.toggle('loading', !!visible);
         const tick = document.getElementById('progress-ticks');
         const slider = document.getElementById('progress-slider');
-        const vis = visible ? 'hidden' : 'visible';
-        if (tick) tick.style.visibility = vis;
-        if (slider) slider.style.visibility = vis;
+        if (tick) tick.style.visibility = 'visible';
+        if (slider) slider.style.visibility = 'visible';
     }
     #tocView
     #chevronAnimator = null;
@@ -786,7 +789,16 @@ class Reader {
     this.openSideBar();
     }
     }
-    setHideNavigationDueToScroll(shouldHide) {
+    setHideNavigationDueToScroll(shouldHide, source = 'unknown') {
+    const canHide = !shouldHide || this.#allowForwardNavHide || source === 'scroll-toggle' || source === 'nav-visibility';
+    if (!canHide) {
+        logBug('nav-hide-blocked', { reason: 'gate', requestedHide: shouldHide, source });
+        return;
+    }
+    if (shouldHide && this.#allowForwardNavHide) {
+        this.#allowForwardNavHide = false; // consume gate
+    }
+    logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
     this.navHUD?.setHideNavigationDueToScroll(shouldHide);
     updateNavHiddenClass(shouldHide);
     }
@@ -796,6 +808,7 @@ class Reader {
     getRenderer: () => this.view?.renderer,
     onJumpRequest: descriptor => this.#goToDescriptor(descriptor),
     });
+    this.allowForwardNavHide = () => { this.#allowForwardNavHide = true; };
     this.#chevronAnimator = new SideNavChevronAnimator();
     $('#side-bar-close-button').addEventListener('click', () => {
     this.closeSideBar()
@@ -1638,15 +1651,17 @@ class Reader {
             case 'live-scroll':
             case 'selection':
             case 'navigation':
-                postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
+                postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection, scrubbing });
                 break;
             case 'page':
-                if (relocateDirection === 'forward') {
-                    postNavigationChromeVisibility(true, { source: 'relocate', direction: 'forward' });
+                if (scrubbing) {
+                    postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection, scrubbing });
+                } else if (relocateDirection === 'forward') {
+                    postNavigationChromeVisibility(true, { source: 'relocate', direction: 'forward', scrubbing });
                 } else if (relocateDirection === 'backward') {
-                    postNavigationChromeVisibility(false, { source: 'relocate', direction: 'backward' });
+                    postNavigationChromeVisibility(false, { source: 'relocate', direction: 'backward', scrubbing });
                 } else {
-                    postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
+                    postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection, scrubbing });
                 }
                 logBug('nav-toggle', {
                     reason: normalizedReason,
@@ -1808,7 +1823,7 @@ class Reader {
             nav = this.view.renderer.prevSection();
             break;
         case 'next':
-            postNavigationChromeVisibility(true, { source: 'button-next', direction: 'forward' });
+            postNavigationChromeVisibility(true, { source: 'button-next', direction: 'forward', scrubbing: false });
             nav = this.view.renderer.nextSection();
             break;
         case 'finish':

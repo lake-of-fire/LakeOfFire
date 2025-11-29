@@ -253,6 +253,11 @@ export class NavigationHUD {
     setHideNavigationDueToScroll(shouldHide) {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
+        logBug?.('navhud-hide', {
+            shouldHide: this.hideNavigationDueToScroll,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        });
         if (this.progressWrapper) {
             this.progressWrapper.setAttribute('aria-hidden', this.hideNavigationDueToScroll ? 'true' : 'false');
         }

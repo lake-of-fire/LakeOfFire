@@ -283,7 +283,11 @@ public class ReaderModeViewModel: ObservableObject {
     //    ]
     //    """
 
-    internal func readerModeLoading(_ isLoading: Bool) {
+    internal func readerModeLoading(_ isLoading: Bool, frameIsMain: Bool = true) {
+        // Ignore loads that originate from subframes; only the main frame should drive the overlay.
+        if !frameIsMain {
+            return
+        }
         if isLoading && !isReaderModeLoading {
             debugPrint(
                 "# READER readerMode.spinner",
@@ -330,6 +334,15 @@ public class ReaderModeViewModel: ObservableObject {
             "isReaderModeLoading=\(isReaderModeLoading)",
             "isReaderMode=\(isReaderMode)",
             "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+        )
+        debugPrint(
+            "# BEGINREADERMODELOAD",
+            "url=\(url.absoluteString)",
+            "suppressSpinner=\(suppressSpinner)",
+            "reason=\(reason ?? "nil")",
+            "matchesRendered=\(matchesRendered)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
         )
         if let expected = expectedSyntheticReaderLoaderURL, !urlsMatchWithoutHash(expected, url) {
             debugPrint(
@@ -444,7 +457,7 @@ public class ReaderModeViewModel: ObservableObject {
             details: isContinuing ? "continuing pending load" : "starting new load"
         )
         if !suppressSpinner {
-            readerModeLoading(true)
+            readerModeLoading(true, frameIsMain: true)
         }
         loadStartTimes[trackedURL.absoluteString] = start
         debugPrint(
@@ -483,7 +496,7 @@ public class ReaderModeViewModel: ObservableObject {
             logTrace(.cancel, url: url, details: "no pending load to cancel")
             // If a caller asks us to cancel but we no longer have a pending URL,
             // still force the spinner off so the UI cannot get stuck in a loading state.
-            readerModeLoading(false)
+            readerModeLoading(false, frameIsMain: true)
         debugPrint(
             "# READER readerMode.spinner.forceOff",
             "reason=noPendingCancel",
@@ -528,7 +541,7 @@ public class ReaderModeViewModel: ObservableObject {
         logStateSnapshot("cancel.requested", url: traceURL)
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
         logTrace(.cancel, url: traceURL, details: "cancelReaderModeLoad invoked")
-        readerModeLoading(false)
+        readerModeLoading(false, frameIsMain: true)
         expectedSyntheticReaderLoaderURL = nil
         lastRenderedReadabilityURL = nil
         if let handler = readerModeLoadCompletionHandler {
@@ -564,7 +577,7 @@ public class ReaderModeViewModel: ObservableObject {
             // a reader-file loader URL), we still want to clear spinners even though
             // the pending URL was cleared earlier.
             if matchesRendered {
-                readerModeLoading(false)
+                readerModeLoading(false, frameIsMain: true)
                 readerModeLoadCompletionHandler?(url)
             }
             return
@@ -586,7 +599,7 @@ public class ReaderModeViewModel: ObservableObject {
             logStateSnapshot("complete.emptyReadability", url: pendingReaderModeURL)
             updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
             lastFallbackLoaderURL = url
-            readerModeLoading(false)
+            readerModeLoading(false, frameIsMain: true)
             readerModeLoadCompletionHandler?(url)
             return
         }
@@ -610,7 +623,7 @@ public class ReaderModeViewModel: ObservableObject {
         logStateSnapshot("complete.success", url: traceURL)
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         loadStartTimes.removeValue(forKey: traceURL.absoluteString)
-        readerModeLoading(false)
+        readerModeLoading(false, frameIsMain: true)
         readerModeLoadCompletionHandler?(traceURL)
     }
 
