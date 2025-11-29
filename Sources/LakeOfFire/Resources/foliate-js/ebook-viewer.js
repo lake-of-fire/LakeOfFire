@@ -233,7 +233,14 @@ globalThis.manabiToggleReaderTableOfContents = () => {
 
 const updateNavHiddenClass = (shouldHide) => {
     try {
-    document?.body?.classList.toggle('nav-hidden', !!shouldHide);
+    const hide = !!shouldHide;
+    document?.body?.classList.toggle('nav-hidden', hide);
+    // Inform the navigation HUD so it can pick compact/full label.
+    globalThis.reader?.navHUD?.setNavHiddenState?.(hide);
+    const navPrimaryText = document.getElementById('nav-primary-text');
+    if (navPrimaryText?.dataset) {
+        navPrimaryText.dataset.labelVariant = hide ? 'compact' : 'full';
+    }
     } catch (_error) {
     // best-effort
     }
@@ -813,6 +820,10 @@ class Reader {
     logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
     this.navHUD?.setHideNavigationDueToScroll(shouldHide);
     updateNavHiddenClass(shouldHide);
+    }
+
+    setNavHiddenState(shouldHide) {
+    this.navHUD?.setNavHiddenState?.(shouldHide);
     }
     constructor() {
     this.navHUD = new NavigationHUD({

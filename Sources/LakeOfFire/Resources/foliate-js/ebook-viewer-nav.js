@@ -136,6 +136,8 @@ export class NavigationHUD {
         this.lastPageMetricsSnapshot = null;
         this.lastScrubberFraction = null;
         this.lastKnownLocationTotal = null;
+        this.navHidden = false;
+        this.#applyLabelVariant();
         if (this.pendingScrubCommit) {
             this.#logPageScrub('pending-commit-reset', {
                 reason: 'new-scrub',
@@ -257,10 +259,7 @@ export class NavigationHUD {
     setHideNavigationDueToScroll(shouldHide) {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
-        // Drive label variant via data attribute on the primary text container.
-        if (this.navPrimaryText) {
-            this.navPrimaryText.dataset.labelVariant = this.hideNavigationDueToScroll ? 'compact' : 'full';
-        }
+        this.#applyLabelVariant();
         logBug?.('navhud-hide', {
             shouldHide: this.hideNavigationDueToScroll,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
@@ -280,6 +279,12 @@ export class NavigationHUD {
             this.#updatePrimaryLine(this.lastRelocateDetail);
         }
         this.#updateRelocateButtons();
+    }
+
+    // External toggle for full nav hide (not the scroll HUD hide).
+    setNavHiddenState(shouldHide) {
+        this.navHidden = !!shouldHide;
+        this.#applyLabelVariant();
     }
 
     getCurrentDescriptor() {
@@ -417,6 +422,7 @@ export class NavigationHUD {
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locTotal != null && locTotal > 0) {
             this.lastKnownLocationTotal = locTotal;
+            lastLocTotal = locTotal;
         }
         // Ensure section index is preserved for per-section totals/offsets
         const rendererIndex = (() => {
@@ -508,14 +514,18 @@ export class NavigationHUD {
         const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
         if (!fullLabelTarget || !compactLabelTarget) return;
 
+        // Ensure our label variant reflects the current hidden state (body/nav classes or flags).
+        this.#syncLabelVariantFromDOM();
+
         const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
         const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
         const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        const displayLabel = rawLabel ? this.#condensePrimaryLabel(rawLabel.replace(/^Loc\\s+/i, 'Loc ')) : '';
+        const normalizedRaw = rawLabel ? rawLabel.replace(/^Loc\\s+/i, 'Loc ') : '';
+        const condensed = normalizedRaw ? this.#condensePrimaryLabel(normalizedRaw) : '';
 
-        // Show the same condensed Loc label; display is controlled via data-label-variant CSS.
-        fullLabelTarget.textContent = displayLabel;
-        compactLabelTarget.textContent = displayLabel;
+        // Full shows the complete Loc string (with total when available); compact omits the total.
+        fullLabelTarget.textContent = normalizedRaw || condensed;
+        compactLabelTarget.textContent = condensed || normalizedRaw;
 
         if (fullLabelCandidate) {
             this.latestPrimaryLabel = fullLabelCandidate;
@@ -534,6 +544,26 @@ export class NavigationHUD {
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
             hideNavigationDueToScroll: this.hideNavigationDueToScroll,
         });
+    }
+
+    #applyLabelVariant() {
+        if (!this.navPrimaryText?.dataset) return;
+        const hide = this.hideNavigationDueToScroll || this.navHidden;
+        this.navPrimaryText.dataset.labelVariant = hide ? 'compact' : 'full';
+    }
+
+    #syncLabelVariantFromDOM() {
+        const bodyHidden = typeof document !== 'undefined'
+            ? document.body?.classList?.contains?.('nav-hidden')
+            : false;
+        const barHidden = this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? false;
+        const desiredHide = bodyHidden || barHidden || this.hideNavigationDueToScroll || this.navHidden;
+        if (this.navPrimaryText?.dataset) {
+            const next = desiredHide ? 'compact' : 'full';
+            if (this.navPrimaryText.dataset.labelVariant !== next) {
+                this.navPrimaryText.dataset.labelVariant = next;
+            }
+        }
     }
 
     #applyRelocateButtonEdges() {
@@ -675,12 +705,14 @@ export class NavigationHUD {
 
     #condensePrimaryLabel(label) {
         if (typeof label !== 'string') return '';
-        // If label is already condensed (single number) return as-is
-        if (!label.includes(' of ')) return label;
-        const [current, total] = label.split(' of ');
-        const trimmedCurrent = current?.trim() ?? '';
-        if (!trimmedCurrent) return label;
-        return trimmedCurrent;
+        // Prefer an explicit "Loc <n>" capture so we keep the prefix even if the suffix format changes.
+        const locMatch = label.match(/\bLoc\s*(\d+)/i);
+        if (locMatch) {
+            return `Loc ${locMatch[1]}`.replace(/\s+/g, ' ').trim();
+        }
+        // Otherwise strip any "of <total>" suffix (allowing for varied whitespace/non-breaking spaces).
+        const trimmed = label.replace(/\s*of\s+.*$/i, '').trim();
+        return trimmed || label;
     }
 
     #computePageMetrics(detail) {
@@ -1466,11 +1498,9 @@ export class NavigationHUD {
             return `${locCurrent + 1}`;
         }
         const derivedTotal = locTotal
+            ?? this.lastKnownLocationTotal
             ?? lastLocTotal
             ?? this.lastPrimaryLabelDiagnostics?.locationTotal
-            ?? this.rendererPageSnapshot?.total
-            ?? this.fallbackTotalPageCount
-            ?? this.totalPageCount
             ?? null;
         if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
             const clampedTotal = Math.max(1, derivedTotal);
