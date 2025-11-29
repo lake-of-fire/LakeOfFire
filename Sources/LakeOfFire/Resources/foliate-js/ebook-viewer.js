@@ -28,6 +28,15 @@ const logFix = (event, detail = {}) => {
     }
 };
 
+const logBug = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail };
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKBUG1 ${JSON.stringify(payload)}`);
+    } catch (_err) {
+        try { console.log('# BOOKBUG1', event, detail); } catch (_) {}
+    }
+};
+
 const getBookCacheKey = () => {
     try {
         return globalThis.reader?.view?.book?.id
@@ -229,17 +238,20 @@ const updateNavHiddenClass = (shouldHide) => {
 };
 
 const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
-    applyLocalHideNavigationDueToScroll(!!shouldHide);
+    logBug('nav-visibility', { shouldHide, source, direction });
+    // Temporarily force nav to stay visible while diagnosing hide desync.
+    const effectiveHide = false;
+    applyLocalHideNavigationDueToScroll(effectiveHide);
     try {
-    window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
-    hideNavigationDueToScroll: !!shouldHide,
-    source: source ?? null,
-    direction: direction ?? null,
-    });
+        window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
+            hideNavigationDueToScroll: effectiveHide,
+            source: source ?? null,
+            direction: direction ?? null,
+        });
     } catch (error) {
-    console.error('Failed to notify native navigation chrome visibility', error);
+        console.error('Failed to notify native navigation chrome visibility', error);
     }
-    updateNavHiddenClass(shouldHide);
+    updateNavHiddenClass(effectiveHide);
 };
 
 // Factory for replaceText with isCacheWarmer support
@@ -684,8 +696,9 @@ class Reader {
         document.body.classList.toggle('loading', !!visible);
         const tick = document.getElementById('progress-ticks');
         const slider = document.getElementById('progress-slider');
-        if (tick) tick.style.visibility = visible ? 'hidden' : '';
-        if (slider) slider.style.visibility = visible ? 'hidden' : '';
+        const vis = visible ? 'hidden' : 'visible';
+        if (tick) tick.style.visibility = vis;
+        if (slider) slider.style.visibility = vis;
     }
     #tocView
     #chevronAnimator = null;
@@ -976,14 +989,11 @@ class Reader {
     }
     const pageCountUpdate = e => {
         const map = new Map(e?.detail?.counts ?? []);
-        const linearCount = Array.isArray(this.book?.sections)
-            ? this.book.sections.filter(s => s.linear !== 'no').length
-            : null;
         const sum = Array.from(map.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0);
-        if (map.size > 0 && (linearCount == null || map.size === linearCount) && sum > 0) {
+        if (map.size > 0 && sum > 0) {
             this.navHUD?.setSectionPageCountsFromCache(map);
             this.#renderSectionTicks(map);
-            logFix('cachewarmer:update', { size: map.size, total: e?.detail?.total ?? null, linearCount, sum });
+            logFix('cachewarmer:update', { size: map.size, total: e?.detail?.total ?? null, sum });
         }
     };
     document.addEventListener('cachewarmer:pagecounts', pageCountUpdate);
@@ -1537,25 +1547,55 @@ class Reader {
     })
     }, 400)
 
-    async #onRelocate({
-        detail
-    }) {
+    async #onRelocate({ detail }) {
+        const sectionIndexFromDetail =
+            typeof detail?.sectionIndex === 'number' ? detail.sectionIndex :
+            (typeof detail?.index === 'number' ? detail.index : null);
+        const fractionFromDetail = typeof detail?.fraction === 'number' ? detail.fraction : null;
+        try {
         // Make sure any loading overlay from the previous navigation is cleared.
-        // In some navigation paths (e.g., swiping between sections) `didDisplay`
-        // can be skipped, leaving `body.loading` set and a full‑page overlay
-        // intercepting taps. Clearing it here guarantees the controls and content
-        // remain interactive once relocate fires.
         this.setLoadingIndicator(false);
+        const navBar = document.getElementById('nav-bar');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        const sliderEl = document.getElementById('progress-slider');
+        const ticksEl = document.getElementById('progress-ticks');
+        logBug('relocate:start', {
+            reason: detail?.reason ?? null,
+            sectionIndex: sectionIndexFromDetail,
+            fraction: fractionFromDetail,
+            bodyClasses: Array.from(document?.body?.classList ?? []),
+            navHidden: navBar?.classList?.contains?.('nav-hidden') ?? null,
+            sliderVisible: sliderEl?.style?.visibility ?? null,
+        });
+            logBug('relocate:start', {
+                reason: detail?.reason ?? null,
+                sectionIndex: sectionIndexFromDetail,
+                fraction: fractionFromDetail,
+                bodyClasses: Array.from(document?.body?.classList ?? []),
+            });
 
-        const {
-            fraction,
-            location,
-            tocItem,
-            pageItem,
-            cfi,
-            reason,
-            index: sectionIndex
-        } = detail
+            // Force nav visible on every relocate while debugging.
+            postNavigationChromeVisibility(false, { source: 'relocate-force', direction: null });
+            if (navBar) {
+                navBar.style.visibility = 'visible';
+                navBar.classList.remove('nav-hidden', 'nav-hidden-due-to-scroll');
+            }
+            [progressWrapper, sliderEl, ticksEl].forEach(el => {
+                if (!el) return;
+                el.style.visibility = 'visible';
+                el.style.display = '';
+                el.classList.remove('nav-hidden', 'nav-hidden-due-to-scroll');
+            });
+
+            const {
+                fraction,
+                location,
+                tocItem,
+                pageItem,
+                cfi,
+                reason,
+                index: sectionIndex
+            } = detail
         // Normalize section index so downstream HUD can aggregate page counts reliably.
         const inferredSectionIndex = (() => {
             if (typeof detail?.sectionIndex === 'number') return detail.sectionIndex
@@ -1564,13 +1604,13 @@ class Reader {
             if (typeof rendererIndex === 'number') return rendererIndex
             return null
         })()
-        const normalizedDetail = {
-            ...detail,
-            sectionIndex: inferredSectionIndex,
-            index: typeof detail?.index === 'number'
-                ? detail.index
-                : (typeof sectionIndex === 'number' ? sectionIndex : inferredSectionIndex),
-        }
+            const normalizedDetail = {
+                ...detail,
+                sectionIndex: inferredSectionIndex,
+                index: typeof detail?.index === 'number'
+                    ? detail.index
+                    : (typeof sectionIndex === 'number' ? sectionIndex : inferredSectionIndex),
+            }
         const previousFraction = typeof this.lastKnownFraction === 'number' ? this.lastKnownFraction : null;
         const previousPageEstimate = this.lastPageEstimate;
         const percent = percentFormat.format(fraction)
@@ -1594,22 +1634,31 @@ class Reader {
         previousFraction,
         previousPageEstimate,
         });
-        switch (normalizedReason) {
-        case 'live-scroll':
-        case 'selection':
-        case 'navigation':
-            postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
-            break;
-        case 'page':
-            // Keep nav visible on page turns to avoid stuck hidden state.
-            postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
-            break;
-        default:
-            break;
-        }
-
-        // Force nav visible after every relocate to prevent desync between HTML and Swift layer.
-        postNavigationChromeVisibility(false, { source: 'relocate-reset' });
+            switch (normalizedReason) {
+            case 'live-scroll':
+            case 'selection':
+            case 'navigation':
+                postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
+                break;
+            case 'page':
+                if (relocateDirection === 'forward') {
+                    postNavigationChromeVisibility(true, { source: 'relocate', direction: 'forward' });
+                } else if (relocateDirection === 'backward') {
+                    postNavigationChromeVisibility(false, { source: 'relocate', direction: 'backward' });
+                } else {
+                    postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection });
+                }
+                logBug('nav-toggle', {
+                    reason: normalizedReason,
+                    direction: relocateDirection,
+                    hide: relocateDirection === 'forward',
+                    fraction,
+                    sectionIndex,
+                });
+                break;
+            default:
+                break;
+            }
 
         if (this.hasLoadedLastPosition) {
             this.#postUpdateReadingProgressMessage({
@@ -1642,10 +1691,10 @@ class Reader {
         const percentButton = this.#jumpButton ?? document.getElementById('percent-jump-button');
         if (!this.#jumpInput && percentInput) this.#jumpInput = percentInput;
         if (!this.#jumpButton && percentButton) this.#jumpButton = percentButton;
-        const pageEstimate = this.navHUD?.getPageEstimate(normalizedDetail);
-        if (pageEstimate) {
-            this.lastPageEstimate = pageEstimate;
-        }
+            const pageEstimate = this.navHUD?.getPageEstimate(normalizedDetail);
+            if (pageEstimate) {
+                this.lastPageEstimate = pageEstimate;
+            }
         logEBookPageNum('relocate:label', {
             label: navLabel ?? '',
             fraction,
@@ -1674,8 +1723,20 @@ class Reader {
         });
         this.#updateJumpUnitAvailability();
         this.#syncJumpInputWithState();
-        if (percentButton) {
-            percentButton.disabled = true;
+            if (percentButton) {
+                percentButton.disabled = true;
+            }
+            logBug('relocate:end', {
+                reason: detail?.reason ?? null,
+                sectionIndex: sectionIndexFromDetail,
+                fraction,
+                pageEstimateCurrent: this.lastPageEstimate?.current ?? null,
+                pageEstimateTotal: this.lastPageEstimate?.total ?? null,
+                navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+            });
+        } catch (error) {
+            logBug('relocate:error', { message: String(error), stack: error?.stack ?? null });
+            console.error(error);
         }
     }
 

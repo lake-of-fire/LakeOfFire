@@ -30,6 +30,17 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     }
 };
 
+// Stub logFix to avoid breaking when viewer.js isn't importing it here.
+// We only need a no-op logger for nav diagnostics.
+const logFix = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail };
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# EBOOKFIX1 ${JSON.stringify(payload)}`);
+    } catch (_err) {
+        try { console.log('# EBOOKFIX1', event, detail); } catch (_) {}
+    }
+};
+
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
     for (const item of items) {
