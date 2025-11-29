@@ -498,15 +498,10 @@ export class NavigationHUD {
         if (!fullLabelTarget || !compactLabelTarget) return;
 
         const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
-        const fullLabelCandidate = this.formatPrimaryLabel(detail);
-        const compactLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: true, condensedOnly: true });
+        const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
         const fullLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        const compactLabel = compactLabelCandidate
-            || (fullLabelCandidate ? this.#condensePrimaryLabel(fullLabelCandidate) : null)
-            || scrubFrozenLabel
-            || fullLabel;
-        const shouldRequestRenderer = !fullLabelCandidate;
-
+        // Use the same value for compact so it remains visible when nav is compacted/hidden
+        const compactLabel = fullLabel;
         if (fullLabel) {
             fullLabelTarget.textContent = fullLabel;
             if (fullLabelCandidate) {
@@ -516,15 +511,7 @@ export class NavigationHUD {
             fullLabelTarget.textContent = '';
         }
 
-        if (shouldRequestRenderer) {
-            this.#requestRendererPrimaryLine();
-        }
-
-        if (compactLabel) {
-            compactLabelTarget.textContent = compactLabel;
-        } else {
-            compactLabelTarget.textContent = fullLabelTarget.textContent;
-        }
+        compactLabelTarget.textContent = compactLabel;
 
         // UI surface logging: what the user actually sees on the nav bar.
         logEBookPageNumLimited('ui:primary-label', {
@@ -578,7 +565,7 @@ export class NavigationHUD {
         return null;
     }
 
-    formatPrimaryLabel(detail, { allowRendererFallback = true, condensedOnly = false } = {}) {
+    formatPrimaryLabel(detail, { allowRendererFallback = false, condensedOnly = false } = {}) {
         const derived = this.#derivePrimaryLabel(detail);
         if (derived) {
             const label = condensedOnly ? this.#condensePrimaryLabel(derived) : derived;
@@ -587,16 +574,7 @@ export class NavigationHUD {
             }
             return label;
         }
-        if (allowRendererFallback && this.rendererPageSnapshot) {
-            const fallback = this.#formatRendererPageLabel(this.rendererPageSnapshot);
-            if (fallback) {
-                const label = condensedOnly ? this.#condensePrimaryLabel(fallback) : fallback;
-                if (!condensedOnly) {
-                    this.latestPrimaryLabel = label;
-                }
-                return label;
-            }
-        }
+        // No fallback to page-based labels.
         return '';
     }
 
@@ -1088,39 +1066,8 @@ export class NavigationHUD {
     }
     
     #requestRendererPrimaryLine() {
-        const renderer = this.getRenderer?.();
-        if (!renderer || typeof renderer.page !== 'function' || typeof renderer.pages !== 'function') {
-            return;
-        }
-        const token = ++this.primaryLineRequestToken;
-        Promise.allSettled([renderer.page(), renderer.pages()]).then(results => {
-            if (token !== this.primaryLineRequestToken) return;
-            const [pageResult, pagesResult] = results;
-            if (pageResult.status !== 'fulfilled' || pagesResult.status !== 'fulfilled') {
-                return;
-            }
-            const normalized = this.#normalizeRendererPageInfo(pageResult.value, pagesResult.value, renderer);
-            if (!normalized) {
-                return;
-            }
-            this.rendererPageSnapshot = normalized;
-            const label = this.#formatRendererPageLabel(normalized);
-            if (label) {
-                const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
-                const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
-                fullLabelTarget.textContent = label;
-                compactLabelTarget.textContent = this.#condensePrimaryLabel(label) || label;
-                this.latestPrimaryLabel = label;
-                this.lastPrimaryLabelDiagnostics = {
-                    label,
-                    source: 'renderer-primary-line',
-                    rendererSnapshotCurrent: normalized.current,
-                    rendererSnapshotTotal: normalized.total,
-                    totalPageCount: this.totalPageCount,
-                };
-                this.#logPageNumberDiagnostic('renderer-primary-line', this.lastPrimaryLabelDiagnostics);
-            }
-        }).catch(() => {});
+        // No-op: we no longer backfill the primary label with renderer page numbers.
+        return;
     }
     
     #normalizeRendererPageInfo(rawPage, rawTotal, renderer) {
@@ -1482,8 +1429,8 @@ export class NavigationHUD {
         if (locCurrent != null) {
             return `${locCurrent + 1}`;
         }
-        // Derive a location-style label from fraction + any known total.
-        const derivedTotal = locTotal
+        // Derive a location-style label from fraction + last known location total if available.
+        const derivedTotal = this.lastPrimaryLabelDiagnostics?.locationTotal
             ?? this.rendererPageSnapshot?.total
             ?? this.fallbackTotalPageCount
             ?? this.totalPageCount
