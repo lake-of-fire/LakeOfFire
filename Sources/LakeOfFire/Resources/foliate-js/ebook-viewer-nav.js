@@ -40,6 +40,14 @@ const logFix = (event, detail = {}) => {
         try { console.log('# EBOOKFIX1', event, detail); } catch (_) {}
     }
 };
+const logBug = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail };
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# BOOKBUG1 ${JSON.stringify(payload)}`);
+    } catch (_err) {
+        try { console.log('# BOOKBUG1', event, detail); } catch (_) {}
+    }
+};
 
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
@@ -154,6 +162,9 @@ export class NavigationHUD {
         }
     }
 
+    linearSectionCount = null;
+    linearSectionIndexes = new Set();
+
     setIsRTL(isRTL) {
         this.isRTL = !!isRTL;
         this.#applyRelocateButtonEdges();
@@ -167,8 +178,17 @@ export class NavigationHUD {
             : null;
         if (typeof linearCount === 'number' && linearCount > 0 && counts.size < linearCount) {
             // Don't overwrite until all linear sections are known.
+            logBug?.('pagecount:cachewarmer:skip-partial', {
+                received: counts.size,
+                linearCount,
+            });
             return;
         }
+        logBug?.('pagecount:cachewarmer:apply', {
+            received: counts.size,
+            linearCount,
+            total: Array.from(counts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0),
+        });
         this.sectionPageCounts = new Map(counts);
         const total = Array.from(counts.values()).reduce((acc, v) => acc + (Number.isFinite(v) && v > 0 ? v : 0), 0);
         if (total > 0) {
@@ -218,6 +238,13 @@ export class NavigationHUD {
     
     setNavContext(context) {
         this.navContext = context ?? null;
+        this.linearSectionIndexes = new Set();
+        if (Array.isArray(this.navContext?.sections)) {
+            this.navContext.sections.forEach((section, idx) => {
+                if (section?.linear !== 'no') this.linearSectionIndexes.add(idx);
+            });
+        }
+        this.linearSectionCount = this.linearSectionIndexes.size || null;
         this.#toggleCompletionStack();
         this.#updateSectionProgress();
         this.#updateRelocateButtons();
@@ -719,6 +746,8 @@ export class NavigationHUD {
             rendererSnapshotTotal: this.rendererPageSnapshot?.total ?? null,
             effectiveTotalPages: adjustedTotal ?? null,
             totalSource: this.lastTotalSource ?? null,
+            currentPageNumber: adjustedCurrent ?? null,
+            totalPages: adjustedTotal ?? null,
         };
         this.#logPageMetrics({
             fraction: fraction != null ? Number(fraction.toFixed(6)) : null,
@@ -892,6 +921,14 @@ export class NavigationHUD {
                     descriptorFraction: descriptor?.fraction ?? null,
                     prevFraction: previousDescriptor?.fraction ?? null,
                 });
+                logBug('EBOOKJUMP', {
+                    event: 'push',
+                    reason,
+                    backDepth: this.relocateStacks.back.length,
+                    forwardDepth: this.relocateStacks.forward.length,
+                    prevFraction: previousDescriptor?.fraction ?? null,
+                    newFraction: descriptor?.fraction ?? null,
+                });
             }
         } else if (isPageTurn && descriptorChanged && !isScrubbing && previousDescriptor) {
             this.#pushBackStack(previousDescriptor);
@@ -900,6 +937,15 @@ export class NavigationHUD {
                 backDepth: this.relocateStacks.back.length,
                 descriptorFraction: descriptor?.fraction ?? null,
                 prevFraction: previousDescriptor?.fraction ?? null,
+                sectionIndex: detail?.sectionIndex ?? null,
+            });
+            logBug('EBOOKJUMP', {
+                event: 'push-pageturn',
+                reason,
+                backDepth: this.relocateStacks.back.length,
+                forwardDepth: this.relocateStacks.forward.length,
+                prevFraction: previousDescriptor?.fraction ?? null,
+                newFraction: descriptor?.fraction ?? null,
                 sectionIndex: detail?.sectionIndex ?? null,
             });
         } else if (!isScrubbing && descriptorChanged) {
@@ -970,6 +1016,13 @@ export class NavigationHUD {
             backDepth: backStack.length,
             forwardDepth: this.relocateStacks.forward.length,
             hiddenDueToScroll: this.hideNavigationDueToScroll,
+        });
+        logBug('EBOOKJUMP', {
+            event: 'stack-push',
+            index,
+            backDepth: backStack.length,
+            forwardDepth: this.relocateStacks.forward.length,
+            fraction: entry.fraction ?? null,
         });
         this.#logStackSnapshot('push');
         return { entry, index };
@@ -1181,10 +1234,16 @@ export class NavigationHUD {
     #logPageScrub(_event, _payload = {}) {}
 
     #logJumpDiagnostic(event, payload = {}) {
+        const pageNumber = typeof this.lastPrimaryLabelDiagnostics?.currentPageNumber === 'number'
+            ? this.lastPrimaryLabelDiagnostics.currentPageNumber
+            : null;
+        const pageTotal = typeof this.lastPrimaryLabelDiagnostics?.totalPages === 'number'
+            ? this.lastPrimaryLabelDiagnostics.totalPages
+            : null;
         const context = {
-            windowURL: this.#safeTopURL(),
-            pageURL: document?.location?.href ?? null,
             timestamp: Date.now(),
+            pageNumber,
+            pageTotal,
             ...payload,
         };
         const cleanedEntries = Object.entries(context).filter(([, value]) => value !== undefined && value !== null);
@@ -1202,14 +1261,6 @@ export class NavigationHUD {
         }
     }
 
-    #safeTopURL() {
-        try {
-            return window.top?.location?.href ?? null;
-        } catch (_error) {
-            return null;
-        }
-    }
-    
     #isSameDescriptor(a, b) {
         if (!a || !b) return false;
         if (a.cfi && b.cfi) return a.cfi === b.cfi;
@@ -1276,12 +1327,21 @@ export class NavigationHUD {
         return sum;
     }
 
+    #hasCompleteSectionCounts() {
+        if (!this.linearSectionCount || this.linearSectionCount <= 0) return false;
+        let filled = 0;
+        for (const idx of this.linearSectionIndexes) {
+            if (this.sectionPageCounts.has(idx)) filled += 1;
+        }
+        return filled === this.linearSectionCount;
+    }
+
     #currentTotalPages(detail, detailPageCount) {
         const candidates = [];
         if (this.totalPageCount > 0) {
             candidates.push({ source: 'page-targets', total: this.totalPageCount });
         }
-        if (this.sectionPageCounts.size > 0) {
+        if (this.sectionPageCounts.size > 0 && this.#hasCompleteSectionCounts()) {
             const sectionSum = Array.from(this.sectionPageCounts.values())
                 .reduce((acc, value) => acc + (typeof value === 'number' && value > 0 ? value : 0), 0);
             if (sectionSum > 0) {
@@ -1297,18 +1357,18 @@ export class NavigationHUD {
         if (rendererTotal && rendererTotal > 0 && rendererScrolled === false) {
             candidates.push({ source: 'renderer', total: rendererTotal });
         }
-        if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
-            candidates.push({ source: 'fallback', total: this.fallbackTotalPageCount });
-        }
         const locationTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locationTotal && locationTotal > 0) {
             candidates.push({ source: 'location', total: locationTotal });
+        }
+        if (typeof this.fallbackTotalPageCount === 'number' && this.fallbackTotalPageCount > 0) {
+            candidates.push({ source: 'fallback', total: this.fallbackTotalPageCount });
         }
         if (!candidates.length) {
             this.lastTotalSource = null;
             return null;
         }
-        const precedence = ['page-targets', 'sections', 'renderer', 'detail', 'fallback', 'location'];
+        const precedence = ['page-targets', 'sections', 'fallback', 'renderer', 'detail', 'location'];
         const best = candidates
             .sort((a, b) => {
                 const pa = precedence.indexOf(a.source);
@@ -1320,6 +1380,13 @@ export class NavigationHUD {
         if (best?.total && best.source !== 'page-targets') {
             this.#updateFallbackTotalPages(best.total);
         }
+        logBug('total-pages-choice', {
+            chosenSource: best?.source ?? null,
+            chosenTotal: best?.total ?? null,
+            candidates: candidates.map(({ source, total }) => ({ source, total })),
+            sectionsComplete: this.#hasCompleteSectionCounts(),
+            linearSectionCount: this.linearSectionCount ?? null,
+        });
         const summary = candidates.map(({ source, total }) => ({ source, total }));
         const changed = !this.lastTotalPagesSnapshot
             || this.lastTotalPagesSnapshot.source !== (best?.source ?? null)
@@ -1426,11 +1493,8 @@ export class NavigationHUD {
             } else {
                 backBtn.removeAttribute('aria-disabled');
             }
-            if (!showBack) {
-                backBtn.setAttribute('aria-hidden', 'true');
-            } else {
-                backBtn.removeAttribute('aria-hidden');
-            }
+            if (!showBack) backBtn.setAttribute('aria-hidden', 'true');
+            else backBtn.removeAttribute('aria-hidden');
         }
         if (forwardBtn) {
             forwardBtn.hidden = !showForward;
@@ -1440,11 +1504,8 @@ export class NavigationHUD {
             } else {
                 forwardBtn.removeAttribute('aria-disabled');
             }
-            if (!showForward) {
-                forwardBtn.setAttribute('aria-hidden', 'true');
-            } else {
-                forwardBtn.removeAttribute('aria-hidden');
-            }
+            if (!showForward) forwardBtn.setAttribute('aria-hidden', 'true');
+            else forwardBtn.removeAttribute('aria-hidden');
         }
         const backLabelDescriptor = this.#descriptorForRelocateLabel('back');
         const forwardLabelDescriptor = this.#descriptorForRelocateLabel('forward');
@@ -1625,6 +1686,13 @@ export class NavigationHUD {
             backDepth: this.relocateStacks?.back?.length ?? 0,
             forwardDepth: this.relocateStacks?.forward?.length ?? 0,
         });
+        logBug('EBOOKJUMP', {
+            event: 'jump-finalized',
+            direction,
+            targetFraction,
+            backDepth: this.relocateStacks?.back?.length ?? 0,
+            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
+        });
         this.#updateRelocateButtons();
     }
     
@@ -1632,10 +1700,12 @@ export class NavigationHUD {
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length) {
             this.#logJumpBack('tap-ignored-empty', { direction });
+            logBug('EBOOKJUMP', { event: 'tap-empty', direction });
             return;
         }
         if (this.hideNavigationDueToScroll) {
             this.#logJumpBack('tap-ignored-hidden', { direction });
+            logBug('EBOOKJUMP', { event: 'tap-hidden', direction });
             return;
         }
         if (this.pendingRelocateJump) {
