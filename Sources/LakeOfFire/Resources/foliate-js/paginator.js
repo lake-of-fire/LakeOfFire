@@ -1308,6 +1308,8 @@ class View {
     #resizeObserver = null
     #styleCache = new WeakMap()
     #isCacheWarmer = false
+    #pendingResizeAfterExpand = null
+    #expandRetryScheduled = false
     cachedViewSize = null
     getLastBodyRect() {
         // Rounded body rect captured by the resize observer; avoids forcing layout reads elsewhere.
@@ -1315,8 +1317,16 @@ class View {
     }
     #handleResize(newSize) {
         if (!newSize) return
+        const inExpand = this.#inExpand || false
         // Keep resize lightweight: invalidate cached sizes and ask container to re-bake when enabled.
-        if (this.#inExpand || this.#isCacheWarmer) return
+        if (this.#isCacheWarmer) return
+        if (inExpand) {
+            // Buffer the last resize that arrives while expand is running so we can replay it afterwards.
+            this.#pendingResizeAfterExpand = newSize
+            console.log('[paginator] handleResize buffered during expand', { newSize, inExpand })
+            return
+        }
+        console.log('[paginator] handleResize apply', { newSize, inExpand })
         this.cachedViewSize = null
         if (MANABI_TRACKING_SIZE_BAKE_ENABLED) {
             this.container?.requestTrackingSectionSizeBakeDebounced?.({
@@ -1712,6 +1722,8 @@ class View {
             pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
             inExpand: this.#inExpand || false,
         })
+        // Reset per-expand retry state; invalid measurements schedule a single retry.
+        this.#expandRetryScheduled = false
         this.#inExpand = true
         try {
             await this.onBeforeExpand()
@@ -1741,8 +1753,44 @@ class View {
                         // which seem to be supported only by WebKit and only for horizontal writing
                         const contentStart = this.#vertical ? 0
                             : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
-                        const contentSize = contentStart + contentRect[side]
-                        const pageCount = Math.ceil(contentSize / this.#size)
+                        const contentRectSide = contentRect?.[side] ?? 0
+                        const contentSize = contentStart + contentRectSide
+                        const sizeValid = Number.isFinite(this.#size) && this.#size > 0
+                        const contentRectValid = Number.isFinite(contentRectSide) && contentRectSide > 0
+                        const contentSizeValid = Number.isFinite(contentSize) && contentSize > 0
+                        const pageCount = (sizeValid && contentSizeValid)
+                            ? Math.ceil(contentSize / this.#size)
+                            : null
+                        const invalidMeasurement = !sizeValid || !contentRectValid || !contentSizeValid || !pageCount || pageCount <= 0
+                        console.log('[paginator] expand measure', {
+                            size: this.#size,
+                            side,
+                            contentRectSide,
+                            contentStart,
+                            contentSize,
+                            pageCount,
+                            invalidMeasurement,
+                        })
+                        if (invalidMeasurement) {
+                            logEBookPageNumLimited('expand:invalid-measurement', {
+                                mode: 'column',
+                                side,
+                                size: this.#size,
+                                contentRectSide,
+                                contentStart,
+                                contentSize,
+                                pageCount,
+                            })
+                            // Defer a retry so we don't lock in a bogus 0/1 page count; often fonts/images finish after this.
+                            if (!this.#expandRetryScheduled) {
+                                this.#expandRetryScheduled = true
+                                requestAnimationFrame(() => {
+                                    this.#expandRetryScheduled = false
+                                    if (!this.#inExpand) this.expand().catch(() => {})
+                                })
+                            }
+                            return
+                        }
                         logEBookPerf('EXPAND.metrics', {
                             mode: 'column',
                             side,
@@ -1875,17 +1923,23 @@ class View {
                     pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
                     inExpand: this.#inExpand || false,
                 })
-                logEBookPageNumLimited('expand:complete', {
-                    column: this.#column,
-                    vertical: this.#vertical,
-                    size: this.#size,
-                    suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
-                    trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
-                    pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
-                })
+                    logEBookPageNumLimited('expand:complete', {
+                        column: this.#column,
+                        vertical: this.#vertical,
+                        size: this.#size,
+                        suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                        trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
+                        pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
+                    })
                     //                console.log("expand... call'd onexpand")
                 } finally {
+                    const bufferedResize = this.#pendingResizeAfterExpand
+                    this.#pendingResizeAfterExpand = null
                     this.#inExpand = false
+                    if (bufferedResize) {
+                        console.log('[paginator] expand: replay buffered resize after expand', bufferedResize)
+                        this.#handleResize(bufferedResize)
+                    }
                     resolve()
                 }
             })
@@ -2346,6 +2400,7 @@ export class Paginator extends HTMLElement {
             this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
             this.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
             this.addEventListener('touchend', this.#onTouchEnd.bind(this))
+            this.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
             this.addEventListener('load', ({
                 detail: {
                     doc
@@ -2354,6 +2409,7 @@ export class Paginator extends HTMLElement {
                 doc.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
                 doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
                 doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
+                doc.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
             })
             this.addEventListener('wheel', this.#onWheel.bind(this), opts);
         }
@@ -3803,24 +3859,56 @@ export class Paginator extends HTMLElement {
         }
     }
     #onTouchEnd(e) {
+        const hadNav = this.#touchTriggeredNav;
+        const hadChevron = this.#touchHasShownChevron;
+
         this.#touchState = null;
-        // If we just loaded a new section, skip the opacity reset
-        if (this.#skipTouchEndOpacity && !this.#touchTriggeredNav) {
+
+        // If we just loaded a new section, skip the opacity reset for non-nav touches
+        if (this.#skipTouchEndOpacity && !hadNav) {
             this.#logChevronDispatch('sideNavChevronOpacity:touchEnd:skipReset', { reason: 'skipTouchEndOpacity' });
             this.#skipTouchEndOpacity = false
             this.#touchHasShownChevron = false;
+            this.#touchTriggeredNav = false;
+            this.#maxChevronLeft = 0;
+            this.#maxChevronRight = 0;
             return
         }
-        // If swipe never triggered navigation but showed the chevron, fade it out now.
-        if (!this.#touchTriggeredNav && this.#touchHasShownChevron) {
-            this.#clearPendingChevronReset();
+
+        // Always clear any outstanding reset timers once the finger lifts
+        this.#clearPendingChevronReset();
+
+        if (hadNav) {
+            // Navigation already occurred; force a full chevron reset so UI controls re-enable
+            this.#logResetNeed('touchEnd:nav');
+            this.#emitChevronReset('reset:touchEndNav');
+        } else if (hadChevron) {
+            // If swipe never triggered navigation but showed the chevron, fade it out now.
             this.#logResetNeed('touchEnd:noNav');
             this.#scheduleChevronHide(0);
+        }
+
+        this.#touchHasShownChevron = false;
+        this.#touchTriggeredNav = false;
+        this.#maxChevronLeft = 0;
+        this.#maxChevronRight = 0;
+        this.#skipTouchEndOpacity = false;
+    }
+
+    #onTouchCancel(e) {
+        // Treat cancellation as an end-of-gesture and force-reset chevrons/state.
+        const hadGesture = this.#touchHasShownChevron || this.#touchTriggeredNav;
+        this.#touchState = null;
+        this.#clearPendingChevronReset();
+        if (hadGesture) {
+            this.#logResetNeed('touchCancel');
+            this.#emitChevronReset('reset:touchCancel');
         }
         this.#touchHasShownChevron = false;
         this.#touchTriggeredNav = false;
         this.#maxChevronLeft = 0;
         this.#maxChevronRight = 0;
+        this.#skipTouchEndOpacity = false;
     }
     // allows one to process rects as if they were LTR and horizontal
     async #getRectMapper() {
@@ -3892,6 +3980,8 @@ export class Paginator extends HTMLElement {
         this.#emitChevronReset('reset:event');
     };
     #emitChevronReset(source = 'reset:auto') {
+        // Stop any in-flight auto-hide timers before fanning out a reset.
+        this.#clearPendingChevronReset();
         try {
             const line = `# EBOOK CHEVRESET ${JSON.stringify({ source })}`;
             window.webkit?.messageHandlers?.print?.postMessage?.(line);

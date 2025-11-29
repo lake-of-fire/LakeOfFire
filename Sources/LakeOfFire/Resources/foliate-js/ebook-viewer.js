@@ -1064,6 +1064,7 @@ class Reader {
     percentButton.disabled = true;
     this.view.goToFraction(fraction);
     }
+    this.closeSideBar();
     });
 
     document.addEventListener('keydown', this.#handleKeydown.bind(this))
