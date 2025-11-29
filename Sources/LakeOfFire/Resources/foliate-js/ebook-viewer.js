@@ -1007,21 +1007,8 @@ class Reader {
     slider.addEventListener('pointercancel', this.#handleProgressSliderPointerCancel)
 
     this.book = book;
-    const initialCounts = getCacheWarmerSectionPageCounts();
-    if (initialCounts) {
-        this.navHUD?.setSectionPageCountsFromCache(initialCounts);
-        logFix('pagecount:init', { size: initialCounts.size, total: Array.from(initialCounts.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0) });
-    }
-    const pageCountUpdate = e => {
-        const map = new Map(e?.detail?.counts ?? []);
-        const sum = Array.from(map.values()).reduce((a, v) => a + (Number.isFinite(v) ? v : 0), 0);
-        if (map.size > 0 && sum > 0) {
-            this.navHUD?.setSectionPageCountsFromCache(map);
-            this.#renderSectionTicks(map);
-            logFix('cachewarmer:update', { size: map.size, total: e?.detail?.total ?? null, sum });
-        }
-    };
-    document.addEventListener('cachewarmer:pagecounts', pageCountUpdate);
+    // Cache-warmer section page counts are disabled; rely on live renderer counts instead.
+    const initialCounts = null;
 
     slider.style.setProperty('--value', slider.value);
     slider.style.setProperty('--min', slider.min == '' ? '0' : slider.min);
@@ -1629,7 +1616,7 @@ class Reader {
             if (typeof rendererIndex === 'number') return rendererIndex
             return null
         })()
-            const normalizedDetail = {
+        const normalizedDetail = {
                 ...detail,
                 sectionIndex: inferredSectionIndex,
                 index: typeof detail?.index === 'number'
@@ -1638,14 +1625,40 @@ class Reader {
             }
         const previousFraction = typeof this.lastKnownFraction === 'number' ? this.lastKnownFraction : null;
         const previousPageEstimate = this.lastPageEstimate;
-        const percent = percentFormat.format(fraction)
         const slider = $('#progress-slider')
         slider.style.visibility = 'visible'
         const ticks = document.getElementById('progress-ticks');
         if (ticks) ticks.style.visibility = 'visible'
-        if ((detail.reason || '').toLowerCase() !== 'live-scroll') {
-            slider.value = fraction
-            slider.style.setProperty('--value', slider.value); // keep slider progress updated
+        // Ensure detail has a location derived from fraction so labels stay in Loc space even before new section loads.
+        const inferredTotalLoc = this.navHUD?.rendererPageSnapshot?.total
+            || this.navHUD?.fallbackTotalPageCount
+            || this.navHUD?.totalPageCount
+            || null;
+        if (!detail.location && typeof fraction === 'number' && inferredTotalLoc && inferredTotalLoc > 0) {
+            const clampedTotal = Math.max(1, inferredTotalLoc);
+            const idx = Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1));
+            detail.location = { current: idx, total: clampedTotal };
+        }
+        // Live-update relocate labels using loc derived from fraction while scrubbing
+        if (this.navHUD) {
+            const locTotal = this.navHUD?.rendererPageSnapshot?.total
+                || this.navHUD?.fallbackTotalPageCount
+                || this.navHUD?.totalPageCount
+                || null;
+            if (locTotal && locTotal > 0) {
+                const clampedTotal = Math.max(1, locTotal);
+                const idx = Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1));
+                const liveDescriptor = {
+                    location: { current: idx, total: clampedTotal },
+                    fraction,
+                };
+                if (this.navHUD.navRelocateLabels?.back) {
+                    this.navHUD.navRelocateLabels.back.textContent = this.navHUD.labelForDescriptor?.(liveDescriptor) ?? '';
+                }
+                if (this.navHUD.navRelocateLabels?.forward) {
+                    this.navHUD.navRelocateLabels.forward.textContent = this.navHUD.labelForDescriptor?.(liveDescriptor) ?? '';
+                }
+            }
         }
         // (removed: setting tocView currentHref here)
         const scrubbing = !!this.#progressScrubState;
@@ -1700,6 +1713,15 @@ class Reader {
 
         await this.updateNavButtons();
         await this.navHUD?.handleRelocate(normalizedDetail);
+        const scrubFraction = this.navHUD?.getScrubberFraction(normalizedDetail) ?? null;
+        const effectiveFraction = Number.isFinite(scrubFraction) ? scrubFraction : fraction;
+        if ((detail.reason || '').toLowerCase() !== 'live-scroll') {
+            const sliderValue = Number.isFinite(effectiveFraction) ? effectiveFraction : 0;
+            slider.value = sliderValue;
+            slider.style.setProperty('--value', sliderValue); // keep slider progress updated
+        }
+        const percentValue = Number.isFinite(effectiveFraction) ? effectiveFraction : 0;
+        const percent = percentFormat.format(percentValue);
         const navLabel = this.navHUD?.getPrimaryDisplayLabel(normalizedDetail);
         const tooltipParts = [];
         if (navLabel) {
@@ -1713,8 +1735,8 @@ class Reader {
             this.#finalizeProgressScrubSession({ cancel: this.#progressScrubState.cancelRequested });
         }
 
-        this.lastKnownFraction = fraction;
-        const pct = Math.round(fraction * 100);
+        this.lastKnownFraction = percentValue;
+        const pct = Math.round(percentValue * 100);
         this.lastPercentValue = pct;
         const percentInput = this.#jumpInput ?? document.getElementById('percent-jump-input');
         const percentButton = this.#jumpButton ?? document.getElementById('percent-jump-button');
@@ -1727,6 +1749,7 @@ class Reader {
         logEBookPageNum('relocate:label', {
             label: navLabel ?? '',
             fraction,
+            scrubFraction: scrubFraction ?? null,
             sectionIndex,
             pageEstimateCurrent: pageEstimate?.current ?? null,
             pageEstimateTotal: pageEstimate?.total ?? null,
@@ -1737,6 +1760,7 @@ class Reader {
             relocateDirection,
             sectionIndex,
             fraction,
+            scrubFraction: scrubFraction ?? null,
             pageItemCurrent: pageItem?.current ?? null,
             pageItemTotal: pageItem?.total ?? null,
             locationCurrent: location?.current ?? null,
@@ -1759,6 +1783,7 @@ class Reader {
                 reason: detail?.reason ?? null,
                 sectionIndex: sectionIndexFromDetail,
                 fraction,
+                scrubFraction: scrubFraction ?? null,
                 pageEstimateCurrent: this.lastPageEstimate?.current ?? null,
                 pageEstimateTotal: this.lastPageEstimate?.total ?? null,
                 navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,

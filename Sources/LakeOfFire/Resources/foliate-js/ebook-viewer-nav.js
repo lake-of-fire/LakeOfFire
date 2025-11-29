@@ -133,6 +133,7 @@ export class NavigationHUD {
         this.lastTotalSource = null;
         this.lastTotalPagesSnapshot = null;
         this.lastPageMetricsSnapshot = null;
+        this.lastScrubberFraction = null;
         if (this.pendingScrubCommit) {
             this.#logPageScrub('pending-commit-reset', {
                 reason: 'new-scrub',
@@ -206,6 +207,7 @@ export class NavigationHUD {
     setPageTargets(pageList) {
         this.sectionPageCounts.clear?.();
         this.lastSectionIndexSeen = null;
+        this.lastScrubberFraction = null;
         this.pageTargets = flattenPageTargets(pageList ?? []);
         this.pageTargetIndexByKey = new Map();
         this.pageTargets.forEach((item, index) => {
@@ -599,18 +601,45 @@ export class NavigationHUD {
     }
 
     getPrimaryDisplayLabel(detail) {
-        const label = this.formatPrimaryLabel(detail, { allowRendererFallback: true });
-        if (label) return label;
-        return this.navPrimaryText?.textContent || this.latestPrimaryLabel || '';
+        const label = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
+        return label ?? '';
     }
 
     getPageEstimate(detail) {
-        const metrics = this.#computePageMetrics(detail);
-        if (!metrics) return null;
-        return {
-            current: metrics.currentPageNumber ?? null,
-            total: metrics.totalPages ?? null,
-        };
+        // Only use location-derived current/total; ignore page-based metrics.
+        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
+        const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        if (locCurrent == null && locTotal == null) return null;
+        return { current: locCurrent != null ? locCurrent + 1 : null, total: locTotal };
+    }
+
+    getScrubberFraction(detail = null) {
+        if (detail) {
+            const metrics = this.#computePageMetrics(detail);
+            const computed = this.lastScrubberFraction
+                ?? this.#scrubberFractionFromMetrics({
+                    current: metrics?.currentPageNumber,
+                    total: metrics?.totalPages,
+                    fallbackFraction: typeof detail.fraction === 'number' ? detail.fraction : null,
+                });
+            if (computed != null) {
+                this.lastScrubberFraction = computed;
+            }
+            return computed;
+        }
+        return this.lastScrubberFraction;
+    }
+
+    #scrubberFractionFromMetrics({ current, total, fallbackFraction }) {
+        if (typeof total === 'number' && total > 1 && typeof current === 'number') {
+            const clampedCurrent = Math.max(1, Math.min(total, current));
+            const numerator = clampedCurrent - 1;
+            return Math.max(0, Math.min(1, numerator / (total - 1)));
+        }
+        if (typeof fallbackFraction === 'number' && isFinite(fallbackFraction)) {
+            return Math.max(0, Math.min(1, fallbackFraction));
+        }
+        return null;
     }
 
     #derivePrimaryLabel(detail) {
@@ -620,48 +649,35 @@ export class NavigationHUD {
                 label: '',
                 totalPageCount: this.totalPageCount,
             };
-            return '';
+            return null;
         }
-        const metrics = this.#computePageMetrics(detail);
-        if (!metrics) {
+
+        // Prefer location-based "Loc" display only.
+        const locCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
+        const locTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
+        if (locCurrent != null) {
+            const label = locTotal != null
+                ? `Loc ${locCurrent + 1} of ${locTotal}`
+                : `Loc ${locCurrent + 1}`;
             this.lastPrimaryLabelDiagnostics = {
-                source: 'pending-renderer',
-                label: '',
+                source: 'location-loc',
+                label,
+                locationCurrent: locCurrent,
+                locationTotal: locTotal,
                 totalPageCount: this.totalPageCount,
             };
-            return '';
+            this.latestPrimaryLabel = label;
+            return label;
         }
-        const { currentPageNumber, totalPages, pageItemLabel, diag } = metrics;
-        const commit = (label, source) => {
-            this.lastPrimaryLabelDiagnostics = {
-                ...diag,
-                label: label ?? '',
-                source,
-            };
-            return label ?? '';
-        };
-        if (this.hideNavigationDueToScroll && currentPageNumber != null) {
-            return commit(String(currentPageNumber), 'hide-nav-current');
-        }
-        if (typeof totalPages === 'number' && totalPages > 0 && currentPageNumber != null) {
-            const source = diag.pageIndexFromItem != null ? 'page-target-index'
-                : (diag.locationCurrent != null ? 'location-estimate' : 'fraction-estimate');
-            return commit(`${currentPageNumber} of ${totalPages}`, source);
-        }
-        if (currentPageNumber != null) {
-            const source = diag.pageIndexFromItem != null ? 'page-target-index-no-total'
-                : (diag.locationCurrent != null ? 'location-no-total' : 'fraction-no-total');
-            return commit(String(currentPageNumber), source);
-        }
-        if (pageItemLabel) {
-            return commit(this.#sanitizePageLabel(pageItemLabel), 'page-item-label');
-        }
+
+        // If no location data, we won't show a label.
+        this.latestPrimaryLabel = '';
         this.lastPrimaryLabelDiagnostics = {
-            ...diag,
+            source: 'no-location',
             label: '',
-            source: 'pending-renderer',
+            totalPageCount: this.totalPageCount,
         };
-        return '';
+        return null;
     }
 
     #condensePrimaryLabel(label) {
@@ -754,6 +770,14 @@ export class NavigationHUD {
             currentPageNumber: adjustedCurrent ?? null,
             totalPages: adjustedTotal ?? null,
         };
+        const scrubFraction = this.#scrubberFractionFromMetrics({
+            current: adjustedCurrent,
+            total: adjustedTotal,
+            fallbackFraction: fraction,
+        });
+        if (scrubFraction != null) {
+            this.lastScrubberFraction = scrubFraction;
+        }
         this.#logPageMetrics({
             fraction: fraction != null ? Number(fraction.toFixed(6)) : null,
             pageItemKey,
@@ -1446,30 +1470,30 @@ export class NavigationHUD {
         }
     }
 
+    // Public wrapper so external callers (e.g., scrubber live updates) can format labels without accessing private fields.
+    labelForDescriptor(descriptor) {
+        return this.#labelForDescriptor(descriptor);
+    }
+
     #labelForDescriptor(descriptor) {
         if (!descriptor) return '';
-        if (descriptor.pageItemKey && this.pageTargetIndexByKey?.has(descriptor.pageItemKey)) {
-            return String((this.pageTargetIndexByKey.get(descriptor.pageItemKey) ?? 0) + 1);
+        const locCurrent = typeof descriptor.location?.current === 'number' ? descriptor.location.current : null;
+        const locTotal = typeof descriptor.location?.total === 'number' ? descriptor.location.total : null;
+        if (locCurrent != null) {
+            return `${locCurrent + 1}`;
         }
-        const inferredTotal = this.totalPageCount
-            || this.rendererPageSnapshot?.total
-            || this.fallbackTotalPageCount
-            || null;
-        const indexFromFraction = this.#pageIndexFromFraction(descriptor.fraction, inferredTotal);
-        if (indexFromFraction != null) {
-            return String(indexFromFraction + 1);
+        // Derive a location-style label from fraction + any known total.
+        const derivedTotal = locTotal
+            ?? this.rendererPageSnapshot?.total
+            ?? this.fallbackTotalPageCount
+            ?? this.totalPageCount
+            ?? null;
+        if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
+            const clampedTotal = Math.max(1, derivedTotal);
+            const idx = Math.round(Math.max(0, Math.min(1, descriptor.fraction)) * (clampedTotal - 1));
+            return `${idx + 1}`;
         }
-        if (typeof descriptor.fraction === 'number' && this.rendererPageSnapshot?.total) {
-            const total = this.rendererPageSnapshot.total;
-            const position = Math.max(1, Math.min(total, Math.round(descriptor.fraction * (total - 1)) + 1));
-            return String(position);
-        }
-        if (descriptor.pageLabel) {
-            const number = this.#pageNumberFromLabel(descriptor.pageLabel);
-            if (number) return number;
-            const sanitized = this.#sanitizePageLabel(descriptor.pageLabel);
-            if (sanitized) return sanitized;
-        }
+        // No location info; leave label empty.
         return '';
     }
     
