@@ -999,7 +999,7 @@ class Reader {
     this.#tickContainer = document.getElementById('progress-ticks')
     slider.dir = book.dir
     const goToFractionImmediate = e => {
-    this.view.goToFraction(parseFloat(e.target.value))
+        this.view.goToFraction(parseFloat(e.target.value))
     };
     slider.addEventListener('input', goToFractionImmediate)
     slider.addEventListener('pointerdown', this.#handleProgressSliderPointerDown)
@@ -1643,8 +1643,10 @@ class Reader {
         slider.style.visibility = 'visible'
         const ticks = document.getElementById('progress-ticks');
         if (ticks) ticks.style.visibility = 'visible'
-        slider.value = fraction
-        slider.style.setProperty('--value', slider.value); // keep slider progress updated
+        if ((detail.reason || '').toLowerCase() !== 'live-scroll') {
+            slider.value = fraction
+            slider.style.setProperty('--value', slider.value); // keep slider progress updated
+        }
         // (removed: setting tocView currentHref here)
         const scrubbing = !!this.#progressScrubState;
         if (scrubbing) {
