@@ -12,6 +12,12 @@ const CSS_DEFAULTS = {
     maxColumnCountPortrait: 1,
 };
 
+// Chevron visual animations toggle (restored to enabled)
+const CHEVRON_VISUALS_ENABLED = true;
+// Preview chevrons during a swipe before navigation triggers
+// Set to false to avoid mid-gesture state that previously required resets.
+const CHEVRON_SWIPE_PREVIEW_ENABLED = false;
+
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
@@ -1968,6 +1974,7 @@ export class Paginator extends HTMLElement {
     ]
     #logChevronDispatch(_event, _payload = {}) {}
     #emitChevronOpacity(detail, source) {
+        if (!CHEVRON_VISUALS_ENABLED) return;
         const nextLeft = detail?.leftOpacity ?? null;
         const nextRight = detail?.rightOpacity ?? null;
         if (this.#lastChevronEmit.left === nextLeft && this.#lastChevronEmit.right === nextRight) {
@@ -3855,7 +3862,9 @@ export class Paginator extends HTMLElement {
             this.#logResetNeed('postSwipeNav');
             this.#emitChevronReset('reset:postSwipeNav');
         } else {
-            this.#updateSwipeChevron(dx, minSwipe, 'swipe');
+            if (CHEVRON_SWIPE_PREVIEW_ENABLED) {
+                this.#updateSwipeChevron(dx, minSwipe, 'swipe');
+            }
         }
     }
     #onTouchEnd(e) {
@@ -3893,6 +3902,19 @@ export class Paginator extends HTMLElement {
         this.#maxChevronLeft = 0;
         this.#maxChevronRight = 0;
         this.#skipTouchEndOpacity = false;
+    }
+
+    #forceEndTouchGesture(source = 'unknown') {
+        // Safety net: clear lingering swipe state after navigation/display completes.
+        this.#logResetNeed('forceEndTouchGesture', { source });
+        this.#clearPendingChevronReset();
+        this.#touchState = null;
+        this.#touchHasShownChevron = false;
+        this.#touchTriggeredNav = false;
+        this.#maxChevronLeft = 0;
+        this.#maxChevronRight = 0;
+        this.#skipTouchEndOpacity = false;
+        this.#emitChevronReset('reset:forceEndTouchGesture');
     }
 
     #onTouchCancel(e) {
@@ -4686,6 +4708,7 @@ export class Paginator extends HTMLElement {
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         this.#scrolledToAnchorOnLoad = true
         this.#setLoading(false)
+        this.#forceEndTouchGesture('didDisplay')
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
     }

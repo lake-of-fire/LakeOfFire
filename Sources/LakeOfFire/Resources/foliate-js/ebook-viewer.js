@@ -704,6 +704,7 @@ class Reader {
     #allowForwardNavHide = false;
     #logScrubDiagnostic(_event, _payload = {}) {}
     #logChevronDiagnostic(_event, _payload = {}) {}
+    #loadingTimeoutId = null;
     #show(btn, show = true) {
         if (show) {
             btn.hidden = false;
@@ -721,6 +722,19 @@ class Reader {
         const slider = document.getElementById('progress-slider');
         if (tick) tick.style.visibility = 'visible';
         if (slider) slider.style.visibility = 'visible';
+
+        // Fail-safe: clear any lingering loading overlay if the expected hide event never arrives.
+        if (this.#loadingTimeoutId) {
+            clearTimeout(this.#loadingTimeoutId);
+            this.#loadingTimeoutId = null;
+        }
+        if (visible) {
+            this.#loadingTimeoutId = setTimeout(() => {
+                // If still marked loading, force-clear to restore UI interactivity.
+                document.body.classList.remove('loading');
+                this.#loadingTimeoutId = null;
+            }, 1800); // 1.8s safety window
+        }
     }
     #tocView
     #chevronAnimator = null;
