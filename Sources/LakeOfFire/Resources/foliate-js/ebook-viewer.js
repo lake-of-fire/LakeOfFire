@@ -210,6 +210,7 @@ logEBookPerf('fontset-ready', { status: fontSet.status, size: fontSet.size })
 installFontDiagnostics()
 
 let pendingHideNavigationState = null;
+let navHideLock = false;
 const applyLocalHideNavigationDueToScroll = (shouldHide, source = 'unknown') => {
     pendingHideNavigationState = !!shouldHide;
     if (globalThis.reader?.setHideNavigationDueToScroll) {
@@ -240,10 +241,21 @@ const updateNavHiddenClass = (shouldHide) => {
 
 const postNavigationChromeVisibility = (shouldHide, { source, direction, scrubbing = false } = {}) => {
     const appliedHide = !!shouldHide && direction === 'forward' && !scrubbing;
-    if (appliedHide) {
-        globalThis.reader?.allowForwardNavHide();
+
+    // If we previously hid for a forward move, block auto-unhide triggered by relocate refreshes.
+    if (!appliedHide && navHideLock && (source === 'relocate' || source === 'relocate-force')) {
+        logBug('nav-visibility-lock-blocked', { shouldHide, source, direction, scrubbing, navHideLock });
+        return;
     }
-    logBug('nav-visibility', { shouldHide, appliedHide, source, direction, scrubbing });
+
+    if (appliedHide) {
+        navHideLock = true;
+        globalThis.reader?.allowForwardNavHide();
+    } else if (direction === 'backward' || source === 'button-prev') {
+        navHideLock = false; // allow backward nav to show chrome again
+    }
+
+    logBug('nav-visibility', { shouldHide, appliedHide, source, direction, scrubbing, navHideLock });
     applyLocalHideNavigationDueToScroll(appliedHide, source ?? 'nav-visibility');
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
