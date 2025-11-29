@@ -86,10 +86,9 @@ const MANABI_TRACKING_SECTION_SELECTOR = `.${MANABI_TRACKING_SECTION_CLASS}`
 const MANABI_TRACKING_SECTION_VISIBLE_CLASS = 'manabi-tracking-section-visible'
 const MANABI_TRACKING_PREBAKE_HIDDEN_CLASS = 'manabi-prebake-hidden'
 const MANABI_TRACKING_PREBAKE_HIDE_ENABLED = true
-// Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
 const MANABI_TRACKING_SIZE_BAKED_ATTR = 'data-manabi-size-baked'
-// Size baking temporarily disabled.
-const MANABI_TRACKING_SIZE_BAKE_ENABLED = false
+// Geometry bake disabled: keep constants for compatibility, but no-op the workflow below.
+const MANABI_TRACKING_SIZE_BAKE_ENABLED = true
 // Foliate upstream inserts lead/trail sentinel pages in paginated mode; keep adjustment on.
 const MANABI_RENDERER_SENTINEL_ADJUST_ENABLED = true
 const MANABI_TRACKING_SIZE_BAKE_BATCH_SIZE = 5
@@ -106,7 +105,8 @@ const MANABI_TRACKING_SIZE_STABLE_MAX_EVENTS = 120
 const MANABI_TRACKING_SIZE_STABLE_REQUIRED_STREAK = 2
 const MANABI_TRACKING_DOC_STABLE_MAX_EVENTS = 180
 const MANABI_TRACKING_DOC_STABLE_REQUIRED_STREAK = 2
-const MANABI_TRACKING_CACHE_HANDLER = 'trackingSizeCache'
+const MANABI_TRACKING_CACHE_HANDLER = globalThis.MANABI_TRACKING_CACHE_HANDLER || 'trackingSizeCache'
+globalThis.MANABI_TRACKING_CACHE_HANDLER = MANABI_TRACKING_CACHE_HANDLER
 const MANABI_TRACKING_CACHE_VERSION = 'v1'
 const MANABI_SENTINEL_ROOT_MARGIN_PX = 64
 

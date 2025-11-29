@@ -37,6 +37,9 @@ const logBug = (event, detail = {}) => {
     }
 };
 
+const MANABI_TRACKING_CACHE_HANDLER = globalThis.MANABI_TRACKING_CACHE_HANDLER || 'trackingSizeCache';
+globalThis.MANABI_TRACKING_CACHE_HANDLER = MANABI_TRACKING_CACHE_HANDLER;
+
 const getBookCacheKey = () => {
     try {
         return globalThis.reader?.view?.book?.id
