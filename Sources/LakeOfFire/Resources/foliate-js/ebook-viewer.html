@@ -248,13 +248,19 @@
                     opacity: 0;
                     transition: opacity 240ms ease;
                 }
-                #nav-primary-text-full {
+                #nav-primary-text {
+                    --label-variant: full;
+                }
+                #nav-primary-text[data-label-variant="full"] #nav-primary-text-full {
                     opacity: 1;
                 }
-                body.nav-hidden #nav-primary-text-full {
+                #nav-primary-text[data-label-variant="full"] #nav-primary-text-compact {
                     opacity: 0;
                 }
-                body.nav-hidden #nav-primary-text-compact {
+                #nav-primary-text[data-label-variant="compact"] #nav-primary-text-full {
+                    opacity: 0;
+                }
+                #nav-primary-text[data-label-variant="compact"] #nav-primary-text-compact {
                     opacity: 1;
                 }
                 .nav-section-progress {

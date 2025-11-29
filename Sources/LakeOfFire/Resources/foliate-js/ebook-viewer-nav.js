@@ -5,6 +5,7 @@ const FRACTION_EPSILON = 0.000001;
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
+let lastLocTotal = null;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
@@ -256,6 +257,10 @@ export class NavigationHUD {
     setHideNavigationDueToScroll(shouldHide) {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
+        // Drive label variant via data attribute on the primary text container.
+        if (this.navPrimaryText) {
+            this.navPrimaryText.dataset.labelVariant = this.hideNavigationDueToScroll ? 'compact' : 'full';
+        }
         logBug?.('navhud-hide', {
             shouldHide: this.hideNavigationDueToScroll,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
@@ -508,10 +513,9 @@ export class NavigationHUD {
         const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
         const displayLabel = rawLabel ? this.#condensePrimaryLabel(rawLabel.replace(/^Loc\\s+/i, 'Loc ')) : '';
 
-        // Show compact when nav hidden; full when visible. Never both.
-        const showCompact = this.hideNavigationDueToScroll;
-        fullLabelTarget.textContent = showCompact ? '' : displayLabel;
-        compactLabelTarget.textContent = showCompact ? displayLabel : '';
+        // Show the same condensed Loc label; display is controlled via data-label-variant CSS.
+        fullLabelTarget.textContent = displayLabel;
+        compactLabelTarget.textContent = displayLabel;
 
         if (fullLabelCandidate) {
             this.latestPrimaryLabel = fullLabelCandidate;
@@ -644,6 +648,7 @@ export class NavigationHUD {
         const locCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
         const locTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
         if (locCurrent != null) {
+            if (locTotal != null) lastLocTotal = locTotal;
             const label = locTotal != null
                 ? `Loc ${locCurrent + 1} of ${locTotal}`
                 : `Loc ${locCurrent + 1}`;
@@ -1456,8 +1461,21 @@ export class NavigationHUD {
     #labelForDescriptor(descriptor) {
         if (!descriptor) return '';
         const locCurrent = typeof descriptor.location?.current === 'number' ? descriptor.location.current : null;
+        const locTotal = typeof descriptor.location?.total === 'number' ? descriptor.location.total : null;
         if (locCurrent != null) {
             return `${locCurrent + 1}`;
+        }
+        const derivedTotal = locTotal
+            ?? lastLocTotal
+            ?? this.lastPrimaryLabelDiagnostics?.locationTotal
+            ?? this.rendererPageSnapshot?.total
+            ?? this.fallbackTotalPageCount
+            ?? this.totalPageCount
+            ?? null;
+        if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
+            const clampedTotal = Math.max(1, derivedTotal);
+            const idx = Math.round(Math.max(0, Math.min(1, descriptor.fraction)) * (clampedTotal - 1));
+            return `${idx + 1}`;
         }
         // No location info; leave label empty.
         return '';
@@ -1569,8 +1587,8 @@ export class NavigationHUD {
         if (!descriptor) return;
         const reason = (detail.reason || '').toLowerCase();
         const isLiveScroll = reason === 'live-scroll';
-        const phase = detail.liveScrollPhase ?? null;
-        const canPrune = !isLiveScroll || phase === 'settled' || !phase;
+        // Only prune when not actively scrubbing; keep history stable during live scroll sessions.
+        const canPrune = !isLiveScroll && !this.scrubSession?.active;
         if (!canPrune) return;
         const backStack = this.relocateStacks.back;
         if (!backStack?.length) return;
