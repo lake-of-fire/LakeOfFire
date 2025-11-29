@@ -134,6 +134,7 @@ export class NavigationHUD {
         this.lastTotalPagesSnapshot = null;
         this.lastPageMetricsSnapshot = null;
         this.lastScrubberFraction = null;
+        this.lastKnownLocationTotal = null;
         if (this.pendingScrubCommit) {
             this.#logPageScrub('pending-commit-reset', {
                 reason: 'new-scrub',
@@ -407,6 +408,11 @@ export class NavigationHUD {
     
     async handleRelocate(detail) {
         if (!detail) return;
+        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
+        const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        if (locTotal != null && locTotal > 0) {
+            this.lastKnownLocationTotal = locTotal;
+        }
         // Ensure section index is preserved for per-section totals/offsets
         const rendererIndex = (() => {
             try {
@@ -499,19 +505,17 @@ export class NavigationHUD {
 
         const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
         const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
-        const fullLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        // Compact form should strip "Loc " prefix and any " of …"
-        const compactLabel = fullLabel ? this.#condensePrimaryLabel(fullLabel.replace(/^Loc\\s+/i, '')) : '';
-        if (fullLabel) {
-            fullLabelTarget.textContent = fullLabel;
-            if (fullLabelCandidate) {
-                this.latestPrimaryLabel = fullLabelCandidate;
-            }
-        } else {
-            fullLabelTarget.textContent = '';
-        }
+        const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
+        const displayLabel = rawLabel ? this.#condensePrimaryLabel(rawLabel.replace(/^Loc\\s+/i, 'Loc ')) : '';
 
-        compactLabelTarget.textContent = compactLabel;
+        // Show compact when nav hidden; full when visible. Never both.
+        const showCompact = this.hideNavigationDueToScroll;
+        fullLabelTarget.textContent = showCompact ? '' : displayLabel;
+        compactLabelTarget.textContent = showCompact ? displayLabel : '';
+
+        if (fullLabelCandidate) {
+            this.latestPrimaryLabel = fullLabelCandidate;
+        }
 
         // UI surface logging: what the user actually sees on the nav bar.
         logEBookPageNumLimited('ui:primary-label', {
@@ -589,6 +593,12 @@ export class NavigationHUD {
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locCurrent == null && locTotal == null) return null;
         return { current: locCurrent != null ? locCurrent + 1 : null, total: locTotal };
+    }
+
+    getLocationTotalHint() {
+        return this.lastKnownLocationTotal
+            ?? this.lastPrimaryLabelDiagnostics?.locationTotal
+            ?? null;
     }
 
     getScrubberFraction(detail = null) {
@@ -1037,21 +1047,40 @@ export class NavigationHUD {
     
     #makeLocationDescriptor(detail) {
         if (!detail) return null;
+        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
+        const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
+        const location = (locCurrent != null || locTotal != null)
+            ? { current: locCurrent, total: locTotal }
+            : null;
+        const locationTotalHint = locTotal != null ? locTotal : (this.lastKnownLocationTotal ?? null);
         return {
             cfi: detail.cfi ?? null,
             fraction: typeof detail.fraction === 'number' ? detail.fraction : null,
             pageItemKey: detail.pageItem ? ensurePageKey(detail.pageItem) : null,
             pageLabel: typeof detail.pageItem?.label === 'string' ? detail.pageItem.label : null,
+            location,
+            locationTotalHint,
         };
     }
 
     #descriptorFromFraction(fraction) {
         if (typeof fraction !== 'number' || !isFinite(fraction)) return null;
+        const locTotal = this.lastKnownLocationTotal ?? this.lastPrimaryLabelDiagnostics?.locationTotal ?? null;
+        const hasTotal = typeof locTotal === 'number' && locTotal > 0;
+        const clampedTotal = hasTotal ? Math.max(1, locTotal) : null;
+        const location = hasTotal
+            ? {
+                total: clampedTotal,
+                current: Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1)),
+            }
+            : null;
         return {
             cfi: null,
             fraction,
             pageItemKey: null,
             pageLabel: null,
+            location,
+            locationTotalHint: hasTotal ? clampedTotal : null,
         };
     }
 
@@ -1062,6 +1091,8 @@ export class NavigationHUD {
             fraction: typeof descriptor.fraction === 'number' ? descriptor.fraction : null,
             pageItemKey: descriptor.pageItemKey ?? null,
             pageLabel: descriptor.pageLabel ?? null,
+            location: descriptor.location ? { ...descriptor.location } : null,
+            locationTotalHint: typeof descriptor.locationTotalHint === 'number' ? descriptor.locationTotalHint : null,
         };
     }
     
@@ -1425,21 +1456,8 @@ export class NavigationHUD {
     #labelForDescriptor(descriptor) {
         if (!descriptor) return '';
         const locCurrent = typeof descriptor.location?.current === 'number' ? descriptor.location.current : null;
-        const locTotal = typeof descriptor.location?.total === 'number' ? descriptor.location.total : null;
         if (locCurrent != null) {
             return `${locCurrent + 1}`;
-        }
-        // Derive a location-style label from fraction + last known location total if available.
-        const derivedTotal = this.lastPrimaryLabelDiagnostics?.locationTotal
-            ?? this.navContext?.sections?.length
-            ?? this.rendererPageSnapshot?.total
-            ?? this.fallbackTotalPageCount
-            ?? this.totalPageCount
-            ?? null;
-        if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
-            const clampedTotal = Math.max(1, derivedTotal);
-            const idx = Math.round(Math.max(0, Math.min(1, descriptor.fraction)) * (clampedTotal - 1));
-            return `${idx + 1}`;
         }
         // No location info; leave label empty.
         return '';

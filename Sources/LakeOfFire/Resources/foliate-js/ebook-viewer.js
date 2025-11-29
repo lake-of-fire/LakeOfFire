@@ -1630,37 +1630,6 @@ class Reader {
         slider.style.visibility = 'visible'
         const ticks = document.getElementById('progress-ticks');
         if (ticks) ticks.style.visibility = 'visible'
-        // Ensure detail has a location derived from fraction so labels stay in Loc space even before new section loads.
-        const inferredTotalLoc = this.navHUD?.rendererPageSnapshot?.total
-            || this.navHUD?.fallbackTotalPageCount
-            || this.navHUD?.totalPageCount
-            || null;
-        if (!detail.location && typeof fraction === 'number' && inferredTotalLoc && inferredTotalLoc > 0) {
-            const clampedTotal = Math.max(1, inferredTotalLoc);
-            const idx = Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1));
-            detail.location = { current: idx, total: clampedTotal };
-        }
-        // Live-update relocate labels using loc derived from fraction while scrubbing
-        if (this.navHUD) {
-            const locTotal = this.navHUD?.rendererPageSnapshot?.total
-                || this.navHUD?.fallbackTotalPageCount
-                || this.navHUD?.totalPageCount
-                || null;
-            if (locTotal && locTotal > 0) {
-                const clampedTotal = Math.max(1, locTotal);
-                const idx = Math.round(Math.max(0, Math.min(1, fraction)) * (clampedTotal - 1));
-                const liveDescriptor = {
-                    location: { current: idx, total: clampedTotal },
-                    fraction,
-                };
-                if (this.navHUD.navRelocateLabels?.back) {
-                    this.navHUD.navRelocateLabels.back.textContent = this.navHUD.labelForDescriptor?.(liveDescriptor) ?? '';
-                }
-                if (this.navHUD.navRelocateLabels?.forward) {
-                    this.navHUD.navRelocateLabels.forward.textContent = this.navHUD.labelForDescriptor?.(liveDescriptor) ?? '';
-                }
-            }
-        }
         // (removed: setting tocView currentHref here)
         const scrubbing = !!this.#progressScrubState;
         if (scrubbing) {
