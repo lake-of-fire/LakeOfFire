@@ -239,11 +239,8 @@
                     direction: ltr;
                     unicode-bidi: isolate;
                     pointer-events: none;
-                    height: 12px;
-                    box-sizing: border-box;
-                }
-                #nav-primary-text[data-label-variant="compact"] {
                     height: 26px;
+                    box-sizing: border-box;
                 }
                 #nav-primary-percent {
                     font-weight: 500;
@@ -260,6 +257,10 @@
                     pointer-events: none;
                     height: 12px;
                     opacity: 0;
+                }
+                #nav-primary-text-compact,
+                #nav-primary-percent {
+                    margin-top: 14px;
                 }
                 .nav-primary-layer {
                     position: absolute;
@@ -285,7 +286,6 @@
                 }
                 #nav-primary-text[data-label-variant="compact"] ~ #nav-primary-percent,
                 #nav-primary-text[data-label-variant="compact"]  #nav-primary-text-compact {
-                    margin-top: 14px;
                     opacity: 0.8;
                 }
                 #nav-primary-text-compact {
