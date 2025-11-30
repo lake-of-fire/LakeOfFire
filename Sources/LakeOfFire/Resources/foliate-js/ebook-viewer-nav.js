@@ -177,6 +177,22 @@ export class NavigationHUD {
         }
     }
 
+    #logJumpButton(event, payload = {}) {
+        const cleanedEntries = Object.entries(payload ?? {}).filter(([, value]) => value !== undefined);
+        const metadata = cleanedEntries.length ? JSON.stringify(Object.fromEntries(cleanedEntries)) : '';
+        const line = metadata ? `# JUMPTOBUTTON ${event} ${metadata}` : `# JUMPTOBUTTON ${event}`;
+        try {
+            window.webkit?.messageHandlers?.print?.postMessage?.(line);
+        } catch (_error) {
+            // optional native logger
+        }
+        try {
+            console.log(line);
+        } catch (_error) {
+            // optional console logger
+        }
+    }
+
     linearSectionCount = null;
     linearSectionIndexes = new Set();
 
@@ -1760,31 +1776,47 @@ export class NavigationHUD {
     }
     
     async #handleRelocateJump(direction) {
+        this.#logJumpButton('tap', {
+            direction,
+            backDepth: this.relocateStacks?.back?.length ?? 0,
+            forwardDepth: this.relocateStacks?.forward?.length ?? 0,
+            hideNavigationDueToScroll: this.hideNavigationDueToScroll,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            isProcessingRelocateJump: !!this.isProcessingRelocateJump,
+        });
+
         const stack = this.relocateStacks?.[direction];
         if (!stack?.length) {
             this.#logJumpBack('tap-ignored-empty', { direction });
+            this.#logJumpButton('tap-ignored-empty', { direction });
             logBug('EBOOKJUMP', { event: 'tap-empty', direction });
             return;
         }
         if (this.hideNavigationDueToScroll) {
             this.#logJumpBack('tap-ignored-hidden', { direction });
+            this.#logJumpButton('tap-ignored-hidden', { direction });
             logBug('EBOOKJUMP', { event: 'tap-hidden', direction });
             return;
         }
         if (this.pendingRelocateJump) {
             this.#logJumpBack('tap-ignored-pending', { direction });
+            this.#logJumpButton('tap-ignored-pending', { direction });
             return;
         }
         const descriptor = this.#cloneDescriptor(stack[stack.length - 1]);
         if (!descriptor) {
             this.#logJumpBack('tap-ignored-nodescriptor', { direction });
+            this.#logJumpButton('tap-ignored-nodescriptor', { direction });
             return;
         }
+
         const preJumpDescriptor = this.lastRelocateDetail
             ? this.#makeLocationDescriptor(this.lastRelocateDetail)
             : this.#cloneDescriptor(this.currentLocationDescriptor);
         const opposite = direction === 'back' ? 'forward' : 'back';
         const oppositeStack = this.relocateStacks?.[opposite];
+
         this.pendingRelocateJump = {
             direction,
             targetDescriptor: descriptor,
@@ -1792,8 +1824,16 @@ export class NavigationHUD {
         };
         this.isProcessingRelocateJump = true;
         this.#updateRelocateButtons();
+
         const targetFraction = typeof descriptor?.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
         this.#logJumpBack('tap', {
+            direction,
+            stackDepth: stack.length,
+            targetFraction,
+            oppositeDepth: oppositeStack?.length ?? 0,
+            hiddenDueToScroll: this.hideNavigationDueToScroll,
+        });
+        this.#logJumpButton('tap-valid', {
             direction,
             stackDepth: stack.length,
             targetFraction,
@@ -1811,14 +1851,26 @@ export class NavigationHUD {
             direction,
             targetFraction,
         });
+
         try {
             this.#logJumpBack('request', {
                 direction,
                 targetFraction,
                 stackDepth: stack.length,
             });
+            this.#logJumpButton('request', {
+                direction,
+                targetFraction,
+                stackDepth: stack.length,
+            });
+
             await this.onJumpRequest?.(descriptor);
+
             this.#logJumpBack('request-complete', {
+                direction,
+                targetFraction,
+            });
+            this.#logJumpButton('request-complete', {
                 direction,
                 targetFraction,
             });
@@ -1828,12 +1880,21 @@ export class NavigationHUD {
                 direction,
                 message: error?.message ?? String(error),
             });
+            this.#logJumpButton('error', {
+                direction,
+                message: error?.message ?? String(error),
+            });
             this.pendingRelocateJump = null;
             this.isProcessingRelocateJump = false;
             this.#logStackSnapshot('button-error', { direction });
             this.#updateRelocateButtons();
         } finally {
             this.#logJumpBack('postjump', {
+                direction,
+                pending: !!this.pendingRelocateJump,
+                processing: !!this.isProcessingRelocateJump,
+            });
+            this.#logJumpButton('postjump', {
                 direction,
                 pending: !!this.pendingRelocateJump,
                 processing: !!this.isProcessingRelocateJump,
