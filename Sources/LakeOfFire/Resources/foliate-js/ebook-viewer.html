@@ -224,7 +224,7 @@
                     height: 33px;
                     box-sizing: border-box;
                 }
-                #nav-primary-text, #nav-primary-percent {
+                #nav-primary-text {
                     font-weight: 500;
                     color: var(--secondary-color);
                     text-align: center;
@@ -232,6 +232,7 @@
                     line-height: 12px;
                     position: absolute;
                     top: 3px;
+                    left: 50%;
                     transform: translateX(-50%);
                     width: calc(100% - (var(--nav-horizontal-padding) * 2));
                     white-space: nowrap;
@@ -239,14 +240,26 @@
                     unicode-bidi: isolate;
                     pointer-events: none;
                     height: 12px;
+                    box-sizing: border-box;
                 }
                 #nav-primary-text[data-label-variant="compact"] {
-                    left: var(--nav-horizontal-padding);
-                    right: calc(var(--nav-horizontal-padding) + var(--nav-compact-percent-min-width));
-                    transform: none;
-                    text-align: left;
-                    width: auto;
-                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2) - var(--nav-compact-percent-min-width));
+                    height: 26px;
+                }
+                #nav-primary-percent {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    position: absolute;
+                    top: 3px;
+                    right: var(--nav-horizontal-padding);
+                    min-width: var(--nav-compact-percent-min-width);
+                    text-align: right;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    pointer-events: none;
+                    height: 12px;
+                    opacity: 0;
                 }
                 .nav-primary-layer {
                     position: absolute;
@@ -275,11 +288,9 @@
                     margin-top: 14px;
                     opacity: 0.8;
                 }
-                #nav-primary-percent {
-                    right: var(--nav-horizontal-padding);
-                    min-width: var(--nav-compact-percent-min-width);
-                    text-align: right;
-                    opacity: 0;
+                #nav-primary-text-compact {
+                    text-align: left;
+                    box-sizing: border-box;
                 }
                 #nav-primary-percent[hidden] {
                     display: none;
