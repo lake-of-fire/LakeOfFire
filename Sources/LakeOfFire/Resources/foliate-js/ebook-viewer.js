@@ -266,12 +266,19 @@ const updateNavHiddenClass = (shouldHide) => {
     }
 };
 
-const postNavigationChromeVisibility = (shouldHide, { source, direction, scrubbing = false } = {}) => {
+const postNavigationChromeVisibility = (shouldHide, { source, direction, scrubbing = false, ctx = null } = {}) => {
     navHideLock = false;
     const appliedHide = !!shouldHide;
 
-    logNavHide('nav-visibility', { requested: !!shouldHide, applied: appliedHide, source, direction, scrubbing, navHideLock });
-    logBug('nav-visibility', { shouldHide, appliedHide, source, direction, scrubbing, navHideLock });
+    const payload = { requested: !!shouldHide, applied: appliedHide, source, direction, scrubbing, navHideLock };
+    if (ctx && typeof ctx === 'object') {
+        payload.sectionIndex = ctx.sectionIndex ?? null;
+        payload.fraction = ctx.fraction ?? null;
+        payload.previousFraction = ctx.previousFraction ?? null;
+        payload.reason = ctx.reason ?? null;
+    }
+    logNavHide('nav-visibility', payload);
+    logBug('nav-visibility', payload);
     applyLocalHideNavigationDueToScroll(appliedHide, source ?? 'nav-visibility');
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
@@ -864,7 +871,7 @@ class Reader {
             navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
         });
         logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
-        this.navHUD?.setHideNavigationDueToScroll(shouldHide, source);
+        this.navHUD?.setHideNavigationDueToScroll(shouldHide, source, this._lastRelocateContext ?? null);
         updateNavHiddenClass(shouldHide);
     }
 
@@ -1779,9 +1786,12 @@ class Reader {
 
         const normalizedReason = (detail.reason || '').toLowerCase();
         const relocateDirection = this.#deriveRelocateDirection(detail, {
-        previousFraction,
-        previousPageEstimate,
+            previousFraction,
+            previousPageEstimate,
         });
+        const sectionDelta = (typeof sectionIndex === 'number' && typeof this._lastRelocateSectionIndex === 'number')
+            ? sectionIndex - this._lastRelocateSectionIndex
+            : null;
         logNavHide('relocate:direction', {
             reason: normalizedReason,
             direction: relocateDirection,
@@ -1792,23 +1802,49 @@ class Reader {
             bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
             hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            sectionDelta,
         });
-            switch (normalizedReason) {
-            case 'live-scroll':
-            case 'selection':
-            case 'navigation':
-                postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection, scrubbing });
-                break;
-            case 'page':
-                if (scrubbing) {
-                    postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection, scrubbing });
-                } else if (relocateDirection === 'forward') {
-                    postNavigationChromeVisibility(true, { source: 'relocate', direction: 'forward', scrubbing });
-                } else if (relocateDirection === 'backward') {
-                    postNavigationChromeVisibility(false, { source: 'relocate', direction: 'backward', scrubbing });
-                } else {
-                    postNavigationChromeVisibility(false, { source: 'relocate', direction: relocateDirection, scrubbing });
-                }
+        switch (normalizedReason) {
+        case 'live-scroll':
+        case 'selection':
+        case 'navigation':
+            postNavigationChromeVisibility(false, {
+                source: 'relocate',
+                direction: relocateDirection,
+                scrubbing,
+                ctx: { sectionIndex, fraction, previousFraction, reason: normalizedReason },
+            });
+            break;
+        case 'page':
+            if (scrubbing) {
+                postNavigationChromeVisibility(false, {
+                    source: 'relocate',
+                    direction: relocateDirection,
+                    scrubbing,
+                    ctx: { sectionIndex, fraction, previousFraction, reason: normalizedReason },
+                });
+            } else if (relocateDirection === 'forward') {
+                postNavigationChromeVisibility(true, {
+                    source: 'relocate',
+                    direction: 'forward',
+                    scrubbing,
+                    ctx: { sectionIndex, fraction, previousFraction, reason: normalizedReason },
+                });
+            } else if (relocateDirection === 'backward') {
+                postNavigationChromeVisibility(false, {
+                    source: 'relocate',
+                    direction: 'backward',
+                    scrubbing,
+                    ctx: { sectionIndex, fraction, previousFraction, reason: normalizedReason },
+                });
+            } else {
+                postNavigationChromeVisibility(false, {
+                    source: 'relocate',
+                    direction: relocateDirection,
+                    scrubbing,
+                    ctx: { sectionIndex, fraction, previousFraction, reason: normalizedReason },
+                });
+            }
                 logBug('nav-toggle', {
                     reason: normalizedReason,
                     direction: relocateDirection,
@@ -1832,6 +1868,13 @@ class Reader {
 
         await this.updateNavButtons();
         await this.navHUD?.handleRelocate(normalizedDetail);
+        this._lastRelocateContext = {
+            fraction,
+            sectionIndex,
+            reason: normalizedReason,
+            relocateDirection,
+            previousFraction,
+        };
         const scrubFraction = this.navHUD?.getScrubberFraction(normalizedDetail) ?? null;
         const effectiveFraction = Number.isFinite(scrubFraction) ? scrubFraction : fraction;
         if ((detail.reason || '').toLowerCase() !== 'live-scroll') {
