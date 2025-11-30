@@ -99,6 +99,7 @@ export class NavigationHUD {
         this.navPrimaryText = document.getElementById('nav-primary-text');
         this.navPrimaryTextFull = document.getElementById('nav-primary-text-full');
         this.navPrimaryTextCompact = document.getElementById('nav-primary-text-compact');
+        this.navPrimaryPercent = document.getElementById('nav-primary-percent');
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
@@ -321,6 +322,10 @@ export class NavigationHUD {
     setNavHiddenState(shouldHide) {
         this.navHidden = !!shouldHide;
         this.#applyLabelVariant();
+        const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
+        if (descriptor) {
+            this.#updatePrimaryLine(descriptor);
+        }
     }
 
     getCurrentDescriptor() {
@@ -567,6 +572,8 @@ export class NavigationHUD {
             this.latestPrimaryLabel = fullLabelCandidate;
         }
 
+        this.#updateCompactPercent(detail);
+
         // UI surface logging: what the user actually sees on the nav bar.
         logEBookPageNumLimited('ui:primary-label', {
             label: fullLabelTarget.textContent || '',
@@ -600,6 +607,32 @@ export class NavigationHUD {
                 this.navPrimaryText.dataset.labelVariant = next;
             }
         }
+    }
+
+    #updateCompactPercent(detail) {
+        if (!this.navPrimaryPercent) return;
+        const isCompact = this.navPrimaryText?.dataset?.labelVariant === 'compact';
+        const fraction = this.#fractionForPercent(detail);
+        const hasValue = isCompact && typeof fraction === 'number' && isFinite(fraction);
+        if (hasValue) {
+            const clamped = Math.max(0, Math.min(1, fraction));
+            this.navPrimaryPercent.textContent = this.formatPercent(clamped);
+            this.navPrimaryPercent.hidden = false;
+            this.navPrimaryPercent.setAttribute('aria-hidden', 'false');
+        } else {
+            this.navPrimaryPercent.textContent = '';
+            this.navPrimaryPercent.hidden = true;
+            this.navPrimaryPercent.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    #fractionForPercent(detail) {
+        if (detail && typeof detail.fraction === 'number') return detail.fraction;
+        if (typeof this.lastScrubberFraction === 'number') return this.lastScrubberFraction;
+        const descriptorFraction = typeof this.currentLocationDescriptor?.fraction === 'number'
+            ? this.currentLocationDescriptor.fraction
+            : null;
+        return descriptorFraction;
     }
 
     #applyRelocateButtonEdges() {
@@ -884,6 +917,7 @@ export class NavigationHUD {
             this.navSectionLabels?.leading,
             this.navSectionLabels?.trailing,
             this.navPrimaryText,
+            this.navPrimaryPercent,
         ].filter(Boolean);
         fadeTargets.forEach(el => {
             if (shouldShow) {
@@ -898,6 +932,15 @@ export class NavigationHUD {
                 this.navPrimaryText.setAttribute('aria-hidden', 'true');
             } else {
                 this.navPrimaryText.removeAttribute('aria-hidden');
+            }
+        }
+        if (this.navPrimaryPercent) {
+            if (shouldShow) {
+                this.navPrimaryPercent.hidden = true;
+                this.navPrimaryPercent.setAttribute('aria-hidden', 'true');
+            } else {
+                const descriptor = this.lastRelocateDetail || this.currentLocationDescriptor;
+                this.#updateCompactPercent(descriptor);
             }
         }
     }

@@ -67,37 +67,43 @@ public class ReaderContentListModalsModel: ObservableObject {
 }
 
 struct ReaderContentListSheetsModifier: ViewModifier {
-    let isActive: Bool
-    @ObservedObject var readerContentListModalsModel: ReaderContentListModalsModel
-    
+    @Binding var isActive: Bool
+    let origin: String
+
+    @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+
     func body(content: Content) -> some View {
         let hostID = ObjectIdentifier(readerContentListModalsModel)
+        let logPrefix = "# DELETEMODAL [\(origin)] host=\(hostID)"
         content
             .onChange(of: readerContentListModalsModel.confirmDelete) { newValue in
-                debugPrint("# DELETEMODAL confirmDelete changed -> \(newValue) isActive=\(isActive) host=\(hostID)")
+                debugPrint("\(logPrefix) confirmDelete changed -> \(newValue) isActive=\(isActive)")
             }
             .onReceive(readerContentListModalsModel.$confirmDeletionOf) { newValue in
-                debugPrint("# DELETEMODAL confirmDeletionOf updated count=\(newValue?.count ?? 0) host=\(hostID)")
+                debugPrint("\(logPrefix) confirmDeletionOf updated count=\(newValue?.count ?? 0)")
             }
             .alert(readerContentListModalsModel.deletionConfirmationTitle, isPresented: Binding<Bool>(
                 get: {
                     readerContentListModalsModel.confirmDelete && isActive
                 },
                 set: { newValue in
+                    debugPrint("\(logPrefix) SHEET SET", newValue)
                     if isActive {
-                        readerContentListModalsModel.confirmDelete = newValue
+                        Task { @MainActor in
+                            readerContentListModalsModel.confirmDelete = newValue
+                        }
                     } else {
-                        debugPrint("# DELETEMODAL ignoring set newValue=\(newValue) because isActive=false host=\(hostID)")
+                        debugPrint("\(logPrefix) ignoring set newValue=\(newValue) because isActive=false")
                     }
                 }
             ), actions: {
                 Button("Cancel", role: .cancel) {
-                    debugPrint("# DELETEMODAL cancel tapped host=\(hostID)")
+                    debugPrint("\(logPrefix) cancel tapped")
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
                 Button(readerContentListModalsModel.deletionConfirmationActionTitle, role: .destructive) {
                     guard let items = readerContentListModalsModel.confirmDeletionOf else { return }
-                    debugPrint("# DELETEMODAL delete confirmed items=\(items.count) host=\(hostID)")
+                    debugPrint("\(logPrefix) delete confirmed items=\(items.count)")
                     Task { @MainActor in
                         for item in items {
                             try await item.delete()
@@ -108,17 +114,17 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                 Text(readerContentListModalsModel.deletionConfirmationMessage)
             })
             .onAppear {
-                debugPrint("# DELETEMODAL sheets modifier appear isActive=\(isActive) host=\(hostID)")
+                debugPrint("\(logPrefix) sheets modifier appear isActive=\(isActive)")
             }
     }
 }
 
 public extension View {
-    func readerContentListSheets(isActive: Bool, readerContentListModalsModel: ReaderContentListModalsModel) -> some View {
+    func readerContentListSheets(isActive: Binding<Bool>, origin: String) -> some View {
         modifier(
             ReaderContentListSheetsModifier(
                 isActive: isActive,
-                readerContentListModalsModel: readerContentListModalsModel
+                origin: origin
             )
         )
     }
