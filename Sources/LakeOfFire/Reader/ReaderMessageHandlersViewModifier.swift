@@ -13,6 +13,60 @@ private struct ReaderSizeTrackingCacheEntry: Codable {
     let blockStart: Double?
 }
 
+private struct ReaderSizeTrackingCacheSnapshot: Codable {
+    let cacheKey: String
+    let savedAt: Date
+    let reason: String?
+    let entries: [ReaderSizeTrackingCacheEntry]
+}
+
+private struct ReaderSizeTrackingCacheBucket: Codable {
+    var snapshots: [ReaderSizeTrackingCacheSnapshot] = []
+
+    init(snapshots: [ReaderSizeTrackingCacheSnapshot] = []) {
+        self.snapshots = snapshots
+    }
+
+    init(from decoder: Decoder) throws {
+        // Support legacy payloads that stored a flat array of entries for a single key.
+        let container = try decoder.singleValueContainer()
+        if let snapshots = try? container.decode([ReaderSizeTrackingCacheSnapshot].self) {
+            self.snapshots = snapshots
+            return
+        }
+        if let legacyEntries = try? container.decode([ReaderSizeTrackingCacheEntry].self) {
+            self.snapshots = [
+                ReaderSizeTrackingCacheSnapshot(
+                    cacheKey: "legacy",
+                    savedAt: Date(),
+                    reason: "legacy",
+                    entries: legacyEntries
+                )
+            ]
+            return
+        }
+        self.snapshots = []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(snapshots)
+    }
+
+    mutating func upsertSnapshot(_ snapshot: ReaderSizeTrackingCacheSnapshot, limit: Int) {
+        // Remove any prior snapshot for the same cacheKey so we overwrite per-key.
+        snapshots.removeAll { $0.cacheKey == snapshot.cacheKey }
+        snapshots.insert(snapshot, at: 0)
+        if snapshots.count > limit {
+            snapshots.removeLast(snapshots.count - limit)
+        }
+    }
+
+    func snapshot(for cacheKey: String) -> ReaderSizeTrackingCacheSnapshot? {
+        snapshots.first { $0.cacheKey == cacheKey }
+    }
+}
+
 private let readerModeDatasetProbeScript = """
 (() => {
     const hasDocument = typeof document !== 'undefined';
@@ -98,13 +152,34 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
 
-    // Cache baked tracking-section sizes keyed by settings/viewport/section.
-    private let trackingSizeCache = LRUSQLiteCache<String, [ReaderSizeTrackingCacheEntry]>(
-        namespace: "reader-pagination-size-tracking-cache-v1",
-        version: 1,
+    // Cache baked tracking-section sizes keyed by section href + book, with per-key snapshots.
+    private let trackingSizeCache = LRUSQLiteCache<String, ReaderSizeTrackingCacheBucket>(
+        namespace: "reader-pagination-size-tracking-cache-v2",
+        version: 2,
         totalBytesLimit: 20 * 1024 * 1024,
         countLimit: 10_000
     )
+    private let trackingSizeHistoryLimit = 10
+
+    nonisolated private func makeBucketKey(from cacheKey: String) -> String {
+        let parts = cacheKey.split(separator: "|").map(String.init)
+        var book: String?
+        var href: String?
+        for part in parts {
+            if part.hasPrefix("book:") {
+                book = String(part.dropFirst("book:".count))
+            } else if part.hasPrefix("href:") {
+                href = String(part.dropFirst("href:".count))
+            }
+        }
+        if let book, let href {
+            return "book:\(book)|href:\(href)"
+        } else if let href {
+            return "href:\(href)"
+        } else {
+            return "legacy:\(cacheKey)"
+        }
+    }
 
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -167,6 +242,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                       let command = body["command"] as? String,
                       let key = body["key"] as? String else { return }
 
+                let bucketKey = makeBucketKey(from: key)
+
                 switch command {
                 case "set":
                     if let entries = body["entries"] as? [[String: Any]] {
@@ -177,12 +254,26 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             let blockStart = dict["blockStart"] as? Double
                             return ReaderSizeTrackingCacheEntry(id: id, inlineSize: inlineSize, blockSize: blockSize, blockStart: blockStart)
                         }
-                        trackingSizeCache.setValue(decoded, forKey: key)
-                        debugPrint("# READER trackingSizeCache set", "key=\(key.prefix(72))…", "count=\(decoded.count)")
+                        var bucket = trackingSizeCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
+                        let snapshot = ReaderSizeTrackingCacheSnapshot(
+                            cacheKey: key,
+                            savedAt: Date(),
+                            reason: body["reason"] as? String,
+                            entries: decoded
+                        )
+                        bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
+                        trackingSizeCache.setValue(bucket, forKey: bucketKey)
+                        debugPrint("# READER trackingSizeCache set",
+                                   "bucket=\(bucketKey.prefix(72))…",
+                                   "cacheKey=\(key.prefix(72))…",
+                                   "entries=\(decoded.count)",
+                                   "snapshots=\(bucket.snapshots.count)",
+                                   "reason=\(snapshot.reason ?? "<nil>")")
                     }
                 case "get":
                     guard let requestId = body["requestId"] as? String else { return }
-                    if let cached = trackingSizeCache.value(forKey: key) {
+                    if let bucket = trackingSizeCache.value(forKey: bucketKey),
+                       let cached = bucket.snapshot(for: key)?.entries {
                         do {
                             let data = try JSONEncoder().encode(cached)
                             if let json = String(data: data, encoding: .utf8) {
@@ -191,7 +282,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                     try? await self.scriptCaller.evaluateJavaScript(js, in: message.frameInfo)
                                 }
                             }
-                            debugPrint("# READER trackingSizeCache hit", "key=\(key.prefix(72))…", "count=\(cached.count)")
+                            debugPrint("# READER trackingSizeCache hit",
+                                       "bucket=\(bucketKey.prefix(72))…",
+                                       "cacheKey=\(key.prefix(72))…",
+                                       "entries=\(cached.count)",
+                                       "snapshots=\(bucket.snapshots.count)")
                         } catch {
                             // ignore encoding errors
                         }
