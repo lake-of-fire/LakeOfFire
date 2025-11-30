@@ -18,6 +18,8 @@ const CHEVRON_VISUALS_ENABLED = true;
 // Set to false to avoid mid-gesture state that previously required resets.
 const CHEVRON_SWIPE_PREVIEW_ENABLED = false;
 
+const logBug = globalThis.logBug || (() => {});
+
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 // https://learnersbucket.com/examples/interview/debouncing-with-leading-and-trailing-options/
@@ -122,6 +124,23 @@ const logEBookPagination = () => {}
 
 // Perf logger for targeted instrumentation (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail })
+
+// Explicit bake diagnostics (user-requested) with tight budget to avoid log spam.
+let logEBookBakeCounter = 0
+const LOG_EBOOK_BAKE_LIMIT = 400
+const logEBookBake = (event, detail = {}) => {
+    if (logEBookBakeCounter >= LOG_EBOOK_BAKE_LIMIT) return
+    logEBookBakeCounter += 1
+    try {
+        const payload = { event, ...detail }
+        const line = `# EBOOKBAKE ${JSON.stringify(payload)}`
+        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line)
+    } catch (error) {
+        try {
+            console.log('# EBOOKBAKE fallback', event, detail, error)
+        } catch (_) {}
+    }
+}
 
 // Default whitelist keeps logs focused; set global `manabiPageNumVerbose = true`
 // to re‑enable all pagination geometry noise when debugging.
@@ -636,6 +655,14 @@ const bakeTrackingSectionSizes = async (doc, {
         safeLeft: Math.round((globalThis.manabiSafeAreaInsets?.left ?? 0) * 1000) / 1000,
         safeRight: Math.round((globalThis.manabiSafeAreaInsets?.right ?? 0) * 1000) / 1000,
     }
+    logEBookBake('bake:start', {
+        reason,
+        sectionIndex,
+        sections: sections.length,
+        viewport,
+        bookId: bookId ?? null,
+        sectionHref: sectionHref ?? null,
+    })
     const initialViewportBlockTarget = vertical
         ? Math.max(1, viewport.width + viewport.safeLeft + viewport.safeRight)
         : Math.max(1, viewport.height + viewport.safeTop + viewport.safeBottom)
@@ -676,7 +703,15 @@ const bakeTrackingSectionSizes = async (doc, {
     }
 
     // Ensure the document layout has settled before hiding/baking sections.
-    await waitForStableDocumentSize(doc)
+    const stableDocRect = await waitForStableDocumentSize(doc)
+    logEBookBake('bake:doc-stable', {
+        reason,
+        sectionIndex,
+        rect: stableDocRect ? {
+            width: Math.round(stableDocRect.width),
+            height: Math.round(stableDocRect.height),
+        } : null,
+    })
 
     const bakedTags = []
     const bakedEntryMap = new Map()
@@ -779,7 +814,16 @@ const bakeTrackingSectionSizes = async (doc, {
     }
 
     const container = sections[0]?.parentElement
+    const hasContainerCache = bakedEntryMap.has('__container__')
     const appliedFromCache = applyCachedEntries(cachedEntries, container)
+    logEBookBake('bake:cache', {
+        reason,
+        sectionIndex,
+        applied: appliedFromCache,
+        total: sections.length,
+        hasContainerCache,
+        cacheKey,
+    })
     logEBookPerf('tracking-size-cache-apply', {
         key: cacheKey,
         applied: appliedFromCache,
@@ -789,7 +833,6 @@ const bakeTrackingSectionSizes = async (doc, {
 
     let preMeasuredRects = null
 
-    const hasContainerCache = bakedEntryMap.has('__container__')
     if (appliedFromCache === sections.length) {
         applyAbsoluteLayout()
         seedInitialVisibility()
@@ -921,6 +964,13 @@ const bakeTrackingSectionSizes = async (doc, {
                 body.classList.remove(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS)
             }
             seedInitialVisibility()
+            logEBookBake('bake:viewport-ready', {
+                reason,
+                sectionIndex,
+                bakedCount,
+                coverageBlock,
+                target: initialViewportBlockTarget,
+            })
             logEBookPerf('tracking-size-bake-viewport-ready', {
                 reason,
                 sectionIndex,
@@ -1071,8 +1121,6 @@ const bakeTrackingSectionSizes = async (doc, {
     seedInitialVisibility()
     // tracking visibility logs removed for noise reduction
 
-    const durationMs = (performance?.now?.() ?? Date.now()) - startTs
-
         try {
             const handler = globalThis.webkit?.messageHandlers?.[MANABI_TRACKING_CACHE_HANDLER]
             const entriesForCache = Array.from(bakedEntryMap.values()).filter(e => !e.skipCache)
@@ -1088,6 +1136,23 @@ const bakeTrackingSectionSizes = async (doc, {
             // ignore cache store errors
         }
 
+    const durationMs = (performance?.now?.() ?? Date.now()) - startTs
+    const containerEntry = bakedEntryMap.get('__container__') || null
+    logEBookBake('bake:done', {
+        reason,
+        sectionIndex,
+        durationMs: Math.round(durationMs),
+        bakedCount,
+        multiColumnCount,
+        coverageBlock,
+        target: initialViewportBlockTarget,
+        initialViewportReleased,
+        appliedFromCache,
+        containerSize: containerEntry ? {
+            inline: containerEntry.inlineSize,
+            block: containerEntry.blockSize,
+        } : null,
+    })
 }
 
 // Geometry measurement disabled: keep signature for compatibility, do nothing.
@@ -1787,6 +1852,19 @@ class View {
                                 contentSize,
                                 pageCount,
                             })
+                            logEBookBake('expand:invalid-measurement', {
+                                mode: 'column',
+                                side,
+                                size: this.#size,
+                                contentRectSide,
+                                contentStart,
+                                contentSize,
+                                pageCount,
+                                column: this.#column,
+                                vertical: this.#vertical,
+                                readyFlag: this.container?.trackingSizeBakeReadyPublic ?? null,
+                                suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
+                            })
                             // Defer a retry so we don't lock in a bogus 0/1 page count; often fonts/images finish after this.
                             if (!this.#expandRetryScheduled) {
                                 this.#expandRetryScheduled = true
@@ -2128,6 +2206,7 @@ export class Paginator extends HTMLElement {
     #justAnchored = false
     #isLoading = false
     #locked = false // while true, prevent any further navigation
+    #lockTimestamp = 0
     #styles
     #styleMap = new WeakMap()
     #scrollBounds
@@ -2616,6 +2695,10 @@ export class Paginator extends HTMLElement {
         // Lock expands and reset readiness before pre-bake render.
         this.#suppressBakeOnExpand = true
         this.#trackingSizeBakeReady = false
+        logEBookBake('initial-bake:start', {
+            sectionIndex,
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+        })
         logEBookPageNumLimited('bake:initial:start', {
             sectionIndex,
             suppressBakeOnExpand: this.#suppressBakeOnExpand,
@@ -2639,6 +2722,11 @@ export class Paginator extends HTMLElement {
                 sectionIndex,
                 skipPostBakeRefresh: true,
             })
+            logEBookBake('initial-bake:after-perform', {
+                sectionIndex,
+                ready: this.#trackingSizeBakeReady,
+                suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            })
         } finally {
             // Keep suppressBakeOnExpand true through the first post-bake render/expand
             // to avoid a redundant bake loop. It will be unset after that expand.
@@ -2653,6 +2741,11 @@ export class Paginator extends HTMLElement {
 
         // Post-bake render/expand with fresh measurements; allow expand to bake if needed.
         this.#suppressBakeOnExpand = false
+        logEBookBake('initial-bake:post-render-begin', {
+            sectionIndex,
+            ready: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+        })
         await this.#view?.render(layout, { source: 'initial-bake-post-render' })
         logEBookPerf('EXPAND.callsite', {
             source: 'initial-bake-after-render',
@@ -2661,6 +2754,11 @@ export class Paginator extends HTMLElement {
             bodyHidden: this.view?.document?.body?.classList?.contains?.(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS) ?? null,
         })
         logEBookPageNumLimited('bake:initial:done', {
+            sectionIndex,
+            ready: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+        })
+        logEBookBake('initial-bake:done', {
             sectionIndex,
             ready: this.#trackingSizeBakeReady,
             suppressBakeOnExpand: this.#suppressBakeOnExpand,
@@ -2715,6 +2813,13 @@ export class Paginator extends HTMLElement {
             readyFlag: this.#trackingSizeBakeReady,
             pendingReason: this.#pendingTrackingSizeBakeReason ?? null,
         })
+        logEBookBake('bake:begin', {
+            reason,
+            sectionIndex,
+            isCacheWarmer: this.#isCacheWarmer,
+            readyFlag: this.#trackingSizeBakeReady,
+            pendingReason: this.#pendingTrackingSizeBakeReason ?? null,
+        })
 
         const activeView = this.#view
 
@@ -2722,6 +2827,10 @@ export class Paginator extends HTMLElement {
         hideDocumentContentForPreBake(doc)
         this.#trackingSizeBakeReady = false
         logEBookPageNumLimited('bake:flag-reset-false', {
+            reason,
+            sectionIndex,
+        })
+        logEBookBake('bake:flag-reset', {
             reason,
             sectionIndex,
         })
@@ -2802,6 +2911,14 @@ export class Paginator extends HTMLElement {
                     reason,
                     sectionIndex,
                     ready: this.#trackingSizeBakeReady,
+                })
+                logEBookBake('bake:ready-set', {
+                    reason,
+                    sectionIndex,
+                    durationMs,
+                    stillActiveView: this.#view === activeView,
+                    lastBakedRect: this.#lastTrackingSizeBakedRect ?? null,
+                    lastObservedRect: this.#trackingSizeLastObservedRect ?? null,
                 })
                 logEBookPageNumLimited('bake:ready-set', {
                     reason,
@@ -4802,7 +4919,17 @@ export class Paginator extends HTMLElement {
         }
     }
     async goTo(target) {
-        if (this.#locked) return
+        if (this.#locked) {
+            const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            const elapsed = now - this.#lockTimestamp;
+            if (elapsed > 400) {
+                this.#locked = false;
+                logBug?.('paginator:watchdog-unlock-goTo', { elapsedMs: elapsed });
+            } else {
+                logBug?.('paginator:locked-goTo', { elapsedMs: elapsed });
+                return;
+            }
+        }
         const resolved = await target
         if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
     }
@@ -4852,12 +4979,25 @@ export class Paginator extends HTMLElement {
             if (this.sections[index]?.linear !== 'no') return index
     }
     async #turnPage(dir, distance) {
-        if (this.#locked) return
+        if (this.#locked) {
+            const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            const elapsed = now - this.#lockTimestamp;
+            if (elapsed > 400) {
+                this.#locked = false;
+                logBug?.('paginator:watchdog-unlock-turnPage', { dir, elapsedMs: elapsed });
+            } else {
+                logBug?.('paginator:locked-turnPage', { dir, elapsedMs: elapsed });
+                return;
+            }
+        }
 
         this.#locked = true
+        this.#lockTimestamp = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        logBug?.('paginator:turnPage:start', { dir, distance });
         try {
             const prev = dir === -1
             const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+            logBug?.('paginator:turnPage:shouldGo', { dir, shouldGo });
             if (shouldGo) {
                 await this.#goTo({
                     index: this.#adjacentIndex(dir),
@@ -4871,6 +5011,7 @@ export class Paginator extends HTMLElement {
         } finally {
             // Never leave the paginator locked if navigation threw/cancelled.
             this.#locked = false
+            logBug?.('paginator:turnPage:end', { dir });
         }
     }
     async prev(distance) {

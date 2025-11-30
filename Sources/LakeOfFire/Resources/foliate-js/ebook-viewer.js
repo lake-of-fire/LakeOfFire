@@ -37,6 +37,16 @@ const logBug = (event, detail = {}) => {
     }
 };
 
+const logNavHide = (event, detail = {}) => {
+    const payload = { event, ...detail };
+    const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 const MANABI_TRACKING_CACHE_HANDLER = globalThis.MANABI_TRACKING_CACHE_HANDLER || 'trackingSizeCache';
 globalThis.MANABI_TRACKING_CACHE_HANDLER = MANABI_TRACKING_CACHE_HANDLER;
 
@@ -215,10 +225,16 @@ installFontDiagnostics()
 let pendingHideNavigationState = null;
 let navHideLock = false;
 const applyLocalHideNavigationDueToScroll = (shouldHide, source = 'unknown') => {
-    pendingHideNavigationState = !!shouldHide;
+    const appliedHide = !!shouldHide;
+    pendingHideNavigationState = appliedHide;
+    logNavHide('apply-local', {
+        requested: !!shouldHide,
+        applied: appliedHide,
+        source,
+        hasReader: !!globalThis.reader,
+    });
     if (globalThis.reader?.setHideNavigationDueToScroll) {
-        logBug('nav-apply-local', { shouldHide: pendingHideNavigationState, source });
-        globalThis.reader.setHideNavigationDueToScroll(pendingHideNavigationState, source);
+        globalThis.reader.setHideNavigationDueToScroll(appliedHide, source);
         pendingHideNavigationState = null;
     }
 };
@@ -250,21 +266,10 @@ const updateNavHiddenClass = (shouldHide) => {
 };
 
 const postNavigationChromeVisibility = (shouldHide, { source, direction, scrubbing = false } = {}) => {
-    const appliedHide = !!shouldHide && direction === 'forward' && !scrubbing;
+    navHideLock = false;
+    const appliedHide = !!shouldHide;
 
-    // If we previously hid for a forward move, block auto-unhide triggered by relocate refreshes.
-    if (!appliedHide && navHideLock && (source === 'relocate' || source === 'relocate-force')) {
-        logBug('nav-visibility-lock-blocked', { shouldHide, source, direction, scrubbing, navHideLock });
-        return;
-    }
-
-    if (appliedHide) {
-        navHideLock = true;
-        globalThis.reader?.allowForwardNavHide();
-    } else if (direction === 'backward' || source === 'button-prev') {
-        navHideLock = false; // allow backward nav to show chrome again
-    }
-
+    logNavHide('nav-visibility', { requested: !!shouldHide, applied: appliedHide, source, direction, scrubbing, navHideLock });
     logBug('nav-visibility', { shouldHide, appliedHide, source, direction, scrubbing, navHideLock });
     applyLocalHideNavigationDueToScroll(appliedHide, source ?? 'nav-visibility');
     try {
@@ -720,24 +725,20 @@ class Reader {
         }
     }
     setLoadingIndicator(visible) {
+        logBug('loading-indicator:set', {
+            visible: !!visible,
+            bodyHasLoading: document?.body?.classList?.contains?.('loading') ?? null,
+        });
+        // TEMP: disable loading overlay entirely to verify it’s the culprit.
+        // Leave hook in place so we can re-enable quickly by removing this return.
+        return;
         document.body.classList.toggle('loading', !!visible);
         const tick = document.getElementById('progress-ticks');
         const slider = document.getElementById('progress-slider');
         if (tick) tick.style.visibility = 'visible';
         if (slider) slider.style.visibility = 'visible';
 
-        // Fail-safe: clear any lingering loading overlay if the expected hide event never arrives.
-        if (this.#loadingTimeoutId) {
-            clearTimeout(this.#loadingTimeoutId);
-            this.#loadingTimeoutId = null;
-        }
-        if (visible) {
-            this.#loadingTimeoutId = setTimeout(() => {
-                // If still marked loading, force-clear to restore UI interactivity.
-                document.body.classList.remove('loading');
-                this.#loadingTimeoutId = null;
-            }, 1800); // 1.8s safety window
-        }
+        // Fail-safe removed per request; rely on explicit relocate/didDisplay hooks.
     }
     #tocView
     #chevronAnimator = null;
@@ -834,6 +835,12 @@ class Reader {
     if (shouldHide && this.#allowForwardNavHide) {
         this.#allowForwardNavHide = false; // consume gate
     }
+    logNavHide('reader:set-hide', {
+        requested: !!shouldHide,
+        applied: !!shouldHide,
+        source,
+        gateConsumed: shouldHide ? !this.#allowForwardNavHide : null,
+    });
     logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
     this.navHUD?.setHideNavigationDueToScroll(shouldHide);
     updateNavHiddenClass(shouldHide);
@@ -865,8 +872,10 @@ class Reader {
     }
     this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
     this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
+    this.view.renderer.addEventListener('relocate', this.#onRendererRelocate.bind(this))
     this.view.addEventListener('load', this.#onLoad.bind(this))
     this.view.addEventListener('relocate', this.#onRelocate.bind(this))
+    this._sideNavCooldownUntil = 0;
 
     const {
     book
@@ -953,9 +962,49 @@ class Reader {
     );
     // Side-nav scroll handlers
     const leftSideBtn = document.getElementById('btn-scroll-left');
-    if (leftSideBtn) leftSideBtn.addEventListener('click', async () => await this.view.goLeft());
+    if (leftSideBtn) {
+    const triggerNavLeft = async () => {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        if (now < this._sideNavCooldownUntil) return;
+        this._sideNavCooldownUntil = now + 180; // debounce rapid double-fires
+        await this.view.goLeft();
+    };
+    leftSideBtn.addEventListener('click', async () => {
+        logBug('side-nav:click', { direction: 'left' });
+        await triggerNavLeft();
+    });
+    leftSideBtn.addEventListener('pointerdown', async (e) => {
+        logBug('side-nav:pointerdown', { direction: 'left' });
+        e.preventDefault();
+        await triggerNavLeft();
+    });
+    leftSideBtn.addEventListener('pointerup', async () => {
+        logBug('side-nav:pointerup', { direction: 'left' });
+        await triggerNavLeft();
+    });
+    }
     const rightSideBtn = document.getElementById('btn-scroll-right');
-    if (rightSideBtn) rightSideBtn.addEventListener('click', async () => await this.view.goRight());
+    if (rightSideBtn) {
+    const triggerNavRight = async () => {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        if (now < this._sideNavCooldownUntil) return;
+        this._sideNavCooldownUntil = now + 180;
+        await this.view.goRight();
+    };
+    rightSideBtn.addEventListener('click', async () => {
+        logBug('side-nav:click', { direction: 'right' });
+        await triggerNavRight();
+    });
+    rightSideBtn.addEventListener('pointerdown', async (e) => {
+        logBug('side-nav:pointerdown', { direction: 'right' });
+        e.preventDefault();
+        await triggerNavRight();
+    });
+    rightSideBtn.addEventListener('pointerup', async () => {
+        logBug('side-nav:pointerup', { direction: 'right' });
+        await triggerNavRight();
+    });
+    }
 
     const flashSideNav = (direction) => {
     this.view?.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
@@ -1510,6 +1559,16 @@ class Reader {
         this.setLoadingIndicator(true);
     }
     #onDidDisplay({}) {
+        this.setLoadingIndicator(false);
+    }
+    #onRendererRelocate({ detail }) {
+        const bodyIsLoading = document?.body?.classList?.contains?.('loading') ?? null;
+        logBug('relocate:renderer', {
+            reason: detail?.reason ?? null,
+            sectionIndex: typeof detail?.sectionIndex === 'number' ? detail.sectionIndex : null,
+            bodyIsLoading,
+        });
+        // Failsafe: clear loading even if didDisplay never fires.
         this.setLoadingIndicator(false);
     }
     #onLoad({

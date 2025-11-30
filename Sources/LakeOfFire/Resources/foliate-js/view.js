@@ -5,6 +5,7 @@ const SEARCH_PREFIX = 'foliate-search:'
 
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {}
+const logBug = globalThis.logBug || (() => {})
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -387,6 +388,10 @@ export class View extends HTMLElement {
                 direction: isForward ? 'forward' : 'backward'
             })
         }
+        logBug?.('view:goLeft', {
+            dir: this.book.dir,
+            cacheWarmer: this.#isCacheWarmer,
+        });
         return this.book.dir === 'rtl' ? await this.next() : await this.prev()
     }
     async goRight() {
@@ -397,6 +402,10 @@ export class View extends HTMLElement {
                 direction: isForward ? 'forward' : 'backward'
             })
         }
+        logBug?.('view:goRight', {
+            dir: this.book.dir,
+            cacheWarmer: this.#isCacheWarmer,
+        });
         return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {

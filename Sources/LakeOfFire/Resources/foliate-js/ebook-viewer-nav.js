@@ -50,6 +50,16 @@ const logBug = (event, detail = {}) => {
     }
 };
 
+const logNavHide = (event, detail = {}) => {
+    const payload = { event, ...detail };
+    const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
 const flattenPageTargets = (items, collector = []) => {
     if (!Array.isArray(items)) return collector;
     for (const item of items) {
@@ -260,6 +270,11 @@ export class NavigationHUD {
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this.#applyLabelVariant();
+        logNavHide('hud:set-hide', {
+            shouldHide: this.hideNavigationDueToScroll,
+            navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+        });
         logBug?.('navhud-hide', {
             shouldHide: this.hideNavigationDueToScroll,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,

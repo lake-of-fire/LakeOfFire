@@ -175,7 +175,7 @@
                 body.nav-hidden {
                     --manabi-highlight-opacity: 0.5;
                 }
-                /* Prevent accidental text selection on nav chrome */
+                /* Allow nav chrome text/labels to be selectable (override global disables) */
                 .nav-relocate-button,
                 .nav-section-progress,
                 #nav-section-progress-leading,
@@ -190,9 +190,11 @@
                 #btn-prev-chapter,
                 #btn-next-chapter,
                 .button-label,
-                .side-nav {
-                    user-select: none;
-                    -webkit-user-select: none;
+                .side-nav,
+                #nav-bar,
+                #nav-bar * {
+                    user-select: text;
+                    -webkit-user-select: text;
                 }
                 #nav-bar *,
                 #nav-bottom-row,
@@ -446,11 +448,12 @@
                     align-items: center;
                     width: 100%;
                     flex: 1;
+                    --thumb-size: 24px;
                     gap: 12px;
-                    user-select: none;
-                    -webkit-user-select: none;
-                    -moz-user-select: none;
-                    -ms-user-select: none;
+                    user-select: text;
+                    -webkit-user-select: text;
+                    -moz-user-select: text;
+                    -ms-user-select: text;
                     transition: opacity 375ms ease-out;
                     position: relative;
                 }
@@ -459,10 +462,10 @@
                     margin: 0;
                     visibility: hidden;
                     /*accent-color: GrayText;*/
-                    user-select: none;
-                    -webkit-user-select: none;
-                    -moz-user-select: none;
-                    -ms-user-select: none;
+                    user-select: text;
+                    -webkit-user-select: text;
+                    -moz-user-select: text;
+                    -ms-user-select: text;
                 }
                 #progress-ticks {
                     position: absolute;
