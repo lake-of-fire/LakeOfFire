@@ -224,6 +224,7 @@ installFontDiagnostics()
 
 let pendingHideNavigationState = null;
 let navHideLock = false;
+
 const applyLocalHideNavigationDueToScroll = (shouldHide, source = 'unknown') => {
     const appliedHide = !!shouldHide;
     pendingHideNavigationState = appliedHide;
@@ -729,16 +730,9 @@ class Reader {
             visible: !!visible,
             bodyHasLoading: document?.body?.classList?.contains?.('loading') ?? null,
         });
-        // TEMP: disable loading overlay entirely to verify it’s the culprit.
-        // Leave hook in place so we can re-enable quickly by removing this return.
-        return;
-        document.body.classList.toggle('loading', !!visible);
-        const tick = document.getElementById('progress-ticks');
-        const slider = document.getElementById('progress-slider');
-        if (tick) tick.style.visibility = 'visible';
-        if (slider) slider.style.visibility = 'visible';
-
-        // Fail-safe removed per request; rely on explicit relocate/didDisplay hooks.
+        const indicator = document.getElementById('loading-indicator');
+        if (indicator) indicator.classList.toggle('show', !!visible);
+        // Keep nav/chevrons interactive by avoiding body-level loading class.
     }
     #tocView
     #chevronAnimator = null;
@@ -827,23 +821,51 @@ class Reader {
     }
     }
     setHideNavigationDueToScroll(shouldHide, source = 'unknown') {
-    const canHide = !shouldHide || this.#allowForwardNavHide || source === 'scroll-toggle' || source === 'nav-visibility';
-    if (!canHide) {
-        logBug('nav-hide-blocked', { reason: 'gate', requestedHide: shouldHide, source });
-        return;
-    }
-    if (shouldHide && this.#allowForwardNavHide) {
-        this.#allowForwardNavHide = false; // consume gate
-    }
-    logNavHide('reader:set-hide', {
-        requested: !!shouldHide,
-        applied: !!shouldHide,
-        source,
-        gateConsumed: shouldHide ? !this.#allowForwardNavHide : null,
-    });
-    logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
-    this.navHUD?.setHideNavigationDueToScroll(shouldHide);
-    updateNavHiddenClass(shouldHide);
+        const allowSource = new Set([
+            'scroll-toggle',
+            'nav-visibility',
+            'relocate',
+            'relocate-force',
+            'swipe-left',
+            'swipe-right',
+            'keyboard',
+            'arrow',
+            'side-nav',
+            'tap',
+            'unknown',
+        ]).has(source);
+        const canHide = !shouldHide || this.#allowForwardNavHide || allowSource;
+        if (!canHide) {
+            logNavHide('reader:set-hide-blocked', {
+                requested: !!shouldHide,
+                source,
+                allowForwardNavHide: this.#allowForwardNavHide,
+                navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+            });
+            logBug('nav-hide-blocked', { reason: 'gate', requestedHide: shouldHide, source });
+            return;
+        }
+        if (shouldHide && this.#allowForwardNavHide) {
+            this.#allowForwardNavHide = false; // consume gate
+        }
+        if (!shouldHide) {
+            // Showing again resets the gate so a future hide is allowed.
+            this.#allowForwardNavHide = true;
+            logNavHide('reader:reset-hide-gate', {
+                source,
+                navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+            });
+        }
+        logNavHide('reader:set-hide', {
+            requested: !!shouldHide,
+            applied: !!shouldHide,
+            source,
+            gateConsumed: shouldHide ? !this.#allowForwardNavHide : null,
+            navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
+        logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
+        this.navHUD?.setHideNavigationDueToScroll(shouldHide, source);
+        updateNavHiddenClass(shouldHide);
     }
 
     setNavHiddenState(shouldHide) {
@@ -857,6 +879,7 @@ class Reader {
     });
     this.allowForwardNavHide = () => { this.#allowForwardNavHide = true; };
     this.#chevronAnimator = new SideNavChevronAnimator();
+    this._lastRelocateSectionIndex = null;
     $('#side-bar-close-button').addEventListener('click', () => {
     this.closeSideBar()
     })
@@ -971,15 +994,30 @@ class Reader {
     };
     leftSideBtn.addEventListener('click', async () => {
         logBug('side-nav:click', { direction: 'left' });
+        logNavHide('side-nav:click', {
+            direction: 'left',
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
         await triggerNavLeft();
     });
     leftSideBtn.addEventListener('pointerdown', async (e) => {
         logBug('side-nav:pointerdown', { direction: 'left' });
+        logNavHide('side-nav:pointerdown', {
+            direction: 'left',
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
         e.preventDefault();
         await triggerNavLeft();
     });
     leftSideBtn.addEventListener('pointerup', async () => {
         logBug('side-nav:pointerup', { direction: 'left' });
+        logNavHide('side-nav:pointerup', {
+            direction: 'left',
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
         await triggerNavLeft();
     });
     }
@@ -993,15 +1031,30 @@ class Reader {
     };
     rightSideBtn.addEventListener('click', async () => {
         logBug('side-nav:click', { direction: 'right' });
+        logNavHide('side-nav:click', {
+            direction: 'right',
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
         await triggerNavRight();
     });
     rightSideBtn.addEventListener('pointerdown', async (e) => {
         logBug('side-nav:pointerdown', { direction: 'right' });
+        logNavHide('side-nav:pointerdown', {
+            direction: 'right',
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
         e.preventDefault();
         await triggerNavRight();
     });
     rightSideBtn.addEventListener('pointerup', async () => {
         logBug('side-nav:pointerup', { direction: 'right' });
+        logNavHide('side-nav:pointerup', {
+            direction: 'right',
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        });
         await triggerNavRight();
     });
     }
@@ -1674,17 +1727,15 @@ class Reader {
                 bodyClasses: Array.from(document?.body?.classList ?? []),
             });
 
-            // Force nav visible on every relocate while debugging.
-            postNavigationChromeVisibility(false, { source: 'relocate-force', direction: null });
-            if (navBar) {
-                navBar.style.visibility = 'visible';
-                navBar.classList.remove('nav-hidden', 'nav-hidden-due-to-scroll');
-            }
-            [progressWrapper, sliderEl, ticksEl].forEach(el => {
-                if (!el) return;
-                el.style.visibility = 'visible';
-                el.style.display = '';
-                el.classList.remove('nav-hidden', 'nav-hidden-due-to-scroll');
+            // Previously forced nav visible on every relocate for debugging; that caused flicker when crossing sections.
+            // Keep state untouched so forward page turns can hide the nav without being re-shown here.
+            logNavHide('relocate:preserve-nav-state', {
+                source: detail?.reason ?? null,
+                navHiddenClass: navBar?.classList?.contains?.('nav-hidden') ?? null,
+                navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+                bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+                hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+                pendingHideNavigationState,
             });
 
             const {
@@ -1730,6 +1781,17 @@ class Reader {
         const relocateDirection = this.#deriveRelocateDirection(detail, {
         previousFraction,
         previousPageEstimate,
+        });
+        logNavHide('relocate:direction', {
+            reason: normalizedReason,
+            direction: relocateDirection,
+            previousFraction,
+            fraction,
+            previousSectionIndex: this._lastRelocateSectionIndex ?? null,
+            sectionIndex,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
         });
             switch (normalizedReason) {
             case 'live-scroll':
@@ -1831,6 +1893,7 @@ class Reader {
             lastPercentValue: this.lastPercentValue ?? null,
             scrubbing,
         });
+        this._lastRelocateSectionIndex = sectionIndex;
         this.#updateJumpUnitAvailability();
         this.#syncJumpInputWithState();
             if (percentButton) {

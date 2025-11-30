@@ -6,6 +6,15 @@ const SEARCH_PREFIX = 'foliate-search:'
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {}
 const logBug = globalThis.logBug || (() => {})
+const logNavHide = globalThis.logNavHide || ((event, detail = {}) => {
+    const payload = { event, ...detail };
+    const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+});
 
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
@@ -28,9 +37,16 @@ const summarizeNavigationTarget = target => {
 }
 
 const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
+    const appliedHide = !!shouldHide;
+    logNavHide('view:post-nav-visibility', {
+        requested: !!shouldHide,
+        applied: appliedHide,
+        source: source ?? null,
+        direction: direction ?? null,
+    });
     try {
         window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
-            hideNavigationDueToScroll: !!shouldHide,
+            hideNavigationDueToScroll: appliedHide,
             source: source ?? null,
             direction: direction ?? null,
         });
@@ -388,6 +404,12 @@ export class View extends HTMLElement {
                 direction: isForward ? 'forward' : 'backward'
             })
         }
+        logNavHide('view:goLeft', {
+            dir: this.book.dir,
+            requestedHide: isForward,
+            cacheWarmer: this.#isCacheWarmer,
+            navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        })
         logBug?.('view:goLeft', {
             dir: this.book.dir,
             cacheWarmer: this.#isCacheWarmer,
@@ -402,6 +424,12 @@ export class View extends HTMLElement {
                 direction: isForward ? 'forward' : 'backward'
             })
         }
+        logNavHide('view:goRight', {
+            dir: this.book.dir,
+            requestedHide: isForward,
+            cacheWarmer: this.#isCacheWarmer,
+            navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+        })
         logBug?.('view:goRight', {
             dir: this.book.dir,
             cacheWarmer: this.#isCacheWarmer,

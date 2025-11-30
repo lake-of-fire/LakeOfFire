@@ -266,14 +266,18 @@ export class NavigationHUD {
         this.#updateRelocateButtons();
     }
     
-    setHideNavigationDueToScroll(shouldHide) {
+    setHideNavigationDueToScroll(shouldHide, source = 'unknown') {
+        const previous = this.hideNavigationDueToScroll;
         this.hideNavigationDueToScroll = !!shouldHide;
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this.#applyLabelVariant();
         logNavHide('hud:set-hide', {
             shouldHide: this.hideNavigationDueToScroll,
+            previous,
+            source,
             navHiddenClass: this.navBar?.classList?.contains?.('nav-hidden') ?? null,
             navHiddenScrollClass: this.navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            progressWrapperHidden: this.progressWrapper?.getAttribute?.('aria-hidden') ?? null,
         });
         logBug?.('navhud-hide', {
             shouldHide: this.hideNavigationDueToScroll,

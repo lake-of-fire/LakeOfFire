@@ -175,7 +175,7 @@
                 body.nav-hidden {
                     --manabi-highlight-opacity: 0.5;
                 }
-                /* Allow nav chrome text/labels to be selectable (override global disables) */
+                /* Prevent accidental text selection on nav chrome */
                 .nav-relocate-button,
                 .nav-section-progress,
                 #nav-section-progress-leading,
@@ -193,8 +193,8 @@
                 .side-nav,
                 #nav-bar,
                 #nav-bar * {
-                    user-select: text;
-                    -webkit-user-select: text;
+                    user-select: none;
+                    -webkit-user-select: none;
                 }
                 #nav-bar *,
                 #nav-bottom-row,
@@ -450,10 +450,10 @@
                     flex: 1;
                     --thumb-size: 24px;
                     gap: 12px;
-                    user-select: text;
-                    -webkit-user-select: text;
-                    -moz-user-select: text;
-                    -ms-user-select: text;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
                     transition: opacity 375ms ease-out;
                     position: relative;
                 }
@@ -462,10 +462,10 @@
                     margin: 0;
                     visibility: hidden;
                     /*accent-color: GrayText;*/
-                    user-select: text;
-                    -webkit-user-select: text;
-                    -moz-user-select: text;
-                    -ms-user-select: text;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
                 }
                 #progress-ticks {
                     position: absolute;
@@ -560,22 +560,18 @@
                 #loading-indicator, #dimming-overlay {
                     visibility: hidden;
                     position: fixed;
-                    z-index: 2;
+                    z-index: 4;
                     top: 0;
                     left: 0;
-                    width: 100dvw;
-                    height: 100dvh;
+                    width: 100%;
+                    height: 100%;
                     opacity: 0;
                     transition: visibility 0s linear 300ms, opacity 300ms ease;
                     contain: strict;
+                    pointer-events: none; /* do not block nav/chevrons */
                 }
                 #loading-indicator {
-                    background: rgba(255, 255, 255, 1);
-                }
-                @media (prefers-color-scheme: dark) {
-                    #loading-indicator {
-                        background: rgba(0, 0, 0, 1);
-                    }
+                    background: transparent;
                 }
                 #dimming-overlay {
                     background: rgba(0, 0, 0, .2);
@@ -665,21 +661,7 @@
                     display: none;
                 }
                 
-                body.loading #loading-indicator {
-                    visibility: visible !important;
-                    opacity: 1 !important;
-                    transition-delay: 0s !important;
-                    pointer-events: auto !important;
-                }
-                body.loading foliate-view,
-                body.loading .side-nav,
-                body.loading #btn-prev-chapter,
-                body.loading #btn-next-chapter,
-                body.loading #btn-finish,
-                body.loading #btn-restart {
-                    visibility: hidden !important;
-                    pointer-events: none !important;
-                }
+                /* body.loading rules unused; indicator is toggled directly */
                 
                 /* From https://github.com/swordray/ispinner/blob/3e3b49eac80c9ba7494cb9485bb85f17e712292c/ispinner.css */
                 .ispinner {
