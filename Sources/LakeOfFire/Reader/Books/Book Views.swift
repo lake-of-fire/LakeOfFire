@@ -294,16 +294,17 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(3)
-                if hasAudio {
-                    HStack(spacing: 6) {
-                        Image(systemName: "headphones")
-                            .imageScale(.small)
-                        Text("Audiobook with Text")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                    }
-                    .foregroundStyle(.secondary)
-                }
+                // Temporarily hide audiobook badge pending UX update.
+//                if hasAudio {
+//                    HStack(spacing: 6) {
+//                        Image(systemName: "headphones")
+//                            .imageScale(.small)
+//                        Text("Audiobook with Text")
+//                            .font(.caption)
+//                            .fontWeight(.semibold)
+//                    }
+//                    .foregroundStyle(.secondary)
+//                }
                 if let publicationYearText {
                     Text(publicationYearText)
                         .font(.caption)

@@ -125,6 +125,32 @@ const logEBookPagination = () => {}
 // Perf logger for targeted instrumentation (disabled)
 const logEBookPerf = (event, detail = {}) => ({ event, ...detail })
 
+// Targeted resize diagnostics (off by default unless called explicitly)
+const logEBookResize = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail }
+        const line = `# EBOOK RESIZE ${JSON.stringify(payload)}`
+        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line)
+    } catch (error) {
+        try {
+            console.log('# EBOOK RESIZE fallback', event, detail, error)
+        } catch (_) {}
+    }
+}
+
+// Visual flash/visibility diagnostics
+const logEBookFlash = (event, detail = {}) => {
+    try {
+        const payload = { event, ...detail }
+        const line = `# EBOOKFLASH ${JSON.stringify(payload)}`
+        globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line)
+    } catch (error) {
+        try {
+            console.log('# EBOOKFLASH fallback', event, detail, error)
+        } catch (_) {}
+    }
+}
+
 // Explicit bake diagnostics (user-requested) with tight budget to avoid log spam.
 let logEBookBakeCounter = 0
 const LOG_EBOOK_BAKE_LIMIT = 400
@@ -235,6 +261,18 @@ const hideDocumentContentForPreBake = doc => {
     target.classList.add(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
     target.style.setProperty('display', 'none', 'important')
     const afterRect = target.getBoundingClientRect?.()
+    logEBookFlash('prebake-hide', {
+        url: doc?.URL || null,
+        targetId: target.id || null,
+        beforeRect: beforeRect ? {
+            width: Math.round(beforeRect.width),
+            height: Math.round(beforeRect.height),
+        } : null,
+        afterRect: afterRect ? {
+            width: Math.round(afterRect.width),
+            height: Math.round(afterRect.height),
+        } : null,
+    })
     logEBookPageNumLimited('bake:hide-doc', {
         url: doc?.URL || null,
         targetId: target.id || null,
@@ -267,6 +305,18 @@ const revealDocumentContentForBake = doc => {
         restoreInlineStyleProperty(target, 'display', snapshot)
     }
     const afterRect = target?.getBoundingClientRect?.()
+    logEBookFlash('prebake-reveal', {
+        url: doc?.URL || null,
+        targetId: target?.id || null,
+        beforeRect: beforeRect ? {
+            width: Math.round(beforeRect.width),
+            height: Math.round(beforeRect.height),
+        } : null,
+        afterRect: afterRect ? {
+            width: Math.round(afterRect.width),
+            height: Math.round(afterRect.height),
+        } : null,
+    })
     logEBookPageNumLimited('bake:reveal-doc', {
         url: doc?.URL || null,
         targetId: target?.id || null,
@@ -1391,12 +1441,23 @@ class View {
         const inExpand = this.#inExpand || false
         // Keep resize lightweight: invalidate cached sizes and ask container to re-bake when enabled.
         if (this.#isCacheWarmer) return
+        this.#lastBodyRect = newSize
         if (inExpand) {
             // Buffer the last resize that arrives while expand is running so we can replay it afterwards.
             this.#pendingResizeAfterExpand = newSize
+            logEBookResize('iframe-resize-buffered', {
+                newSize,
+                inExpand,
+                isCacheWarmer: this.#isCacheWarmer,
+            })
             console.log('[paginator] handleResize buffered during expand', { newSize, inExpand })
             return
         }
+        logEBookResize('iframe-resize-apply', {
+            newSize,
+            inExpand,
+            isCacheWarmer: this.#isCacheWarmer,
+        })
         console.log('[paginator] handleResize apply', { newSize, inExpand })
         this.cachedViewSize = null
         if (MANABI_TRACKING_SIZE_BAKE_ENABLED) {
@@ -1410,6 +1471,7 @@ class View {
     }
     #element = document.createElement('div')
     #iframe = document.createElement('iframe')
+    #iframeShownForBake = false
     #contentRange = document.createRange()
     #overlayer
     #vertical = null
@@ -1503,10 +1565,16 @@ class View {
     }
 
     revealIframeForBake(reason) {
+        if (this.#iframeShownForBake) return
         if (this.#iframe?.style?.display === 'none') {
             this.#iframe.style.display = 'block'
+            this.#iframeShownForBake = true
             logEBookPerf('iframe-display-set', { state: 'shown-for-bake', reason })
             logEBookPageNumLimited('bake:iframe-reveal', {
+                reason,
+                sectionIndex: this.container?.currentIndex ?? null,
+            })
+            logEBookFlash('iframe-reveal', {
                 reason,
                 sectionIndex: this.container?.currentIndex ?? null,
             })
@@ -1520,6 +1588,7 @@ class View {
     }
     async load(src, afterLoad, beforeRender, sectionIndex = null) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
+        this.#iframeShownForBake = false
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
         this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
@@ -2133,11 +2202,22 @@ export class Paginator extends HTMLElement {
             newSize.top !== old.top ||
             newSize.left !== old.left
 
-        if (!changed) return
+        if (!changed) {
+            logEBookResize('container-resize-no-change', {
+                newSize,
+                old,
+            })
+            return
+        }
 
         this.#lastResizerRect = newSize
         this.#cachedSizes = null
         this.#cachedStart = null
+
+        logEBookResize('container-resize-change', {
+            newSize,
+            old,
+        })
 
         this.#debouncedRender();
 
@@ -2163,11 +2243,22 @@ export class Paginator extends HTMLElement {
                 }
                 const still =
                     stable.width === this.#lastResizerRect?.width &&
-                    stable.height === this.#lastResizerRect?.height &&
-                    stable.top === this.#lastResizerRect?.top &&
-                    stable.left === this.#lastResizerRect?.left
+                    stable.height === this.#lastResizerRect?.height
 
-                if (!still) return
+                if (!still) {
+                    logEBookResize('container-resize-unstable', {
+                        stable,
+                        last: this.#lastResizerRect,
+                        compareTopLeft: true,
+                    })
+                    return
+                }
+
+                logEBookResize('container-resize-bake', {
+                    stable,
+                    reason: 'container-resize',
+                    note: 'top/left ignored for stability',
+                })
 
                 this.requestTrackingSectionGeometryBake({
                     reason: 'container-resize',
@@ -2201,6 +2292,11 @@ export class Paginator extends HTMLElement {
     #topMargin = 0
     #bottomMargin = 0
     #index = -1
+    #loadingReason = null
+    #activeBakeCount = 0
+    #sizeBakeDebounceTimer = null
+    #sizeBakeDebounceArgs = null
+    #trackingSizeBakeQueuedRect = null
     get currentIndex() { return this.#index }
     #anchor = 0 // anchor view to a fraction (0-1), Range, or Element
     #justAnchored = false
@@ -2238,7 +2334,27 @@ export class Paginator extends HTMLElement {
     #trackingSizeBakeInFlight = null
     #trackingSizeBakeNeedsRerun = false
     #trackingSizeBakeQueuedReason = null
-    requestTrackingSectionSizeBakeDebounced = (args) => this.requestTrackingSectionSizeBake(args)
+    requestTrackingSectionSizeBakeDebounced = (args) => {
+        logEBookResize('size-bake-requested', {
+            reason: args?.reason ?? 'unspecified',
+            rectProvided: !!args?.rect,
+        })
+        if (this.#sizeBakeDebounceTimer) {
+            clearTimeout(this.#sizeBakeDebounceTimer)
+        }
+        this.#sizeBakeDebounceArgs = args
+        this.#sizeBakeDebounceTimer = setTimeout(() => {
+            const pending = this.#sizeBakeDebounceArgs
+            this.#sizeBakeDebounceTimer = null
+            this.#sizeBakeDebounceArgs = null
+            logEBookResize('size-bake-debounced-fire', {
+                reason: pending?.reason ?? 'unspecified',
+                rectProvided: !!pending?.rect,
+            })
+            this.requestTrackingSectionSizeBake(pending)
+        }, 240)
+        return true
+    }
     #trackingSizeBakeReady = false
     #trackingSizeLastObservedRect = null
     #pendingTrackingSizeBakeReason = null
@@ -2520,12 +2636,22 @@ export class Paginator extends HTMLElement {
         this.#container.append(this.#view.element)
         return this.#view
     }
-    #setLoading(isLoading) {
+    #setLoading(isLoading, reason = 'unspecified') {
+        if (this.#isLoading === isLoading) return
         this.#isLoading = isLoading;
+        this.#loadingReason = reason || this.#loadingReason || 'unspecified'
         if (isLoading) {
             this.#top.classList.add('reader-loading');
+            logEBookFlash('loading-start', {
+                sectionIndex: this.#index,
+                reason: this.#loadingReason,
+            })
         } else {
             this.#top.classList.remove('reader-loading');
+            logEBookFlash('loading-stop', {
+                sectionIndex: this.#index,
+                reason: this.#loadingReason,
+            })
         }
     }
 
@@ -2550,6 +2676,12 @@ export class Paginator extends HTMLElement {
                 sectionIndex: sectionIndex ?? this.#index,
                 status: 'skip-not-ready-styles-applied'
             })
+            logEBookResize('size-bake-skip', {
+                reason,
+                sectionIndex: sectionIndex ?? this.#index,
+                status: 'skip-not-ready-styles-applied',
+                ready: this.#trackingSizeBakeReady,
+            })
             return false
         }
         const ctxBase = {
@@ -2562,17 +2694,19 @@ export class Paginator extends HTMLElement {
         }
         if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'disabled' })
-            this.#setLoading(false)
+            this.#setLoading(false, 'size-bake-disabled')
             return false
         }
         if (this.#isCacheWarmer) return false
         if (!this.#view?.document) {
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'no-document' })
+            logEBookResize('size-bake-skip', { ...ctxBase, status: 'no-document' })
             this.#pendingTrackingSizeBakeReason = reason
             return false
         }
         if (!this.#trackingSizeBakeReady) {
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'not-ready' })
+            logEBookResize('size-bake-skip', { ...ctxBase, status: 'not-ready' })
             this.#pendingTrackingSizeBakeReason = reason
             return false
         }
@@ -2587,6 +2721,7 @@ export class Paginator extends HTMLElement {
                 rect.left === last.left
             if (unchanged) {
                 logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'unchanged-rect' })
+                logEBookResize('size-bake-skip', { ...ctxBase, status: 'unchanged-rect', rect })
                 return false
             }
             this.#trackingSizeLastObservedRect = rect
@@ -2595,6 +2730,7 @@ export class Paginator extends HTMLElement {
             const cachedBodyRect = this.#view?.getLastBodyRect?.()
             if (!cachedBodyRect) {
                 logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'no-cached-rect' })
+                logEBookResize('size-bake-skip', { ...ctxBase, status: 'no-cached-rect' })
                 return false
             }
             const derived = {
@@ -2610,24 +2746,41 @@ export class Paginator extends HTMLElement {
                 derived.top === lastBaked.top &&
                 derived.left === lastBaked.left) {
                 logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'unchanged-derived' })
+                logEBookResize('size-bake-skip', { ...ctxBase, status: 'unchanged-derived', derived })
                 return false
             }
             this.#trackingSizeLastObservedRect = derived
         }
 
         if (this.#trackingSizeBakeInFlight) {
+            const sameQueuedReason = this.#trackingSizeBakeQueuedReason === reason
+            const sameQueuedRect = rect && this.#trackingSizeBakeQueuedRect &&
+                rect.width === this.#trackingSizeBakeQueuedRect.width &&
+                rect.height === this.#trackingSizeBakeQueuedRect.height &&
+                rect.top === this.#trackingSizeBakeQueuedRect.top &&
+                rect.left === this.#trackingSizeBakeQueuedRect.left
+
+            if (sameQueuedReason && sameQueuedRect) {
+                logEBookResize('size-bake-queued-skip-same', { ...ctxBase, rectProvided: !!rect })
+                return true
+            }
+
             this.#trackingSizeBakeNeedsRerun = true
             this.#trackingSizeBakeQueuedReason = reason
+            this.#trackingSizeBakeQueuedRect = rect || this.#trackingSizeBakeQueuedRect
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'queued-rerun' })
             logEBookPageNumLimited('bake:request', { ...ctxBase, status: 'queued-rerun' })
+            logEBookResize('size-bake-queued-rerun', { ...ctxBase, rectProvided: !!rect, rect })
             return true
         }
 
         this.#trackingSizeBakeQueuedReason = null
         this.#trackingSizeBakeNeedsRerun = false
+        this.#trackingSizeBakeQueuedRect = null
 
         logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'start' })
         logEBookPageNumLimited('bake:request', { ...ctxBase, status: 'start', rectProvided: !!rect })
+        logEBookResize('size-bake-start', { ...ctxBase, rectProvided: !!rect, rect })
         this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
             reason,
             sectionIndex: sectionIndex ?? this.#index,
@@ -2636,6 +2789,7 @@ export class Paginator extends HTMLElement {
             // swallow bake errors after reporting if needed
             console.error('tracking size bake error', error)
             logEBookPageNumLimited('bake:error', { ...ctxBase, error: String(error) })
+            logEBookResize('size-bake-error', { ...ctxBase, error: String(error) })
         }).finally(() => {
             this.#trackingSizeBakeInFlight = null
             if (this.#trackingSizeBakeNeedsRerun) {
@@ -2660,6 +2814,7 @@ export class Paginator extends HTMLElement {
         this.#pendingTrackingSizeBakeReason = null
         this.#trackingSizeBakeReady = false
         this.#lastTrackingSizeBakedRect = null
+        this.#loadingReason = null
 
         this.#cachedSentinelDoc = null
         this.#cachedSentinelElements = []
@@ -2776,7 +2931,7 @@ export class Paginator extends HTMLElement {
                 sectionIndex,
                 status: 'disabled',
             })
-            this.#setLoading(false)
+            this.#setLoading(false, 'size-bake-disabled')
             return
         }
         const perfStart = performance?.now?.() ?? null
@@ -2792,7 +2947,7 @@ export class Paginator extends HTMLElement {
                 sectionIndex,
                 status: 'no-doc',
             })
-            this.#setLoading(false)
+            this.#setLoading(false, 'size-bake-no-doc')
             return
         }
 
@@ -2823,7 +2978,10 @@ export class Paginator extends HTMLElement {
 
         const activeView = this.#view
 
-        this.#setLoading(true)
+        this.#activeBakeCount += 1
+        if (this.#activeBakeCount === 1) {
+            this.#setLoading(true, 'size-bake')
+        }
         hideDocumentContentForPreBake(doc)
         this.#trackingSizeBakeReady = false
         logEBookPageNumLimited('bake:flag-reset-false', {
@@ -2855,11 +3013,14 @@ export class Paginator extends HTMLElement {
                     top: Math.round(cachedBodyRect.top),
                     left: Math.round(cachedBodyRect.left),
                 }
-                logEBookPageNumLimited('bake:last-baked-rect', {
-                    sectionIndex,
-                    rect: this.#lastTrackingSizeBakedRect,
-                })
-            }
+            logEBookPageNumLimited('bake:last-baked-rect', {
+                sectionIndex,
+                rect: this.#lastTrackingSizeBakedRect,
+            })
+        }
+
+        // Clear any queued rect once a bake starts; new requests will set it again if needed.
+        this.#trackingSizeBakeQueuedRect = null
 
             // After bake completes, refresh layout & relocate once the full layout is known.
             // Guard against races where the user navigated away.
@@ -2888,7 +3049,23 @@ export class Paginator extends HTMLElement {
         } finally {
             this.#revealPreBakeContent()
             if (this.#view === activeView) {
-                this.#setLoading(false)
+                this.#activeBakeCount = Math.max(0, this.#activeBakeCount - 1)
+                const keepLoading =
+                    this.#activeBakeCount > 0 ||
+                    !!this.#sizeBakeDebounceTimer ||
+                    !!this.#trackingSizeBakeNeedsRerun
+
+                if (keepLoading) {
+                    logEBookFlash('loading-keep', {
+                        sectionIndex: this.#index,
+                        reason: 'size-bake-pending',
+                        activeBakeCount: this.#activeBakeCount,
+                        debouncePending: !!this.#sizeBakeDebounceTimer,
+                        rerunQueued: !!this.#trackingSizeBakeNeedsRerun,
+                    })
+                } else {
+                    this.#setLoading(false, 'size-bake-complete')
+                }
             }
             const durationMs = perfStart !== null && typeof performance !== 'undefined' && typeof performance.now === 'function'
                 ? performance.now() - perfStart
@@ -3169,7 +3346,7 @@ export class Paginator extends HTMLElement {
         this.#view.cachedViewSize = null;
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
-        this.#setLoading(true)
+        this.#setLoading(true, 'expand')
         this.#cachedStart = null
         this.#trackingSizeBakeReady = false
         this.#trackingSizeLastObservedRect = null
@@ -3190,7 +3367,10 @@ export class Paginator extends HTMLElement {
         const pendingReason = this.#pendingTrackingSizeBakeReason
         this.#pendingTrackingSizeBakeReason = null
 
-        this.#setLoading(false)
+        // Avoid clearing loading if a size-bake is currently driving the spinner; let bake completion stop it.
+        if (!(this.#isLoading && this.#loadingReason === 'size-bake')) {
+            this.#setLoading(false, 'expand')
+        }
         const shouldBake = !this.#suppressBakeOnExpand
         logEBookPerf('on-expand', {
             pendingReason: pendingReason || null,
@@ -4718,7 +4898,7 @@ export class Paginator extends HTMLElement {
     }
     async #display(promise) {
         //            console.log("#display...")
-        this.#setLoading(true)
+        this.#setLoading(true, 'display')
         const {
             index,
             src,
@@ -4824,7 +5004,7 @@ export class Paginator extends HTMLElement {
         }
         //            console.log("#display... scrolledToAnchorOnLoad = true")
         this.#scrolledToAnchorOnLoad = true
-        this.#setLoading(false)
+        this.#setLoading(false, 'display-complete')
         this.#forceEndTouchGesture('didDisplay')
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
