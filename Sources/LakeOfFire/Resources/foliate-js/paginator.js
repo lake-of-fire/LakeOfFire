@@ -2334,6 +2334,7 @@ export class Paginator extends HTMLElement {
     #trackingSizeBakeInFlight = null
     #trackingSizeBakeNeedsRerun = false
     #trackingSizeBakeQueuedReason = null
+    #skipNextExpandBake = false
     requestTrackingSectionSizeBakeDebounced = (args) => {
         logEBookResize('size-bake-requested', {
             reason: args?.reason ?? 'unspecified',
@@ -2814,6 +2815,7 @@ export class Paginator extends HTMLElement {
         this.#pendingTrackingSizeBakeReason = null
         this.#trackingSizeBakeReady = false
         this.#lastTrackingSizeBakedRect = null
+        this.#skipNextExpandBake = false
         this.#loadingReason = null
 
         this.#cachedSentinelDoc = null
@@ -2896,6 +2898,7 @@ export class Paginator extends HTMLElement {
 
         // Post-bake render/expand with fresh measurements; allow expand to bake if needed.
         this.#suppressBakeOnExpand = false
+        this.#skipNextExpandBake = true
         logEBookBake('initial-bake:post-render-begin', {
             sectionIndex,
             ready: this.#trackingSizeBakeReady,
@@ -3371,10 +3374,13 @@ export class Paginator extends HTMLElement {
         if (!(this.#isLoading && this.#loadingReason === 'size-bake')) {
             this.#setLoading(false, 'expand')
         }
-        const shouldBake = !this.#suppressBakeOnExpand
+        const skipNextExpandBake = this.#skipNextExpandBake
+        const shouldBake = !this.#suppressBakeOnExpand && !skipNextExpandBake
+        this.#skipNextExpandBake = false
         logEBookPerf('on-expand', {
             pendingReason: pendingReason || null,
             suppressBake: this.#suppressBakeOnExpand,
+            skipNext: skipNextExpandBake,
             hasDoc: !!this.#view?.document,
             vertical: this.#vertical,
             column: this.#column,
@@ -3384,6 +3390,7 @@ export class Paginator extends HTMLElement {
             pendingReason: pendingReason || null,
             suppressBake: this.#suppressBakeOnExpand,
             readyFlag: this.#trackingSizeBakeReady,
+            skipNext: skipNextExpandBake,
         })
         if (shouldBake) {
             this.requestTrackingSectionSizeBake({ reason: pendingReason || 'expand' })
