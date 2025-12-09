@@ -295,6 +295,46 @@
                 #nav-primary-percent[hidden] {
                     display: none;
                 }
+                /* Hidden-state overlay copies the nav label without moving the original */
+                #nav-hidden-overlay {
+                    position: fixed;
+                    left: 0;
+                    right: 0;
+                    bottom: 16px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 10px;
+                    pointer-events: none;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                    z-index: 6;
+                    padding: 0 var(--nav-horizontal-padding);
+                    box-sizing: border-box;
+                }
+                #nav-hidden-overlay .nav-hidden-label {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    white-space: nowrap;
+                    text-align: left;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                #nav-hidden-overlay .nav-hidden-percent {
+                    text-align: right;
+                }
+                body.nav-hidden #nav-primary-text,
+                body.nav-hidden #nav-primary-percent {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
+                body.nav-hidden #nav-hidden-overlay,
+                #nav-bar.nav-hidden-due-to-scroll #nav-hidden-overlay,
+                #nav-bar.nav-hidden-floating #nav-hidden-overlay {
+                    opacity: 1;
+                }
                 .nav-section-progress {
                     font-size: var(--nav-section-progress-font-size, 14px);
                     font-weight: 500;
@@ -1046,6 +1086,10 @@
                     <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
                 </button>
             </div>
+        </div>
+        <div id="nav-hidden-overlay" aria-hidden="true">
+            <span id="nav-hidden-primary-text" class="nav-hidden-label"></span>
+            <span id="nav-hidden-primary-percent" class="nav-hidden-label nav-hidden-percent"></span>
         </div>
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">

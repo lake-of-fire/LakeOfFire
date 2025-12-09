@@ -100,6 +100,10 @@ export class NavigationHUD {
         this.navPrimaryTextFull = document.getElementById('nav-primary-text-full');
         this.navPrimaryTextCompact = document.getElementById('nav-primary-text-compact');
         this.navPrimaryPercent = document.getElementById('nav-primary-percent');
+        this.navHiddenOverlay = {
+            text: document.getElementById('nav-hidden-primary-text'),
+            percent: document.getElementById('nav-hidden-primary-percent'),
+        };
         this.navSectionProgress = {
             leading: document.getElementById('nav-section-progress-leading'),
             trailing: document.getElementById('nav-section-progress-trailing'),
@@ -286,6 +290,17 @@ export class NavigationHUD {
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         const previous = this.hideNavigationDueToScroll;
         this.hideNavigationDueToScroll = !!shouldHide;
+        if (this.hideNavigationDueToScroll) {
+            this.navBar?.classList.add('nav-hidden-floating');
+        } else if (previous) {
+            // Keep bottom-anchored overlay in place long enough to fade out without jumping upward.
+            this.navBar?.classList.add('nav-hidden-floating');
+            setTimeout(() => {
+                if (!this.hideNavigationDueToScroll) {
+                    this.navBar?.classList.remove('nav-hidden-floating');
+                }
+            }, 300);
+        }
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this.#applyLabelVariant();
         logNavHide('hud:set-hide', {
@@ -553,6 +568,7 @@ export class NavigationHUD {
     #updatePrimaryLine(detail) {
         const fullLabelTarget = this.navPrimaryTextFull ?? this.navPrimaryText;
         const compactLabelTarget = this.navPrimaryTextCompact ?? this.navPrimaryText;
+        const overlayLabelTarget = this.navHiddenOverlay?.text;
         if (!fullLabelTarget || !compactLabelTarget) return;
 
         // Ensure our label variant reflects the current hidden state (body/nav classes or flags).
@@ -567,6 +583,9 @@ export class NavigationHUD {
         // Full shows the complete Loc string (with total when available); compact omits the total.
         fullLabelTarget.textContent = normalizedRaw || condensed;
         compactLabelTarget.textContent = condensed || normalizedRaw;
+        if (overlayLabelTarget) {
+            overlayLabelTarget.textContent = condensed || normalizedRaw;
+        }
 
         if (fullLabelCandidate) {
             this.latestPrimaryLabel = fullLabelCandidate;
@@ -614,15 +633,29 @@ export class NavigationHUD {
         const isCompact = this.navPrimaryText?.dataset?.labelVariant === 'compact';
         const fraction = this.#fractionForPercent(detail);
         const hasValue = isCompact && typeof fraction === 'number' && isFinite(fraction);
+        const primary = this.navPrimaryPercent;
+        const overlay = this.navHiddenOverlay?.percent;
+
         if (hasValue) {
             const clamped = Math.max(0, Math.min(1, fraction));
-            this.navPrimaryPercent.textContent = this.formatPercent(clamped);
-            this.navPrimaryPercent.hidden = false;
-            this.navPrimaryPercent.setAttribute('aria-hidden', 'false');
+            const text = this.formatPercent(clamped);
+            primary.textContent = text;
+            primary.hidden = false;
+            primary.setAttribute('aria-hidden', 'false');
+            if (overlay) {
+                overlay.textContent = text;
+                overlay.hidden = false;
+                overlay.setAttribute('aria-hidden', 'false');
+            }
         } else {
-            this.navPrimaryPercent.textContent = '';
-            this.navPrimaryPercent.hidden = true;
-            this.navPrimaryPercent.setAttribute('aria-hidden', 'true');
+            primary.textContent = '';
+            primary.hidden = true;
+            primary.setAttribute('aria-hidden', 'true');
+            if (overlay) {
+                overlay.textContent = '';
+                overlay.hidden = true;
+                overlay.setAttribute('aria-hidden', 'true');
+            }
         }
     }
 

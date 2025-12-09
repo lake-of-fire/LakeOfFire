@@ -213,6 +213,11 @@ const logEBookPageNumLimited = (event, detail = {}) => {
     logEBookPageNum(event, { count: logEBookPageNumCounter, ...detail })
 }
 
+const applyVerticalWritingClass = (doc, isVertical) => {
+    const enable = !!isVertical
+    try { doc?.body?.classList?.toggle('reader-vertical-writing', enable) } catch (_) {}
+}
+
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
     if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
@@ -1619,6 +1624,7 @@ class View {
                     this.#vertical = direction.vertical;
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
+                    applyVerticalWritingClass(doc, this.#vertical)
                     globalThis.manabiTrackingVertical = this.#vertical
                     globalThis.manabiTrackingVerticalRTL = this.#verticalRTL
                     globalThis.manabiTrackingRTL = this.#rtl
@@ -1676,9 +1682,7 @@ class View {
         this.#column = layout.flow !== 'scrolled'
         this.layout = layout
 
-        if (this.#vertical) {
-            this.document.body?.classList.add('reader-vertical-writing')
-        }
+        applyVerticalWritingClass(this.document, this.#vertical)
 
         if (this.#column) {
             //            console.log("render(layout)... await columnize(layout)")
