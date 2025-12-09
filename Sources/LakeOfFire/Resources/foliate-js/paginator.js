@@ -2297,6 +2297,7 @@ export class Paginator extends HTMLElement {
     #bottomMargin = 0
     #index = -1
     #loadingReason = null
+    #hasExpandedOnce = false
     #activeBakeCount = 0
     #sizeBakeDebounceTimer = null
     #sizeBakeDebounceArgs = null
@@ -2627,6 +2628,7 @@ export class Paginator extends HTMLElement {
     #createView() {
         this.#cancelTrackingGeometryBakeSchedule()
         this.#resetTrackingSectionSizeState()
+        this.#hasExpandedOnce = false
         if (this.#view) {
             this.#view.destroy()
             this.#container.removeChild(this.#view.element)
@@ -2642,6 +2644,17 @@ export class Paginator extends HTMLElement {
         return this.#view
     }
     #setLoading(isLoading, reason = 'unspecified') {
+        const isExpand = reason === 'expand'
+        if (isLoading && isExpand && this.#hasExpandedOnce && !this.#isLoading) {
+            this.#loadingReason = reason || this.#loadingReason || 'unspecified'
+            logEBookFlash('loading-skip', {
+                sectionIndex: this.#index,
+                reason: this.#loadingReason,
+                hasExpandedOnce: this.#hasExpandedOnce,
+                isCacheWarmer: this.#isCacheWarmer,
+            })
+            return
+        }
         if (this.#isLoading === isLoading) return
         this.#isLoading = isLoading;
         this.#loadingReason = reason || this.#loadingReason || 'unspecified'
@@ -2982,12 +2995,32 @@ export class Paginator extends HTMLElement {
             readyFlag: this.#trackingSizeBakeReady,
             pendingReason: this.#pendingTrackingSizeBakeReason ?? null,
         })
+        logEBookFlash('size-bake-begin', {
+            sectionIndex: sectionIndex ?? this.#index,
+            reason,
+            activeBakeCount: this.#activeBakeCount,
+            hasExpandedOnce: this.#hasExpandedOnce,
+            loadingReason: this.#loadingReason,
+            isLoading: this.#isLoading,
+        })
 
         const activeView = this.#view
 
         this.#activeBakeCount += 1
         if (this.#activeBakeCount === 1) {
-            this.#setLoading(true, 'size-bake')
+            const shouldShowLoading = !(this.#hasExpandedOnce && reason !== 'initial-load')
+            if (shouldShowLoading) {
+                this.#setLoading(true, 'size-bake')
+            } else {
+                // Avoid reapplying the loading opacity mask on post-expand resize bakes; it causes a visible flash.
+                logEBookFlash('loading-skip', {
+                    sectionIndex: sectionIndex ?? this.#index,
+                    reason: 'size-bake',
+                    bakeReason: reason,
+                    hasExpandedOnce: this.#hasExpandedOnce,
+                    isCacheWarmer: this.#isCacheWarmer,
+                })
+            }
         }
         hideDocumentContentForPreBake(doc)
         this.#trackingSizeBakeReady = false
@@ -3073,6 +3106,14 @@ export class Paginator extends HTMLElement {
                 } else {
                     this.#setLoading(false, 'size-bake-complete')
                 }
+                logEBookFlash('size-bake-finish', {
+                    sectionIndex: this.#index,
+                    reason,
+                    keepLoading,
+                    activeBakeCount: this.#activeBakeCount,
+                    debouncePending: !!this.#sizeBakeDebounceTimer,
+                    rerunQueued: !!this.#trackingSizeBakeNeedsRerun,
+                })
             }
             const durationMs = perfStart !== null && typeof performance !== 'undefined' && typeof performance.now === 'function'
                 ? performance.now() - perfStart
@@ -3373,6 +3414,8 @@ export class Paginator extends HTMLElement {
         this.#trackingSizeBakeReady = true
         const pendingReason = this.#pendingTrackingSizeBakeReason
         this.#pendingTrackingSizeBakeReason = null
+
+        this.#hasExpandedOnce = true
 
         // Avoid clearing loading if a size-bake is currently driving the spinner; let bake completion stop it.
         if (!(this.#isLoading && this.#loadingReason === 'size-bake')) {
