@@ -330,10 +330,12 @@
                     opacity: 0 !important;
                     pointer-events: none !important;
                 }
-                body.nav-hidden #nav-hidden-overlay,
-                #nav-bar.nav-hidden-due-to-scroll #nav-hidden-overlay,
-                #nav-bar.nav-hidden-floating #nav-hidden-overlay {
+                body.nav-hidden #nav-hidden-overlay {
+                /*#nav-bar.nav-hidden-due-to-scroll #nav-hidden-overlay {*/
                     opacity: 1;
+                }
+                #nav-bar.nav-hidden-due-to-scroll {
+                    display: none;
                 }
                 .nav-section-progress {
                     font-size: var(--nav-section-progress-font-size, 14px);

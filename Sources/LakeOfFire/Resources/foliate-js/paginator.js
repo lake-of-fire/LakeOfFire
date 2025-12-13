@@ -3,7 +3,7 @@
 const CSS_DEFAULTS = {
     gapPct: 5,
     minGapPx: 36,
-    topMarginPx: 4,
+    topMarginPx: 0, //4,
     bottomMarginPx: 69,
     sideMarginPx: 32,
     maxInlineSizePx: 720,

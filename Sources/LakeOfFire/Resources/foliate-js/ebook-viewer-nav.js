@@ -290,17 +290,6 @@ export class NavigationHUD {
     setHideNavigationDueToScroll(shouldHide, source = 'unknown', context = null) {
         const previous = this.hideNavigationDueToScroll;
         this.hideNavigationDueToScroll = !!shouldHide;
-        if (this.hideNavigationDueToScroll) {
-            this.navBar?.classList.add('nav-hidden-floating');
-        } else if (previous) {
-            // Keep bottom-anchored overlay in place long enough to fade out without jumping upward.
-            this.navBar?.classList.add('nav-hidden-floating');
-            setTimeout(() => {
-                if (!this.hideNavigationDueToScroll) {
-                    this.navBar?.classList.remove('nav-hidden-floating');
-                }
-            }, 300);
-        }
         this.navBar?.classList.toggle('nav-hidden-due-to-scroll', this.hideNavigationDueToScroll);
         this.#applyLabelVariant();
         logNavHide('hud:set-hide', {

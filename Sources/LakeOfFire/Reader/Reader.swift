@@ -255,6 +255,9 @@ public struct Reader: View {
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
     
+    @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var scriptCaller: WebViewScriptCaller
+    
     @State private var obscuredInsets: EdgeInsets? = nil
     
     public init(
@@ -371,5 +374,28 @@ public struct Reader: View {
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
+        .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
+            Task { @MainActor in
+                guard scriptCaller.hasAsyncCaller else { return }
+                let displayTitle = readerContent.content?.titleForDisplay ?? readerContent.contentTitle
+                guard !displayTitle.isEmpty else { return }
+                do {
+                    try await scriptCaller.evaluateJavaScript(
+                        """
+                        (function() {
+                          const el = document.getElementById('reader-title');
+                          if (el && el.textContent !== title) {
+                            el.textContent = title;
+                          }
+                        })();
+                        """,
+                        arguments: ["title": displayTitle],
+                        duplicateInMultiTargetFrames: true
+                    )
+                } catch {
+                    debugPrint("# READER title.sync.failed", error.localizedDescription)
+                }
+            }
+        }
     }
 }

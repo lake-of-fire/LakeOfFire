@@ -17,6 +17,8 @@ public class ReaderContent: ObservableObject {
     @Published public var currentSectionIndex: Int?
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
+    public let contentTitleSubject = PassthroughSubject<String, Never>()
+    public private(set) var contentTitle: String = ""
     private var cancellables = Set<AnyCancellable>()
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     
@@ -26,6 +28,11 @@ public class ReaderContent: ObservableObject {
                 guard let self else { return }
 //                debugPrint("# new content", newContent?.url)
                 self.locationBarTitle = newContent?.locationBarTitle
+                let newTitle = newContent?.title ?? ""
+                self.contentTitle = newTitle
+                if !newTitle.isEmpty {
+                    self.contentTitleSubject.send(newTitle)
+                }
             }
             .store(in: &cancellables)
     }
@@ -91,5 +98,25 @@ public class ReaderContent: ObservableObject {
         }
         debugPrint("# FLASH ReaderContent.getContent awaiting loadingTask", pageURL)
         return try await loadingTask?.value
+    }
+
+    @MainActor
+    public func updateContentTitle(_ newTitle: String) async {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard let content else { return }
+        guard trimmed != content.title else { return }
+
+        contentTitle = trimmed
+        contentTitleSubject.send(trimmed)
+
+        do {
+            try await content.writeAllRelatedAsync { _, object in
+                object.title = trimmed
+                object.refreshChangeMetadata(explicitlyModified: true)
+            }
+        } catch {
+            debugPrint("# READER contentTitle.update.failed", error.localizedDescription)
+        }
     }
 }
