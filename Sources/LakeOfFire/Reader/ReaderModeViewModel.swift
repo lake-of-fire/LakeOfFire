@@ -250,6 +250,38 @@ public class ReaderModeViewModel: ObservableObject {
         return false
     }
 
+    /// Normalizes loader/snippet URLs so pending/completion matching stays stable
+    /// across internal loader redirects and snippet content URLs.
+    private func normalizedPendingMatchKey(for url: URL?) -> String? {
+        guard let url else { return nil }
+
+        // Canonicalize snippet URLs by key so loader and final URLs line up.
+        if let snippetKey = url.snippetKey {
+            return "snippet:\(snippetKey)"
+        }
+
+        // If this is the internal reader loader, prefer its reader-url target.
+        if url.isReaderURLLoaderURL,
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let readerValue = components.queryItems?.first(where: { $0.name == "reader-url" })?.value {
+            let decodedReaderURLString = readerValue.removingPercentEncoding ?? readerValue
+            guard let readerURL = URL(string: decodedReaderURLString) else {
+                return url.absoluteString
+            }
+            // Preserve snippet equivalence even when nested in the loader.
+            if let snippetKey = readerURL.snippetKey {
+                return "snippet:\(snippetKey)"
+            }
+            return readerURL.absoluteString
+        }
+
+        return url.absoluteString
+    }
+
+    private func pendingKeysMatch(_ lhs: URL?, _ rhs: URL?) -> Bool {
+        normalizedPendingMatchKey(for: lhs) == normalizedPendingMatchKey(for: rhs)
+    }
+
     private func logTrace(
         _ stage: ReaderModeLoadStage,
         url: URL?,
@@ -630,7 +662,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
-        guard let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(url) else {
+        guard let pendingReaderModeURL, pendingKeysMatch(pendingReaderModeURL, url) else {
             let pendingDescription = self.pendingReaderModeURL?.absoluteString ?? "nil"
             let readabilityBytes = readabilityContent?.utf8.count ?? 0
             let pendingState = self.pendingReaderModeURL == nil ? "noPending" : "pendingMismatch"
@@ -1222,6 +1254,7 @@ public class ReaderModeViewModel: ObservableObject {
                     "url=\(url.absoluteString)",
                     "elapsed=\(String(format: "%.3f", totalRenderElapsed))s"
                 )
+                markReaderModeLoadComplete(for: url)
             }()
         }()
     }
@@ -1767,7 +1800,24 @@ public class ReaderModeViewModel: ObservableObject {
         } else if loadTraceRecords[traceKey(for: newState.pageURL)] != nil {
             logTrace(.navFinished, url: newState.pageURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         }
-        if let pendingReaderModeURL, pendingReaderModeURL.matchesReaderURL(newState.pageURL) {
+        let pendingMatchesPage: Bool = {
+            guard let pendingReaderModeURL else { return false }
+
+            let pendingKey = normalizedPendingMatchKey(for: pendingReaderModeURL)
+            let pendingLoaderKey = normalizedPendingMatchKey(for: ReaderContentLoader.readerLoaderURL(for: pendingReaderModeURL))
+            let pageKey = normalizedPendingMatchKey(for: newState.pageURL)
+            let pageLoaderKey = normalizedPendingMatchKey(for: ReaderContentLoader.readerLoaderURL(for: newState.pageURL))
+
+            if let pendingKey {
+                if pendingKey == pageKey || pendingKey == pageLoaderKey { return true }
+            }
+            if let pendingLoaderKey {
+                if pendingLoaderKey == pageKey || pendingLoaderKey == pendingKey { return true }
+            }
+            return false
+        }()
+
+        if pendingMatchesPage, let pendingReaderModeURL {
             debugPrint(
                 "# READERPERF readerMode.navFinished.markComplete",
                 "ts=\(Date().timeIntervalSince1970)",
