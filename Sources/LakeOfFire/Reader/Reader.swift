@@ -163,10 +163,19 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
 
 fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject var readerContent: ReaderContent
     
     func body(content: Content) -> some View {
+        let isSnippet = readerContent.pageURL.isSnippetURL
+            || readerModeViewModel.pendingReaderModeURL?.isSnippetURL == true
         content
-        .modifier(ReaderLoadingProgressOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading, context: "ReaderWebView"))
+            // Snippets manage their own overlay; suppress the generic reader-mode spinner for them
+            .modifier(
+                ReaderLoadingProgressOverlayViewModifier(
+                    isLoading: !isSnippet && readerModeViewModel.isReaderModeLoading,
+                    context: "ReaderWebView"
+                )
+            )
     }
 }
 

@@ -69,6 +69,12 @@ private struct ReaderLoadingOverlay: View {
                 "isLoading=\(newValue)",
                 "currentMessage=\(statusMessage ?? "nil")"
             )
+            debugPrint(
+                "# FLASH overlay.loading",
+                "context=\(context)",
+                "isLoading=\(newValue)",
+                "status=\(statusMessage ?? "nil")"
+            )
             if newValue { startHeartbeat() } else { stopHeartbeat() }
             syncStatusDisplay()
         }
@@ -76,6 +82,12 @@ private struct ReaderLoadingOverlay: View {
             syncStatusDisplay()
         }
         .onAppear {
+            debugPrint(
+                "# FLASH overlay.appear",
+                "context=\(context)",
+                "isLoading=\(isLoading)",
+                "status=\(statusMessage ?? "nil")"
+            )
             syncStatusDisplay()
         }
         .onDisappear {
@@ -131,6 +143,13 @@ private struct ReaderLoadingOverlay: View {
                 "message=\(message)",
                 "isLoading=\(isLoading)"
             )
+            debugPrint(
+                "# FLASH overlay.status",
+                "context=\(context)",
+                "action=show",
+                "message=\(message)",
+                "isLoading=\(isLoading)"
+            )
             let workItem = DispatchWorkItem {
                 isShowingStatus = true
             }
@@ -140,6 +159,13 @@ private struct ReaderLoadingOverlay: View {
             if displayedMessage != nil {
                 debugPrint(
                     "# READER overlay.status",
+                    "context=\(context)",
+                    "action=hide",
+                    "message=\(displayedMessage ?? "")",
+                    "isLoading=\(isLoading)"
+                )
+                debugPrint(
+                    "# FLASH overlay.status",
                     "context=\(context)",
                     "action=hide",
                     "message=\(displayedMessage ?? "")",
@@ -161,6 +187,12 @@ private struct ReaderLoadingOverlay: View {
             displayedMessage = nil
             debugPrint(
                 "# READER overlay.complete",
+                "context=\(context)",
+                "messageCleared",
+                "isLoading=\(isLoading)"
+            )
+            debugPrint(
+                "# FLASH overlay.complete",
                 "context=\(context)",
                 "messageCleared",
                 "isLoading=\(isLoading)"
@@ -204,6 +236,13 @@ private struct ReaderLoadingOverlay: View {
                 }
                 debugPrint(
                     "# READER overlay.heartbeat",
+                    "context=\(context)",
+                    "isLoading=\(isLoading)",
+                    "isShowingStatus=\(isShowingStatus)",
+                    "message=\(activeMessage)"
+                )
+                debugPrint(
+                    "# FLASH overlay.heartbeat",
                     "context=\(context)",
                     "isLoading=\(isLoading)",
                     "isShowingStatus=\(isShowingStatus)",

@@ -43,6 +43,12 @@ public class ReaderContent: ObservableObject {
 
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
 
+        let shouldMarkProvisional = resolvedContentURL.isSnippetURL
+        if shouldMarkProvisional && !isReaderProvisionallyNavigating {
+            isReaderProvisionallyNavigating = true
+            debugPrint("# FLASH provisional.mark", url.absoluteString, "state=true")
+        }
+
         if let loadingTask, pageURL.matchesReaderURL(url) {
             debugPrint("# FLASH ReaderContent.load in-flight", url)
             _ = try await loadingTask.value
@@ -88,6 +94,11 @@ public class ReaderContent: ObservableObject {
         try await loadingTask?.value
         debugPrint("# FLASH ReaderContent.load completed", url)
         loadingTask = nil
+
+        if shouldMarkProvisional && isReaderProvisionallyNavigating {
+            isReaderProvisionallyNavigating = false
+            debugPrint("# FLASH provisional.clear", url.absoluteString, "state=false")
+        }
     }
 
     @MainActor

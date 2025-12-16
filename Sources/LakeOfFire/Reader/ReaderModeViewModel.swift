@@ -7,6 +7,10 @@ import RealmSwiftGaps
 import LakeKit
 import WebKit
 
+private extension URL {
+    var isAboutBlank: Bool { absoluteString == "about:blank" }
+}
+
 @globalActor
 fileprivate actor ReaderViewModelActor {
     static var shared = ReaderViewModelActor()
@@ -168,6 +172,15 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func updatePendingReaderModeURL(_ newValue: URL?, reason: String) {
+        // Ignore about:blank churn; it should never drive pending state.
+        if let newValue, newValue.isAboutBlank {
+            debugPrint(
+                "# FLASH readerMode.pendingUpdate.skipAboutBlank",
+                "reason=\(reason)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+            )
+            return
+        }
         let oldValue = pendingReaderModeURL
         let oldDescription = oldValue?.absoluteString ?? "nil"
         let newDescription = newValue?.absoluteString ?? "nil"
@@ -188,6 +201,15 @@ public class ReaderModeViewModel: ObservableObject {
             "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
             "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
             "stack=\(Thread.callStackSymbols.prefix(5).joined(separator: " | "))"
+        )
+        debugPrint(
+            "# FLASH readerMode.pendingUpdate",
+            "from=\(oldDescription)",
+            "to=\(newDescription)",
+            "change=\(changeDescription)",
+            "reason=\(reason)",
+            "isLoading=\(isReaderModeLoading)",
+            "awaitingFirstRender=\(lastRenderedReadabilityURL == nil)"
         )
         pendingReaderModeURL = newValue
     }
@@ -288,11 +310,23 @@ public class ReaderModeViewModel: ObservableObject {
         if !frameIsMain {
             return
         }
+        // Ignore about:blank spinner flips; they are bootstrap navigations.
+        if pendingReaderModeURL?.isAboutBlank == true {
+            debugPrint("# FLASH readerMode.spinner.skipAboutBlank", "loading=\(isLoading)")
+            return
+        }
         if isLoading && !isReaderModeLoading {
             debugPrint(
-                "# READER readerMode.spinner",
+                "# FLASH readerMode.spinner",
                 "loading=true",
                 "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+            )
+            debugPrint(
+                "# FLASH readerMode.spinnerState",
+                "loading=true",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
             )
             debugPrint(
                 "# READERPERF readerMode.spinner.set",
@@ -301,12 +335,26 @@ public class ReaderModeViewModel: ObservableObject {
                 "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
             )
+            debugPrint(
+                "# FLASH readerMode.spinner.set",
+                "value=true",
+                "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "stack=\(Thread.callStackSymbols.prefix(4).joined(separator: " | "))"
+            )
             isReaderModeLoading = true
         } else if !isLoading && isReaderModeLoading {
             debugPrint(
-                "# READER readerMode.spinner",
+                "# FLASH readerMode.spinner",
                 "loading=false",
                 "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+            )
+            debugPrint(
+                "# FLASH readerMode.spinnerState",
+                "loading=false",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
             )
             debugPrint(
                 "# READERPERF readerMode.spinner.set",
@@ -314,6 +362,13 @@ public class ReaderModeViewModel: ObservableObject {
                 "value=false",
                 "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+            )
+            debugPrint(
+                "# FLASH readerMode.spinner.set",
+                "value=false",
+                "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "stack=\(Thread.callStackSymbols.prefix(4).joined(separator: " | "))"
             )
             isReaderModeLoading = false
         }
@@ -410,7 +465,14 @@ public class ReaderModeViewModel: ObservableObject {
                 "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
             )
             // Force a fresh render to avoid stale/empty content while still clearing spinners.
-            lastRenderedReadabilityURL = nil
+            if let rendered = lastRenderedReadabilityURL, !urlsMatchWithoutHash(rendered, url) {
+                lastRenderedReadabilityURL = nil
+                debugPrint(
+                    "# FLASH readerMode.lastRendered.clear",
+                    "url=\(url.absoluteString)",
+                    "reason=rerenderAlreadyRendered.mismatch"
+                )
+            }
         }
         logStateSnapshot("beginLoad.precheck", url: url)
         var isContinuing = false
@@ -419,7 +481,14 @@ public class ReaderModeViewModel: ObservableObject {
             isContinuing = true
         } else {
             updatePendingReaderModeURL(url, reason: "beginLoad")
-            lastRenderedReadabilityURL = nil
+            if let rendered = lastRenderedReadabilityURL, !urlsMatchWithoutHash(rendered, url) {
+                lastRenderedReadabilityURL = nil
+                debugPrint(
+                    "# FLASH readerMode.lastRendered.clear",
+                    "url=\(url.absoluteString)",
+                    "reason=beginLoad.newPending"
+                )
+            }
             lastFallbackLoaderURL = nil
         }
         let trackedURL = pendingReaderModeURL ?? url
@@ -505,6 +574,11 @@ public class ReaderModeViewModel: ObservableObject {
         // Clear stale loader state so it can't leak into the next navigation.
         expectedSyntheticReaderLoaderURL = nil
         lastRenderedReadabilityURL = nil
+        debugPrint(
+            "# FLASH readerMode.lastRendered.clear",
+            "url=\(url?.absoluteString ?? "nil")",
+            "reason=noPendingCancel"
+        )
         if let handler = readerModeLoadCompletionHandler {
             let completedURL = url
                 ?? lastRenderedReadabilityURL
@@ -544,6 +618,11 @@ public class ReaderModeViewModel: ObservableObject {
         readerModeLoading(false, frameIsMain: true)
         expectedSyntheticReaderLoaderURL = nil
         lastRenderedReadabilityURL = nil
+        debugPrint(
+            "# FLASH readerMode.lastRendered.clear",
+            "url=\((traceURL ?? url)?.absoluteString ?? "nil")",
+            "reason=cancelReaderModeLoad"
+        )
         if let handler = readerModeLoadCompletionHandler {
             handler(traceURL ?? url ?? URL(string: "about:blank")!)
         }
@@ -599,6 +678,14 @@ public class ReaderModeViewModel: ObservableObject {
             logStateSnapshot("complete.emptyReadability", url: pendingReaderModeURL)
             updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
             lastFallbackLoaderURL = url
+            if lastRenderedReadabilityURL == nil {
+                lastRenderedReadabilityURL = url
+                debugPrint(
+                    "# FLASH readerMode.rendered.setFallback",
+                    "url=\(url.absoluteString)",
+                    "reason=complete.emptyReadability"
+                )
+            }
             readerModeLoading(false, frameIsMain: true)
             readerModeLoadCompletionHandler?(url)
             return
@@ -620,6 +707,14 @@ public class ReaderModeViewModel: ObservableObject {
             "readabilityBytes=\(readabilityBytes)",
             "hasReadableBody=\(hasReadableBody)"
         )
+        if lastRenderedReadabilityURL == nil {
+            lastRenderedReadabilityURL = traceURL
+            debugPrint(
+                "# FLASH readerMode.rendered.setFallback",
+                "url=\(traceURL.absoluteString)",
+                "reason=complete.success.noRenderedURL"
+            )
+        }
         logStateSnapshot("complete.success", url: traceURL)
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         loadStartTimes.removeValue(forKey: traceURL.absoluteString)
@@ -1101,6 +1196,11 @@ public class ReaderModeViewModel: ObservableObject {
             }()
             try await { @MainActor in
                 lastRenderedReadabilityURL = url
+                debugPrint(
+                    "# FLASH readerMode.rendered",
+                    "url=\(url.absoluteString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+                )
                 let totalRenderElapsed = Date().timeIntervalSince(renderStart)
                 debugPrint(
                     "# READERPERF readerMode.render.total",
@@ -1442,6 +1542,11 @@ public class ReaderModeViewModel: ObservableObject {
                     // Do not abandon the load outright; instead, clear cached render state
                     // and let the caller retry (so we don't get stuck with blank content).
                     lastRenderedReadabilityURL = nil
+                    debugPrint(
+                        "# FLASH readerMode.render.clearLastRendered",
+                        "url=\(committedURL.absoluteString)",
+                        "reason=htmlFetchEmptyBody"
+                    )
                     readerModeLoading(false)
                     updatePendingReaderModeURL(nil, reason: "htmlFetchEmptyBody")
                     readerModeLoadCompletionHandler?(committedURL)
