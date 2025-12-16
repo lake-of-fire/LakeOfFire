@@ -678,14 +678,6 @@ public class ReaderModeViewModel: ObservableObject {
             logStateSnapshot("complete.emptyReadability", url: pendingReaderModeURL)
             updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
             lastFallbackLoaderURL = url
-            if lastRenderedReadabilityURL == nil {
-                lastRenderedReadabilityURL = url
-                debugPrint(
-                    "# FLASH readerMode.rendered.setFallback",
-                    "url=\(url.absoluteString)",
-                    "reason=complete.emptyReadability"
-                )
-            }
             readerModeLoading(false, frameIsMain: true)
             readerModeLoadCompletionHandler?(url)
             return
@@ -761,6 +753,11 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# READER readerMode.showReaderView", readerContent.pageURL)
+        debugPrint(
+            "# FLASH readability.showReaderView",
+            "contentURL=\(readerContent.pageURL.absoluteString)",
+            "hasReadability=\(readabilityContent != nil)"
+        )
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
         logTrace(.readabilityTaskScheduled, url: readerContent.pageURL, details: "readabilityBytes=\(readabilityBytes)")
         let contentURL = readerContent.pageURL
@@ -822,12 +819,12 @@ public class ReaderModeViewModel: ObservableObject {
         let renderStart = Date()
         if let frameInfo {
             debugPrint(
-                "# READER readability.targetFrame",
+                "# FLASH readability.targetFrame",
                 "frameURL=\(frameInfo.request.url?.absoluteString ?? "<nil>")",
                 "pageURL=\(readerContent.pageURL.absoluteString)"
             )
         } else {
-            debugPrint("# READER readability.targetFrame", "frameURL=<nil>", "pageURL=\(readerContent.pageURL.absoluteString)")
+            debugPrint("# FLASH readability.targetFrame", "frameURL=<nil>", "pageURL=\(readerContent.pageURL.absoluteString)")
         }
         let readabilityPublishedTime = self.readabilityPublishedTime
         self.readabilityPublishedTime = nil
@@ -838,13 +835,20 @@ public class ReaderModeViewModel: ObservableObject {
         let url = content.url
         if url.isSnippetURL {
             debugPrint(
-                "# READER snippet.renderStart",
+                "# FLASH snippet.renderStart",
                 "contentURL=\(url.absoluteString)",
                 "readabilityBytes=\(readabilityContent.utf8.count)",
                 "frameIsMain=\(frameInfo?.isMainFrame ?? true)",
                 "renderSelector=\(renderToSelector ?? "<root>")"
             )
         }
+        debugPrint(
+            "# FLASH readability.render.start",
+            "contentURL=\(url.absoluteString)",
+            "bytes=\(readabilityContent.utf8.count)",
+            "renderSelector=\(renderToSelector ?? "<root>")",
+            "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
+        )
         let renderBaseURL: URL
         if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
             renderBaseURL = url
@@ -862,7 +866,10 @@ public class ReaderModeViewModel: ObservableObject {
         let renderTarget = renderToSelector ?? "<root>"
         logTrace(.readabilityProcessingStart, url: url, details: "renderTo=\(renderTarget) | frameIsMain=\(frameInfo?.isMainFrame ?? true)")
 
-        if let lastRenderedReadabilityURL, lastRenderedReadabilityURL.matchesReaderURL(url) {
+        if let lastRenderedReadabilityURL,
+           lastRenderedReadabilityURL.matchesReaderURL(url),
+           readabilityContent == nil {
+            debugPrint("# FLASH readability.render.skipAlreadyRendered", "url=\(url.absoluteString)")
             markReaderModeLoadComplete(for: url)
             return
         }
@@ -873,15 +880,15 @@ public class ReaderModeViewModel: ObservableObject {
 
         Task {
             do {
-                debugPrint("# READER readability.datasetFlag", "url=\(url.absoluteString)")
+                debugPrint("# FLASH readability.datasetFlag", "url=\(url.absoluteString)")
                 try await scriptCaller.evaluateJavaScript("""
                 if (document.body) {
                     document.body.dataset.isNextLoadInReaderMode = 'true';
-                    try { document.body.style.setProperty('content-visibility', 'hidden'); } catch (_) {}
+                    // TODO: Temporarily disabled optimization: try { document.body.style.setProperty('content-visibility', 'hidden'); } catch (_) {}
                 }
                 """)
             } catch {
-                debugPrint("# READER readability.datasetFlag.error", error.localizedDescription)
+                debugPrint("# FLASH readability.datasetFlag.error", error.localizedDescription)
             }
         }
 
@@ -1158,6 +1165,13 @@ public class ReaderModeViewModel: ObservableObject {
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
+                    )
+                    debugPrint(
+                        "# FLASH readability.navigator.load",
+                        "url=\(url.absoluteString)",
+                        "base=\(renderBaseURL.absoluteString)",
+                        "bytes=\(transformedBytes)",
+                        "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
                     )
                     debugPrint(
                         "# READER readability.navigatorLoad.dispatched",
@@ -1576,8 +1590,32 @@ public class ReaderModeViewModel: ObservableObject {
 
                     let hasReaderContentNode = html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil
                     let hasReadabilityClass = html.range(of: #"<body[^>]*class=['\"].*?readability-mode.*?['\"]"#, options: .regularExpression) != nil
+                    let hasReaderModeAvailableFlag = html.range(
+                        of: #"data-manabi-reader-mode-available=['"]true['"]"#,
+                        options: [.regularExpression, .caseInsensitive]
+                    ) != nil
+                    var readerModeAvailableForMatchesURL = false
+                    if let regex = try? NSRegularExpression(
+                        pattern: #"data-manabi-reader-mode-available-for=['"]([^'"]+)['"]"#,
+                        options: [.caseInsensitive]
+                    ) {
+                        let nsHTML = html as NSString
+                        let nsRange = NSRange(location: 0, length: nsHTML.length)
+                        if let match = regex.firstMatch(in: html, options: [], range: nsRange) {
+                            let valueRange = match.range(at: 1)
+                            if valueRange.location != NSNotFound,
+                               let swiftRange = Range(valueRange, in: html) {
+                                let attrValue = String(html[swiftRange])
+                                if let attrURL = URL(string: attrValue),
+                                   attrURL.matchesReaderURL(committedURL) {
+                                    readerModeAvailableForMatchesURL = true
+                                }
+                            }
+                        }
+                    }
+                    let hasPreprocessedManabiReaderMarkup = hasReaderModeAvailableFlag && readerModeAvailableForMatchesURL
                     let hasNextLoadMarkers = html.range(of: #"<body.*?data-(is-next-load-in-reader-mode|next-load-is-readability-mode)=['\"]true['\"]"#, options: .regularExpression) != nil
-                    let hasReadabilityMarkup = hasReadabilityClass || hasReaderContentNode || hasNextLoadMarkers
+                    let hasReadabilityMarkup = hasReadabilityClass || hasReaderContentNode || hasNextLoadMarkers || hasPreprocessedManabiReaderMarkup
                     let snippetHasReaderContent = isSnippetURL && hasReaderContentNode
                     if snippetHasReaderContent {
                         debugPrint(
@@ -1964,6 +2002,13 @@ private func logHTMLBodyMetrics(
 }
 
 internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
+    // Remove any stale next-load flags so we can authoritatively set the value.
+    let html = html.replacingOccurrences(
+        of: #"data-is-next-load-in-reader-mode=['\"][^'"]*['\"]"#,
+        with: "",
+        options: .regularExpression
+    )
+
     if html.range(of: #"<body[^>]*class=['\"].*?readability-mode.*?['\"]"#, options: .regularExpression) != nil
         || html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil {
         return html

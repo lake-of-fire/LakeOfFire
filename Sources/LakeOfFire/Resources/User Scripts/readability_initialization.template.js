@@ -466,7 +466,7 @@
                     if (document.body) {
                         if (content) {
                             document.body.dataset.manabiReaderModeAvailable = 'true';
-                        document.body.dataset.manabiReaderModeAvailableFor = windowURL;
+                            document.body.dataset.manabiReaderModeAvailableFor = windowURL;
                             document.body.dataset.isNextLoadInReaderMode = 'false';
                             const hasReaderBody = html.indexOf('id="reader-content"') !== -1
                             readerLog("outputPrepared", {
