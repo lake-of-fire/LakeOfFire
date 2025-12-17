@@ -173,11 +173,12 @@ private class ReaderWebViewHandler {
                 scriptCaller: scriptCaller
             )
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", state.pageURL)
-            guard let content = self.readerContent.content else { return }
-            self.readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
-                // no external callback here
+            if let content = self.readerContent.content {
+                self.readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
+                    // no external callback here
+                }
+                debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerViewModel", state.pageURL)
             }
-            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerViewModel", state.pageURL)
         }
     }
 

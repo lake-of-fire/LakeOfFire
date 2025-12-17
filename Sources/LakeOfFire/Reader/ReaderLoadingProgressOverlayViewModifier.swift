@@ -28,11 +28,17 @@ private struct ReaderLoadingOverlay: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    private struct OverlayEmission: Equatable {
+        let isLoading: Bool
+        let statusMessage: String?
+    }
+
     @State private var displayedMessage: String?
     @State private var isShowingStatus = false
     @State private var showWorkItem: DispatchWorkItem?
     @State private var hideWorkItem: DispatchWorkItem?
     @State private var heartbeatTask: Task<Void, Never>?
+    @State private var lastLoggedEmission: OverlayEmission?
 
     var body: some View {
         ZStack {
@@ -63,18 +69,25 @@ private struct ReaderLoadingOverlay: View {
         .allowsHitTesting(isLoading)
         .animation(.easeInOut(duration: 0.2), value: isShowingStatus)
         .onChange(of: isLoading) { newValue in
-            debugPrint(
-                "# READER overlay.loading",
-                "context=\(context)",
-                "isLoading=\(newValue)",
-                "currentMessage=\(statusMessage ?? "nil")"
+            let emission = OverlayEmission(
+                isLoading: newValue,
+                statusMessage: newValue ? statusMessage : nil
             )
-            debugPrint(
-                "# FLASH overlay.loading",
-                "context=\(context)",
-                "isLoading=\(newValue)",
-                "status=\(statusMessage ?? "nil")"
-            )
+            if lastLoggedEmission != emission {
+                lastLoggedEmission = emission
+                debugPrint(
+                    "# READER overlay.loading",
+                    "context=\(context)",
+                    "isLoading=\(newValue)",
+                    "currentMessage=\((newValue ? statusMessage : nil) ?? "nil")"
+                )
+                debugPrint(
+                    "# FLASH overlay.loading",
+                    "context=\(context)",
+                    "isLoading=\(newValue)",
+                    "status=\((newValue ? statusMessage : nil) ?? "nil")"
+                )
+            }
             if newValue { startHeartbeat() } else { stopHeartbeat() }
             syncStatusDisplay()
         }
