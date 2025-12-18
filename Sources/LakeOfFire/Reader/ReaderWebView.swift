@@ -356,6 +356,7 @@ private struct ReaderWebViewInternal: View {
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
 
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
         #if os(iOS)
@@ -372,10 +373,23 @@ private struct ReaderWebViewInternal: View {
     }
 
     public var body: some View {
-        WebView(
-            config: WebViewConfig(
+        let useTransparentWebViewBackground = readerModeViewModel.isReaderModeLoading
+        let webViewConfig: WebViewConfig = {
+            if useTransparentWebViewBackground {
+                return WebViewConfig(
+                    dataDetectorsEnabled: false,
+                    isOpaque: false,
+                    backgroundColor: .clear,
+                    userScripts: userScripts
+                )
+            }
+            return WebViewConfig(
                 dataDetectorsEnabled: false,
-                userScripts: userScripts),
+                userScripts: userScripts
+            )
+        }()
+        WebView(
+            config: webViewConfig,
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,

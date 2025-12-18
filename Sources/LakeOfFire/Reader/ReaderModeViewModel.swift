@@ -689,56 +689,9 @@ public class ReaderModeViewModel: ObservableObject {
         }
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
         if readabilityBytes == 0 {
-            let canonicalURL = url.canonicalReaderContentURL()
-
-            // If we already rendered readability for this URL, treat missing readabilityContent
-            // as a non-fatal state (it may have been cleared after rendering to reduce memory).
-            if urlMatchesLastRendered(canonicalURL) {
-                debugPrint(
-                    "# FLASH readerMode.complete.emptyReadability.rendered",
-                    "url=\(canonicalURL.absoluteString)",
-                    "pending=\(pendingReaderModeURL.absoluteString)"
-                )
-                let traceURL = pendingReaderModeURL
-                updatePendingReaderModeURL(nil, reason: "markReaderModeLoadComplete.renderedEmptyReadability")
-                logStateSnapshot("complete.renderedEmptyReadability", url: traceURL)
-                readerModeLoading(false, frameIsMain: true)
-                readerModeLoadCompletionHandler?(canonicalURL)
+            if handleEmptyReadabilityCompletion(url: url, pendingReaderModeURL: pendingReaderModeURL) {
                 return
             }
-
-            if canonicalURL.isSnippetURL {
-                debugPrint(
-                    "# FLASH readerMode.complete.defer.emptyReadability.snippet",
-                    canonicalURL.absoluteString
-                )
-                return
-            }
-            if expectedSyntheticReaderLoaderURL != nil {
-                debugPrint(
-                    "# READER readerMode.complete.defer.emptyReadability.expectedSyntheticCommit",
-                    url.absoluteString
-                )
-                return
-            }
-            debugPrint(
-                "# READERPERF readerMode.complete.deferred",
-                "url=\(url.absoluteString)",
-                "reason=emptyReadability",
-                "pending=\(pendingReaderModeURL.absoluteString)",
-                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "isReaderModeLoading=\(isReaderModeLoading)",
-                "ts=\(Date().timeIntervalSince1970)",
-                "stack=\(Thread.callStackSymbols.prefix(5).joined(separator: " | "))"
-            )
-            // Treat empty readability (e.g., EPUB native view or script-only pages) as
-            // a terminal state so spinners do not linger indefinitely.
-            logStateSnapshot("complete.emptyReadability", url: pendingReaderModeURL)
-            updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
-            lastFallbackLoaderURL = canonicalURL
-            readerModeLoading(false, frameIsMain: true)
-            readerModeLoadCompletionHandler?(canonicalURL)
-            return
         }
         let traceURL = pendingReaderModeURL
         updatePendingReaderModeURL(nil, reason: "markReaderModeLoadComplete")
@@ -770,6 +723,61 @@ public class ReaderModeViewModel: ObservableObject {
         loadStartTimes.removeValue(forKey: traceURL.absoluteString)
         readerModeLoading(false, frameIsMain: true)
         readerModeLoadCompletionHandler?(traceURL)
+    }
+
+    private func handleEmptyReadabilityCompletion(url: URL, pendingReaderModeURL: URL) -> Bool {
+        let canonicalURL = url.canonicalReaderContentURL()
+
+        // If we already rendered readability for this URL, treat missing readabilityContent
+        // as a non-fatal state (it may have been cleared after rendering to reduce memory).
+        if urlMatchesLastRendered(canonicalURL) {
+            debugPrint(
+                "# FLASH readerMode.complete.emptyReadability.rendered",
+                "url=\(canonicalURL.absoluteString)",
+                "pending=\(pendingReaderModeURL.absoluteString)"
+            )
+            logStateSnapshot("complete.renderedEmptyReadability", url: pendingReaderModeURL)
+            updatePendingReaderModeURL(nil, reason: "markReaderModeLoadComplete.renderedEmptyReadability")
+            readerModeLoading(false, frameIsMain: true)
+            readerModeLoadCompletionHandler?(canonicalURL)
+            return true
+        }
+
+        if canonicalURL.isSnippetURL {
+            debugPrint(
+                "# FLASH readerMode.complete.defer.emptyReadability.snippet",
+                canonicalURL.absoluteString
+            )
+            return true
+        }
+
+        if expectedSyntheticReaderLoaderURL != nil {
+            debugPrint(
+                "# READER readerMode.complete.defer.emptyReadability.expectedSyntheticCommit",
+                url.absoluteString
+            )
+            return true
+        }
+
+        debugPrint(
+            "# READERPERF readerMode.complete.deferred",
+            "url=\(url.absoluteString)",
+            "reason=emptyReadability",
+            "pending=\(pendingReaderModeURL.absoluteString)",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "ts=\(Date().timeIntervalSince1970)",
+            "stack=\(Thread.callStackSymbols.prefix(5).joined(separator: " | "))"
+        )
+
+        // Treat empty readability (e.g., EPUB native view or script-only pages) as
+        // a terminal state so spinners do not linger indefinitely.
+        logStateSnapshot("complete.emptyReadability", url: pendingReaderModeURL)
+        updatePendingReaderModeURL(nil, reason: "complete.emptyReadability")
+        lastFallbackLoaderURL = canonicalURL
+        readerModeLoading(false, frameIsMain: true)
+        readerModeLoadCompletionHandler?(canonicalURL)
+        return true
     }
 
     @MainActor
@@ -944,7 +952,15 @@ public class ReaderModeViewModel: ObservableObject {
                 try await scriptCaller.evaluateJavaScript("""
                 if (document.body) {
                     document.body.dataset.isNextLoadInReaderMode = 'true';
-                    // TODO: Temporarily disabled optimization: try { document.body.style.setProperty('content-visibility', 'hidden'); } catch (_) {}
+                    try {
+                        if (document.documentElement) {
+                            document.documentElement.style.setProperty('background-color', 'transparent', 'important');
+                        }
+                        document.body.style.setProperty('background-color', 'transparent', 'important');
+                        if (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('content-visibility', 'hidden')) {
+                            document.body.style.setProperty('content-visibility', 'hidden');
+                        }
+                    } catch (_) {}
                 }
                 """)
             } catch {
@@ -1187,6 +1203,7 @@ public class ReaderModeViewModel: ObservableObject {
                         style.textContent = css
                         document.head.appendChild(style)
                         document.body?.classList.add('readability-mode')
+                        try { document.body?.style.removeProperty('content-visibility') } catch (_) {}
                         """
                         ,
                         arguments: [
@@ -1830,36 +1847,26 @@ public class ReaderModeViewModel: ObservableObject {
             logTrace(.navFinished, url: newState.pageURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         }
 
-        // Loader navigation finishing is NOT reader-mode completion.
-        // The loader is a trampoline; completion should be driven by:
-        //  - readability.showReaderView → showReadabilityContent → navigator synthetic commit, OR
-        //  - the final content URL flow.
-        if pendingReaderModeURL != nil, newState.pageURL.isReaderURLLoaderURL {
-            debugPrint("# FLASH readerMode.navFinished.defer.loader", "pageURL=\(newState.pageURL)")
-            return
-        }
-
-        if let pendingReaderModeURL, let expectedSyntheticReaderLoaderURL {
-            debugPrint(
-                "# FLASH readerMode.navFinished.defer.synthetic",
-                "pageURL=\(newState.pageURL)",
-                "pending=\(pendingReaderModeURL)",
-                "expected=\(expectedSyntheticReaderLoaderURL)"
-            )
-            return
-        }
-
-        if let pendingReaderModeURL,
-           !hasRenderedReadabilityContent {
-            debugPrint(
-                "# FLASH readerMode.navFinished.defer.pending",
-                "pageURL=\(newState.pageURL.absoluteString)",
-                "pending=\(pendingReaderModeURL.absoluteString)",
-                "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "isReaderModeLoading=\(isReaderModeLoading)"
-            )
-            // Navigation finishing is a prerequisite for readability, not completion.
-            // Completion should be driven by showReadabilityContent / final render.
+        if let deferral = navigationFinishedDeferral(newState: newState) {
+            switch deferral {
+            case .loader:
+                debugPrint("# FLASH readerMode.navFinished.defer.loader", "pageURL=\(newState.pageURL)")
+            case .synthetic(let pendingURL, let expectedURL):
+                debugPrint(
+                    "# FLASH readerMode.navFinished.defer.synthetic",
+                    "pageURL=\(newState.pageURL)",
+                    "pending=\(pendingURL)",
+                    "expected=\(expectedURL)"
+                )
+            case .pending(let pendingURL):
+                debugPrint(
+                    "# FLASH readerMode.navFinished.defer.pending",
+                    "pageURL=\(newState.pageURL.absoluteString)",
+                    "pending=\(pendingURL.absoluteString)",
+                    "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                    "isReaderModeLoading=\(isReaderModeLoading)"
+                )
+            }
             return
         }
 
@@ -1897,6 +1904,38 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         logDomSnapshot(pageURL: newState.pageURL, scriptCaller: scriptCaller, reason: newState.pageURL.isReaderURLLoaderURL ? "loader-navFinished" : "navFinished")
+    }
+
+    private enum NavigationFinishedDeferral {
+        case loader
+        case synthetic(pendingURL: URL, expectedURL: URL)
+        case pending(pendingURL: URL)
+    }
+
+    // Keep navigation-finished side effects lightweight: reader-mode completion should be
+    // driven by the readability render pipeline, not intermediate trampoline navigations.
+    private func navigationFinishedDeferral(newState: WebViewState) -> NavigationFinishedDeferral? {
+        guard let pendingReaderModeURL else { return nil }
+
+        // Loader navigation finishing is NOT reader-mode completion.
+        // The loader is a trampoline; completion should be driven by:
+        //  - readability.showReaderView → showReadabilityContent → navigator synthetic commit, OR
+        //  - the final content URL flow.
+        if newState.pageURL.isReaderURLLoaderURL {
+            return .loader
+        }
+
+        if let expectedSyntheticReaderLoaderURL {
+            return .synthetic(pendingURL: pendingReaderModeURL, expectedURL: expectedSyntheticReaderLoaderURL)
+        }
+
+        // If we're still in the pre-render phase, navigation finishing is a prerequisite
+        // for readability, not completion.
+        if !hasRenderedReadabilityContent {
+            return .pending(pendingURL: pendingReaderModeURL)
+        }
+
+        return nil
     }
 
     @MainActor
@@ -2128,6 +2167,7 @@ internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
     }
     let markerAttributes = "data-is-next-load-in-reader-mode='true'"
     var updatedHTML: String
+    let preloadBodyInlineStyle = "content-visibility: hidden;"
 
     if html.range(of: "<body", options: .caseInsensitive) != nil {
         updatedHTML = html.replacingOccurrences(of: "<body", with: "<body \(markerAttributes) ", options: .caseInsensitive)
@@ -2136,7 +2176,7 @@ internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
         return """
         <html>
         <head></head>
-        <body \(markerAttributes) style='content-visibility: hidden;'>
+        <body \(markerAttributes) style='\(preloadBodyInlineStyle)'>
         \(html)
         </body>
         </html>
@@ -2149,15 +2189,17 @@ internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
     // Ensure the fallback body stays hidden until the readability content is injected.
     if let styleMatch = bodyStyleRegex.firstMatch(in: updatedHTML, options: [], range: nsRange) {
         let existingStyle = nsHTML.substring(with: styleMatch.range(at: 2))
-        if existingStyle.range(of: "content-visibility", options: .caseInsensitive) == nil {
+        if existingStyle.range(of: "content-visibility", options: .caseInsensitive) == nil,
+           existingStyle.range(of: "visibility", options: .caseInsensitive) == nil,
+           existingStyle.range(of: "opacity", options: .caseInsensitive) == nil {
             let prefix = nsHTML.substring(with: styleMatch.range(at: 1))
             let suffix = nsHTML.substring(with: styleMatch.range(at: 3))
-            let newStyle = "content-visibility: hidden; \(existingStyle)"
+            let newStyle = "\(preloadBodyInlineStyle) \(existingStyle)"
             let replacement = prefix + newStyle + suffix
             updatedHTML = nsHTML.replacingCharacters(in: styleMatch.range, with: replacement)
         }
     } else {
-        updatedHTML = updatedHTML.replacingOccurrences(of: "<body", with: "<body style='content-visibility: hidden;'", options: .caseInsensitive)
+        updatedHTML = updatedHTML.replacingOccurrences(of: "<body", with: "<body style='\(preloadBodyInlineStyle)'", options: .caseInsensitive)
     }
 
     return updatedHTML
@@ -2378,7 +2420,13 @@ public func processForReaderMode(
                 existingBodyStyle = existingBodyStyle
                     .split(separator: ";")
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.lowercased().hasPrefix("content-visibility") && !$0.isEmpty }
+                    .filter {
+                        let lowercased = $0.lowercased()
+                        if lowercased.hasPrefix("content-visibility") { return false }
+                        if lowercased.hasPrefix("visibility") { return false }
+                        if lowercased.hasPrefix("opacity") { return false }
+                        return !$0.isEmpty
+                    }
                     .joined(separator: "; ")
                 _ = try? bodyTag.attr("style", existingBodyStyle)
             }

@@ -108,13 +108,6 @@ private struct ReaderLoadingOverlay: View {
             syncStatusDisplay()
         }
         .onChange(of: isVisible) { _ in
-            debugPrint(
-                "# FLASH overlay.visible",
-                "context=\(context)",
-                "isVisible=\(isVisible)",
-                "isLoading=\(isLoading)",
-                "status=\((isLoading ? statusMessage : nil) ?? "nil")"
-            )
             syncStatusDisplay()
         }
         .onAppear {
