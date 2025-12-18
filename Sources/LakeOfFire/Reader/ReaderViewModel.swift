@@ -89,7 +89,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @MainActor
     public func onNavigationCommitted(content: any ReaderContentProtocol, newState: WebViewState) async throws {
-        debugPrint("# FLASH ReaderViewModel.onNavigationCommitted", newState.pageURL, content.url)
+        debugPrint(
+            "# FLASH ReaderViewModel.onNavigationCommitted",
+            "page=\(flashURLDescription(newState.pageURL))",
+            "content=\(flashURLDescription(content.url))"
+        )
         if let historyRecord = content as? HistoryRecord {
             let contentRef = ReaderContentLoader.ContentReference(content: historyRecord)
             Task { @RealmBackgroundActor in
@@ -104,45 +108,54 @@ public class ReaderViewModel: NSObject, ObservableObject {
     }
     
     public func onNavigationFinished(content: any ReaderContentProtocol, newState: WebViewState, completion: ((WebViewState) -> Void)? = nil) {
-        debugPrint("# FLASH ReaderViewModel.onNavigationFinished", newState.pageURL, content.url)
+        debugPrint(
+            "# FLASH ReaderViewModel.onNavigationFinished",
+            "page=\(flashURLDescription(newState.pageURL))",
+            "content=\(flashURLDescription(content.url))"
+        )
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             try Task.checkCancellation()
             refreshSettingsInWebView(content: content, newState: newState)
 
             completion?(newState)
-            debugPrint("# FLASH ReaderViewModel.onNavigationFinished completed", newState.pageURL)
+            debugPrint("# FLASH ReaderViewModel.onNavigationFinished completed", "page=\(flashURLDescription(newState.pageURL))")
         }
     }
     
     // TODO: Move to Loader probably
     @MainActor
     public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        debugPrint("# FLASH ReaderViewModel.getContent start", pageURL)
+        debugPrint("# FLASH ReaderViewModel.getContent start", "page=\(flashURLDescription(pageURL))")
         if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) {
-            debugPrint("# FLASH ReaderViewModel.getContent loaderRedirect", pageURL.absoluteString, "->", contentURL.absoluteString)
+            debugPrint(
+                "# FLASH ReaderViewModel.getContent loaderRedirect",
+                "page=\(flashURLDescription(pageURL))",
+                "->",
+                flashURLDescription(contentURL)
+            )
             if let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
                 try Task.checkCancellation()
-                debugPrint("# FLASH ReaderViewModel.getContent resolved via loader", contentURL)
+                debugPrint("# FLASH ReaderViewModel.getContent resolved via loader", "content=\(flashURLDescription(contentURL))")
                 return content
             } else {
-                debugPrint("# FLASH ReaderViewModel.getContent loaderRedirectFailed", contentURL.absoluteString)
+                debugPrint("# FLASH ReaderViewModel.getContent loaderRedirectFailed", "content=\(flashURLDescription(contentURL))")
             }
         }
         if pageURL.isSnippetURL {
-            debugPrint("# FLASH ReaderViewModel.getContent snippetNoLoader", pageURL.absoluteString)
+            debugPrint("# FLASH ReaderViewModel.getContent snippetNoLoader", "page=\(flashURLDescription(pageURL))")
         }
         if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
-            debugPrint("# FLASH ReaderViewModel.getContent resolved direct", pageURL)
+            debugPrint("# FLASH ReaderViewModel.getContent resolved direct", "page=\(flashURLDescription(pageURL))")
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
-            debugPrint("# FLASH ReaderViewModel.getContent resolved direct", pageURL)
+            debugPrint("# FLASH ReaderViewModel.getContent resolved direct", "page=\(flashURLDescription(pageURL))")
             return content
         }
         try Task.checkCancellation()
-        debugPrint("# FLASH ReaderViewModel.getContent no match", pageURL)
+        debugPrint("# FLASH ReaderViewModel.getContent no match", "page=\(flashURLDescription(pageURL))")
         return nil
     }
     

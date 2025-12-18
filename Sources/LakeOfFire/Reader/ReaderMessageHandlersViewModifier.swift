@@ -605,13 +605,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 readerModeViewModel.readabilityPublishedTime = result.publishedTime
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
-                debugPrint(
-                    "# FLASH readability.parsed",
-                    "contentURL=\(resolvedURL.absoluteString)",
-                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")",
-                    "outputBytes=\(result.outputHTML.utf8.count)",
-                    "frameIsMain=\(message.frameInfo.isMainFrame)"
-                )
+                    debugPrint(
+                        "# FLASH readability.parsed",
+                        "contentURL=\(flashURLDescription(resolvedURL))",
+                        "frameURL=\(flashURLDescription(message.frameInfo.request.url))",
+                        "outputBytes=\(result.outputHTML.utf8.count)",
+                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                    )
                 debugPrint(
                     "# READER readabilityParsed.dispatch",
                     "contentURL=\(resolvedURL.absoluteString)",
@@ -630,7 +630,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
                     debugPrint(
                         "# FLASH readability.showReaderView.dispatch",
-                        "contentURL=\(resolvedURL.absoluteString)",
+                        "contentURL=\(flashURLDescription(resolvedURL))",
                         "outputBytes=\(result.outputHTML.utf8.count)",
                         "frameIsMain=\(message.frameInfo.isMainFrame)"
                     )

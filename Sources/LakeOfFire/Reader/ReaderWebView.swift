@@ -58,7 +58,13 @@ private class ReaderWebViewHandler {
     }
 
     func handleNewURL(state: WebViewState, source: String) async throws {
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL start", state.pageURL, "loading", state.isLoading, "provisional", state.isProvisionallyNavigating, "source", source)
+        debugPrint(
+            "# FLASH ReaderWebViewHandler.handleNewURL start",
+            "page=\(flashURLDescription(state.pageURL))",
+            "loading=\(state.isLoading)",
+            "provisional=\(state.isProvisionallyNavigating)",
+            "source=\(source)"
+        )
         debugPrint(
             "# READERPERF webView.state",
             "ts=\(Date().timeIntervalSince1970)",
@@ -82,13 +88,13 @@ private class ReaderWebViewHandler {
         }
 
         if state.pageURL.absoluteString == "about:blank" {
-            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL native reader view", state.pageURL)
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL native reader view", "page=\(flashURLDescription(state.pageURL))")
             let cancelURL = readerContent.content?.url ?? readerContent.pageURL
             readerModeViewModel.cancelReaderModeLoad(for: cancelURL)
         }
 
         if let lastHandledURL, lastHandledURL.matchesReaderURL(state.pageURL), lastHandledIsProvisionallyNavigating == state.isProvisionallyNavigating, lastHandledIsLoading == state.isLoading {
-            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL skipping duplicate", state.pageURL)
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL skipping duplicate", "page=\(flashURLDescription(state.pageURL))")
             return
         }
 
@@ -99,7 +105,7 @@ private class ReaderWebViewHandler {
         try Task.checkCancellation()
         try await readerContent.load(url: state.pageURL)
         if state.pageURL.isSnippetURL {
-            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL snippetPageLoaded", state.pageURL.absoluteString)
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL snippetPageLoaded", "page=\(flashURLDescription(state.pageURL))")
         }
         if let current = readerContent.content {
             debugPrint(
@@ -114,32 +120,32 @@ private class ReaderWebViewHandler {
         } else {
             debugPrint("# READER content.state", "pageURL=\(state.pageURL.absoluteString)", "contentURL=<nil>")
         }
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerContent loaded", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerContent loaded", "page=\(flashURLDescription(state.pageURL))")
         try Task.checkCancellation()
         guard let content = readerContent.content else {
-            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL missing readerContent.content", state.pageURL)
+            debugPrint("# FLASH ReaderWebViewHandler.handleNewURL missing readerContent.content", "page=\(flashURLDescription(state.pageURL))")
             return
         }
 
         // TODO: Add onURLChanged or rename these view model methods to be more generic...
         try await readerViewModel.onNavigationCommitted(content: content, newState: state)
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerViewModel committed", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerViewModel committed", "page=\(flashURLDescription(state.pageURL))")
         try Task.checkCancellation()
         try await readerModeViewModel.onNavigationCommitted(
             readerContent: readerContent,
             newState: state,
             scriptCaller: scriptCaller
         )
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerModeViewModel committed", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerModeViewModel committed", "page=\(flashURLDescription(state.pageURL))")
         try Task.checkCancellation()
         guard let content = readerContent.content, content.url.matchesReaderURL(state.pageURL) else { return }
         try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL mediaPlayer committed", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL mediaPlayer committed", "page=\(flashURLDescription(state.pageURL))")
         try Task.checkCancellation()
     }
 
     func onNavigationCommitted(state: WebViewState) {
-        debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", "page=\(flashURLDescription(state.pageURL))")
         navigationTaskManager.startOnNavigationCommitted {
             let navigationToken = self.readerContent.beginMainFrameNavigationTask(to: state.pageURL)
             defer { self.readerContent.endMainFrameNavigationTask(navigationToken) }
@@ -156,19 +162,19 @@ private class ReaderWebViewHandler {
     }
 
     func onNavigationFinished(state: WebViewState) {
-        debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished event", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished event", "page=\(flashURLDescription(state.pageURL))")
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
             await self.readerModeViewModel.onNavigationFinished(
                 newState: state,
                 scriptCaller: scriptCaller
             )
-            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", state.pageURL)
+            debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", "page=\(flashURLDescription(state.pageURL))")
             if let content = self.readerContent.content {
                 self.readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
                     // no external callback here
                 }
-                debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerViewModel", state.pageURL)
+                debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerViewModel", "page=\(flashURLDescription(state.pageURL))")
             }
         }
     }
@@ -178,7 +184,7 @@ private class ReaderWebViewHandler {
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed skipping about:blank")
             return
         }
-        debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed event", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed event", "page=\(flashURLDescription(state.pageURL))")
         navigationTaskManager.startOnNavigationFailed { @MainActor in
             if let error = state.error {
                 let nsError = error as NSError
@@ -205,7 +211,7 @@ private class ReaderWebViewHandler {
             debugPrint("# FLASH ReaderWebViewHandler.onURLChanged skipping about:blank")
             return
         }
-        debugPrint("# FLASH ReaderWebViewHandler.onURLChanged event", state.pageURL)
+        debugPrint("# FLASH ReaderWebViewHandler.onURLChanged event", "page=\(flashURLDescription(state.pageURL))")
         navigationTaskManager.startOnURLChanged { @MainActor in
             let navigationToken = self.readerContent.beginMainFrameNavigationTask(to: state.pageURL)
             defer { self.readerContent.endMainFrameNavigationTask(navigationToken) }
@@ -242,7 +248,6 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
-    @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
 
     @State private var handler: ReaderWebViewHandler?
 
@@ -273,13 +278,14 @@ public struct ReaderWebView: View {
         _textSelection = textSelection ?? .constant(nil)
         self.buildMenu = buildMenu
     }
-
+    
     public var body: some View {
         // Initialize handler if nil, and update dependencies
         return Group {
             if let handler = handler {
                 ReaderWebViewInternal(
                     persistentWebViewID: persistentWebViewID,
+                    useTransparentWebViewBackground: readerModeViewModel.isReaderModeLoadedOrPending(url: readerViewModel.state.pageURL, content: readerContent.content),
                     obscuredInsets: obscuredInsets,
                     bounces: bounces,
                     additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
@@ -339,6 +345,7 @@ public struct ReaderWebView: View {
 
 private struct ReaderWebViewInternal: View {
     var persistentWebViewID: String?
+    let useTransparentWebViewBackground: Bool
     let obscuredInsets: EdgeInsets?
     var bounces = true
     var additionalBottomSafeAreaInset: CGFloat?
@@ -356,7 +363,6 @@ private struct ReaderWebViewInternal: View {
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
-    @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
 
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
         #if os(iOS)
@@ -371,9 +377,8 @@ private struct ReaderWebViewInternal: View {
         EdgeInsets()
         #endif
     }
-
+    
     public var body: some View {
-        let useTransparentWebViewBackground = readerModeViewModel.isReaderModeLoading
         let webViewConfig: WebViewConfig = {
             if useTransparentWebViewBackground {
                 return WebViewConfig(
@@ -388,6 +393,7 @@ private struct ReaderWebViewInternal: View {
                 userScripts: userScripts
             )
         }()
+        
         WebView(
             config: webViewConfig,
             navigator: navigator,

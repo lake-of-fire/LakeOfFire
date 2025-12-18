@@ -815,13 +815,24 @@ public class ReaderModeViewModel: ObservableObject {
         }
         return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
     }
+    
+    // TODO: Might not need to pass both of these in... seems like a lot of redundant checks...
+    func isReaderModeLoadedOrPending(url: URL, content: (any ReaderContentProtocol)?) -> Bool {
+        if isReaderModeLoading || isReaderMode || isReaderModeLoadPending(for: url) {
+            return true
+        }
+        if let content {
+            return isReaderModeLoadPending(content: content)
+        }
+        return false
+    }
 
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# READER readerMode.showReaderView", readerContent.pageURL)
         debugPrint(
             "# FLASH readability.showReaderView",
-            "contentURL=\(readerContent.pageURL.absoluteString)",
+            "contentURL=\(flashURLDescription(readerContent.pageURL))",
             "hasReadability=\(readabilityContent != nil)"
         )
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
@@ -886,11 +897,11 @@ public class ReaderModeViewModel: ObservableObject {
         if let frameInfo {
             debugPrint(
                 "# FLASH readability.targetFrame",
-                "frameURL=\(frameInfo.request.url?.absoluteString ?? "<nil>")",
-                "pageURL=\(readerContent.pageURL.absoluteString)"
+                "frameURL=\(flashURLDescription(frameInfo.request.url))",
+                "pageURL=\(flashURLDescription(readerContent.pageURL))"
             )
         } else {
-            debugPrint("# FLASH readability.targetFrame", "frameURL=<nil>", "pageURL=\(readerContent.pageURL.absoluteString)")
+            debugPrint("# FLASH readability.targetFrame", "frameURL=<nil>", "pageURL=\(flashURLDescription(readerContent.pageURL))")
         }
         let readabilityPublishedTime = self.readabilityPublishedTime
         self.readabilityPublishedTime = nil
@@ -910,7 +921,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
         debugPrint(
             "# FLASH readability.render.start",
-            "contentURL=\(url.absoluteString)",
+            "contentURL=\(flashURLDescription(url))",
             "bytes=\(readabilityContent.utf8.count)",
             "renderSelector=\(renderToSelector ?? "<root>")",
             "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
@@ -1245,8 +1256,8 @@ public class ReaderModeViewModel: ObservableObject {
                     )
                     debugPrint(
                         "# FLASH readability.navigator.load",
-                        "url=\(url.absoluteString)",
-                        "base=\(renderBaseURL.absoluteString)",
+                        "url=\(flashURLDescription(url))",
+                        "base=\(flashURLDescription(renderBaseURL))",
                         "bytes=\(transformedBytes)",
                         "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
                     )

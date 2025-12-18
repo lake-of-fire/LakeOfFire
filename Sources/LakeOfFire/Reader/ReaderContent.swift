@@ -50,7 +50,7 @@ public class ReaderContent: ObservableObject {
         mainFrameNavigationURL = url
         debugPrint(
             "# FLASH mainFrameNavigation.begin",
-            url.absoluteString,
+            flashURLDescription(url),
             "active=\(mainFrameNavigationTaskOrder.count)"
         )
         return token
@@ -70,7 +70,7 @@ public class ReaderContent: ObservableObject {
 
         debugPrint(
             "# FLASH mainFrameNavigation.end",
-            url.absoluteString,
+            flashURLDescription(url),
             "active=\(mainFrameNavigationTaskOrder.count)"
         )
 
@@ -81,27 +81,27 @@ public class ReaderContent: ObservableObject {
     
     @MainActor
     internal func load(url: URL) async throws {
-        debugPrint("# FLASH ReaderContent.load start", url)
+        debugPrint("# FLASH ReaderContent.load start", "page=\(flashURLDescription(url))")
 
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
 
         let shouldMarkProvisional = resolvedContentURL.isSnippetURL
         if shouldMarkProvisional && !isReaderProvisionallyNavigating {
             isReaderProvisionallyNavigating = true
-            debugPrint("# FLASH provisional.mark", url.absoluteString, "state=true")
+            debugPrint("# FLASH provisional.mark", "page=\(flashURLDescription(url))", "state=true")
         }
 
         if let loadingTask, pageURL.matchesReaderURL(url) {
-            debugPrint("# FLASH ReaderContent.load in-flight", url)
+            debugPrint("# FLASH ReaderContent.load in-flight", "page=\(flashURLDescription(url))")
             _ = try await loadingTask.value
             return
         }
 
         if let existingContent = content, existingContent.url.matchesReaderURL(resolvedContentURL) {
-            debugPrint("# FLASH ReaderContent.load reuse existing content", url)
+            debugPrint("# FLASH ReaderContent.load reuse existing content", "page=\(flashURLDescription(url))")
             if !pageURL.matchesReaderURL(url) {
                 pageURL = url
-                debugPrint("# FLASH ReaderContent.load updated pageURL only", url)
+                debugPrint("# FLASH ReaderContent.load updated pageURL only", "page=\(flashURLDescription(url))")
             }
             return
         }
@@ -113,11 +113,11 @@ public class ReaderContent: ObservableObject {
         loadingTask?.cancel()
         loadingTask = Task { @MainActor [weak self] in
             try Task.checkCancellation()
-            debugPrint("# FLASH ReaderContent.load task resolving content", url)
+            debugPrint("# FLASH ReaderContent.load task resolving content", "page=\(flashURLDescription(url))")
             let content = try await ReaderViewModel.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
-                debugPrint("# FLASH ReaderContent.load mismatch", url, content.url)
+                debugPrint("# FLASH ReaderContent.load mismatch", "page=\(flashURLDescription(url))", "content=\(flashURLDescription(content.url))")
                 return nil
             }
             self?.content = content
@@ -130,16 +130,16 @@ public class ReaderContent: ObservableObject {
                 "isFromClipboard=\(content.isFromClipboard)"
             ].joined(separator: " | ")
             debugPrint("# FLASH ReaderContent.load contentAssigned", contentSummary)
-            debugPrint("# FLASH ReaderContent.load task set content", content.url)
+            debugPrint("# FLASH ReaderContent.load task set content", "content=\(flashURLDescription(content.url))")
             return content
         }
         try await loadingTask?.value
-        debugPrint("# FLASH ReaderContent.load completed", url)
+        debugPrint("# FLASH ReaderContent.load completed", "page=\(flashURLDescription(url))")
         loadingTask = nil
 
         if shouldMarkProvisional && isReaderProvisionallyNavigating {
             isReaderProvisionallyNavigating = false
-            debugPrint("# FLASH provisional.clear", url.absoluteString, "state=false")
+            debugPrint("# FLASH provisional.clear", "page=\(flashURLDescription(url))", "state=false")
         }
     }
 
