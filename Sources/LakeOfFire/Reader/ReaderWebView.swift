@@ -136,22 +136,13 @@ private class ReaderWebViewHandler {
         try await readerMediaPlayerViewModel.onNavigationCommitted(content: content, newState: state)
         debugPrint("# FLASH ReaderWebViewHandler.handleNewURL mediaPlayer committed", state.pageURL)
         try Task.checkCancellation()
-
-        await self.readerModeViewModel.onNavigationFinished(
-            newState: state,
-            scriptCaller: scriptCaller
-        )
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerModeViewModel finished", state.pageURL)
-        try Task.checkCancellation()
-        self.readerViewModel.onNavigationFinished(content: content, newState: state) { _ in
-            // no external callback here
-        }
-        debugPrint("# FLASH ReaderWebViewHandler.handleNewURL readerViewModel finished", state.pageURL)
     }
 
     func onNavigationCommitted(state: WebViewState) {
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", state.pageURL)
         navigationTaskManager.startOnNavigationCommitted {
+            let navigationToken = self.readerContent.beginMainFrameNavigationTask(to: state.pageURL)
+            defer { self.readerContent.endMainFrameNavigationTask(navigationToken) }
             do {
                 try await self.handleNewURL(state: state, source: "navigationCommitted")
             } catch {
@@ -216,6 +207,8 @@ private class ReaderWebViewHandler {
         }
         debugPrint("# FLASH ReaderWebViewHandler.onURLChanged event", state.pageURL)
         navigationTaskManager.startOnURLChanged { @MainActor in
+            let navigationToken = self.readerContent.beginMainFrameNavigationTask(to: state.pageURL)
+            defer { self.readerContent.endMainFrameNavigationTask(navigationToken) }
             do {
                 try await self.handleNewURL(state: state, source: "urlChanged")
             } catch is CancellationError {

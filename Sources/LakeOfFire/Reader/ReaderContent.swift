@@ -17,6 +17,10 @@ public class ReaderContent: ObservableObject {
     @Published public var currentSectionIndex: Int?
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
+    @Published public private(set) var isReaderMainFrameNavigating = false
+    @Published public private(set) var mainFrameNavigationURL: URL?
+    private var mainFrameNavigationTasks: [UUID: URL] = [:]
+    private var mainFrameNavigationTaskOrder: [UUID] = []
     public let contentTitleSubject = PassthroughSubject<String, Never>()
     public private(set) var contentTitle: String = ""
     private var cancellables = Set<AnyCancellable>()
@@ -35,6 +39,44 @@ public class ReaderContent: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    @MainActor
+    internal func beginMainFrameNavigationTask(to url: URL) -> UUID {
+        let token = UUID()
+        mainFrameNavigationTasks[token] = url
+        mainFrameNavigationTaskOrder.append(token)
+        isReaderMainFrameNavigating = true
+        mainFrameNavigationURL = url
+        debugPrint(
+            "# FLASH mainFrameNavigation.begin",
+            url.absoluteString,
+            "active=\(mainFrameNavigationTaskOrder.count)"
+        )
+        return token
+    }
+
+    @MainActor
+    internal func endMainFrameNavigationTask(_ token: UUID) {
+        guard let url = mainFrameNavigationTasks.removeValue(forKey: token) else { return }
+        if let index = mainFrameNavigationTaskOrder.firstIndex(of: token) {
+            mainFrameNavigationTaskOrder.remove(at: index)
+        }
+
+        let remainingToken = mainFrameNavigationTaskOrder.last
+        let remainingURL = remainingToken.flatMap { mainFrameNavigationTasks[$0] }
+        mainFrameNavigationURL = remainingURL
+        isReaderMainFrameNavigating = !mainFrameNavigationTaskOrder.isEmpty
+
+        debugPrint(
+            "# FLASH mainFrameNavigation.end",
+            url.absoluteString,
+            "active=\(mainFrameNavigationTaskOrder.count)"
+        )
+
+        if isReaderMainFrameNavigating {
+            return
+        }
     }
     
     @MainActor

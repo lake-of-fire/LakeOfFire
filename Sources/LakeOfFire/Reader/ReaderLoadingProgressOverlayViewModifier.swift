@@ -33,12 +33,21 @@ private struct ReaderLoadingOverlay: View {
         let statusMessage: String?
     }
 
+    private let showDelayNanoseconds: UInt64 = 200_000_000
+    private let minimumVisibleNanoseconds: UInt64 = 250_000_000
+
     @State private var displayedMessage: String?
     @State private var isShowingStatus = false
     @State private var showWorkItem: DispatchWorkItem?
     @State private var hideWorkItem: DispatchWorkItem?
     @State private var heartbeatTask: Task<Void, Never>?
     @State private var lastLoggedEmission: OverlayEmission?
+    @State private var isVisible = false
+    @State private var visibleSince: Date?
+    @State private var showVisibilityTask: Task<Void, Never>?
+    @State private var hideVisibilityTask: Task<Void, Never>?
+    @State private var latestIsLoading = false
+    @State private var latestStatusMessage: String?
 
     var body: some View {
         ZStack {
@@ -65,10 +74,12 @@ private struct ReaderLoadingOverlay: View {
             }
         }
         .ignoresSafeArea(.all)
-        .opacity(isLoading ? 1 : 0)
-        .allowsHitTesting(isLoading)
-        .animation(.easeInOut(duration: 0.2), value: isShowingStatus)
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
+        .animation(.easeInOut(duration: 0.2), value: isVisible)
         .onChange(of: isLoading) { newValue in
+            latestIsLoading = newValue
+            latestStatusMessage = statusMessage
             let emission = OverlayEmission(
                 isLoading: newValue,
                 statusMessage: newValue ? statusMessage : nil
@@ -86,33 +97,98 @@ private struct ReaderLoadingOverlay: View {
                     "context=\(context)",
                     "isLoading=\(newValue)",
                     "status=\((newValue ? statusMessage : nil) ?? "nil")"
-                )
+                    )
             }
             if newValue { startHeartbeat() } else { stopHeartbeat() }
+            syncVisibility()
             syncStatusDisplay()
         }
         .onChange(of: statusMessage) { _ in
+            latestStatusMessage = statusMessage
+            syncStatusDisplay()
+        }
+        .onChange(of: isVisible) { _ in
+            debugPrint(
+                "# FLASH overlay.visible",
+                "context=\(context)",
+                "isVisible=\(isVisible)",
+                "isLoading=\(isLoading)",
+                "status=\((isLoading ? statusMessage : nil) ?? "nil")"
+            )
             syncStatusDisplay()
         }
         .onAppear {
+            latestIsLoading = isLoading
+            latestStatusMessage = statusMessage
             debugPrint(
                 "# FLASH overlay.appear",
                 "context=\(context)",
                 "isLoading=\(isLoading)",
                 "status=\(statusMessage ?? "nil")"
             )
+            syncVisibility()
             syncStatusDisplay()
         }
         .onDisappear {
             cancelAllWork()
             displayedMessage = nil
             isShowingStatus = false
+            cancelVisibilityWork()
+            isVisible = false
+            visibleSince = nil
             stopHeartbeat()
         }
     }
 
     private var overlayColor: Color {
         colorScheme == .dark ? .black : .white
+    }
+
+    @MainActor
+    private func syncVisibility() {
+        cancelVisibilityWork()
+
+        if latestIsLoading {
+            showVisibilityTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: showDelayNanoseconds)
+                if Task.isCancelled { return }
+                guard latestIsLoading else { return }
+                if !isVisible {
+                    isVisible = true
+                    visibleSince = Date()
+                }
+            }
+            return
+        }
+
+        guard isVisible else {
+            visibleSince = nil
+            return
+        }
+
+        let shownAt = visibleSince ?? Date()
+        let elapsedSeconds = Date().timeIntervalSince(shownAt)
+        let elapsedNanoseconds = UInt64(max(0, elapsedSeconds) * 1_000_000_000)
+        let remainingNanoseconds = minimumVisibleNanoseconds > elapsedNanoseconds
+            ? (minimumVisibleNanoseconds - elapsedNanoseconds)
+            : 0
+        hideVisibilityTask = Task { @MainActor in
+            if remainingNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: remainingNanoseconds)
+            }
+            if Task.isCancelled { return }
+            guard !latestIsLoading else { return }
+            isVisible = false
+            visibleSince = nil
+        }
+    }
+
+    @MainActor
+    private func cancelVisibilityWork() {
+        showVisibilityTask?.cancel()
+        showVisibilityTask = nil
+        hideVisibilityTask?.cancel()
+        hideVisibilityTask = nil
     }
 
     @MainActor
@@ -134,6 +210,17 @@ private struct ReaderLoadingOverlay: View {
             displayedMessage = nil
             isShowingStatus = false
             stopHeartbeat()
+            return
+        }
+
+        // Avoid flashing the status message during short loading pulses by only
+        // showing status while the overlay is actually visible (debounced).
+        guard isVisible else {
+            cancelHideWork()
+            if displayedMessage != nil || isShowingStatus {
+                displayedMessage = nil
+                isShowingStatus = false
+            }
             return
         }
 
@@ -164,6 +251,7 @@ private struct ReaderLoadingOverlay: View {
                 "isLoading=\(isLoading)"
             )
             let workItem = DispatchWorkItem {
+                guard latestIsLoading, isVisible else { return }
                 isShowingStatus = true
             }
             showWorkItem = workItem
