@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftUIWebView
 import SwiftSoup
+import SwiftReadability
+import SwiftDOMPurify
 import RealmSwift
 import Combine
 import RealmSwiftGaps
@@ -17,6 +19,47 @@ fileprivate actor ReaderViewModelActor {
 }
 
 private let readerPerfStacksEnabled = false
+
+private let readabilityExcludedDomains: Set<String> = [
+    "x.com",
+    "twitter.com",
+    "facebook.com",
+    "instagram.com",
+    "youtube.com",
+    "web.whatsapp.com",
+    "mail.google.com",
+    "outlook.live.com",
+    "discord.com",
+    "teams.microsoft.com",
+    "docs.google.com",
+    "drive.google.com",
+    "calendar.google.com",
+    "slack.com",
+    "notion.so",
+    "linkedin.com",
+    "reddit.com",
+    "messenger.com",
+    "meet.google.com",
+    "tiktok.com",
+    "amazon.com",
+    "line.me",
+    "mail.yahoo.co.jp"
+]
+
+private let readabilityClassesToPreserve: [String] = [
+    "caption",
+    "emoji",
+    "hidden",
+    "invisible",
+    "sr-only",
+    "visually-hidden",
+    "visuallyhidden",
+    "wp-caption",
+    "wp-caption-text",
+    "wp-smiley"
+]
+
+private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
 
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
@@ -1731,6 +1774,7 @@ public class ReaderModeViewModel: ObservableObject {
                         "shouldUse=\(shouldUseReadability)"
                     )
 
+                    var didRenderReadability = false
                     if shouldUseReadability {
                         readabilityContent = html
                         debugPrint(
@@ -1740,13 +1784,56 @@ public class ReaderModeViewModel: ObservableObject {
                             "hasMarkup=\(hasReadabilityMarkup)",
                             "bytes=\(html.utf8.count)"
                         )
-                        let details = "hasReadabilityMarkup=\(hasReadabilityMarkup) | snippet=\(isSnippetURL)"
-                        logTrace(.readabilityContentReady, url: committedURL, details: details)
-                        showReaderView(
-                            readerContent: readerContent,
-                            scriptCaller: scriptCaller
+                        didRenderReadability = true
+                    } else if shouldProcessReadabilityInSwift(content: content, url: committedURL) {
+                        let minChars = max(content.meaningfulContentMinLength, 1)
+                        let swiftOutcome = await processReadabilityHTMLInSwift(
+                            html: html,
+                            url: committedURL,
+                            meaningfulContentMinChars: minChars
                         )
-                        lastFallbackLoaderURL = nil
+                        switch swiftOutcome {
+                        case .success(let result):
+                            readabilityContent = result.outputHTML
+                            readabilityPublishedTime = result.publishedTime
+                            readabilityContainerSelector = nil
+                            readabilityContainerFrameInfo = nil
+                            debugPrint(
+                                "# READER readability.swift.captured",
+                                "url=\(committedURL.absoluteString)",
+                                "snippet=\(isSnippetURL)",
+                                "bytes=\(result.outputHTML.utf8.count)"
+                            )
+                            do {
+                                if !content.isReaderModeAvailable {
+                                    try await content.asyncWrite { _, record in
+                                        record.isReaderModeAvailable = true
+                                        record.refreshChangeMetadata(explicitlyModified: true)
+                                    }
+                                }
+                            } catch {
+                                debugPrint("# READER readability.swift.availableUpdate.error", error.localizedDescription)
+                            }
+                            didRenderReadability = true
+                        case .unavailable(let reason):
+                            debugPrint(
+                                "# READER readability.swift.unavailable",
+                                "url=\(committedURL.absoluteString)",
+                                "reason=\(reason)"
+                            )
+                            readabilityContent = nil
+                            readabilityPublishedTime = nil
+                            html = prepareHTMLForDirectLoad(html)
+                        case .failed(let reason):
+                            debugPrint(
+                                "# READER readability.swift.failed",
+                                "url=\(committedURL.absoluteString)",
+                                "reason=\(reason)"
+                            )
+                            readabilityContent = nil
+                            readabilityPublishedTime = nil
+                            html = prepareHTMLForDirectLoad(html)
+                        }
                     } else {
                         if isSnippetURL {
                             debugPrint(
@@ -1756,6 +1843,17 @@ public class ReaderModeViewModel: ObservableObject {
                             )
                         }
                         html = prepareHTMLForNextReaderLoad(html)
+                    }
+
+                    if didRenderReadability {
+                        let details = "hasReadabilityMarkup=\(hasReadabilityMarkup) | snippet=\(isSnippetURL) | source=\(shouldUseReadability ? "cached" : "swift")"
+                        logTrace(.readabilityContentReady, url: committedURL, details: details)
+                        showReaderView(
+                            readerContent: readerContent,
+                            scriptCaller: scriptCaller
+                        )
+                        lastFallbackLoaderURL = nil
+                    } else {
                         logHTMLBodyMetrics(
                             event: "afterPrepare",
                             html: html,
@@ -2214,6 +2312,261 @@ internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
     }
 
     return updatedHTML
+}
+
+private func prepareHTMLForDirectLoad(_ html: String) -> String {
+    var updatedHTML = html
+    let markerPatterns = [
+        #"data-is-next-load-in-reader-mode=['\"][^'"]*['\"]"#,
+        #"data-next-load-is-readability-mode=['\"][^'"]*['\"]"#,
+        #"data-manabi-reader-mode-available=['\"][^'"]*['\"]"#,
+        #"data-manabi-reader-mode-available-for=['\"][^'"]*['\"]"#
+    ]
+    for pattern in markerPatterns {
+        updatedHTML = updatedHTML.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+    }
+
+    if updatedHTML.range(of: "<body", options: .caseInsensitive) == nil {
+        return """
+        <html>
+        <head></head>
+        <body>
+        \(updatedHTML)
+        </body>
+        </html>
+        """
+    }
+    return updatedHTML
+}
+
+private enum SwiftReadabilityProcessingOutcome {
+    case success(SwiftReadabilityProcessingResult)
+    case unavailable(reason: String)
+    case failed(reason: String)
+}
+
+private struct SwiftReadabilityProcessingResult {
+    let outputHTML: String
+    let publishedTime: String?
+    let sanitizedContentBytes: Int
+}
+
+private func shouldProcessReadabilityInSwift(
+    content: any ReaderContentProtocol,
+    url: URL
+) -> Bool {
+    if url.isEBookURL || url.isNativeReaderView {
+        return false
+    }
+    let scheme = url.scheme?.lowercased() ?? ""
+    if scheme == "blob" || scheme == "ebook" || scheme == "ebook-url" {
+        return false
+    }
+    return content.rssContainsFullContent || content.isFromClipboard || url.isReaderFileURL || url.isSnippetURL
+}
+
+private func processReadabilityHTMLInSwift(
+    html: String,
+    url: URL,
+    meaningfulContentMinChars: Int
+) async -> SwiftReadabilityProcessingOutcome {
+    await Task.detached(priority: .userInitiated) {
+        let normalizedURL = url.canonicalReaderContentURL()
+        guard canHaveReadabilityContent(for: normalizedURL) else {
+            return .unavailable(reason: "excludedDomainOrProtocol")
+        }
+        guard !normalizedURL.isEBookURL else {
+            return .unavailable(reason: "ebookURL")
+        }
+        let normalizedHTML = ensureReadabilityBodyExists(html)
+        let options = SwiftReadability.ReadabilityOptions(
+            charThreshold: max(meaningfulContentMinChars, 1),
+            classesToPreserve: readabilityClassesToPreserve
+        )
+        let parser = SwiftReadability.Readability(html: normalizedHTML, url: normalizedURL, options: options)
+        guard let result = try? parser.parse() else {
+            return .failed(reason: "parseReturnedNil")
+        }
+        if !result.readerable {
+            debugPrint(
+                "# READER readability.swift.readerableFalse",
+                "url=\(normalizedURL.absoluteString)",
+                "length=\(result.length)"
+            )
+            return .unavailable(reason: "readerableFalse")
+        }
+        let rawContent = result.content
+        guard !rawContent.isEmpty else {
+            return .failed(reason: "emptyContent")
+        }
+        let rawTitle = result.title ?? ""
+        let rawByline = result.byline ?? ""
+        let title = SwiftDOMPurify.DOMPurify.sanitize(rawTitle)
+        let byline = SwiftDOMPurify.DOMPurify.sanitize(rawByline)
+        let content = SwiftDOMPurify.DOMPurify.sanitize(rawContent)
+        let outputHTML = buildReadabilityHTML(
+            title: title,
+            byline: byline,
+            publishedTime: result.publishedTime,
+            content: content,
+            contentURL: normalizedURL
+        )
+        let contentBytes = content.utf8.count
+        if contentBytes == 0 {
+            return .failed(reason: "emptySanitizedContent")
+        }
+        return .success(
+            SwiftReadabilityProcessingResult(
+                outputHTML: outputHTML,
+                publishedTime: result.publishedTime,
+                sanitizedContentBytes: contentBytes
+            )
+        )
+    }.value
+}
+
+private func canHaveReadabilityContent(for url: URL) -> Bool {
+    let scheme = url.scheme?.lowercased()
+    if scheme == "about" {
+        return false
+    }
+    if scheme == "https", let host = url.host?.lowercased(), readabilityExcludedDomains.contains(host) {
+        return false
+    }
+    if url.absoluteString.hasPrefix("ebook://") {
+        return false
+    }
+    return true
+}
+
+private func ensureReadabilityBodyExists(_ html: String) -> String {
+    if html.range(of: "<body", options: .caseInsensitive) != nil {
+        return html
+    }
+    return """
+    <html>
+    <head></head>
+    <body>
+    \(html)
+    </body>
+    </html>
+    """
+}
+
+private func buildReadabilityHTML(
+    title: String,
+    byline: String,
+    publishedTime: String?,
+    content: String,
+    contentURL: URL
+) -> String {
+    let normalizedByline = normalizeBylineText(byline)
+    let hasByline = !normalizedByline.isEmpty
+    let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
+    let bylineLine = hasByline
+        ? "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(normalizedByline)</span></div>"
+        : ""
+    let metaLine = "<div id=\"reader-meta-line\" class=\"byline-meta-line\"><span id=\"reader-publication-date\"></span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>"
+    let css = Readability.shared.css
+    let scripts = Readability.shared.scripts
+    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeHTMLAttribute(contentURL.absoluteString))\""
+    let documentReadyScript = """
+    (function () {
+        function logDocumentState(reason) {
+            try {
+                const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
+                if (!handler || typeof handler.postMessage !== "function") {
+                    return
+                }
+                const readerContent = document.getElementById("reader-content")
+                const payload = {
+                    message: "# READER snippetLoader.documentReady",
+                    reason: reason,
+                    bodyHTMLBytes: document.body && typeof document.body.innerHTML === "string" ? document.body.innerHTML.length : 0,
+                    bodyTextBytes: document.body && typeof document.body.textContent === "string" ? document.body.textContent.length : 0,
+                    hasReaderContent: !!readerContent,
+                    readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
+                    readerContentTextBytes: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0,
+                    readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null,
+                    windowURL: window.location.href,
+                    pageURL: document.location.href
+                }
+                handler.postMessage(payload)
+            } catch (error) {
+                try {
+                    console.log("snippetLoader.documentReady log error", error)
+                } catch (_) {}
+            }
+        }
+        if (document.readyState === "complete" || document.readyState === "interactive") {
+            logDocumentState("immediate")
+        } else {
+            document.addEventListener("DOMContentLoaded", function () {
+                logDocumentState("domcontentloaded")
+            }, { once: true })
+        }
+    })();
+    """
+    let escapedTitle = title
+    let escapedContent = content
+    return """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <meta content="text/html; charset=UTF-8" http-equiv="content-type">
+            <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
+            <meta name="referrer" content="never">
+            <style id='swiftuiwebview-readability-styles'>
+                \(css)
+            </style>
+            <title>\(escapedTitle)</title>
+        </head>
+
+        <body class="readability-mode" \(availabilityAttributes)>
+            <div id="reader-header" class="header">
+                <h1 id="reader-title">\(escapedTitle)</h1>
+                <div id="reader-byline-container">
+                    \(bylineLine)
+                    \(metaLine)
+                </div>
+            </div>
+            <div id="reader-content">
+                \(escapedContent)
+            </div>
+            <script>
+                \(scripts)
+            </script>
+            <script>
+                \(documentReadyScript)
+            </script>
+        </body>
+    </html>
+    """
+}
+
+private func normalizeBylineText(_ rawByline: String) -> String {
+    let trimmed = rawByline.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    let nsByline = trimmed as NSString
+    let range = NSRange(location: 0, length: nsByline.length)
+    let stripped = readabilityBylinePrefixRegex.stringByReplacingMatches(
+        in: trimmed,
+        options: [],
+        range: range,
+        withTemplate: ""
+    )
+    let cleaned = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.isEmpty ? trimmed : cleaned
+}
+
+private func isInternalReaderURL(_ url: URL) -> Bool {
+    return url.scheme == "internal" && url.host == "local"
+}
+
+private func escapeHTMLAttribute(_ raw: String) -> String {
+    let settings = OutputSettings().escapeMode(Entities.EscapeMode.extended).charset(String.Encoding.utf8)
+    let escaped = Entities.escape(raw, settings)
+    return escaped.replacingOccurrences(of: "\"", with: "&quot;")
 }
 
 @MainActor
