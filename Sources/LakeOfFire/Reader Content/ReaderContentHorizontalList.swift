@@ -6,6 +6,10 @@ import SwiftUtilities
 import Pow
 import LakeKit
 
+fileprivate enum ReaderContentHorizontalListLayout {
+    static let groupBoxContentInsets = EdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11)
+}
+
 fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -15,6 +19,14 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
             .conditionalEffect(
                 .pushDown,
                 condition: configuration.isPressed)
+    }
+}
+
+fileprivate struct ReaderContentHorizontalListSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
 
@@ -103,7 +115,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .applyStackListGroupBoxStyle(.automatic, defaultIsGrouped: stackListStyle == .grouped)
-            .stackListGroupBoxContentInsets(EdgeInsets(top: 11, leading: 11, bottom: 11, trailing: 11))
+            .stackListGroupBoxContentInsets(ReaderContentHorizontalListLayout.groupBoxContentInsets)
 //            .padding(16)
 //            .background(cardBackground)
 //            .contentShape(RoundedRectangle(cornerRadius: Layout.cardCornerRadius, style: .continuous))
@@ -303,12 +315,20 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     let resetScrollOnAppear: Bool
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
+    @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
+    @State private var lastLoggedSize: CGSize = .zero
     
     let contentSortAscending = false
     var contentFilter: (@ReaderContentListActor (Int, C) async throws -> Bool) = { @ReaderContentListActor _, _ in return true }
     //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
+
+    private var estimatedRowHeight: CGFloat {
+        maxCellHeight
+        + ReaderContentHorizontalListLayout.groupBoxContentInsets.top
+        + ReaderContentHorizontalListLayout.groupBoxContentInsets.bottom
+    }
     
     public var body: some View {
         ZStack {
@@ -326,6 +346,11 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         if !viewModel.showLoadingIndicator,
                viewModel.filteredContents.isEmpty {
                 emptyStateView()
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: estimatedRowHeight,
+                        alignment: .topLeading
+                    )
             }
             
             if viewModel.showLoadingIndicator {
@@ -353,6 +378,40 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 )
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: ReaderContentHorizontalListSizePreferenceKey.self, value: proxy.size)
+            }
+        )
+        .onPreferenceChange(ReaderContentHorizontalListSizePreferenceKey.self) { size in
+            guard abs(size.height - lastLoggedSize.height) > 0.5 else { return }
+            lastLoggedSize = size
+            debugPrint("# HORIZLISTSIZE measured height:", size.height, "width:", size.width)
+        }
+        .onAppear {
+            debugPrint("# HORIZLISTSIZE estimate:", estimatedRowHeight, "maxCellHeight:", maxCellHeight)
+        }
+        .onChange(of: viewModel.showLoadingIndicator) { isLoading in
+            debugPrint(
+                "# HORIZLISTSIZE state loading:",
+                isLoading,
+                "count:",
+                viewModel.filteredContents.count,
+                "estimate:",
+                estimatedRowHeight
+            )
+        }
+        .onChange(of: viewModel.filteredContents.count) { count in
+            debugPrint(
+                "# HORIZLISTSIZE state loading:",
+                viewModel.showLoadingIndicator,
+                "count:",
+                count,
+                "estimate:",
+                estimatedRowHeight
+            )
         }
         //.enableInjection()
     }

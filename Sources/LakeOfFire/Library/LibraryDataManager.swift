@@ -12,6 +12,23 @@ import SwiftUtilities
 
 let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
 
+private var isRunningTests: Bool {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["XCTestConfigurationFilePath"] != nil {
+        return true
+    }
+    if environment["XCTestBundlePath"] != nil {
+        return true
+    }
+    if ProcessInfo.processInfo.arguments.contains("-XCTest") {
+        return true
+    }
+    if NSClassFromString("XCTestCase") != nil {
+        return true
+    }
+    return false
+}
+
 //extension URL: FailableCustomPersistable {
 //    public typealias PersistedType = String
 //
@@ -300,6 +317,7 @@ public class LibraryDataManager: NSObject {
     
     public override init() {
         super.init()
+        guard !isRunningTests else { return }
         
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
         Task { @MainActor in
@@ -531,6 +549,7 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
+        guard !isRunningTests else { return }
         Task.detached { @MainActor in
             let downloadables = try await LibraryConfiguration.getConsolidatedOrCreate().downloadables
             await DownloadController.shared.ensureDownloaded(downloadables)

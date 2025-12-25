@@ -227,10 +227,9 @@
     
     let manabi_readability = function () {
         const body = document.body
-        const nextLoadFlag = body?.dataset?.isNextLoadInReaderMode === 'true'
         const hasReadabilityMode = body?.classList.contains('readability-mode')
         const hasReaderContent = document.getElementById('reader-content') !== null
-        const shouldProcess = (window.top.location.protocol !== 'ebook:' && nextLoadFlag) || (!hasReadabilityMode && !hasReaderContent)
+        const shouldProcess = !hasReadabilityMode && !hasReaderContent
 
         // Don't run on already-Readability-ified content unless explicitly requested for the next load.
         if (shouldProcess) {
@@ -326,7 +325,6 @@
                     })
                     if (document.body) {
                         document.body.dataset.manabiReaderModeAvailable = 'false';
-                        document.body.dataset.isNextLoadInReaderMode = 'false';
                         delete document.body.dataset.manabiReaderModeAvailableFor;
                     }
                     window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
@@ -467,7 +465,6 @@
                         if (content) {
                             document.body.dataset.manabiReaderModeAvailable = 'true';
                             document.body.dataset.manabiReaderModeAvailableFor = windowURL;
-                            document.body.dataset.isNextLoadInReaderMode = 'false';
                             const hasReaderBody = html.indexOf('id="reader-content"') !== -1
                             readerLog("outputPrepared", {
                                 contentBytes: content.length,
@@ -502,7 +499,6 @@
                             })
                         } else {
                             document.body.dataset.manabiReaderModeAvailable = 'false';
-                            document.body.dataset.isNextLoadInReaderMode = 'false';
                             delete document.body.dataset.manabiReaderModeAvailableFor;
 
                             window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({

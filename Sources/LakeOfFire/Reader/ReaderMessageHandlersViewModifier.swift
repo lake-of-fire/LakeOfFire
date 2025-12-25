@@ -86,7 +86,6 @@ private let readerModeDatasetProbeScript = """
         "manabiReaderModeAvailable",
         "manabiReaderModeAvailableFor",
         "manabiReaderModeAvailableConfidently",
-        "isNextLoadInReaderMode",
         "manabiTrackingEnabled",
         "manabiSettingsInitialized",
         "manabiFuriganaEnabled",
@@ -447,12 +446,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     readerModeViewModel.readabilityContainerFrameInfo = nil
                 }
 
-                try? await scriptCaller.evaluateJavaScript("""
-                        if (document.body) {
-                            document.body.dataset.isNextLoadInReaderMode = 'false';
-                        }
-                        """)
-                
                 if readerModeViewModel.isReaderMode {
                     readerModeViewModel.isReaderMode = false
                 }
@@ -578,7 +571,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             if (document.body) {
                                 document.body.dataset.manabiReaderModeAvailable = 'false';
                                 document.body.dataset.manabiReaderModeAvailableFor = '';
-                                document.body.dataset.isNextLoadInReaderMode = 'false';
                                 if (!document.body.classList.contains('readability-mode')) {
                                     document.body.classList.add('readability-mode');
                                 }
@@ -642,13 +634,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.manabiReaderModeAvailableConfidently = 'true';
-                            document.body.dataset.isNextLoadInReaderMode = 'false';
-                        }
-                        """)
-                } else {
-                    try? await scriptCaller.evaluateJavaScript("""
-                        if (document.body) {
-                            document.body.dataset.isNextLoadInReaderMode = 'false';
                         }
                         """)
                 }

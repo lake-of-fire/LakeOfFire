@@ -788,9 +788,13 @@ public class ReaderModeViewModel: ObservableObject {
 
         if canonicalURL.isSnippetURL {
             debugPrint(
-                "# FLASH readerMode.complete.defer.emptyReadability.snippet",
+                "# SNIPPETLOAD readerMode.complete.emptyReadability.snippet",
                 canonicalURL.absoluteString
             )
+            logStateSnapshot("complete.emptyReadability.snippet", url: pendingReaderModeURL)
+            updatePendingReaderModeURL(nil, reason: "complete.emptyReadability.snippet")
+            readerModeLoading(false, frameIsMain: true)
+            readerModeLoadCompletionHandler?(canonicalURL)
             return true
         }
 
@@ -1002,10 +1006,9 @@ public class ReaderModeViewModel: ObservableObject {
 
         Task {
             do {
-                debugPrint("# FLASH readability.datasetFlag", "url=\(url.absoluteString)")
+                debugPrint("# FLASH readability.preloadStyles", "url=\(url.absoluteString)")
                 try await scriptCaller.evaluateJavaScript("""
                 if (document.body) {
-                    document.body.dataset.isNextLoadInReaderMode = 'true';
                     try {
                         if (document.documentElement) {
                             document.documentElement.style.setProperty('background-color', 'transparent', 'important');
@@ -1018,7 +1021,7 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 """)
             } catch {
-                debugPrint("# FLASH readability.datasetFlag.error", error.localizedDescription)
+                debugPrint("# FLASH readability.preloadStyles.error", error.localizedDescription)
             }
         }
 
@@ -1747,8 +1750,8 @@ public class ReaderModeViewModel: ObservableObject {
                         }
                     }
                     let hasPreprocessedManabiReaderMarkup = hasReaderModeAvailableFlag && readerModeAvailableForMatchesURL
-                    let hasNextLoadMarkers = html.range(of: #"<body.*?data-(is-next-load-in-reader-mode|next-load-is-readability-mode)=['\"]true['\"]"#, options: .regularExpression) != nil
-                    let hasReadabilityMarkup = hasReadabilityClass || hasReaderContentNode || hasNextLoadMarkers || hasPreprocessedManabiReaderMarkup
+                    let hasNextLoadReadabilityMarker = html.range(of: #"<body.*?data-next-load-is-readability-mode=['\"]true['\"]"#, options: .regularExpression) != nil
+                    let hasReadabilityMarkup = hasReadabilityClass || hasReaderContentNode || hasNextLoadReadabilityMarker || hasPreprocessedManabiReaderMarkup
                     let snippetHasReaderContent = isSnippetURL && hasReaderContentNode
                     if snippetHasReaderContent {
                         debugPrint(
@@ -2263,29 +2266,21 @@ private func logHTMLBodyMetrics(
 }
 
 internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
-    // Remove any stale next-load flags so we can authoritatively set the value.
-    let html = html.replacingOccurrences(
-        of: #"data-is-next-load-in-reader-mode=['\"][^'"]*['\"]"#,
-        with: "",
-        options: .regularExpression
-    )
-
     if html.range(of: #"<body[^>]*class=['\"].*?readability-mode.*?['\"]"#, options: .regularExpression) != nil
         || html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil {
         return html
     }
-    let markerAttributes = "data-is-next-load-in-reader-mode='true'"
     var updatedHTML: String
     let preloadBodyInlineStyle = "content-visibility: hidden;"
 
     if html.range(of: "<body", options: .caseInsensitive) != nil {
-        updatedHTML = html.replacingOccurrences(of: "<body", with: "<body \(markerAttributes) ", options: .caseInsensitive)
+        updatedHTML = html
     } else {
         // Ensure a valid body exists so downstream Readability sees content.
         return """
         <html>
         <head></head>
-        <body \(markerAttributes) style='\(preloadBodyInlineStyle)'>
+        <body style='\(preloadBodyInlineStyle)'>
         \(html)
         </body>
         </html>
@@ -2317,7 +2312,6 @@ internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
 private func prepareHTMLForDirectLoad(_ html: String) -> String {
     var updatedHTML = html
     let markerPatterns = [
-        #"data-is-next-load-in-reader-mode=['\"][^'"]*['\"]"#,
         #"data-next-load-is-readability-mode=['\"][^'"]*['\"]"#,
         #"data-manabi-reader-mode-available=['\"][^'"]*['\"]"#,
         #"data-manabi-reader-mode-available-for=['\"][^'"]*['\"]"#

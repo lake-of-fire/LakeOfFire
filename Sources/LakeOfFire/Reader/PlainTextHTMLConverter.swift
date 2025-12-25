@@ -25,7 +25,7 @@ public enum PlainTextHTMLConverter {
     }
 
     public static func makeHTMLBody(fromPlainText text: String) -> String {
-        "<html><body data-is-next-load-in-reader-mode=\"true\" data-next-load-is-readability-mode=\"true\">\(normalizeLineBreaks(text))</body></html>"
+        "<html><body>\(normalizeLineBreaks(text))</body></html>"
     }
 
     private static func makeEscapedHTMLBody(
@@ -38,7 +38,7 @@ public enum PlainTextHTMLConverter {
         }
         let escaped = escape(mutableText)
         let withLineBreaks = normalizeLineBreaks(escaped)
-        return "<html><body data-is-next-load-in-reader-mode=\"true\" data-next-load-is-readability-mode=\"true\">\(withLineBreaks)</body></html>"
+        return "<html><body>\(withLineBreaks)</body></html>"
     }
 
     private static func normalizeLineBreaks(_ text: String) -> String {
