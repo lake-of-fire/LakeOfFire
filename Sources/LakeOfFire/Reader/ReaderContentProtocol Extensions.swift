@@ -18,7 +18,7 @@ public extension ReaderContentProtocol {
     }
 
     func isHome(categorySelection: String?) -> Bool {
-        return url.absoluteString == "about:blank" && (categorySelection ?? "home") == "home"
+        return url.absoluteString == "about:blank"
     }
 
     @MainActor

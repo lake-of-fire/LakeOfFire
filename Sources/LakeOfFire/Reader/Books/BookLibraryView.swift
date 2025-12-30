@@ -10,9 +10,9 @@ import LakeKit
 
 @MainActor
 public class BookLibraryModalsModel: ObservableObject {
-    @Published var showingEbookCatalogs = false
-    @Published var showingAddCatalog = false
-    @Published var isImportingBookFile = false
+    @Published public var showingEbookCatalogs = false
+    @Published public var showingAddCatalog = false
+    @Published public var isImportingBookFile = false
 
     public init() { }
 }
@@ -126,9 +126,11 @@ fileprivate struct EditorsPicksView: View {
 @available(macOS 13.0, iOS 16.0, *)
 public struct BookLibraryView: View {
     @ObservedObject private var viewModel: BookLibraryViewModel
+    private let showsInlineAddButton: Bool
 
-    public init (viewModel: BookLibraryViewModel) {
+    public init(viewModel: BookLibraryViewModel, showsInlineAddButton: Bool = true) {
         self.viewModel = viewModel
+        self.showsInlineAddButton = showsInlineAddButton
     }
     
     @Environment(\.contentSelection) private var contentSelection
@@ -159,12 +161,16 @@ public struct BookLibraryView: View {
     }
     
     @ViewBuilder private var myBooksHeader: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("My \(viewModel.mediaTypeTitle)")
-            Spacer()
-            if !isMyBooksEmpty {
-                addEpubButton
+        if showsInlineAddButton {
+            HStack(alignment: .firstTextBaseline) {
+                Text("My \(viewModel.mediaTypeTitle)")
+                Spacer()
+                if !isMyBooksEmpty {
+                    addEpubButton
+                }
             }
+        } else {
+            Text("My \(viewModel.mediaTypeTitle)")
         }
     }
     
@@ -184,7 +190,8 @@ public struct BookLibraryView: View {
                 entrySelection: contentSelection,
                 includeSource: false,
                 alwaysShowThumbnails: true,
-                showSeparators: true
+                showSeparators: false,
+                useCardBackground: true
             )
         }
     }
@@ -256,6 +263,7 @@ public struct BookLibraryView: View {
             }
         }
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
+            viewModel.hasLocalFiles = !filteredFileIDs.isEmpty
             guard let loadedFiles = viewModel.loadedFiles else { return }
             Task { @RealmBackgroundActor in
                 guard !filteredFileIDs.isEmpty, let realmConfiguration = await readerContentListViewModel.realmConfiguration else { return }
@@ -274,8 +282,8 @@ public struct BookLibraryView: View {
 public class BookLibraryViewModel: ObservableObject {
     public static let defaultOPDSURL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
     
-    let mediaTypeTitle: String
-    let mediaFileTypeTitle: String
+    public let mediaTypeTitle: String
+    public let mediaFileTypeTitle: String
     let opdsURL: URL
     let fileTypes: [UTType]
     let fileFilter: ((ContentFile) throws -> Bool)?
@@ -302,6 +310,7 @@ public class BookLibraryViewModel: ObservableObject {
 
     @Published var editorsPicks: [Publication] = []
     @Published var errorMessage: String?
+    @Published public var hasLocalFiles = false
     /// Hook used by host apps to run navigation side effects (e.g., clearing tab selection) after jumping into the reader.
     @Published public var onNavigateToReader: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()

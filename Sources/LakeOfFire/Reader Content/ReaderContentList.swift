@@ -160,6 +160,12 @@ private struct ReaderContentRowSeparatorModifier: ViewModifier {
     }
 }
 
+fileprivate struct ReaderContentListAppearance: Sendable {
+    var alwaysShowThumbnails: Bool = true
+    var showSeparators: Bool = false
+    var useCardBackground: Bool = false
+}
+
 // MARK: - Shared selection syncing
 
 private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: ViewModifier {
@@ -432,7 +438,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     let content: C
     @Binding var entrySelection: String?
     let includeSource: Bool
-    var alwaysShowThumbnails = true
+    let appearance: ReaderContentListAppearance
     let isFirst: Bool
     let isLast: Bool
     @ObservedObject var viewModel: ReaderContentListViewModel<C>
@@ -446,7 +452,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     @ViewBuilder private func cell(item: C) -> some View {
         HStack(spacing: 0) {
-            let shouldReserveThumbnailSpace = alwaysShowThumbnails && item.imageUrl != nil
+            let shouldReserveThumbnailSpace = appearance.alwaysShowThumbnails && item.imageUrl != nil
             let appearance = ReaderContentCellAppearance(
                 maxCellHeight: maxCellHeight,
                 alwaysShowThumbnails: shouldReserveThumbnailSpace,
@@ -466,18 +472,30 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             }
         }
         .padding(11)
-        .tag(item.compoundKey)
+    }
+
+    @ViewBuilder private func rowContent(item: C) -> some View {
+        if appearance.useCardBackground {
+            cell(item: item)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color(.tertiarySystemFill))
+                )
+        } else {
+            cell(item: item)
+        }
     }
     
     var body: some View {
         VStack(spacing: 0) {
             if #available(iOS 16.0, *) {
-                cell(item: content)
+                rowContent(item: content)
+                    .tag(content.compoundKey)
             } else {
                 Button {
                     entrySelection = content.compoundKey
                 } label: {
-                    cell(item: content)
+                    rowContent(item: content)
                         .multilineTextAlignment(.leading)
                 }
                 .buttonStyle(.borderless)
@@ -542,6 +560,13 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             )
         )
 #endif
+        .modifier {
+            if appearance.useCardBackground {
+                $0.listRowBackground(Color.clear)
+            } else {
+                $0
+            }
+        }
         .environmentObject(cloudDriveSyncStatusModel)
         .task { @MainActor in
             if let item = content as? ContentFile {
@@ -554,8 +579,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
 fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     let includeSource: Bool
-    var alwaysShowThumbnails = true
-    var showSeparators = false
+    let appearance: ReaderContentListAppearance
     @ObservedObject private var viewModel: ReaderContentListViewModel<C>
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
@@ -570,7 +594,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
                     content: content,
                     entrySelection: $entrySelection,
                     includeSource: includeSource,
-                    alwaysShowThumbnails: alwaysShowThumbnails,
+                    appearance: appearance,
                     isFirst: isFirst,
                     isLast: isLast,
                     viewModel: viewModel,
@@ -585,16 +609,14 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     init(
         entrySelection: Binding<String?>,
         includeSource: Bool,
-        alwaysShowThumbnails: Bool = true,
-        showSeparators: Bool = false,
+        appearance: ReaderContentListAppearance,
         viewModel: ReaderContentListViewModel<C>,
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil
     ) {
         _entrySelection = entrySelection
         self.includeSource = includeSource
-        self.alwaysShowThumbnails = alwaysShowThumbnails
-        self.showSeparators = showSeparators
+        self.appearance = appearance
         self.viewModel = viewModel
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
@@ -851,7 +873,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                                     content: content,
                                     entrySelection: $entrySelection,
                                     includeSource: includeSource,
-                                    alwaysShowThumbnails: alwaysShowThumbnails,
+                                    appearance: ReaderContentListAppearance(
+                                        alwaysShowThumbnails: alwaysShowThumbnails,
+                                        showSeparators: false,
+                                        useCardBackground: false
+                                    ),
                                     isFirst: index == section.items.startIndex,
                                     isLast: index == lastIndex,
                                     viewModel: viewModel,
@@ -872,7 +898,11 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                                     content: content,
                                     entrySelection: $entrySelection,
                                     includeSource: includeSource,
-                                    alwaysShowThumbnails: alwaysShowThumbnails,
+                                    appearance: ReaderContentListAppearance(
+                                        alwaysShowThumbnails: alwaysShowThumbnails,
+                                        showSeparators: false,
+                                        useCardBackground: false
+                                    ),
                                     isFirst: index == section.items.startIndex,
                                     isLast: index == lastIndex,
                                     viewModel: viewModel,
@@ -933,8 +963,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
     @Binding var entrySelection: String?
     var contentSortAscending = false
     let includeSource: Bool
-    var alwaysShowThumbnails = true
-    var showSeparators = false
+    let appearance: ReaderContentListAppearance
     let onRequestDelete: (@MainActor (C) async throws -> Void)?
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
@@ -943,13 +972,12 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         ReaderContentInnerListItems(
             entrySelection: $entrySelection,
             includeSource: includeSource,
-            alwaysShowThumbnails: alwaysShowThumbnails,
-            showSeparators: showSeparators,
+            appearance: appearance,
             viewModel: viewModel,
             onRequestDelete: onRequestDelete,
             customMenuOptions: customMenuOptions
         )
-        .readerContentListRowStyle(showSeparators: showSeparators)
+        .readerContentListRowStyle(showSeparators: appearance.showSeparators)
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,
@@ -967,17 +995,21 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         onRequestDelete: (@MainActor (C) async throws -> Void)? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        showSeparators: Bool = false
+        showSeparators: Bool = false,
+        useCardBackground: Bool = false
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
         self.contentSortAscending = contentSortAscending
         self.includeSource = includeSource
-        self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.appearance = ReaderContentListAppearance(
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            showSeparators: showSeparators,
+            useCardBackground: useCardBackground
+        )
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
-        self.showSeparators = showSeparators
     }
     
 }

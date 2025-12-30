@@ -1,4 +1,5 @@
 import SwiftUI
+import NavigationBackport
 import Combine
 import RealmSwiftGaps
 import RealmSwift
@@ -69,11 +70,12 @@ private struct ContentCategoryViewWidthKey: PreferenceKey {
     }
 }
 
-public struct ContentCategoryButtons<AdditionalCategories: View>: View {
+public struct ContentCategoryButtons<NavigationValue: Hashable, AdditionalCategories: View>: View {
     @Binding var feedSelection: String?
     @Binding var categorySelection: String?
     private let categoryFilter: (FeedCategory) -> Bool
     private let additionalCategories: AdditionalCategories
+    private let navigationValueProvider: ((FeedCategory) -> NavigationValue)?
     var isCompact = false
     
     @StateObject private var viewModel: ContentCategoryButtonsViewModel
@@ -116,12 +118,7 @@ public struct ContentCategoryButtons<AdditionalCategories: View>: View {
                 let row = rows[rowIndex]
                 HStack(alignment: .top, spacing: 6) {
                     ForEach(row) { category in
-                        FeedCategoryButton(
-                            category: category,
-                            feedSelection: $feedSelection,
-                            categorySelection: $categorySelection,
-                            isCompact: isCompact
-                        )
+                        categoryButton(for: category)
                         .frame(maxWidth: .infinity)
                     }
                     if row.count < columns {
@@ -151,13 +148,64 @@ public struct ContentCategoryButtons<AdditionalCategories: View>: View {
         isCompact: Bool = false,
         categoryFilter: @escaping (FeedCategory) -> Bool = { _ in true },
         @ViewBuilder additionalCategories: () -> AdditionalCategories = { EmptyView() }
+    ) where NavigationValue == Never {
+        _feedSelection = feedSelection
+        _categorySelection = categorySelection
+        self.isCompact = isCompact
+        self.categoryFilter = categoryFilter
+        self.additionalCategories = additionalCategories()
+        self.navigationValueProvider = nil
+        _viewModel = StateObject(wrappedValue: ContentCategoryButtonsViewModel(categoryFilter: categoryFilter))
+    }
+
+    public init(
+        feedSelection: Binding<String?>,
+        categorySelection: Binding<String?>,
+        isCompact: Bool = false,
+        categoryFilter: @escaping (FeedCategory) -> Bool = { _ in true },
+        navigationValueProvider: @escaping (FeedCategory) -> NavigationValue,
+        @ViewBuilder additionalCategories: () -> AdditionalCategories = { EmptyView() }
     ) {
         _feedSelection = feedSelection
         _categorySelection = categorySelection
         self.isCompact = isCompact
         self.categoryFilter = categoryFilter
         self.additionalCategories = additionalCategories()
+        self.navigationValueProvider = navigationValueProvider
         _viewModel = StateObject(wrappedValue: ContentCategoryButtonsViewModel(categoryFilter: categoryFilter))
+    }
+
+    @ViewBuilder
+    private func categoryButton(for category: FeedCategory) -> some View {
+        if let navigationValueProvider {
+            let navigationValue = navigationValueProvider(category)
+            if #available(iOS 16, macOS 13, *) {
+                NavigationLink(value: navigationValue) {
+                    FeedCategoryButtonLabel(
+                        title: category.title,
+                        backgroundImageURL: category.backgroundImageUrl,
+                        isCompact: isCompact
+                    )
+                }
+                .buttonStyle(ReaderCategoryButtonStyle())
+            } else {
+                NBNavigationLink(value: navigationValue) {
+                    FeedCategoryButtonLabel(
+                        title: category.title,
+                        backgroundImageURL: category.backgroundImageUrl,
+                        isCompact: isCompact
+                    )
+                }
+                .buttonStyle(ReaderCategoryButtonStyle())
+            }
+        } else {
+            FeedCategoryButton(
+                category: category,
+                feedSelection: $feedSelection,
+                categorySelection: $categorySelection,
+                isCompact: isCompact
+            )
+        }
     }
 }
 
@@ -190,8 +238,10 @@ public struct FeedCategoryButton: View {
     }
 }
 
-struct ReaderCategoryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Self.Configuration) -> some View {
+public struct ReaderCategoryButtonStyle: ButtonStyle {
+    public init() {}
+
+    public func makeBody(configuration: Self.Configuration) -> some View {
         configuration.label
         //            .clipped()
         //#if os(iOS)
