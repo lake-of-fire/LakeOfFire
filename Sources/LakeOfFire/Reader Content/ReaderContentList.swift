@@ -160,7 +160,7 @@ private struct ReaderContentRowSeparatorModifier: ViewModifier {
     }
 }
 
-fileprivate struct ReaderContentListAppearance: Sendable {
+struct ReaderContentListAppearance: Sendable {
     var alwaysShowThumbnails: Bool = true
     var showSeparators: Bool = false
     var useCardBackground: Bool = false

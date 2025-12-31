@@ -793,6 +793,8 @@ public class ReaderModeViewModel: ObservableObject {
             )
             logStateSnapshot("complete.emptyReadability.snippet", url: pendingReaderModeURL)
             updatePendingReaderModeURL(nil, reason: "complete.emptyReadability.snippet")
+            expectedSyntheticReaderLoaderURL = nil
+            lastFallbackLoaderURL = canonicalURL
             readerModeLoading(false, frameIsMain: true)
             readerModeLoadCompletionHandler?(canonicalURL)
             return true

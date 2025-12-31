@@ -98,6 +98,14 @@ private struct ReaderLoadingOverlay: View {
                     "isLoading=\(newValue)",
                     "status=\((newValue ? statusMessage : nil) ?? "nil")"
                     )
+                if shouldSnippetLog {
+                    debugPrint(
+                        "# SNIPPETLOAD overlay.loading",
+                        "context=\(context)",
+                        "isLoading=\(newValue)",
+                        "status=\((newValue ? statusMessage : nil) ?? "nil")"
+                    )
+                }
             }
             if newValue { startHeartbeat() } else { stopHeartbeat() }
             syncVisibility()
@@ -109,6 +117,14 @@ private struct ReaderLoadingOverlay: View {
         }
         .onChange(of: isVisible) { _ in
             syncStatusDisplay()
+            if shouldSnippetLog {
+                debugPrint(
+                    "# SNIPPETLOAD overlay.visibility",
+                    "context=\(context)",
+                    "isVisible=\(isVisible)",
+                    "latestIsLoading=\(latestIsLoading)"
+                )
+            }
         }
         .onAppear {
             latestIsLoading = isLoading
@@ -119,6 +135,14 @@ private struct ReaderLoadingOverlay: View {
                 "isLoading=\(isLoading)",
                 "status=\(statusMessage ?? "nil")"
             )
+            if shouldSnippetLog {
+                debugPrint(
+                    "# SNIPPETLOAD overlay.appear",
+                    "context=\(context)",
+                    "isLoading=\(isLoading)",
+                    "status=\(statusMessage ?? "nil")"
+                )
+            }
             syncVisibility()
             syncStatusDisplay()
         }
@@ -135,6 +159,10 @@ private struct ReaderLoadingOverlay: View {
 
     private var overlayColor: Color {
         colorScheme == .dark ? .black : .white
+    }
+
+    private var shouldSnippetLog: Bool {
+        context.contains("LookupsSnippet") || context.contains("ManabiReader")
     }
 
     @MainActor
