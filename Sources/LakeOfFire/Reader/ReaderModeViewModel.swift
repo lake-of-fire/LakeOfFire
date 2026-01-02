@@ -2653,7 +2653,7 @@ internal func titleFromReadabilityHTML(_ html: String) -> String? {
             return title
         }
 
-        if let headingText = try? doc.select("h1").first()?.text(),
+        if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
            let title = normalisedTitle(headingText) {
             return title
         }

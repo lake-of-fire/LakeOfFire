@@ -55,6 +55,14 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     var body: some View {
         Button {
             let selection = content.compoundKey
+            debugPrint(
+                "# SNIPPETLOAD ReaderContentHorizontalList.select",
+                "key=\(selection)",
+                "url=\(content.url.absoluteString)",
+                "isSnippet=\(content.url.isSnippetURL)",
+                "hasHandler=\(onContentSelected != nil)",
+                "matchesCurrent=\(content.url.matchesReaderURL(readerContent.pageURL))"
+            )
             contentSelection.wrappedValue = selection
             if content.url.matchesReaderURL(readerContent.pageURL) {
                 Task { @MainActor in
@@ -62,9 +70,11 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                         contentSelection.wrappedValue = nil
                     }
                 }
+                debugPrint("# SNIPPETLOAD ReaderContentHorizontalList.select", "action=skip", "reason=alreadyLoaded")
                 return
             }
             if let handler = onContentSelected {
+                debugPrint("# SNIPPETLOAD ReaderContentHorizontalList.select", "action=customHandler")
                 handler(content)
                 Task { @MainActor in
                     if contentSelection.wrappedValue == selection {
@@ -75,6 +85,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             }
             Task { @MainActor in
                 do {
+                    debugPrint("# SNIPPETLOAD ReaderContentHorizontalList.select", "action=navigatorLoad")
                     try await navigator.load(
                         content: content,
                         readerModeViewModel: readerModeViewModel

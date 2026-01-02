@@ -187,8 +187,17 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                       let itemSelection = itemSelection,
                       let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
                       !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+                debugPrint(
+                    "# SNIPPETLOAD ReaderContentList.select",
+                    "key=\(itemSelection)",
+                    "url=\(content.url.absoluteString)",
+                    "isSnippet=\(content.url.isSnippetURL)",
+                    "hasHandler=\(onSelection != nil)",
+                    "shouldSyncToReader=\(shouldSyncToReader)"
+                )
                 Task { @MainActor in
                     if let handler = onSelection {
+                        debugPrint("# SNIPPETLOAD ReaderContentList.select", "action=customHandler")
                         handler(content)
                         if entrySelection == itemSelection {
                             entrySelection = nil
@@ -197,6 +206,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     }
                     guard shouldSyncToReader else { return }
                     do {
+                        debugPrint("# SNIPPETLOAD ReaderContentList.select", "action=navigatorLoad")
                         try await navigator.load(
                             content: content,
                             readerModeViewModel: readerModeViewModel
@@ -479,7 +489,17 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             cell(item: item)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color(.tertiarySystemFill))
+                        .modifier {
+                            if #available(iOS 17, macOS 14, *) {
+                                $0.fill(Color(.tertiarySystemFill))
+                            } else {
+                                #if os(iOS)
+                                $0.fill(Color(.secondarySystemFill))
+                                #else
+                                $0.fill(Color.gray.opacity(0.12))
+                                #endif
+                            }
+                        }
                 )
         } else {
             cell(item: item)

@@ -218,6 +218,15 @@ public extension WebViewNavigator {
                     let loaderBaseURL = url.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: url) : nil
                     let trackingURL = loaderBaseURL ?? trackingContent.url
                     let shouldTriggerReaderMode = trackingContent.isReaderModeByDefault || loaderBaseURL != nil
+                    if trackingURL.isSnippetURL || (loaderBaseURL?.isSnippetURL ?? false) {
+                        debugPrint(
+                            "# SNIPPETLOAD WebViewNavigator.load",
+                            "trackingURL=\(trackingURL.absoluteString)",
+                            "loaderURL=\(url.absoluteString)",
+                            "hasHandler=\(readerModeViewModel != nil)",
+                            "shouldTrigger=\(shouldTriggerReaderMode)"
+                        )
+                    }
                     if shouldTriggerReaderMode {
                         readerModeViewModel.beginReaderModeLoad(
                             for: trackingURL,
