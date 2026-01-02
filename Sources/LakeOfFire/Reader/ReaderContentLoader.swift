@@ -75,6 +75,10 @@ public struct ReaderContentLoader {
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
         if pageURL.isSnippetURL {
+            if let key = pageURL.snippetKey,
+               let canonical = snippetURL(key: key) {
+                return canonical
+            }
             return pageURL
         }
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="),

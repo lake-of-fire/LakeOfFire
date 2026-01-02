@@ -137,6 +137,9 @@ public protocol DeletableReaderContent: ReaderContentProtocol {
 public extension URL {
     func matchesReaderURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }
+        if let lhsKey = snippetKey, let rhsKey = url.snippetKey, lhsKey == rhsKey {
+            return true
+        }
         if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) {
             return urlsMatchWithoutHash(contentURL, self)
         }

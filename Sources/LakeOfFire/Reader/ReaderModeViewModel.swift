@@ -1762,6 +1762,7 @@ public class ReaderModeViewModel: ObservableObject {
                             "bytes=\(html.utf8.count)"
                         )
                     }
+                    let shouldSwiftReadability = shouldProcessReadabilityInSwift(content: content, url: committedURL)
                     let shouldUseReadability = hasReadabilityMarkup
                     logHTMLBodyMetrics(
                         event: "beforePrepare",
@@ -1778,6 +1779,15 @@ public class ReaderModeViewModel: ObservableObject {
                         "snippet=\(isSnippetURL)",
                         "shouldUse=\(shouldUseReadability)"
                     )
+                    if isSnippetURL {
+                        debugPrint(
+                            "# SNIPPETLOAD snippet.readabilityDecision",
+                            "url=\(committedURL.absoluteString)",
+                            "hasMarkup=\(hasReadabilityMarkup)",
+                            "shouldUse=\(shouldUseReadability)",
+                            "swiftEligible=\(shouldSwiftReadability)"
+                        )
+                    }
 
                     var didRenderReadability = false
                     if shouldUseReadability {
@@ -1789,8 +1799,16 @@ public class ReaderModeViewModel: ObservableObject {
                             "hasMarkup=\(hasReadabilityMarkup)",
                             "bytes=\(html.utf8.count)"
                         )
+                        if isSnippetURL {
+                            debugPrint(
+                                "# SNIPPETLOAD snippet.readabilitySource",
+                                "url=\(committedURL.absoluteString)",
+                                "source=cachedMarkup",
+                                "bytes=\(html.utf8.count)"
+                            )
+                        }
                         didRenderReadability = true
-                    } else if shouldProcessReadabilityInSwift(content: content, url: committedURL) {
+                    } else if shouldSwiftReadability {
                         let minChars = max(content.meaningfulContentMinLength, 1)
                         let swiftOutcome = await processReadabilityHTMLInSwift(
                             html: html,
@@ -1809,6 +1827,14 @@ public class ReaderModeViewModel: ObservableObject {
                                 "snippet=\(isSnippetURL)",
                                 "bytes=\(result.outputHTML.utf8.count)"
                             )
+                            if isSnippetURL {
+                                debugPrint(
+                                    "# SNIPPETLOAD snippet.readabilitySource",
+                                    "url=\(committedURL.absoluteString)",
+                                    "source=swift",
+                                    "bytes=\(result.outputHTML.utf8.count)"
+                                )
+                            }
                             do {
                                 if !content.isReaderModeAvailable {
                                     try await content.asyncWrite { _, record in
@@ -1845,6 +1871,11 @@ public class ReaderModeViewModel: ObservableObject {
                                 "# READER snippet.readabilityBypass",
                                 "url=\(committedURL.absoluteString)",
                                 "reason=missingReadabilityMarkup"
+                            )
+                            debugPrint(
+                                "# SNIPPETLOAD snippet.readabilitySource",
+                                "url=\(committedURL.absoluteString)",
+                                "source=bypass"
                             )
                         }
                         html = prepareHTMLForNextReaderLoad(html)
