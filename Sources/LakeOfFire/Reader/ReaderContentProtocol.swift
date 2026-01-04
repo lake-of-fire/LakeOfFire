@@ -140,10 +140,9 @@ public extension URL {
         if let lhsKey = snippetKey, let rhsKey = url.snippetKey, lhsKey == rhsKey {
             return true
         }
-        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) {
-            return urlsMatchWithoutHash(contentURL, self)
-        }
-        return urlsMatchWithoutHash(url, self)
+        let lhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
+        let rhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        return urlsMatchWithoutHash(lhsContentURL, rhsContentURL)
     }
 }
 
