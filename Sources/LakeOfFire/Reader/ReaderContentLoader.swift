@@ -145,7 +145,7 @@ public struct ReaderContentLoader {
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
-            
+
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
@@ -160,6 +160,22 @@ public struct ReaderContentLoader {
                     historyRealm.add(historyRecord, update: .modified)
                 }
                 return ReaderContentLoader.ContentReference(content: historyRecord)
+            }
+
+            if url.isSnippetURL, let key = url.snippetKey {
+                let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+                if let record = historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key), !record.isDeleted {
+                    debugPrint("# READER snippet.keyLookup", "key=\(key)", "hit=history")
+                    debugPrint("# SNIPPETLOAD snippet.keyLookup", "key=\(key)", "hit=history")
+                    return ReaderContentLoader.ContentReference(content: record)
+                }
+                let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+                if let bookmark = bookmarkRealm.object(ofType: Bookmark.self, forPrimaryKey: key), !bookmark.isDeleted {
+                    debugPrint("# READER snippet.keyLookup", "key=\(key)", "hit=bookmark")
+                    debugPrint("# SNIPPETLOAD snippet.keyLookup", "key=\(key)", "hit=bookmark")
+                    return ReaderContentLoader.ContentReference(content: bookmark)
+                }
+                debugPrint("# SNIPPETLOAD snippet.keyLookup", "key=\(key)", "hit=miss")
             }
             
             var match: (any ReaderContentProtocol)?
@@ -327,6 +343,14 @@ public struct ReaderContentLoader {
                 "contentURL=\(contentURL.absoluteString)",
                 "hasHTML=\(content.hasHTML)",
                 "pendingPageURL=\(content.url.absoluteString)"
+            )
+            debugPrint(
+                "# SNIPPETLOAD snippet.loaderRequest",
+                "contentURL=\(contentURL.absoluteString)",
+                "hasHTML=\(content.hasHTML)",
+                "rssFull=\(content.rssContainsFullContent)",
+                "clipboard=\(content.isFromClipboard)",
+                "readerDefault=\(content.isReaderModeByDefault)"
             )
             if let loaderURL = readerLoaderURL(for: contentURL) {
                 debugPrint(

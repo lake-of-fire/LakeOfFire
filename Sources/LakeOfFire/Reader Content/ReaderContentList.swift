@@ -180,13 +180,14 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
 
     func body(content: Content) -> some View {
         let shouldSyncToReader = enabled && onSelection == nil
+        let shouldSkipWhenAlreadyLoaded = onSelection == nil
         return content
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard enabled else { return }
                 guard oldValue != itemSelection,
                       let itemSelection = itemSelection,
                       let content = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
-                      !content.url.matchesReaderURL(readerContent.pageURL) else { return }
+                      (!shouldSkipWhenAlreadyLoaded || !content.url.matchesReaderURL(readerContent.pageURL)) else { return }
                 debugPrint(
                     "# SNIPPETLOAD ReaderContentList.select",
                     "key=\(itemSelection)",
@@ -511,6 +512,13 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
             if #available(iOS 16.0, *) {
                 rowContent(item: content)
                     .tag(content.compoundKey)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
+                    .accessibilityLabel(content.title)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction {
+                        entrySelection = content.compoundKey
+                    }
             } else {
                 Button {
                     entrySelection = content.compoundKey
@@ -812,7 +820,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,
-            enabled: customGrouping != nil && onContentSelected == nil,
+            enabled: true,
             onSelection: onContentSelected
         )
     }
@@ -1001,7 +1009,7 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         .readerContentSelectionSync(
             viewModel: viewModel,
             entrySelection: $entrySelection,
-            enabled: onContentSelected == nil,
+            enabled: true,
             onSelection: onContentSelected
         )
     }

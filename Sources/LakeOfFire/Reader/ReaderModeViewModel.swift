@@ -1466,6 +1466,14 @@ public class ReaderModeViewModel: ObservableObject {
         scriptCaller: WebViewScriptCaller
     ) async throws {
         debugPrint("# READER readerMode.navCommit", "pageURL=\(newState.pageURL.absoluteString)")
+        if newState.pageURL.isReaderURLLoaderURL {
+            debugPrint(
+                "# SNIPPETLOAD readerMode.navCommit",
+                "pageURL=\(newState.pageURL.absoluteString)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+            )
+        }
         debugPrint(
             "# READERPERF readerMode.navCommit.detail",
             "ts=\(Date().timeIntervalSince1970)",
@@ -1549,7 +1557,15 @@ public class ReaderModeViewModel: ObservableObject {
             if let pendingReaderModeURL, pendingKeysMatch(pendingReaderModeURL, committedURL) {
                 markReaderModeLoadComplete(for: committedURL)
             }
-            return
+            if committedURL.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD readerMode.syntheticCommit.continue",
+                    "loaderURL=\(newState.pageURL.absoluteString)",
+                    "contentURL=\(committedURL.absoluteString)"
+                )
+            } else {
+                return
+            }
         }
 
         let isSnippetContent = committedURL.isSnippetURL
@@ -1561,7 +1577,11 @@ public class ReaderModeViewModel: ObservableObject {
                 "contentURL=\(committedURL.absoluteString)",
                 "loaderPending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
             )
-            return
+            debugPrint(
+                "# SNIPPETLOAD snippet.navCommit.continue",
+                "pageURL=\(newState.pageURL.absoluteString)",
+                "contentURL=\(committedURL.absoluteString)"
+            )
         }
 
         if isLoaderNavigation {
@@ -1571,6 +1591,14 @@ public class ReaderModeViewModel: ObservableObject {
                 "contentURL=\(committedURL.absoluteString)",
                 "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
             )
+            if committedURL.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD readerMode.loaderCommit",
+                    "loaderURL=\(newState.pageURL.absoluteString)",
+                    "contentURL=\(committedURL.absoluteString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
+                )
+            }
         }
 
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
@@ -1581,6 +1609,13 @@ public class ReaderModeViewModel: ObservableObject {
            pendingReaderModeURL == nil,
            let lastRenderedReadabilityURL,
            pendingKeysMatch(lastRenderedReadabilityURL, committedURL) {
+            if committedURL.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD readerMode.navCommit.skipLoader.override",
+                    "loaderURL=\(newState.pageURL.absoluteString)",
+                    "contentURL=\(committedURL.absoluteString)"
+                )
+            } else {
             debugPrint(
                 "# READER readerMode.navCommit.skipLoader",
                 newState.pageURL,
@@ -1595,6 +1630,7 @@ public class ReaderModeViewModel: ObservableObject {
                 "lastRendered=\(lastRenderedReadabilityURL.absoluteString)"
             )
             return
+            }
         }
 
         if isReaderMode != isReaderModeVerified && !newState.pageURL.isEBookURL {
@@ -1621,22 +1657,41 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if isLoaderNavigation {
-            if let readerFileManager {
-                logTrace(.htmlFetchStart, url: committedURL, details: "readerFileManager available")
+            let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
+            if readerFileManager == nil {
+                debugPrint(
+                    "# SNIPPETLOAD readerMode.loaderNoFileManager",
+                    "pageURL=\(newState.pageURL.absoluteString)",
+                    "contentURL=\(committedURL.absoluteString)",
+                    "snippet=\(committedURL.isSnippetURL)"
+                )
+            }
+            do {
+                logTrace(.htmlFetchStart, url: committedURL, details: readerFileManager == nil ? "readerFileManager fallback" : "readerFileManager available")
                 debugPrint(
                     "# READERPERF readerMode.htmlFetch",
                     "stage=start",
                     "url=\(committedURL.absoluteString)",
-                    "source=readerFileManager"
+                    "source=\(readerFileManager == nil ? "readerFileManager fallback" : "readerFileManager")"
                 )
                 let htmlFetchStartedAt = Date()
-                var htmlResult = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+                var htmlResult = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+                if htmlResult == nil, committedURL.isSnippetURL {
+                    let fallbackHTML = content.html
+                    debugPrint(
+                        "# SNIPPETLOAD htmlFetch.nilFallback",
+                        "url=\(committedURL.absoluteString)",
+                        "fallbackBytes=\(fallbackHTML?.utf8.count ?? 0)",
+                        "hasFallback=\(fallbackHTML != nil)"
+                    )
+                    htmlResult = fallbackHTML
+                }
                 let fetchDuration = formattedInterval(Date().timeIntervalSince(htmlFetchStartedAt))
                 debugPrint(
                     "# READERPERF readerMode.htmlFetch",
                     "stage=end",
                     "url=\(committedURL.absoluteString)",
-                    "source=readerFileManager",
+                    "source=\(readerFileManager == nil ? "readerFileManager fallback" : "readerFileManager")",
                     "elapsed=\(fetchDuration)"
                 )
                 let htmlByteCount = htmlResult?.utf8.count ?? 0
@@ -1644,6 +1699,23 @@ public class ReaderModeViewModel: ObservableObject {
                     ? "stored-html"
                     : (content.isFromClipboard ? "clipboard" : (content.url.isReaderFileURL ? "reader-file" : "unknown"))
                 let isSnippetURL = committedURL.isSnippetURL
+                if isSnippetURL {
+                    debugPrint(
+                        "# SNIPPETLOAD htmlFetch.start",
+                        "url=\(committedURL.absoluteString)",
+                        "source=\(htmlSource)",
+                        "rssFull=\(content.rssContainsFullContent)",
+                        "clipboard=\(content.isFromClipboard)"
+                    )
+                }
+                if isSnippetURL {
+                    debugPrint(
+                        "# SNIPPETLOAD htmlFetch.result",
+                        "url=\(committedURL.absoluteString)",
+                        "bytes=\(htmlByteCount)",
+                        "hasHTML=\(htmlResult != nil)"
+                    )
+                }
                 var htmlBodyIsEmpty = false
                 if
                     let html = htmlResult,
@@ -1654,7 +1726,17 @@ public class ReaderModeViewModel: ObservableObject {
                     let hasReadabilityClass = html.range(of: #"<body[^>]*class=['\"][^>]*readability-mode"#, options: .regularExpression) != nil
                     let readabilityMarkersPresent = hasReaderContentNode || hasReadabilityClass
                     let isEffectivelyEmpty = metrics.bodyHTMLBytes == 0 || (metrics.bodyTextBytes == 0 && !readabilityMarkersPresent) || bodyInnerHTML.isEmpty
-                    if isEffectivelyEmpty {
+                    if isEffectivelyEmpty && isSnippetURL {
+                        debugPrint(
+                            "# SNIPPETLOAD htmlFetch.emptyBody",
+                            "url=\(committedURL.absoluteString)",
+                            "bytes=\(htmlByteCount)",
+                            "bodyHTMLBytes=\(metrics.bodyHTMLBytes)",
+                            "bodyTextBytes=\(metrics.bodyTextBytes)",
+                            "hasReadabilityMarkup=\(readabilityMarkersPresent)"
+                        )
+                        htmlBodyIsEmpty = false
+                    } else if isEffectivelyEmpty {
                         htmlBodyIsEmpty = true
                         let preview = snippetPreview(html, maxLength: 160)
                         debugPrint(
@@ -1877,13 +1959,27 @@ public class ReaderModeViewModel: ObservableObject {
                                 "url=\(committedURL.absoluteString)",
                                 "source=bypass"
                             )
+                            debugPrint(
+                                "# SNIPPETLOAD snippet.directFallback",
+                                "url=\(committedURL.absoluteString)",
+                                "reason=missingReadabilityMarkup"
+                            )
+                            html = prepareHTMLForDirectLoad(html)
+                        } else {
+                            html = prepareHTMLForNextReaderLoad(html)
                         }
-                        html = prepareHTMLForNextReaderLoad(html)
                     }
 
                     if didRenderReadability {
                         let details = "hasReadabilityMarkup=\(hasReadabilityMarkup) | snippet=\(isSnippetURL) | source=\(shouldUseReadability ? "cached" : "swift")"
                         logTrace(.readabilityContentReady, url: committedURL, details: details)
+                        if isSnippetURL {
+                            debugPrint(
+                                "# SNIPPETLOAD snippet.readabilityReady",
+                                "url=\(committedURL.absoluteString)",
+                                "source=\(shouldUseReadability ? "cached" : "swift")"
+                            )
+                        }
                         showReaderView(
                             readerContent: readerContent,
                             scriptCaller: scriptCaller
@@ -1909,6 +2005,16 @@ public class ReaderModeViewModel: ObservableObject {
                                 "bodyHTMLBytes=\(payloadMetrics.bodyHTMLBytes)",
                                 "bodyTextBytes=\(payloadMetrics.bodyTextBytes)"
                             )
+                            if isSnippetURL {
+                                debugPrint(
+                                    "# SNIPPETLOAD snippet.fallbackLoad",
+                                    "url=\(committedURL.absoluteString)",
+                                    "bytes=\(htmlData.count)",
+                                    "hasBody=\(payloadMetrics.hasBody)",
+                                    "bodyHTMLBytes=\(payloadMetrics.bodyHTMLBytes)",
+                                    "bodyTextBytes=\(payloadMetrics.bodyTextBytes)"
+                                )
+                            }
                             Task { @MainActor in
                                 expectSyntheticReaderLoaderCommit(for: committedURL)
                                 debugPrint(
@@ -1950,15 +2056,6 @@ public class ReaderModeViewModel: ObservableObject {
                     expectSyntheticReaderLoaderCommit(for: nil)
                     navigator.load(URLRequest(url: committedURL))
                 }
-            } else {
-                logTrace(.htmlFetchStart, url: committedURL, details: "readerFileManager missing; falling back to request")
-                guard let navigator else {
-                    print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
-                    return
-                }
-                logTrace(.navigatorLoad, url: committedURL, details: "mode=fallback-request")
-                expectSyntheticReaderLoaderCommit(for: nil)
-                navigator.load(URLRequest(url: committedURL))
             }
             //        } else {
             //            debugPrint("# nav commit mid 2..", newState.pageURL, content.isReaderModeAvailable)

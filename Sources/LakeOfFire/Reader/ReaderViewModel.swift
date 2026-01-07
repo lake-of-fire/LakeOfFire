@@ -127,6 +127,13 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
         debugPrint("# FLASH ReaderViewModel.getContent start", "page=\(flashURLDescription(pageURL))")
+        if pageURL.isSnippetURL || pageURL.isReaderURLLoaderURL {
+            debugPrint(
+                "# SNIPPETLOAD getContent.start",
+                "pageURL=\(pageURL.absoluteString)",
+                "countsAsHistoryVisit=\(countsAsHistoryVisit)"
+            )
+        }
         if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) {
             debugPrint(
                 "# FLASH ReaderViewModel.getContent loaderRedirect",
@@ -134,12 +141,34 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 "->",
                 flashURLDescription(contentURL)
             )
+            if contentURL.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD getContent.loaderRedirect",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "contentURL=\(contentURL.absoluteString)"
+                )
+            }
             if let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
                 try Task.checkCancellation()
                 debugPrint("# FLASH ReaderViewModel.getContent resolved via loader", "content=\(flashURLDescription(contentURL))")
+                if content.url.isSnippetURL {
+                    debugPrint(
+                        "# SNIPPETLOAD getContent.resolved",
+                        "pageURL=\(pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "hasHTML=\(content.hasHTML)",
+                        "rssFull=\(content.rssContainsFullContent)",
+                        "clipboard=\(content.isFromClipboard)"
+                    )
+                }
                 return content
             } else {
                 debugPrint("# FLASH ReaderViewModel.getContent loaderRedirectFailed", "content=\(flashURLDescription(contentURL))")
+                debugPrint(
+                    "# SNIPPETLOAD getContent.loaderRedirectFailed",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "contentURL=\(contentURL.absoluteString)"
+                )
             }
         }
         if pageURL.isSnippetURL {
@@ -148,14 +177,35 @@ public class ReaderViewModel: NSObject, ObservableObject {
         if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
             debugPrint("# FLASH ReaderViewModel.getContent resolved direct", "page=\(flashURLDescription(pageURL))")
+            if content.url.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD getContent.resolvedDirect",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "contentURL=\(content.url.absoluteString)",
+                    "hasHTML=\(content.hasHTML)",
+                    "rssFull=\(content.rssContainsFullContent)",
+                    "clipboard=\(content.isFromClipboard)"
+                )
+            }
             return content
         } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
             try Task.checkCancellation()
             debugPrint("# FLASH ReaderViewModel.getContent resolved direct", "page=\(flashURLDescription(pageURL))")
+            if content.url.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD getContent.resolvedDirect",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "contentURL=\(content.url.absoluteString)",
+                    "hasHTML=\(content.hasHTML)",
+                    "rssFull=\(content.rssContainsFullContent)",
+                    "clipboard=\(content.isFromClipboard)"
+                )
+            }
             return content
         }
         try Task.checkCancellation()
         debugPrint("# FLASH ReaderViewModel.getContent no match", "page=\(flashURLDescription(pageURL))")
+        debugPrint("# SNIPPETLOAD getContent.noMatch", "pageURL=\(pageURL.absoluteString)")
         return nil
     }
     

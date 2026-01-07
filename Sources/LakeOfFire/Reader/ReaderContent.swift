@@ -82,8 +82,18 @@ public class ReaderContent: ObservableObject {
     @MainActor
     internal func load(url: URL) async throws {
         debugPrint("# FLASH ReaderContent.load start", "page=\(flashURLDescription(url))")
+        if url.isSnippetURL || url.isReaderURLLoaderURL {
+            debugPrint("# SNIPPETLOAD readerContent.load.start", "pageURL=\(url.absoluteString)")
+        }
 
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        if resolvedContentURL.isSnippetURL {
+            debugPrint(
+                "# SNIPPETLOAD readerContent.load.resolvedURL",
+                "pageURL=\(url.absoluteString)",
+                "resolved=\(resolvedContentURL.absoluteString)"
+            )
+        }
 
         let shouldMarkProvisional = resolvedContentURL.isSnippetURL
         if shouldMarkProvisional && !isReaderProvisionallyNavigating {
@@ -103,6 +113,13 @@ public class ReaderContent: ObservableObject {
                 pageURL = url
                 debugPrint("# FLASH ReaderContent.load updated pageURL only", "page=\(flashURLDescription(url))")
             }
+            if existingContent.url.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD readerContent.load.reuse",
+                    "pageURL=\(url.absoluteString)",
+                    "contentURL=\(existingContent.url.absoluteString)"
+                )
+            }
             return
         }
 
@@ -118,6 +135,14 @@ public class ReaderContent: ObservableObject {
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 debugPrint("# FLASH ReaderContent.load mismatch", "page=\(flashURLDescription(url))", "content=\(flashURLDescription(content.url))")
+                if resolvedContentURL.isSnippetURL {
+                    debugPrint(
+                        "# SNIPPETLOAD readerContent.load.mismatch",
+                        "pageURL=\(url.absoluteString)",
+                        "resolved=\(resolvedContentURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)"
+                    )
+                }
                 return nil
             }
             self?.content = content
@@ -131,6 +156,15 @@ public class ReaderContent: ObservableObject {
             ].joined(separator: " | ")
             debugPrint("# FLASH ReaderContent.load contentAssigned", contentSummary)
             debugPrint("# FLASH ReaderContent.load task set content", "content=\(flashURLDescription(content.url))")
+            if content.url.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD readerContent.load.contentAssigned",
+                    "contentURL=\(content.url.absoluteString)",
+                    "hasHTML=\(content.hasHTML)",
+                    "rssFull=\(content.rssContainsFullContent)",
+                    "clipboard=\(content.isFromClipboard)"
+                )
+            }
             return content
         }
         try await loadingTask?.value

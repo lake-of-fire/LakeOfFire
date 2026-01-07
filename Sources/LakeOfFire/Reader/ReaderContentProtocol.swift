@@ -220,16 +220,24 @@ public extension ReaderContentProtocol {
     @MainActor
     public func htmlToDisplay(readerFileManager: ReaderFileManager) async throws -> String? {
         // rssContainsFullContent name is out of date; it just means this object contains the full content (RSS or otherwise)
-        if rssContainsFullContent || isFromClipboard {
+        if rssContainsFullContent || isFromClipboard || url.isSnippetURL {
             let html = self.html
             try Task.checkCancellation()
             let bytes = html?.utf8.count ?? 0
             debugPrint(
                 "# READER htmlToDisplay.source",
                 "url=\(url.absoluteString)",
-                "source=\(rssContainsFullContent ? "stored-html" : "clipboard")",
+                "source=\(url.isSnippetURL ? "snippet-html" : (rssContainsFullContent ? "stored-html" : "clipboard"))",
                 "bytes=\(bytes)"
             )
+            if url.isSnippetURL {
+                debugPrint(
+                    "# SNIPPETLOAD htmlToDisplay.snippet",
+                    "url=\(url.absoluteString)",
+                    "bytes=\(bytes)",
+                    "hasHTML=\(html != nil)"
+                )
+            }
             if url.isSnippetURL {
                 let preview = html.flatMap { snippetPreview($0, maxLength: 240) } ?? "<nil>"
                 debugPrint(
@@ -260,6 +268,14 @@ public extension ReaderContentProtocol {
                 "bytes=\(data.count)"
             )
             return html
+        }
+        if url.isSnippetURL {
+            debugPrint(
+                "# SNIPPETLOAD htmlToDisplay.snippet.miss",
+                "url=\(url.absoluteString)",
+                "rssFull=\(rssContainsFullContent)",
+                "clipboard=\(isFromClipboard)"
+            )
         }
         debugPrint(
             "# READER htmlToDisplay.source",
