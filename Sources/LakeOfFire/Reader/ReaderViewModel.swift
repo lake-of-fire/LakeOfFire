@@ -17,6 +17,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
     @Published var webViewSystemScripts: [WebViewUserScript]? = nil
+    private var baseSystemScripts: [WebViewUserScript]
     
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
@@ -27,8 +28,36 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public var allScripts: [WebViewUserScript] {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
     }
+
+    @MainActor
+    private func logScriptDiagnostics(
+        context: String,
+        systemScripts: [WebViewUserScript],
+        userScripts: [WebViewUserScript]
+    ) {
+        let total = systemScripts.count + userScripts.count
+        let hasReadabilityInSystem = systemScripts.contains(where: { scriptContainsReadability($0) })
+        let hasReadabilityInUser = userScripts.contains(where: { scriptContainsReadability($0) })
+        let hasReadability = hasReadabilityInSystem || hasReadabilityInUser
+        debugPrint(
+            "# READERMODE scripts",
+            "context=\(context)",
+            "systemCount=\(systemScripts.count)",
+            "userCount=\(userScripts.count)",
+            "total=\(total)",
+            "hasReadability=\(hasReadability)",
+            "readabilitySystem=\(hasReadabilityInSystem)",
+            "readabilityUser=\(hasReadabilityInUser)"
+        )
+    }
+
+    private func scriptContainsReadability(_ script: WebViewUserScript) -> Bool {
+        let source = script.source
+        return source.contains("readabilityParsed") || source.contains("manabi_readability")
+    }
     
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
+        self.baseSystemScripts = systemScripts
         super.init()
         
         Task { @RealmBackgroundActor [weak self] in
@@ -43,10 +72,18 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-                        let webViewSystemScripts = systemScripts + libraryConfiguration.systemScripts
+                        let baseScripts = await { @MainActor [weak self] in
+                            self?.baseSystemScripts ?? []
+                        }()
+                        let webViewSystemScripts = baseScripts + libraryConfiguration.systemScripts
                         let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
                         try await { @MainActor [weak self] in
                             guard let self else { return }
+                            self.logScriptDiagnostics(
+                                context: "libraryConfig",
+                                systemScripts: webViewSystemScripts,
+                                userScripts: webViewUserScripts ?? []
+                            )
                             if self.webViewSystemScripts != webViewSystemScripts {
                                 self.webViewSystemScripts = webViewSystemScripts
                             }
@@ -81,10 +118,38 @@ public class ReaderViewModel: NSObject, ObservableObject {
             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
             guard let self = self else { return }
+            self.logScriptDiagnostics(
+                context: "userScripts",
+                systemScripts: self.webViewSystemScripts ?? [],
+                userScripts: scripts
+            )
             if self.webViewUserScripts != scripts {
                 self.webViewUserScripts = scripts
             }
         }()
+    }
+
+    @MainActor
+    public func updateBaseSystemScripts(_ scripts: [WebViewUserScript]) {
+        guard scripts != baseSystemScripts else { return }
+        baseSystemScripts = scripts
+
+        Task { @RealmBackgroundActor [weak self] in
+            guard let self else { return }
+            let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
+            let webViewSystemScripts = scripts + libraryConfiguration.systemScripts
+            try await { @MainActor [weak self] in
+                guard let self else { return }
+                self.logScriptDiagnostics(
+                    context: "baseSystem",
+                    systemScripts: webViewSystemScripts,
+                    userScripts: self.webViewUserScripts ?? []
+                )
+                if self.webViewSystemScripts != webViewSystemScripts {
+                    self.webViewSystemScripts = webViewSystemScripts
+                }
+            }()
+        }
     }
     
     @MainActor

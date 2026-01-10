@@ -880,6 +880,28 @@ public class ReaderModeViewModel: ObservableObject {
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# READER readerMode.showReaderView", readerContent.pageURL)
         debugPrint(
+            "# READERMODE showReaderView.state",
+            "pageURL=\(readerContent.pageURL.absoluteString)",
+            "isReaderMode=\(isReaderMode)",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "hasReadability=\(readabilityContent != nil)",
+            "readabilityBytes=\(readabilityContent?.utf8.count ?? 0)",
+            "contentLoaded=\(readerContent.content != nil)"
+        )
+        if let content = readerContent.content {
+            debugPrint(
+                "# READERMODE showReaderView.content",
+                "contentURL=\(content.url.absoluteString)",
+                "readerAvailable=\(content.isReaderModeAvailable)",
+                "readerDefault=\(content.isReaderModeByDefault)",
+                "rssFull=\(content.rssContainsFullContent)",
+                "fromClipboard=\(content.isFromClipboard)"
+            )
+        }
+        debugPrint(
             "# FLASH readability.showReaderView",
             "contentURL=\(flashURLDescription(readerContent.pageURL))",
             "hasReadability=\(readabilityContent != nil)"
@@ -891,7 +913,15 @@ public class ReaderModeViewModel: ObservableObject {
             // FIME: WHY THIS CALLED WHEN LOAD??
             debugPrint("# READER readerMode.showReaderView.missingContent", readerContent.pageURL)
             debugPrint("# READER readability.missingContent", "url=\(readerContent.pageURL.absoluteString)")
-            cancelReaderModeLoad(for: readerContent.pageURL)
+            debugPrint(
+                "# READERMODE showReaderView.missingReadability",
+                "pageURL=\(contentURL.absoluteString)",
+                "isReaderMode=\(isReaderMode)",
+                "isReaderModeLoading=\(isReaderModeLoading)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+            )
             return
         }
         let readabilityPreview = snippetPreview(readabilityContent, maxLength: 360)

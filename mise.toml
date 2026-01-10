@@ -1,0 +1,6 @@
+[tasks.brave-build]
+description = "Generate swift-brave from brave-core (build + tests)"
+run = [
+  "set -euo pipefail; repo_root=$(cd \"$MISE_PROJECT_ROOT/../..\" && pwd); git -C \"$repo_root\" submodule update --init --recursive \"Vendor/brave-core\" \"Vendor/swift-brave\"",
+  "set -euo pipefail; repo_root=$(cd \"$MISE_PROJECT_ROOT/../..\" && pwd); \"$repo_root/Vendor/brave-core/make-spm\" \"$repo_root/Vendor/swift-brave\""
+]

@@ -343,7 +343,8 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     public func load(
         contents: [C],
         contentFilter: (@ReaderContentListActor (Int, C) async throws -> Bool)? = nil,
-        sortOrder: ReaderContentSortOrder? = nil
+        sortOrder: ReaderContentSortOrder? = nil,
+        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
         if sortOrder == nil && contentFilter == nil {
             filteredContentIDs = contents.map { $0.compoundKey }
@@ -422,6 +423,9 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                         return lhs.createdAt > rhs.createdAt
                     }
                 }
+            }
+            if let postSortTransform {
+                filtered = postSortTransform(filtered)
             }
             try Task.checkCancellation()
             
@@ -655,6 +659,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     let contents: [C]
     var contentFilter: ((Int, C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
+    let postSortTransform: (@ReaderContentListActor ([C]) -> [C])?
     let includeSource: Bool
     @Binding var entrySelection: String?
     var contentSortAscending = false
@@ -800,6 +805,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                         contents: contents,
                         contentFilter: contentFilter,
                         sortOrder: sortOrder,
+                        postSortTransform: postSortTransform
                     )
                     refreshGrouping()
                 }
@@ -809,6 +815,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                             contents: contents,
                             contentFilter: contentFilter,
                             sortOrder: sortOrder,
+                            postSortTransform: postSortTransform
                         )
                         refreshGrouping()
                     }
@@ -965,12 +972,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
         self.contents = contents
         self.contentFilter = contentFilter
         self.sortOrder = sortOrder
+        self.postSortTransform = postSortTransform
         self.includeSource = includeSource
         _entrySelection = entrySelection
         self.alwaysShowThumbnails = alwaysShowThumbnails

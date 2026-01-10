@@ -29,16 +29,6 @@
     // Utils
     ///////////////////
     
-    function canHaveReadabilityContent() {
-        if (window.top.location.protocol === "https:" && excludedDomains.has(window.top.location.host.toLowerCase())) {
-            return false
-        }
-        if (window.top.location.protocol === "about:") {
-            return false
-        }
-        return true
-    }
-    
     function readerLog(event, extra) {
         try {
             const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
@@ -64,6 +54,46 @@
                 console.log("readabilityInit log error", error)
             } catch (_) {}
         }
+    }
+
+    function readerModeLog(event, extra) {
+        try {
+            const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
+            if (!handler || typeof handler.postMessage !== "function") {
+                return
+            }
+            const payload = {
+                message: "# READERMODE " + event,
+                windowURL: getOriginURL(),
+                pageURL: window.location.href,
+            }
+            if (extra && typeof extra === "object") {
+                Object.keys(extra).forEach(key => {
+                    const value = extra[key]
+                    if (value !== undefined) {
+                        payload[key] = value
+                    }
+                })
+            }
+            handler.postMessage(payload)
+        } catch (_) {}
+    }
+
+    function canHaveReadabilityContent() {
+        if (window.top.location.protocol === "https:" && excludedDomains.has(window.top.location.host.toLowerCase())) {
+            readerModeLog("canHaveReadabilityContent.blocked", {
+                reason: "excludedDomain",
+                host: window.top.location.host || null
+            })
+            return false
+        }
+        if (window.top.location.protocol === "about:") {
+            readerModeLog("canHaveReadabilityContent.blocked", {
+                reason: "aboutProtocol"
+            })
+            return false
+        }
+        return true
     }
     
     function previewText(text, limit) {
@@ -230,6 +260,13 @@
         const hasReadabilityMode = body?.classList.contains('readability-mode')
         const hasReaderContent = document.getElementById('reader-content') !== null
         const shouldProcess = !hasReadabilityMode && !hasReaderContent
+        readerModeLog("readability.start", {
+            readyState: document.readyState || "unknown",
+            hasBody: !!body,
+            hasReaderContent: hasReaderContent,
+            hasReadabilityMode: hasReadabilityMode,
+            shouldProcess: shouldProcess
+        })
 
         // Don't run on already-Readability-ified content unless explicitly requested for the next load.
         if (shouldProcess) {
@@ -254,6 +291,10 @@
                     window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
                         pageURL: loc.href,
                         windowURL: windowURL,
+                    })
+                    readerModeLog("readability.unavailable", {
+                        reason: "canHaveReadabilityContent",
+                        hasBody: !!document.body
                     })
                     return
                 }
@@ -497,6 +538,11 @@
                                 inputHTML: inputHTML,
                                 outputHTML: html,
                             })
+                            readerModeLog("readability.posted", {
+                                result: "readabilityParsed",
+                                outputBytes: htmlBytes,
+                                contentBytes: sanitizedContentBytes
+                            })
                         } else {
                             document.body.dataset.manabiReaderModeAvailable = 'false';
                             delete document.body.dataset.manabiReaderModeAvailableFor;
@@ -505,11 +551,19 @@
                                 pageURL: loc.href,
                                 windowURL: windowURL,
                             })
+                            readerModeLog("readability.unavailable", {
+                                reason: "noContent",
+                                outputBytes: htmlBytes,
+                                contentBytes: sanitizedContentBytes
+                            })
                         }
                     } else {
                         window.webkit.messageHandlers.readabilityModeUnavailable.postMessage({
                             pageURL: loc.href,
                             windowURL: windowURL,
+                        })
+                        readerModeLog("readability.unavailable", {
+                            reason: "noBody"
                         })
                     }
                 }
@@ -527,6 +581,13 @@
         if (window.location.protocol === 'about:') {
             return
         }
+        readerModeLog("init", {
+            readyState: document.readyState || "unknown",
+            hasBody: !!document.body,
+            hasReadabilityHandler: !!(window.webkit?.messageHandlers?.readabilityParsed),
+            hasUnavailableHandler: !!(window.webkit?.messageHandlers?.readabilityModeUnavailable),
+            hasPrintHandler: !!(window.webkit?.messageHandlers?.print)
+        })
         
         var observer = new MutationObserver(function (mutations) {
             mutations.forEach(function(mutation) {

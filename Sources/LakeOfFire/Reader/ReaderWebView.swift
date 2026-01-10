@@ -7,15 +7,6 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
-private let blockedHosts = Set([
-    "googleads.g.doubleclick.net", "tpc.googlesyndication.com", "pagead2.googlesyndication.com", "www.google-analytics.com", "www.googletagservices.com",
-    "adclick.g.doublecklick.net", "media-match.com", "www.omaze.com", "omaze.com", "pubads.g.doubleclick.net", "googlehosted.l.googleusercontent.com",
-    "pagead46.l.doubleclick.net", "pagead.l.doubleclick.net", "video-ad-stats.googlesyndication.com", "pagead-googlehosted.l.google.com",
-    "partnerad.l.doubleclick.net", "adserver.adtechus.com", "na.gmtdmp.com", "anycast.pixel.adsafeprotected.com", "d361oi6ppvq2ym.cloudfront.net",
-    "track.gawker.com", "domains.googlesyndication.com", "partner.googleadservices.com", "ads2.opensubtitles.org", "stats.wordpress.com", "botd.wordpress.com",
-    "adservice.google.ca", "adservice.google.com", "adservice.google.jp"
-])
-
 // To avoid redraws...
 @MainActor
 private class ReaderWebViewHandler {
@@ -363,6 +354,8 @@ private struct ReaderWebViewInternal: View {
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @Environment(\.contentBlockingRules) private var contentBlockingRules
+    @Environment(\.contentBlockingEnabled) private var contentBlockingEnabled
 
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
         #if os(iOS)
@@ -379,9 +372,11 @@ private struct ReaderWebViewInternal: View {
     }
     
     public var body: some View {
+        let resolvedContentRules = contentBlockingEnabled ? contentBlockingRules : nil
         let webViewConfig: WebViewConfig = {
             if useTransparentWebViewBackground {
                 return WebViewConfig(
+                    contentRules: resolvedContentRules,
                     dataDetectorsEnabled: false,
                     isOpaque: false,
                     backgroundColor: .clear,
@@ -389,6 +384,7 @@ private struct ReaderWebViewInternal: View {
                 )
             }
             return WebViewConfig(
+                contentRules: resolvedContentRules,
                 dataDetectorsEnabled: false,
                 userScripts: userScripts
             )
@@ -399,7 +395,6 @@ private struct ReaderWebViewInternal: View {
             navigator: navigator,
             state: $state,
             scriptCaller: scriptCaller,
-            blockedHosts: blockedHosts,
             obscuredInsets: totalObscuredInsets(
                 additionalInsets: EdgeInsets(
                     top: 0,

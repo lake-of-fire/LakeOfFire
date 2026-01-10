@@ -351,7 +351,6 @@ struct LibraryFeedFormSections: View {
     @StateObject private var readerContent = ReaderContent()
     @StateObject private var readerViewModel = ReaderViewModel(realmConfiguration: LibraryDataManager.realmConfiguration, systemScripts: [])
     @StateObject private var readerModeViewModel = ReaderModeViewModel()
-    @StateObject private var readerLocationBarViewModel = ReaderLocationBarViewModel()
     @StateObject private var readerMediaPlayerViewModel = ReaderMediaPlayerViewModel()
     
     @State private var readerFeedEntry: FeedEntry?
@@ -466,7 +465,6 @@ struct LibraryFeedFormSections: View {
         .environmentObject(readerContent)
         .environmentObject(readerViewModel)
         .environmentObject(readerModeViewModel)
-        .environmentObject(readerLocationBarViewModel)
         .environmentObject(readerMediaPlayerViewModel)
         .environmentObject(readerViewModel.scriptCaller)
         .environment(\.webViewNavigator, webNavigator)

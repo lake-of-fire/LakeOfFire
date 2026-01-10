@@ -16,8 +16,9 @@ let package = Package(
             targets: ["LakeOfFire"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
-//        .package(path: "../swiftui-webview"),
+//        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
+        .package(path: "../swiftui-webview"),
+        .package(path: "../swift-brave"),
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/RealmSwiftGaps.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/BigSyncKit.git", branch: "main"),
@@ -70,6 +71,7 @@ let package = Package(
             name: "LakeOfFire",
             dependencies: [
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
+                .product(name: "BraveAdblock", package: "swift-brave"),
 //                .product(name: "RealmSwift", package: "RealmBinary"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),

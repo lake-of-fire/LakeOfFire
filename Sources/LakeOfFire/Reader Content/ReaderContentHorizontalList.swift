@@ -324,6 +324,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
     let resetScrollOnAppear: Bool
+    let postSortTransform: (@ReaderContentListActor ([C]) -> [C])?
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
@@ -376,7 +377,8 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
             try? await viewModel.load(
                 contents: contents,
                 contentFilter: contentFilter,
-                sortOrder: sortOrder
+                sortOrder: sortOrder,
+                postSortTransform: postSortTransform
             )
             //                }.value
         }
@@ -385,7 +387,8 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 try? await viewModel.load(
                     contents: contents,
                     contentFilter: contentFilter,
-                    sortOrder: sortOrder
+                    sortOrder: sortOrder,
+                    postSortTransform: postSortTransform
                 )
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
@@ -438,6 +441,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         contentSelection: Binding<String?>,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
+        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
         resetScrollOnAppear: Bool = false,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -452,6 +456,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
         self.contentSelection = contentSelection
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
+        self.postSortTransform = postSortTransform
         self.resetScrollOnAppear = resetScrollOnAppear
         self.emptyStateView = { emptyStateView() }
     }

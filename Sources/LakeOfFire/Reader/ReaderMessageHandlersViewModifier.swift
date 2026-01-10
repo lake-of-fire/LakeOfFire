@@ -149,6 +149,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var navigator: WebViewNavigator
     var hideNavigationDueToScroll: Binding<Bool>
     var updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
+    var contentBlockingEnabled: Bool
+    var contentBlockingStatsModel: AdblockStatsModel?
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
 
     // Cache baked tracking-section sizes keyed by section href + book, with per-key snapshots.
@@ -225,6 +227,23 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(logMessage)
                 } else {
                     debugPrint(logMessage, components.joined(separator: " "))
+                }
+            }),
+            (AdblockStatsUserScript.handlerName, { [weak self] message in
+                guard let self else { return }
+                Task { @MainActor in
+                    guard let statsModel = self.contentBlockingStatsModel else { return }
+                    guard AdblockStatsUserScript.isValidMessageBody(message.body) else { return }
+                    guard let candidates = AdblockStatsModel.candidates(from: message.body) else {
+                        return
+                    }
+                    let mainDocumentURL = message.frameInfo.request.mainDocumentURL
+                    let pageURL = mainDocumentURL ?? message.frameInfo.request.url
+                    await statsModel.handleCandidates(
+                        candidates,
+                        pageURL: pageURL,
+                        isContentBlockingEnabled: self.contentBlockingEnabled
+                    )
                 }
             }),
             ("trackingBookKey", { [weak self] message in
@@ -417,11 +436,36 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 // TODO: Reuse guard code across this and readabilityParsed
                 guard let rawURL = result.windowURL else { return }
                 let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: rawURL) ?? rawURL
-                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL),
-                      let content = try? await ReaderViewModel.getContent(forURL: resolvedURL) else {
+                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL) else {
+                    debugPrint(
+                        "# READERMODE readabilityUnavailable.drop",
+                        "reason=stateURLMismatch",
+                        "windowURL=\(rawURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "stateURL=\(readerViewModel.state.pageURL.absoluteString)"
+                    )
+                    return
+                }
+                guard let content = try? await ReaderViewModel.getContent(forURL: resolvedURL) else {
+                    debugPrint(
+                        "# READERMODE readabilityUnavailable.drop",
+                        "reason=contentMissing",
+                        "windowURL=\(rawURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)"
+                    )
                     return
                 }
                 let isSnippetURL = resolvedURL.isSnippetURL
+                debugPrint(
+                    "# READERMODE readabilityUnavailable",
+                    "windowURL=\(rawURL.absoluteString)",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "isSnippet=\(isSnippetURL)",
+                    "readerAvailable=\(content.isReaderModeAvailable)",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "hasReadability=\(readerModeViewModel.readabilityContent != nil)"
+                )
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
@@ -485,11 +529,39 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 guard let rawWindowURL = result.windowURL else { return }
                 let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: rawWindowURL) ?? rawWindowURL
-                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL),
-                      let content = try? await ReaderViewModel.getContent(forURL: resolvedURL) else {
+                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL) else {
+                    debugPrint(
+                        "# READERMODE readabilityParsed.drop",
+                        "reason=stateURLMismatch",
+                        "windowURL=\(rawWindowURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "stateURL=\(readerViewModel.state.pageURL.absoluteString)"
+                    )
+                    return
+                }
+                guard let content = try? await ReaderViewModel.getContent(forURL: resolvedURL) else {
+                    debugPrint(
+                        "# READERMODE readabilityParsed.drop",
+                        "reason=contentMissing",
+                        "windowURL=\(rawWindowURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)"
+                    )
                     return
                 }
                 let isSnippetURL = resolvedURL.isSnippetURL
+                debugPrint(
+                    "# READERMODE readabilityParsed",
+                    "windowURL=\(rawWindowURL.absoluteString)",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "isSnippet=\(isSnippetURL)",
+                    "outputBytes=\(result.outputHTML.utf8.count)",
+                    "readerAvailable=\(content.isReaderModeAvailable)",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "forceReader=\(forceReaderModeWhenAvailable)",
+                    "hasReadability=\(readerModeViewModel.readabilityContent != nil)",
+                    "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")"
+                )
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
@@ -919,7 +991,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
         hideNavigationDueToScroll: Binding<Bool>,
-        updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
+        updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?,
+        contentBlockingEnabled: Bool,
+        contentBlockingStatsModel: AdblockStatsModel?
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -929,6 +1003,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.navigator = navigator
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
         self.updateReadingProgressHandler = updateReadingProgressHandler
+        self.contentBlockingEnabled = contentBlockingEnabled
+        self.contentBlockingStatsModel = contentBlockingStatsModel
     }
     
     // MARK: Readability
@@ -958,6 +1034,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewMessageHandlers) internal var webViewMessageHandlers
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     @Environment(\.readerUpdateReadingProgressHandler) private var updateReadingProgressHandler
+    @Environment(\.contentBlockingEnabled) private var contentBlockingEnabled
+    @Environment(\.contentBlockingStatsModel) private var contentBlockingStatsModel
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
     @State private var lastAppendedHandlerKeys: [String] = []
@@ -975,7 +1053,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         readerContent: readerContent,
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
-                        updateReadingProgressHandler: updateReadingProgressHandler
+                        updateReadingProgressHandler: updateReadingProgressHandler,
+                        contentBlockingEnabled: contentBlockingEnabled,
+                        contentBlockingStatsModel: contentBlockingStatsModel
                     )
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -986,6 +1066,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.navigator = navigator
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                     readerMessageHandlers.updateReadingProgressHandler = updateReadingProgressHandler
+                    readerMessageHandlers.contentBlockingEnabled = contentBlockingEnabled
+                    readerMessageHandlers.contentBlockingStatsModel = contentBlockingStatsModel
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
@@ -999,8 +1081,14 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView()
             }
+            .task(id: readerViewModel.state.pageURL) { @MainActor in
+                contentBlockingStatsModel?.beginPage(url: readerViewModel.state.pageURL)
+            }
             .task(id: readerContent.pageURL) {
                 await pushHideNavigationStateToWebView()
+            }
+            .onChange(of: contentBlockingEnabled) { isEnabled in
+                readerMessageHandlers?.contentBlockingEnabled = isEnabled
             }
     }
 }
