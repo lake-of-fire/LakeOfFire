@@ -6,17 +6,30 @@ public struct ReaderLoadingProgressOverlayViewModifier: ViewModifier {
     let isLoading: Bool
     let statusMessage: String?
     let context: String
+    let showsImmediately: Bool
 
-    public init(isLoading: Bool, statusMessage: String? = nil, context: String = "ReaderOverlay") {
+    public init(
+        isLoading: Bool,
+        statusMessage: String? = nil,
+        context: String = "ReaderOverlay",
+        showsImmediately: Bool = false
+    ) {
         self.isLoading = isLoading
         self.statusMessage = statusMessage
         self.context = context
+        self.showsImmediately = showsImmediately
     }
 
     public func body(content: Content) -> some View {
         content
             .overlay {
-                ReaderLoadingOverlay(isLoading: isLoading, statusMessage: statusMessage, context: context)
+                ReaderLoadingOverlay(
+                    isLoading: isLoading,
+                    statusMessage: statusMessage,
+                    context: context,
+                    showDelayNanoseconds: showsImmediately ? 0 : 200_000_000,
+                    showsImmediately: showsImmediately
+                )
             }
     }
 }
@@ -25,6 +38,8 @@ private struct ReaderLoadingOverlay: View {
     let isLoading: Bool
     let statusMessage: String?
     let context: String
+    let showDelayNanoseconds: UInt64
+    let showsImmediately: Bool
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -33,7 +48,6 @@ private struct ReaderLoadingOverlay: View {
         let statusMessage: String?
     }
 
-    private let showDelayNanoseconds: UInt64 = 200_000_000
     private let minimumVisibleNanoseconds: UInt64 = 250_000_000
 
     @State private var displayedMessage: String?
@@ -56,7 +70,7 @@ private struct ReaderLoadingOverlay: View {
             VStack(spacing: 12) {
                 ProgressView()
                     .tint(.secondary)
-                    .delayedAppearance()
+                    .delayedAppearance(forceDisplay: showsImmediately)
                 Group {
                     if let message = displayedMessage, !message.isEmpty {
                         Text(message)
@@ -76,7 +90,7 @@ private struct ReaderLoadingOverlay: View {
         .ignoresSafeArea(.all)
         .opacity(isVisible ? 1 : 0)
         .allowsHitTesting(isVisible)
-        .animation(.easeInOut(duration: 0.2), value: isVisible)
+        .animation(showsImmediately ? nil : .easeInOut(duration: 0.2), value: isVisible)
         .onChange(of: isLoading) { newValue in
             latestIsLoading = newValue
             latestStatusMessage = statusMessage
@@ -170,6 +184,13 @@ private struct ReaderLoadingOverlay: View {
         cancelVisibilityWork()
 
         if latestIsLoading {
+            if showDelayNanoseconds == 0 {
+                if !isVisible {
+                    isVisible = true
+                    visibleSince = Date()
+                }
+                return
+            }
             showVisibilityTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: showDelayNanoseconds)
                 if Task.isCancelled { return }

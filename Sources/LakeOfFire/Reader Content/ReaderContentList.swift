@@ -177,6 +177,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
+    @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
 
     func body(content: Content) -> some View {
         let shouldSyncToReader = enabled && onSelection == nil
@@ -196,6 +197,15 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     "hasHandler=\(onSelection != nil)",
                     "shouldSyncToReader=\(shouldSyncToReader)"
                 )
+                debugPrint(
+                    "# STALECONTENTVIEW ReaderContentList.select",
+                    "key=\(itemSelection)",
+                    "url=\(content.url.absoluteString)",
+                    "currentURL=\(readerContent.pageURL.absoluteString)",
+                    "matchesCurrent=\(content.url.matchesReaderURL(readerContent.pageURL))",
+                    "hasHandler=\(onSelection != nil)",
+                    "shouldSyncToReader=\(shouldSyncToReader)"
+                )
                 Task { @MainActor in
                     if let handler = onSelection {
                         debugPrint("# SNIPPETLOAD ReaderContentList.select", "action=customHandler")
@@ -203,9 +213,21 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         if entrySelection == itemSelection {
                             entrySelection = nil
                         }
+                        debugPrint(
+                            "# STALECONTENTVIEW ReaderContentList.select",
+                            "action=customHandler",
+                            "key=\(itemSelection)"
+                        )
                         return
                     }
                     guard shouldSyncToReader else { return }
+                    debugPrint(
+                        "# STALECONTENTVIEW ReaderContentList.select",
+                        "action=hint",
+                        "key=\(itemSelection)",
+                        "url=\(content.url.absoluteString)"
+                    )
+                    contentSelectionNavigationHint?(content.url, content.compoundKey)
                     do {
                         debugPrint("# SNIPPETLOAD ReaderContentList.select", "action=navigatorLoad")
                         try await navigator.load(

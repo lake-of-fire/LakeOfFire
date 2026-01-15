@@ -41,7 +41,7 @@ let package = Package(
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", from: "1.6.0"),
         .package(url: "https://github.com/lake-of-fire/Puppy.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/FaviconFinder.git", branch: "main"),
-        .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.11.3"),
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/swift-readability.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/swift-dompurify.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),

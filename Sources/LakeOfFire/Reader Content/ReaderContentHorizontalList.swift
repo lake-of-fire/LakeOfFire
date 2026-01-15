@@ -48,6 +48,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
     @Environment(\.stackListStyle) private var stackListStyle
     
     private var cardWidth: CGFloat { maxCellHeight * 2.5 }
@@ -61,6 +62,13 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 "url=\(content.url.absoluteString)",
                 "isSnippet=\(content.url.isSnippetURL)",
                 "hasHandler=\(onContentSelected != nil)",
+                "matchesCurrent=\(content.url.matchesReaderURL(readerContent.pageURL))"
+            )
+            debugPrint(
+                "# STALECONTENTVIEW ReaderContentHorizontalList.select",
+                "key=\(selection)",
+                "url=\(content.url.absoluteString)",
+                "currentURL=\(readerContent.pageURL.absoluteString)",
                 "matchesCurrent=\(content.url.matchesReaderURL(readerContent.pageURL))"
             )
             contentSelection.wrappedValue = selection
@@ -80,9 +88,22 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                         contentSelection.wrappedValue = nil
                     }
                 }
+                debugPrint(
+                    "# STALECONTENTVIEW ReaderContentHorizontalList.select",
+                    "action=skip",
+                    "reason=alreadyLoaded",
+                    "key=\(selection)"
+                )
                 debugPrint("# SNIPPETLOAD ReaderContentHorizontalList.select", "action=skip", "reason=alreadyLoaded")
                 return
             }
+            debugPrint(
+                "# STALECONTENTVIEW ReaderContentHorizontalList.select",
+                "action=hint",
+                "key=\(selection)",
+                "url=\(content.url.absoluteString)"
+            )
+            contentSelectionNavigationHint?(content.url, content.compoundKey)
             Task { @MainActor in
                 do {
                     debugPrint("# SNIPPETLOAD ReaderContentHorizontalList.select", "action=navigatorLoad")

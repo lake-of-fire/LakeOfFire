@@ -166,6 +166,7 @@ public enum EbookHTMLProcessingContext {
     @TaskLocal public static var isEbookHTML: Bool = false
 }
 
+@ReaderViewModelActor
 internal func ebookTextProcessor(
     contentURL: URL,
     sectionLocation: String,

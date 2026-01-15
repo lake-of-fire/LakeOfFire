@@ -436,13 +436,23 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 // TODO: Reuse guard code across this and readabilityParsed
                 guard let rawURL = result.windowURL else { return }
                 let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: rawURL) ?? rawURL
-                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL) else {
+                let stateURL = readerViewModel.state.pageURL
+                let stateMatches = resolvedURL.matchesReaderURL(stateURL)
+                if !stateMatches {
+                    let canonicalStateURL = ReaderContentLoader.getContentURL(fromLoaderURL: stateURL) ?? stateURL
+                    debugPrint(
+                        "# READERMODEPROCESSING readabilityUnavailable.mismatch",
+                        "windowURL=\(rawURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "stateURL=\(stateURL.absoluteString)",
+                        "canonicalStateURL=\(canonicalStateURL.absoluteString)"
+                    )
                     debugPrint(
                         "# READERMODE readabilityUnavailable.drop",
                         "reason=stateURLMismatch",
                         "windowURL=\(rawURL.absoluteString)",
                         "contentURL=\(resolvedURL.absoluteString)",
-                        "stateURL=\(readerViewModel.state.pageURL.absoluteString)"
+                        "stateURL=\(stateURL.absoluteString)"
                     )
                     return
                 }
@@ -529,13 +539,23 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 guard let rawWindowURL = result.windowURL else { return }
                 let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: rawWindowURL) ?? rawWindowURL
-                guard urlsMatchWithoutHash(resolvedURL, readerViewModel.state.pageURL) else {
+                let stateURL = readerViewModel.state.pageURL
+                let stateMatches = resolvedURL.matchesReaderURL(stateURL)
+                if !stateMatches {
+                    let canonicalStateURL = ReaderContentLoader.getContentURL(fromLoaderURL: stateURL) ?? stateURL
+                    debugPrint(
+                        "# READERMODEPROCESSING readabilityParsed.mismatch",
+                        "windowURL=\(rawWindowURL.absoluteString)",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "stateURL=\(stateURL.absoluteString)",
+                        "canonicalStateURL=\(canonicalStateURL.absoluteString)"
+                    )
                     debugPrint(
                         "# READERMODE readabilityParsed.drop",
                         "reason=stateURLMismatch",
                         "windowURL=\(rawWindowURL.absoluteString)",
                         "contentURL=\(resolvedURL.absoluteString)",
-                        "stateURL=\(readerViewModel.state.pageURL.absoluteString)"
+                        "stateURL=\(stateURL.absoluteString)"
                     )
                     return
                 }

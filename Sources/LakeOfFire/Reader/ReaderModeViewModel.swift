@@ -14,8 +14,8 @@ private extension URL {
 }
 
 @globalActor
-fileprivate actor ReaderViewModelActor {
-    static var shared = ReaderViewModelActor()
+public actor ReaderViewModelActor {
+    public static let shared = ReaderViewModelActor()
 }
 
 private let readerPerfStacksEnabled = false
@@ -1099,17 +1099,6 @@ public class ReaderModeViewModel: ObservableObject {
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
 
-        await propagateReaderModeDefaults(
-            for: url,
-            primaryRecord: content,
-            readabilityHTML: readabilityContent,
-            fallbackTitle: titleForDisplay
-        )
-        debugPrint(
-            "# READERPERF readerMode.propagateDefaults",
-            "url=\(url.absoluteString)"
-        )
-
         if !isReaderMode {
             isReaderMode = true
         }
@@ -1173,6 +1162,18 @@ public class ReaderModeViewModel: ObservableObject {
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
+            let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
+            await propagateReaderModeDefaults(
+                for: url,
+                primaryRecord: content,
+                readabilityHTML: readabilityContent,
+                fallbackTitle: titleForDisplay,
+                derivedTitle: derivedTitle
+            )
+            debugPrint(
+                "# READERPERF readerMode.propagateDefaults",
+                "url=\(url.absoluteString)"
+            )
             let parseDuration = Date().timeIntervalSince(parseStartedAt)
             let parseSummary = String(format: "%.3fs", parseDuration)
             try updateBylineSection(
@@ -2519,64 +2520,64 @@ private func shouldProcessReadabilityInSwift(
     return content.rssContainsFullContent || content.isFromClipboard || url.isReaderFileURL || url.isSnippetURL
 }
 
+@ReaderViewModelActor
 private func processReadabilityHTMLInSwift(
     html: String,
     url: URL,
     meaningfulContentMinChars: Int
 ) async -> SwiftReadabilityProcessingOutcome {
-    await Task.detached(priority: .userInitiated) {
-        let normalizedURL = url.canonicalReaderContentURL()
-        guard canHaveReadabilityContent(for: normalizedURL) else {
-            return .unavailable(reason: "excludedDomainOrProtocol")
-        }
-        guard !normalizedURL.isEBookURL else {
-            return .unavailable(reason: "ebookURL")
-        }
-        let normalizedHTML = ensureReadabilityBodyExists(html)
-        let options = SwiftReadability.ReadabilityOptions(
-            charThreshold: max(meaningfulContentMinChars, 1),
-            classesToPreserve: readabilityClassesToPreserve
+    let normalizedURL = url.canonicalReaderContentURL()
+    guard canHaveReadabilityContent(for: normalizedURL) else {
+        return .unavailable(reason: "excludedDomainOrProtocol")
+    }
+    guard !normalizedURL.isEBookURL else {
+        return .unavailable(reason: "ebookURL")
+    }
+    let normalizedHTML = ensureReadabilityBodyExists(html)
+    let options = SwiftReadability.ReadabilityOptions(
+        charThreshold: max(meaningfulContentMinChars, 1),
+        classesToPreserve: readabilityClassesToPreserve
+    )
+    let parser = SwiftReadability.Readability(html: normalizedHTML, url: normalizedURL, options: options)
+    guard let result = try? parser.parse() else {
+        return .failed(reason: "parseReturnedNil")
+    }
+    if !result.readerable {
+        debugPrint(
+            "# READER readability.swift.readerableFalse",
+            "url=\(normalizedURL.absoluteString)",
+            "length=\(result.length)"
         )
-        let parser = SwiftReadability.Readability(html: normalizedHTML, url: normalizedURL, options: options)
-        guard let result = try? parser.parse() else {
-            return .failed(reason: "parseReturnedNil")
-        }
-        if !result.readerable {
-            debugPrint(
-                "# READER readability.swift.readerableFalse",
-                "url=\(normalizedURL.absoluteString)",
-                "length=\(result.length)"
-            )
-            return .unavailable(reason: "readerableFalse")
-        }
-        let rawContent = result.content
-        guard !rawContent.isEmpty else {
-            return .failed(reason: "emptyContent")
-        }
-        let rawTitle = result.title ?? ""
-        let rawByline = result.byline ?? ""
-        let title = SwiftDOMPurify.DOMPurify.sanitize(rawTitle)
-        let byline = SwiftDOMPurify.DOMPurify.sanitize(rawByline)
-        let content = SwiftDOMPurify.DOMPurify.sanitize(rawContent)
-        let outputHTML = buildReadabilityHTML(
-            title: title,
-            byline: byline,
+        return .unavailable(reason: "readerableFalse")
+    }
+    let rawContent = result.content
+    guard !rawContent.isEmpty else {
+        return .failed(reason: "emptyContent")
+    }
+    let rawTitle = stripTemplateTagsForSanitize(result.title ?? "")
+    let rawByline = stripTemplateTagsForSanitize(result.byline ?? "")
+    let rawContentForSanitize = stripTemplateTagsForSanitize(rawContent)
+    let title = SwiftDOMPurify.DOMPurify.sanitize(rawTitle)
+    let byline = SwiftDOMPurify.DOMPurify.sanitize(rawByline)
+    let content = SwiftDOMPurify.DOMPurify.sanitize(rawContentForSanitize)
+    let outputHTML = buildReadabilityHTML(
+        title: title,
+        byline: byline,
+        publishedTime: result.publishedTime,
+        content: content,
+        contentURL: normalizedURL
+    )
+    let contentBytes = content.utf8.count
+    if contentBytes == 0 {
+        return .failed(reason: "emptySanitizedContent")
+    }
+    return .success(
+        SwiftReadabilityProcessingResult(
+            outputHTML: outputHTML,
             publishedTime: result.publishedTime,
-            content: content,
-            contentURL: normalizedURL
+            sanitizedContentBytes: contentBytes
         )
-        let contentBytes = content.utf8.count
-        if contentBytes == 0 {
-            return .failed(reason: "emptySanitizedContent")
-        }
-        return .success(
-            SwiftReadabilityProcessingResult(
-                outputHTML: outputHTML,
-                publishedTime: result.publishedTime,
-                sanitizedContentBytes: contentBytes
-            )
-        )
-    }.value
+    )
 }
 
 private func canHaveReadabilityContent(for url: URL) -> Bool {
@@ -2605,6 +2606,17 @@ private func ensureReadabilityBodyExists(_ html: String) -> String {
     </body>
     </html>
     """
+}
+
+private func stripTemplateTagsForSanitize(_ html: String) -> String {
+    guard html.range(of: "<template", options: .caseInsensitive) != nil else {
+        return html
+    }
+    return html.replacingOccurrences(
+        of: #"(?is)<template\b[^>]*>.*?</template>"#,
+        with: "",
+        options: .regularExpression
+    )
 }
 
 private func buildReadabilityHTML(
@@ -2762,10 +2774,11 @@ private func propagateReaderModeDefaults(
     for url: URL,
     primaryRecord: any ReaderContentProtocol,
     readabilityHTML: String,
-    fallbackTitle: String?
+    fallbackTitle: String?,
+    derivedTitle: String? = nil
 ) async {
     let primaryKey = primaryRecord.compoundKey
-    let derivedTitle = titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
+    let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
     _ = await Task { @RealmBackgroundActor in
         do {
             let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
@@ -2778,9 +2791,9 @@ private func propagateReaderModeDefaults(
                         if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
                             record.html = readabilityHTML
                         }
-                        if let derivedTitle,
+                        if let resolvedTitle,
                            record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            record.title = derivedTitle
+                            record.title = resolvedTitle
                         }
                         record.rssContainsFullContent = true
                     }
@@ -2798,6 +2811,24 @@ private func propagateReaderModeDefaults(
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
+    if let doc = try? SwiftSoup.parse(html),
+       let title = titleFromReadabilityDocument(doc) {
+        return title
+    }
+
+    // Final fallback: strip markup and grab the first line as before.
+    func normalisedTitle(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.truncate(36)
+    }
+    let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !stripped.isEmpty else { return nil }
+    let candidate = stripped.components(separatedBy: "\n").first ?? stripped
+    return normalisedTitle(candidate)
+}
+
+internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
     func normalisedTitle(_ raw: String?) -> String? {
         let trimmed = (raw ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2805,39 +2836,51 @@ internal func titleFromReadabilityHTML(_ html: String) -> String? {
     }
 
     // Prefer semantic title hints in the readability HTML.
-    if let doc = try? SwiftSoup.parse(html) {
-        if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
-           let title = normalisedTitle(readerTitleText) {
-            return title
-        }
-
-        if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
-           let title = normalisedTitle(headingText) {
-            return title
-        }
-
-        if let headTitle = try? doc.title(),
-           let title = normalisedTitle(headTitle) {
-            return title
-        }
-
-        // Avoid pulling the full article body into the title by removing the main
-        // content container before falling back to the body text.
-        let docCopy = doc
-        if let readerContent = try? docCopy.getElementById("reader-content") {
-            try? readerContent.remove()
-        }
-        if let bodyText = try? docCopy.body()?.text(),
-           let title = normalisedTitle(bodyText) {
-            return title
-        }
+    if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
+       let title = normalisedTitle(readerTitleText) {
+        return title
     }
 
-    // Final fallback: strip markup and grab the first line as before.
-    let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !stripped.isEmpty else { return nil }
-    let candidate = stripped.components(separatedBy: "\n").first ?? stripped
-    return normalisedTitle(candidate)
+    if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
+       let title = normalisedTitle(headingText) {
+        return title
+    }
+
+    if let headTitle = try? doc.title(),
+       let title = normalisedTitle(headTitle) {
+        return title
+    }
+
+    // Avoid pulling the full article body into the title by skipping the main
+    // content container before falling back to the body text.
+    if let body = doc.body(),
+       let bodyText = bodyTextExcludingReaderContent(from: body),
+       let title = normalisedTitle(bodyText) {
+        return title
+    }
+    return nil
+}
+
+private func bodyTextExcludingReaderContent(from body: SwiftSoup.Element) -> String? {
+    let children = body.children().array()
+    guard !children.isEmpty else {
+        return try? body.text()
+    }
+
+    var candidates: [String] = []
+    candidates.reserveCapacity(children.count)
+    for child in children {
+        if (try? child.attr("id")) == "reader-content" { continue }
+        if (try? child.getElementById("reader-content")) != nil { continue }
+        let text = (try? child.text())?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let text, !text.isEmpty {
+            candidates.append(text)
+        }
+    }
+    if candidates.isEmpty {
+        return try? body.text()
+    }
+    return candidates.joined(separator: " ")
 }
 
 internal func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSize: Double) -> [UInt8] {
