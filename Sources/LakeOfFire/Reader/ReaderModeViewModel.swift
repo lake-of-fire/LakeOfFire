@@ -226,6 +226,14 @@ public class ReaderModeViewModel: ObservableObject {
             )
             return
         }
+        debugPrint(
+            "# READERRELOAD pending.update",
+            "reason=\(reason)",
+            "from=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "to=\(newValue?.absoluteString ?? "nil")",
+            "isReaderMode=\(isReaderMode)",
+            "isReaderModeLoading=\(isReaderModeLoading)"
+        )
         let oldValue = pendingReaderModeURL
         let canonicalNewValue = newValue?.canonicalReaderContentURL()
         let canonicalOldValue = oldValue?.canonicalReaderContentURL()
@@ -443,6 +451,18 @@ public class ReaderModeViewModel: ObservableObject {
         let start = Date()
 
         debugPrint(
+            "# READERRELOAD beginLoad",
+            "url=\(canonicalURL.absoluteString)",
+            "reason=\(reason ?? "nil")",
+            "suppressSpinner=\(suppressSpinner)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderMode=\(isReaderMode)",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+            "hasReadability=\(readabilityContent != nil)"
+        )
+        debugPrint(
             "# READERPERF readerMode.beginLoad.request",
             "ts=\(start.timeIntervalSince1970)",
             "url=\(canonicalURL.absoluteString)",
@@ -525,6 +545,17 @@ public class ReaderModeViewModel: ObservableObject {
         if matchesRendered,
            pendingReaderModeURL == nil,
            isReaderMode {
+            if readabilityContent != nil {
+                debugPrint(
+                    "# READERRELOAD beginLoad.shortCircuit",
+                    "reason=alreadyRenderedWithReadability",
+                    "url=\(canonicalURL.absoluteString)",
+                    "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                    "isLoading=\(isReaderModeLoading)"
+                )
+                readerModeLoading(false, frameIsMain: true)
+                return
+            }
             debugPrint(
                 "# READER readerMode.beginLoad.rerenderAlreadyRendered",
                 "url=\(canonicalURL.absoluteString)",
@@ -606,6 +637,28 @@ public class ReaderModeViewModel: ObservableObject {
     public func cancelReaderModeLoad(for url: URL? = nil) {
         logPerfStack("cancel.invoked", url: url)
         logStateSnapshot("cancel.invoked", url: url)
+        debugPrint(
+            "# READERRELOAD cancel.enter",
+            "url=\(url?.absoluteString ?? "nil")",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderMode=\(isReaderMode)",
+            "isReaderModeLoading=\(isReaderModeLoading)"
+        )
+        if let url,
+           url.isReaderURLLoaderURL,
+           let pendingReaderModeURL,
+           pendingKeysMatch(pendingReaderModeURL, url),
+           isReaderModeLoading,
+           readabilityContent != nil {
+            debugPrint(
+                "# READERRELOAD cancel.skip",
+                "reason=loaderInFlightWithReadability",
+                "url=\(url.absoluteString)",
+                "pending=\(pendingReaderModeURL.absoluteString)"
+            )
+            return
+        }
         guard let pendingReaderModeURL else {
             debugPrint(
                 "# READER readerMode.cancel",
@@ -699,6 +752,15 @@ public class ReaderModeViewModel: ObservableObject {
 
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
+        debugPrint(
+            "# READERRELOAD complete.enter",
+            "url=\(url.absoluteString)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "isReaderMode=\(isReaderMode)",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "hasReadability=\(readabilityContent != nil)"
+        )
         guard let pendingReaderModeURL, pendingKeysMatch(pendingReaderModeURL, url) else {
             let pendingDescription = self.pendingReaderModeURL?.absoluteString ?? "nil"
             let readabilityBytes = readabilityContent?.utf8.count ?? 0

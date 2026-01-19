@@ -622,6 +622,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "hasReadability=\(readerModeViewModel.readabilityContent != nil)",
                     "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")"
                 )
+                debugPrint(
+                    "# READERRELOAD readabilityParsed",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "outputBytes=\(result.outputHTML.utf8.count)",
+                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "isReaderMode=\(readerModeViewModel.isReaderMode)",
+                    "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
+                    "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+                )
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
@@ -755,6 +766,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(
                         "# FLASH readability.showReaderView.dispatch",
                         "contentURL=\(flashURLDescription(resolvedURL))",
+                        "outputBytes=\(result.outputHTML.utf8.count)",
+                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                    )
+                    debugPrint(
+                        "# READERRELOAD showReaderView.dispatch",
+                        "contentURL=\(resolvedURL.absoluteString)",
                         "outputBytes=\(result.outputHTML.utf8.count)",
                         "frameIsMain=\(message.frameInfo.isMainFrame)"
                     )
