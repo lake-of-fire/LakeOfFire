@@ -87,6 +87,15 @@ public class ReaderContent: ObservableObject {
         }
 
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        let displayURL = resolvedContentURL
+        if url.isReaderURLLoaderURL {
+            debugPrint(
+                "# READERRELOAD readerContent.load.loader",
+                "pageURL=\(url.absoluteString)",
+                "resolved=\(resolvedContentURL.absoluteString)",
+                "currentPage=\(pageURL.absoluteString)"
+            )
+        }
         if resolvedContentURL.isSnippetURL {
             debugPrint(
                 "# SNIPPETLOAD readerContent.load.resolvedURL",
@@ -110,8 +119,8 @@ public class ReaderContent: ObservableObject {
         if let existingContent = content, existingContent.url.matchesReaderURL(resolvedContentURL) {
             debugPrint("# FLASH ReaderContent.load reuse existing content", "page=\(flashURLDescription(url))")
             if !pageURL.matchesReaderURL(url) {
-                pageURL = url
-                debugPrint("# FLASH ReaderContent.load updated pageURL only", "page=\(flashURLDescription(url))")
+                pageURL = displayURL
+                debugPrint("# FLASH ReaderContent.load updated pageURL only", "page=\(flashURLDescription(displayURL))")
             }
             if existingContent.url.isSnippetURL {
                 debugPrint(
@@ -125,7 +134,14 @@ public class ReaderContent: ObservableObject {
 
         content = nil
         currentSectionIndex = nil
-        pageURL = url
+        pageURL = displayURL
+        if url.isReaderURLLoaderURL || displayURL.isReaderURLLoaderURL {
+            debugPrint(
+                "# READERRELOAD readerContent.load.pageURLSet",
+                "pageURL=\(displayURL.absoluteString)",
+                "incoming=\(url.absoluteString)"
+            )
+        }
 
         loadingTask?.cancel()
         loadingTask = Task { @MainActor [weak self] in

@@ -95,6 +95,32 @@ private class ReaderWebViewHandler {
 
         try Task.checkCancellation()
         try await readerContent.load(url: state.pageURL)
+        debugPrint(
+            "# READERRELOAD webView.handleNewURL",
+            "pageURL=\(state.pageURL.absoluteString)",
+            "readerContentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
+            "displayURL=\(readerContent.pageURL.absoluteString)",
+            "isReaderMode=\(readerModeViewModel.isReaderMode)",
+            "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
+        )
+        if let content = readerContent.content,
+           content.isReaderModeByDefault,
+           !readerModeViewModel.isReaderMode,
+           !readerModeViewModel.isReaderModeLoading,
+           readerModeViewModel.pendingReaderModeURL == nil,
+           !content.url.isNativeReaderView {
+            debugPrint(
+                "# READERRELOAD readerMode.beginLoad",
+                "reason=webView.handleNewURL",
+                "pageURL=\(state.pageURL.absoluteString)",
+                "contentURL=\(content.url.absoluteString)"
+            )
+            readerModeViewModel.beginReaderModeLoad(
+                for: content.url,
+                suppressSpinner: true,
+                reason: "reload.handleNewURL"
+            )
+        }
         if state.pageURL.isSnippetURL {
             debugPrint("# FLASH ReaderWebViewHandler.handleNewURL snippetPageLoaded", "page=\(flashURLDescription(state.pageURL))")
         }

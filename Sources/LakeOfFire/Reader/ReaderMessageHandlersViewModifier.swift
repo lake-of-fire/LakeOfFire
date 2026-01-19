@@ -476,6 +476,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "readerDefault=\(content.isReaderModeByDefault)",
                     "hasReadability=\(readerModeViewModel.readabilityContent != nil)"
                 )
+                debugPrint(
+                    "# READERRELOAD readabilityUnavailable",
+                    "windowURL=\(rawURL.absoluteString)",
+                    "resolved=\(resolvedURL.absoluteString)",
+                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "isReaderMode=\(readerModeViewModel.isReaderMode)",
+                    "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
+                    "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+                )
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
@@ -488,6 +499,29 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 guard !resolvedURL.isReaderURLLoaderURL else { return }
+                let pendingMatches = readerModeViewModel.pendingReaderModeURL?.matchesReaderURL(resolvedURL) == true
+                let expectedMatches = readerModeViewModel.expectedSyntheticReaderLoaderURL?.matchesReaderURL(resolvedURL) == true
+                if message.frameInfo.isMainFrame,
+                   (readerModeViewModel.isReaderModeLoading || pendingMatches || expectedMatches) {
+                    debugPrint(
+                        "# READERRELOAD readabilityUnavailable.skip",
+                        "reason=readerModeInFlight",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "isLoading=\(readerModeViewModel.isReaderModeLoading)",
+                        "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+                    )
+                    return
+                }
+                if content.isReaderModeByDefault, content.hasHTML {
+                    debugPrint(
+                        "# READERRELOAD readabilityUnavailable.skip",
+                        "reason=readerDefaultHasHTML",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "hasHTML=\(content.hasHTML)"
+                    )
+                    return
+                }
 
                 if isSnippetURL, readerModeViewModel.readabilityContent != nil {
                     debugPrint(
@@ -501,6 +535,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
 
                 if readerModeViewModel.isReaderMode {
+                    debugPrint(
+                        "# READERRELOAD readerMode.setFalse",
+                        "reason=readabilityUnavailable",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "readerDefault=\(content.isReaderModeByDefault)"
+                    )
                     readerModeViewModel.isReaderMode = false
                 }
                 

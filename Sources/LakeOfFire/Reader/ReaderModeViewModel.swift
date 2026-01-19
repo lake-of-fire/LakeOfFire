@@ -2237,6 +2237,7 @@ public class ReaderModeViewModel: ObservableObject {
 @MainActor
 private extension ReaderModeViewModel {
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        guard isReaderMode || isReaderModeLoading else { return }
         guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
         guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
