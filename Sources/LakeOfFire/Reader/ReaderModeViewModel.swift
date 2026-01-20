@@ -649,11 +649,10 @@ public class ReaderModeViewModel: ObservableObject {
            url.isReaderURLLoaderURL,
            let pendingReaderModeURL,
            pendingKeysMatch(pendingReaderModeURL, url),
-           isReaderModeLoading,
-           readabilityContent != nil {
+           (readabilityContent != nil || lastRenderedReadabilityURL != nil) {
             debugPrint(
                 "# READERRELOAD cancel.skip",
-                "reason=loaderInFlightWithReadability",
+                "reason=loaderCancelWithReadability",
                 "url=\(url.absoluteString)",
                 "pending=\(pendingReaderModeURL.absoluteString)"
             )
@@ -895,6 +894,33 @@ public class ReaderModeViewModel: ObservableObject {
     public func isReaderModeLoadPending(for url: URL) -> Bool {
         guard let pendingReaderModeURL else { return false }
         return pendingKeysMatch(pendingReaderModeURL, url)
+    }
+
+    @MainActor
+    public func clearReadabilityCache(for url: URL, reason: String) {
+        let canonicalURL = url.canonicalReaderContentURL()
+        let matchesLastRendered = lastRenderedReadabilityURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
+        let matchesPending = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
+        let isHandling = isReaderModeHandlingURL(canonicalURL)
+        let shouldClear = matchesLastRendered || matchesPending || isHandling
+        debugPrint(
+            "# READERRELOAD cache.clear",
+            "url=\(canonicalURL.absoluteString)",
+            "reason=\(reason)",
+            "matchesLastRendered=\(matchesLastRendered)",
+            "matchesPending=\(matchesPending)",
+            "isHandling=\(isHandling)",
+            "hadReadability=\(readabilityContent != nil)",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+        )
+        guard shouldClear else { return }
+        readabilityContent = nil
+        readabilityContainerSelector = nil
+        readabilityContainerFrameInfo = nil
+        expectedSyntheticReaderLoaderURL = nil
+        if matchesLastRendered {
+            lastRenderedReadabilityURL = nil
+        }
     }
 
     func isReaderModeHandlingURL(_ url: URL) -> Bool {
@@ -1304,66 +1330,91 @@ public class ReaderModeViewModel: ObservableObject {
                 )
             }
             try await { @MainActor in
-                guard url.matchesReaderURL(readerContent.pageURL) else {
-                    debugPrint("# READER readability.readerURLMismatch", url, readerContent.pageURL)
-                    print("Readability content URL mismatch", url, readerContent.pageURL)
+                let pageURL = readerContent.pageURL
+                let urlsMatch = url.matchesReaderURL(pageURL)
+                debugPrint(
+                    "# READERRELOAD showReadabilityContent.enter",
+                    "contentURL=\(url.absoluteString)",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "matches=\(urlsMatch)",
+                    "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
+                )
+                guard urlsMatch else {
+                    debugPrint("# READER readability.readerURLMismatch", url, pageURL)
+                    print("Readability content URL mismatch", url, pageURL)
                     cancelReaderModeLoad(for: url)
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     debugPrint("# READER readability.frameInjection", frameInfo)
-                    try await scriptCaller.evaluateJavaScript(
-                        """
-                        var root = document.body
-                        if (renderToSelector) {
-                            root = document.querySelector(renderToSelector)
-                        }
-                        var serialized = html
-
-                        let xmlns = document.body?.getAttribute('xmlns')
-                        if (xmlns) {
-                            let parser = new DOMParser()
-                            let doc = parser.parseFromString(serialized, 'text/html')
-                            let readabilityNode = doc.body
-                            let replacementNode = root.cloneNode()
-                            replacementNode.innerHTML = ''
-                            for (let innerNode of readabilityNode.childNodes) {
-                                serialized = new XMLSerializer().serializeToString(innerNode)
-                                replacementNode.innerHTML += serialized
+                    do {
+                        try await scriptCaller.evaluateJavaScript(
+                            """
+                            var root = document.body
+                            if (renderToSelector) {
+                                root = document.querySelector(renderToSelector)
                             }
-                            root.innerHTML = replacementNode.innerHTML
-                        } else if (root) {
-                            root.outerHTML = serialized
-                        }
-                        try {
-                            const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
-                            if (handler) {
-                                handler.postMessage({
-                                    message: "# READER snippetLoader.injected",
-                                    context: "frame",
-                                    targetSelector: renderToSelector || "<root>",
-                                    htmlBytes: insertBytes,
-                                    windowURL: window.location.href,
-                                    pageURL: document.location.href
-                                })
-                            }
-                        } catch (error) {
-                            try { console.log("snippetLoader.injected log error", error) } catch (_) {}
-                        }
+                            var serialized = html
 
-                        let style = document.createElement('style')
-                        style.textContent = css
-                        document.head.appendChild(style)
-                        document.body?.classList.add('readability-mode')
-                        try { document.body?.style.removeProperty('content-visibility') } catch (_) {}
-                        """
-                        ,
-                        arguments: [
-                            "renderToSelector": renderToSelector ?? "",
-                            "html": transformedContent,
-                            "insertBytes": transformedContent.utf8.count,
-                            "css": Readability.shared.css
-                        ], in: frameInfo)
+                            let xmlns = document.body?.getAttribute('xmlns')
+                            if (xmlns) {
+                                let parser = new DOMParser()
+                                let doc = parser.parseFromString(serialized, 'text/html')
+                                let readabilityNode = doc.body
+                                let replacementNode = root.cloneNode()
+                                replacementNode.innerHTML = ''
+                                for (let innerNode of readabilityNode.childNodes) {
+                                    serialized = new XMLSerializer().serializeToString(innerNode)
+                                    replacementNode.innerHTML += serialized
+                                }
+                                root.innerHTML = replacementNode.innerHTML
+                            } else if (root) {
+                                root.outerHTML = serialized
+                            }
+                            try {
+                                const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
+                                if (handler) {
+                                    handler.postMessage({
+                                        message: "# READER snippetLoader.injected",
+                                        context: "frame",
+                                        targetSelector: renderToSelector || "<root>",
+                                        htmlBytes: insertBytes,
+                                        windowURL: window.location.href,
+                                        pageURL: document.location.href
+                                    })
+                                }
+                            } catch (error) {
+                                try { console.log("snippetLoader.injected log error", error) } catch (_) {}
+                            }
+
+                            let style = document.createElement('style')
+                            style.textContent = css
+                            document.head.appendChild(style)
+                            document.body?.classList.add('readability-mode')
+                            try { document.body?.style.removeProperty('content-visibility') } catch (_) {}
+                            """
+                            ,
+                            arguments: [
+                                "renderToSelector": renderToSelector ?? "",
+                                "html": transformedContent,
+                                "insertBytes": transformedContent.utf8.count,
+                                "css": Readability.shared.css
+                            ], in: frameInfo)
+                        debugPrint(
+                            "# READERRELOAD showReadabilityContent.frameInjected",
+                            "contentURL=\(url.absoluteString)",
+                            "frameURL=\(frameInfo.request.url?.absoluteString ?? "<nil>")",
+                            "bytes=\(transformedContent.utf8.count)"
+                        )
+                    } catch {
+                        debugPrint(
+                            "# READERRELOAD showReadabilityContent.frameInjectFailed",
+                            "contentURL=\(url.absoluteString)",
+                            "error=\(error.localizedDescription)"
+                        )
+                        cancelReaderModeLoad(for: url)
+                        return
+                    }
                     logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
                     markReaderModeLoadComplete(for: url)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
@@ -1408,6 +1459,13 @@ public class ReaderModeViewModel: ObservableObject {
                         "base=\(renderBaseURL.absoluteString)",
                         "bytes=\(transformedBytes)",
                         "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadDispatch)))s"
+                    )
+                    debugPrint(
+                        "# READERRELOAD showReadabilityContent.navigatorLoad",
+                        "contentURL=\(url.absoluteString)",
+                        "baseURL=\(renderBaseURL.absoluteString)",
+                        "bytes=\(transformedBytes)",
+                        "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
                     )
                     debugPrint(
                         "# READERPERF readerMode.navigatorLoad.readability",
