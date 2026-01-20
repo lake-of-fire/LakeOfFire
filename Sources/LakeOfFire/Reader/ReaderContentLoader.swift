@@ -150,12 +150,22 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        debugPrint(
+            "# NOREADERMODE contentLoader.load.start",
+            "url=\(url.absoluteString)",
+            "persist=\(persist)",
+            "countsAsHistoryVisit=\(countsAsHistoryVisit)"
+        )
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
 
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
+                debugPrint(
+                    "# NOREADERMODE contentLoader.load.skipInternal",
+                    "url=\(url.absoluteString)"
+                )
                 return nil
             } else if url.absoluteString == "about:blank" { //}&& !persist {
                 let historyRecord = HistoryRecord()
@@ -166,6 +176,10 @@ public struct ReaderContentLoader {
                 try await historyRealm.asyncWrite {
                     historyRealm.add(historyRecord, update: .modified)
                 }
+                debugPrint(
+                    "# NOREADERMODE contentLoader.load.aboutBlank",
+                    "url=\(url.absoluteString)"
+                )
                 return ReaderContentLoader.ContentReference(content: historyRecord)
             }
 
@@ -190,6 +204,24 @@ public struct ReaderContentLoader {
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
+            debugPrint(
+                "# NOREADERMODE contentLoader.load.candidates",
+                "url=\(url.absoluteString)",
+                "count=\(candidates.count)",
+                "matched=\(match?.url.absoluteString ?? "nil")"
+            )
+            if let match {
+                debugPrint(
+                    "# NOREADERMODE contentLoader.load.matchDetails",
+                    "url=\(url.absoluteString)",
+                    "type=\(String(describing: type(of: match)))",
+                    "compoundKey=\(match.compoundKey)",
+                    "readerDefault=\(match.isReaderModeByDefault)",
+                    "readerAvailable=\(match.isReaderModeAvailable)",
+                    "hasHTML=\(match.hasHTML)",
+                    "rssFull=\(match.rssContainsFullContent)"
+                )
+            }
             
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
@@ -206,6 +238,20 @@ public struct ReaderContentLoader {
                     }
                 }
                 match = historyRecord
+                debugPrint(
+                    "# NOREADERMODE contentLoader.load.historyCreated",
+                    "url=\(url.absoluteString)",
+                    "compoundKey=\(historyRecord.compoundKey)",
+                    "readerDefault=\(historyRecord.isReaderModeByDefault)",
+                    "readerAvailable=\(historyRecord.isReaderModeAvailable)"
+                )
+            }
+            if match == nil {
+                debugPrint(
+                    "# NOREADERMODE contentLoader.load.noMatch",
+                    "url=\(url.absoluteString)",
+                    "isEBook=\(url.isEBookURL)"
+                )
             }
             
             try Task.checkCancellation()
@@ -215,23 +261,56 @@ public struct ReaderContentLoader {
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
+                debugPrint(
+                    "# NOREADERMODE defaultEnabled",
+                    "reason=readerFileURL",
+                    "url=\(url.absoluteString)",
+                    "recordURL=\(match.url.absoluteString)",
+                    "type=\(String(describing: type(of: match)))",
+                    "compoundKey=\(match.compoundKey)"
+                )
             } else if persist, let match = match, url.isEBookURL, !match.isReaderModeByDefault, let realm = match.realm {
 //                await realm.asyncRefresh()
                 try await realm.asyncWrite {
                     match.isReaderModeByDefault = true
                     match.refreshChangeMetadata(explicitlyModified: true)
                 }
+                debugPrint(
+                    "# NOREADERMODE defaultEnabled",
+                    "reason=ebookURL",
+                    "url=\(url.absoluteString)",
+                    "recordURL=\(match.url.absoluteString)",
+                    "type=\(String(describing: type(of: match)))",
+                    "compoundKey=\(match.compoundKey)"
+                )
             }
             guard let match else { return nil }
             
             if let historyRecord = match as? HistoryRecord {
                 try await historyRecord.refreshDemotedStatus()
             }
+            if match.isReaderModeByDefault {
+                debugPrint(
+                    "# NOREADERMODE defaultState",
+                    "reason=matchedRecord",
+                    "url=\(url.absoluteString)",
+                    "recordURL=\(match.url.absoluteString)",
+                    "type=\(String(describing: type(of: match)))",
+                    "compoundKey=\(match.compoundKey)",
+                    "hasHTML=\(match.hasHTML)",
+                    "rssFull=\(match.rssContainsFullContent)"
+                )
+            }
 
             return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
         if let resolved = try await contentRef?.resolveOnMainActor() {
+            debugPrint(
+                "# NOREADERMODE contentLoader.load.resolved",
+                "url=\(url.absoluteString)",
+                "resolved=\(resolved.url.absoluteString)"
+            )
             debugPrint(
                 "# FLASH ReaderContentLoader.load directResult",
                 resolved.url.absoluteString,
@@ -243,6 +322,10 @@ public struct ReaderContentLoader {
             )
             return resolved
         }
+        debugPrint(
+            "# NOREADERMODE contentLoader.load.resolveNil",
+            "url=\(url.absoluteString)"
+        )
         return nil
     }
     
@@ -321,6 +404,12 @@ public struct ReaderContentLoader {
                 "htmlBytes=\(htmlBytes)",
                 "compressedBytes=\(compressedBytes)",
                 "preview=\(htmlPreview)"
+            )
+            debugPrint(
+                "# NOREADERMODE defaultEnabled",
+                "reason=snippetCreate",
+                "url=\(historyRecord.url.absoluteString)",
+                "compoundKey=\(historyRecord.compoundKey)"
             )
             
             return ReaderContentLoader.ContentReference(content: historyRecord)

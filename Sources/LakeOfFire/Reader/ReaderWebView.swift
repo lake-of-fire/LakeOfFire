@@ -202,14 +202,17 @@ private class ReaderWebViewHandler {
             if let content = self.readerContent.content,
                content.isReaderModeByDefault {
                 let cachedHTML = content.html
+                let allowDuringLoading = self.readerModeViewModel.isReaderModeLoading
+                    && self.readerModeViewModel.isReaderModeHandlingURL(content.url)
                 let canShowCached = self.readerModeViewModel.readabilityContent == nil
-                    && !self.readerModeViewModel.isReaderModeLoading
                     && cachedHTMLBytes > 0
+                    && (!self.readerModeViewModel.isReaderModeLoading || allowDuringLoading)
                 debugPrint(
                     "# READERRELOAD cachedReadability.check",
                     "pageURL=\(state.pageURL.absoluteString)",
                     "contentURL=\(content.url.absoluteString)",
                     "canShow=\(canShowCached)",
+                    "allowDuringLoading=\(allowDuringLoading)",
                     "isReaderMode=\(self.readerModeViewModel.isReaderMode)",
                     "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
                     "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)",
