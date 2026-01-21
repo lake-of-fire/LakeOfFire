@@ -234,12 +234,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     "pageURL=\(pageURL.absoluteString)",
                     "contentURL=\(contentURL.absoluteString)"
                 )
-                debugPrint(
-                    "# NOREADERMODE getContent.loaderRedirectFailed",
-                    "pageURL=\(pageURL.absoluteString)",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "countsAsHistoryVisit=\(countsAsHistoryVisit)"
-                )
             }
         }
         if pageURL.isSnippetURL {
@@ -277,11 +271,6 @@ public class ReaderViewModel: NSObject, ObservableObject {
         try Task.checkCancellation()
         debugPrint("# FLASH ReaderViewModel.getContent no match", "page=\(flashURLDescription(pageURL))")
         debugPrint("# SNIPPETLOAD getContent.noMatch", "pageURL=\(pageURL.absoluteString)")
-        debugPrint(
-            "# NOREADERMODE getContent.noMatch",
-            "pageURL=\(pageURL.absoluteString)",
-            "countsAsHistoryVisit=\(countsAsHistoryVisit)"
-        )
         return nil
     }
     

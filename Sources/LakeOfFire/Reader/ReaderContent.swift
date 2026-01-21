@@ -82,14 +82,6 @@ public class ReaderContent: ObservableObject {
     @MainActor
     internal func load(url: URL) async throws {
         debugPrint("# FLASH ReaderContent.load start", "page=\(flashURLDescription(url))")
-        let pointer = Unmanaged.passUnretained(self).toOpaque()
-        debugPrint(
-            "# NOREADERMODE contentLoad.start",
-            "pageURL=\(url.absoluteString)",
-            "currentPageURL=\(pageURL.absoluteString)",
-            "hasContent=\(content != nil)",
-            "self=\(pointer)"
-        )
         if url.isSnippetURL || url.isReaderURLLoaderURL {
             debugPrint("# SNIPPETLOAD readerContent.load.start", "pageURL=\(url.absoluteString)")
         }
@@ -120,25 +112,12 @@ public class ReaderContent: ObservableObject {
 
         if let loadingTask, pageURL.matchesReaderURL(url) {
             debugPrint("# FLASH ReaderContent.load in-flight", "page=\(flashURLDescription(url))")
-            debugPrint(
-                "# NOREADERMODE contentLoad.inFlight",
-                "pageURL=\(url.absoluteString)",
-                "currentPageURL=\(pageURL.absoluteString)",
-                "self=\(pointer)"
-            )
             _ = try await loadingTask.value
             return
         }
 
         if let existingContent = content, existingContent.url.matchesReaderURL(resolvedContentURL) {
             debugPrint("# FLASH ReaderContent.load reuse existing content", "page=\(flashURLDescription(url))")
-            debugPrint(
-                "# NOREADERMODE contentLoad.reuseExisting",
-                "pageURL=\(url.absoluteString)",
-                "resolvedURL=\(resolvedContentURL.absoluteString)",
-                "contentURL=\(existingContent.url.absoluteString)",
-                "self=\(pointer)"
-            )
             if !pageURL.matchesReaderURL(url) {
                 pageURL = displayURL
                 debugPrint("# FLASH ReaderContent.load updated pageURL only", "page=\(flashURLDescription(displayURL))")
@@ -156,12 +135,6 @@ public class ReaderContent: ObservableObject {
         content = nil
         currentSectionIndex = nil
         pageURL = displayURL
-        debugPrint(
-            "# NOREADERMODE contentLoad.cleared",
-            "pageURL=\(displayURL.absoluteString)",
-            "incomingURL=\(url.absoluteString)",
-            "self=\(pointer)"
-        )
         if url.isReaderURLLoaderURL || displayURL.isReaderURLLoaderURL {
             debugPrint(
                 "# READERRELOAD readerContent.load.pageURLSet",
@@ -178,12 +151,6 @@ public class ReaderContent: ObservableObject {
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 debugPrint("# FLASH ReaderContent.load mismatch", "page=\(flashURLDescription(url))", "content=\(flashURLDescription(content.url))")
-                debugPrint(
-                    "# NOREADERMODE contentLoadMismatch",
-                    "pageURL=\(url.absoluteString)",
-                    "resolvedURL=\(resolvedContentURL.absoluteString)",
-                    "contentURL=\(content.url.absoluteString)"
-                )
                 if resolvedContentURL.isSnippetURL {
                     debugPrint(
                         "# SNIPPETLOAD readerContent.load.mismatch",
@@ -195,28 +162,15 @@ public class ReaderContent: ObservableObject {
                 return nil
             }
             self?.content = content
-            let contentType = String(describing: type(of: content))
             let contentSummary = [
                 "url=\(content.url.absoluteString)",
-                "type=\(contentType)",
-                "compoundKey=\(content.compoundKey)",
                 "isSnippet=\(content.url.isSnippetURL)",
                 "hasHTML=\(content.hasHTML)",
                 "isReaderModeByDefault=\(content.isReaderModeByDefault)",
-                "isReaderModeAvailable=\(content.isReaderModeAvailable)",
                 "rssContainsFullContent=\(content.rssContainsFullContent)",
                 "isFromClipboard=\(content.isFromClipboard)"
             ].joined(separator: " | ")
             debugPrint("# FLASH ReaderContent.load contentAssigned", contentSummary)
-            debugPrint(
-                "# NOREADERMODE contentAssigned",
-                "url=\(content.url.absoluteString)",
-                "type=\(contentType)",
-                "compoundKey=\(content.compoundKey)",
-                "readerAvailable=\(content.isReaderModeAvailable)",
-                "readerDefault=\(content.isReaderModeByDefault)",
-                "self=\(pointer)"
-            )
             debugPrint("# FLASH ReaderContent.load task set content", "content=\(flashURLDescription(content.url))")
             if content.url.isSnippetURL {
                 debugPrint(
@@ -231,22 +185,6 @@ public class ReaderContent: ObservableObject {
         }
         try await loadingTask?.value
         debugPrint("# FLASH ReaderContent.load completed", "page=\(flashURLDescription(url))")
-        if content == nil {
-            debugPrint(
-                "# NOREADERMODE contentLoadFailed",
-                "pageURL=\(url.absoluteString)",
-                "resolvedURL=\(resolvedContentURL.absoluteString)",
-                "self=\(pointer)"
-            )
-        } else {
-            debugPrint(
-                "# NOREADERMODE contentLoad.completed",
-                "pageURL=\(url.absoluteString)",
-                "resolvedURL=\(resolvedContentURL.absoluteString)",
-                "contentURL=\(content?.url.absoluteString ?? "nil")",
-                "self=\(pointer)"
-            )
-        }
         loadingTask = nil
 
         if shouldMarkProvisional && isReaderProvisionallyNavigating {

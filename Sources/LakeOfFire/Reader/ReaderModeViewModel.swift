@@ -1148,7 +1148,6 @@ public class ReaderModeViewModel: ObservableObject {
         let asyncWriteStartedAt = Date()
         logTrace(.contentWriteStart, url: url, details: "marking reader defaults")
         try await content.asyncWrite { [weak self] _, content in
-            let wasReaderDefault = content.isReaderModeByDefault
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
             if !url.isEBookURL && !url.isNativeReaderView {
@@ -1173,13 +1172,6 @@ public class ReaderModeViewModel: ObservableObject {
                 content.rssContainsFullContent = true
             }
             content.refreshChangeMetadata(explicitlyModified: true)
-            if !wasReaderDefault {
-                debugPrint(
-                    "# NOREADERMODE defaultEnabled",
-                    "url=\(url.absoluteString)",
-                    "reason=renderReadabilityContent"
-                )
-            }
         }
         let writeElapsed = Date().timeIntervalSince(asyncWriteStartedAt)
         logTrace(.contentWriteEnd, url: url, details: "duration=\(formattedInterval(writeElapsed))")
@@ -2927,7 +2919,6 @@ private func propagateReaderModeDefaults(
             for record in relatedRecords {
                 guard record.compoundKey != primaryKey, let realm = record.realm else { continue }
                 try await realm.asyncWrite {
-                    let wasReaderDefault = record.isReaderModeByDefault
                     record.isReaderModeByDefault = true
                     record.isReaderModeAvailable = false
                     if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
@@ -2941,14 +2932,6 @@ private func propagateReaderModeDefaults(
                         record.rssContainsFullContent = true
                     }
                     record.refreshChangeMetadata(explicitlyModified: true)
-                    if !wasReaderDefault {
-                        debugPrint(
-                            "# NOREADERMODE defaultEnabled",
-                            "url=\(url.absoluteString)",
-                            "reason=propagateReaderModeDefaults",
-                            "recordURL=\(record.url.absoluteString)"
-                        )
-                    }
                 }
             }
         } catch {

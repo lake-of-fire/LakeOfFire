@@ -546,19 +546,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 
                 do {
                     try await content.asyncWrite { _, content in
-                        let wasAvailable = content.isReaderModeAvailable
                         content.isReaderModeAvailable = false
                         content.refreshChangeMetadata(explicitlyModified: true)
-                        if wasAvailable {
-                            debugPrint(
-                                "# NOREADERMODE availabilityChanged",
-                                "reason=readabilityUnavailable",
-                                "contentURL=\(resolvedURL.absoluteString)",
-                                "windowURL=\(rawURL.absoluteString)",
-                                "frameIsMain=\(message.frameInfo.isMainFrame)",
-                                "readerDefault=\(content.isReaderModeByDefault)"
-                            )
-                        }
                     }
                     
                     try await { @RealmBackgroundActor in
@@ -689,19 +678,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         )
                     }
                     try? await content.asyncWrite { _, content in
-                        let wasAvailable = content.isReaderModeAvailable
                         content.isReaderModeAvailable = false
                         content.refreshChangeMetadata(explicitlyModified: true)
-                        if wasAvailable {
-                            debugPrint(
-                                "# NOREADERMODE availabilityChanged",
-                                "reason=readabilityEmptyOutput",
-                                "contentURL=\(resolvedURL.absoluteString)",
-                                "windowURL=\(resolvedURL.absoluteString)",
-                                "frameIsMain=\(message.frameInfo.isMainFrame)",
-                                "readerDefault=\(content.isReaderModeByDefault)"
-                            )
-                        }
                     }
                     return
                 }
@@ -712,9 +690,20 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 var shouldShortCircuit = readerModeViewModel.isReaderMode && hasProcessedReadability
                 if shouldShortCircuit && !isSnippetURL {
                     let rawHasReadabilityClass = try? await scriptCaller.evaluateJavaScript(
-                        "document.body?.classList.contains('readability-mode') ?? false"
+                        "document.body?.classList.contains('readability-mode') ? 1 : 0"
                     )
-                    let hasReadabilityClass = booleanFromJavaScript(rawHasReadabilityClass)
+                    let hasReadabilityClass: Bool? = {
+                        guard let unwrapped = self.unwrapJavaScriptValue(rawHasReadabilityClass) else {
+                            return nil
+                        }
+                        if let number = unwrapped as? NSNumber {
+                            return number.intValue == 1
+                        }
+                        if let bool = unwrapped as? Bool {
+                            return bool
+                        }
+                        return nil
+                    }()
                     if hasReadabilityClass == false {
                         debugPrint(
                             "# WRONGREADERMODE shortCircuitMismatch",
@@ -770,14 +759,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             if content.isReaderModeAvailable {
                                 content.isReaderModeAvailable = false
                                 content.refreshChangeMetadata(explicitlyModified: true)
-                                debugPrint(
-                                    "# NOREADERMODE availabilityChanged",
-                                    "reason=readabilityShortCircuit",
-                                    "contentURL=\(resolvedURL.absoluteString)",
-                                    "windowURL=\(resolvedURL.absoluteString)",
-                                    "frameIsMain=\(message.frameInfo.isMainFrame)",
-                                    "readerDefault=\(content.isReaderModeByDefault)"
-                                )
                             }
                         }
                         if !readerModeViewModel.isReaderMode {
@@ -847,14 +828,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         try await content.asyncWrite { _, content in
                             content.isReaderModeAvailable = true
                             content.refreshChangeMetadata(explicitlyModified: true)
-                            debugPrint(
-                                "# NOREADERMODE availabilityChanged",
-                                "reason=readabilityParsed",
-                                "contentURL=\(resolvedURL.absoluteString)",
-                                "windowURL=\(rawWindowURL.absoluteString)",
-                                "frameIsMain=\(message.frameInfo.isMainFrame)",
-                                "readerDefault=\(content.isReaderModeByDefault)"
-                            )
                         }
                     }
                     
@@ -1002,25 +975,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
            let jsonData = try? JSONSerialization.data(withJSONObject: unwrapped, options: [.sortedKeys]),
            let string = String(data: jsonData, encoding: .utf8) {
             return trimmedDatasetSummary(string)
-        }
-        return nil
-    }
-
-    private func booleanFromJavaScript(_ value: Any?) -> Bool? {
-        guard let unwrapped = unwrapJavaScriptValue(value) else {
-            return nil
-        }
-        if let bool = unwrapped as? Bool {
-            return bool
-        }
-        if let number = unwrapped as? NSNumber {
-            return number.boolValue
-        }
-        if let string = unwrapped as? String {
-            return (string as NSString).boolValue
-        }
-        if let string = unwrapped as? NSString {
-            return string.boolValue
         }
         return nil
     }
@@ -1203,18 +1157,6 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             "# READERRELOAD viewOriginal.persisted",
             "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
         )
-        debugPrint(
-            "# NOREADERMODE defaultDisabled",
-            "reason=viewOriginal",
-            "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
-        )
-        if readerContent.content?.hasHTML ?? false {
-            debugPrint(
-                "# NOREADERMODE availabilityChanged",
-                "reason=viewOriginal",
-                "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
-            )
-        }
         readerModeViewModel.isReaderMode = false
         readerModeViewModel.clearReadabilityCache(for: contentURL, reason: "viewOriginal")
         debugPrint(
