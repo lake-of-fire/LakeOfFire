@@ -279,6 +279,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let state = newState ?? self.state
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
+                debugPrint(
+                    "# READERMODETITLE webView.documentTitle.sync",
+                    "pageURL=\(state.pageURL.absoluteString)",
+                    "title=\(content.title)"
+                )
                 try await scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
             }
         }
@@ -293,6 +298,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
         } else {
             newTitle = fixAnnoyingTitlesWithPipes(title: title)
         }
+        debugPrint(
+            "# READERMODETITLE metadata.received",
+            "pageURL=\(state.pageURL.absoluteString)",
+            "raw=\(title)",
+            "normalized=\(newTitle)"
+        )
         let contentRefs = try await { @RealmBackgroundActor in
             let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
@@ -301,6 +312,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
             let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
             let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
+            debugPrint(
+                "# READERMODETITLE metadata.apply",
+                "contentURL=\(content.url.absoluteString)",
+                "final=\(finalTitle)",
+                "author=\(author ?? "")"
+            )
             if !finalTitle.isEmpty,
                content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != finalTitle
                 || content.author != author ?? "" {

@@ -397,6 +397,11 @@ public struct Reader: View {
                 guard scriptCaller.hasAsyncCaller else { return }
                 let displayTitle = readerContent.content?.titleForDisplay ?? readerContent.contentTitle
                 guard !displayTitle.isEmpty else { return }
+                debugPrint(
+                    "# READERMODETITLE sync.readerTitle",
+                    "pageURL=\(readerContent.pageURL.absoluteString)",
+                    "title=\(displayTitle)"
+                )
                 do {
                     try await scriptCaller.evaluateJavaScript(
                         """

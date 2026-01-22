@@ -1046,6 +1046,180 @@ public class ReaderModeViewModel: ObservableObject {
         }
     }
 
+    @MainActor
+    public func showReaderViewUsingSwiftProcessing(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+        debugPrint("# READER readerMode.showReaderView.swiftProcessing", readerContent.pageURL)
+        debugPrint(
+            "# READERINJECT showReaderView.swiftProcessing.enter",
+            "pageURL=\(readerContent.pageURL.absoluteString)",
+            "hasReadability=\(readabilityContent != nil)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
+        )
+        let contentURL = readerContent.pageURL
+        beginReaderModeLoad(
+            for: contentURL,
+            suppressSpinner: false,
+            reason: "showReaderView.swiftProcessing"
+        )
+        Task { @MainActor in
+            guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
+                debugPrint("# READER readerMode.showReaderView.swiftProcessing.urlMismatch", contentURL, readerContent.pageURL)
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.abort",
+                    "reason=urlMismatch",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "pageURL=\(readerContent.pageURL.absoluteString)"
+                )
+                cancelReaderModeLoad(for: contentURL)
+                return
+            }
+            guard let content = try await readerContent.getContent() else {
+                debugPrint("# READER readerMode.showReaderView.swiftProcessing.missingContent", contentURL)
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.abort",
+                    "reason=missingContent",
+                    "contentURL=\(contentURL.absoluteString)"
+                )
+                cancelReaderModeLoad(for: contentURL)
+                return
+            }
+
+            let resolvedURL = content.url
+            let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
+            var htmlResult = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+            if htmlResult == nil, resolvedURL.isSnippetURL {
+                htmlResult = content.html
+            }
+            debugPrint(
+                "# READERINJECT showReaderView.swiftProcessing.htmlFetched",
+                "contentURL=\(resolvedURL.absoluteString)",
+                "bytes=\(htmlResult?.utf8.count ?? 0)",
+                "hasHTML=\(htmlResult != nil)",
+                "readerDefault=\(content.isReaderModeByDefault)",
+                "rssFull=\(content.rssContainsFullContent)",
+                "fromClipboard=\(content.isFromClipboard)",
+                "isSnippet=\(resolvedURL.isSnippetURL)"
+            )
+
+            if shouldProcessReadabilityInSwift(content: content, url: resolvedURL), let html = htmlResult {
+                let minChars = max(content.meaningfulContentMinLength, 1)
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.swiftEligible",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "minChars=\(minChars)"
+                )
+                let swiftOutcome = await processReadabilityHTMLInSwift(
+                    html: html,
+                    url: resolvedURL,
+                    meaningfulContentMinChars: minChars
+                )
+                switch swiftOutcome {
+                case .success(let result):
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.swiftSuccess",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "bytes=\(result.outputHTML.utf8.count)",
+                        "published=\(result.publishedTime ?? "nil")"
+                    )
+                    readabilityContent = result.outputHTML
+                    readabilityPublishedTime = result.publishedTime
+                    readabilityContainerSelector = nil
+                    readabilityContainerFrameInfo = nil
+                    do {
+                        try await showReadabilityContent(
+                            readerContent: readerContent,
+                            readabilityContent: result.outputHTML,
+                            renderToSelector: nil,
+                            in: nil,
+                            scriptCaller: scriptCaller
+                        )
+                        debugPrint(
+                            "# READERINJECT showReaderView.swiftProcessing.rendered",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "bytes=\(result.outputHTML.utf8.count)"
+                        )
+                        return
+                    } catch {
+                        debugPrint("# READER readerMode.showReaderView.swiftProcessing.loadFailed", error.localizedDescription)
+                        debugPrint(
+                            "# READERINJECT showReaderView.swiftProcessing.abort",
+                            "reason=renderFailed",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "error=\(error.localizedDescription)"
+                        )
+                        cancelReaderModeLoad(for: contentURL)
+                        return
+                    }
+                case .unavailable(let reason):
+                    debugPrint(
+                        "# READER readerMode.showReaderView.swiftProcessing.unavailable",
+                        "url=\(resolvedURL.absoluteString)",
+                        "reason=\(reason)"
+                    )
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.swiftUnavailable",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "reason=\(reason)"
+                    )
+                case .failed(let reason):
+                    debugPrint(
+                        "# READER readerMode.showReaderView.swiftProcessing.failed",
+                        "url=\(resolvedURL.absoluteString)",
+                        "reason=\(reason)"
+                    )
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.swiftFailed",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "reason=\(reason)"
+                    )
+                }
+            } else {
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.swiftBypass",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "eligible=\(shouldProcessReadabilityInSwift(content: content, url: resolvedURL))",
+                    "hasHTML=\(htmlResult != nil)"
+                )
+            }
+
+            if let fallbackReadability = readabilityContent {
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.fallbackRender",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "bytes=\(fallbackReadability.utf8.count)"
+                )
+                do {
+                    try await showReadabilityContent(
+                        readerContent: readerContent,
+                        readabilityContent: fallbackReadability,
+                        renderToSelector: readabilityContainerSelector,
+                        in: readabilityContainerFrameInfo,
+                        scriptCaller: scriptCaller
+                    )
+                } catch {
+                    debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackFailed", error.localizedDescription)
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.abort",
+                        "reason=fallbackFailed",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "error=\(error.localizedDescription)"
+                    )
+                    cancelReaderModeLoad(for: contentURL)
+                }
+            } else {
+                debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackMissing", contentURL)
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.abort",
+                    "reason=fallbackMissing",
+                    "contentURL=\(contentURL.absoluteString)"
+                )
+                cancelReaderModeLoad(for: contentURL)
+            }
+        }
+    }
+
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
     internal func showReadabilityContent(
@@ -1167,7 +1341,17 @@ public class ReaderModeViewModel: ObservableObject {
                     content.html = readabilityContent
                 }
                 if content.title.isEmpty {
-                    content.title = content.html?.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first?.truncate(36) ?? ""
+                    let oldTitle = content.title
+                    let newTitle = content.html?.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first?.truncate(36) ?? ""
+                    content.title = newTitle
+                    if oldTitle != newTitle {
+                        debugPrint(
+                            "# READERMODETITLE content.titleFromReadability",
+                            "url=\(url.absoluteString)",
+                            "old=\(oldTitle)",
+                            "new=\(newTitle)"
+                        )
+                    }
                 }
                 content.rssContainsFullContent = true
             }
@@ -1250,6 +1434,13 @@ public class ReaderModeViewModel: ObservableObject {
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
+            let segmentCountAfterReadability = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
+            debugPrint(
+                "# READERINJECT readability.docSegments",
+                "stage=afterProcessReadabilityContent",
+                "url=\(url.absoluteString)",
+                "segments=\(segmentCountAfterReadability)"
+            )
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
             await propagateReaderModeDefaults(
                 for: url,
@@ -1293,6 +1484,13 @@ public class ReaderModeViewModel: ObservableObject {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
+            let segmentCountAfterProcessing = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
+            debugPrint(
+                "# READERINJECT readability.docSegments",
+                "stage=afterProcessForReaderMode",
+                "url=\(url.absoluteString)",
+                "segments=\(segmentCountAfterProcessing)"
+            )
             let transformDuration = Date().timeIntervalSince(transformStartedAt)
             let transformSummary = String(format: "%.3fs", transformDuration)
             await MainActor.run {
@@ -1314,6 +1512,13 @@ public class ReaderModeViewModel: ObservableObject {
                     false
                 )
             }
+            let htmlSegmentCount = max(html.components(separatedBy: "manabi-segment").count - 1, 0)
+            debugPrint(
+                "# READERINJECT readability.htmlSegments",
+                "stage=afterProcessHTML",
+                "url=\(url.absoluteString)",
+                "segments=\(htmlSegmentCount)"
+            )
 
             let transformedContent = html
             debugPrint(
@@ -2927,7 +3132,16 @@ private func propagateReaderModeDefaults(
                         }
                         if let resolvedTitle,
                            record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            let oldTitle = record.title
                             record.title = resolvedTitle
+                            if oldTitle != resolvedTitle {
+                                debugPrint(
+                                    "# READERMODETITLE propagateDefaults",
+                                    "url=\(url.absoluteString)",
+                                    "old=\(oldTitle)",
+                                    "new=\(resolvedTitle)"
+                                )
+                            }
                         }
                         record.rssContainsFullContent = true
                     }
@@ -3069,6 +3283,12 @@ public func preprocessWebContentForReaderMode(
             let currentTitleText = try titleElement.text(trimAndNormaliseWhitespace: false)
             if currentTitleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try titleElement.text(fallbackTitle)
+                debugPrint(
+                    "# READERMODETITLE preprocess.fallback",
+                    "url=\(url.absoluteString)",
+                    "old=\(currentTitleText)",
+                    "new=\(fallbackTitle)"
+                )
                 if let headTitle = try doc.head()?.getElementsByTag("title").first() {
                     let currentHeadTitle = try headTitle.text()
                     if currentHeadTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -3139,6 +3359,11 @@ public func processForReaderMode(
             let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
             do {
                 try existing.html(escapedTitle)
+                debugPrint(
+                    "# READERMODETITLE process.defaultTitle",
+                    "url=\(url.absoluteString)",
+                    "new=\(defaultTitle)"
+                )
             } catch { }
         }
 

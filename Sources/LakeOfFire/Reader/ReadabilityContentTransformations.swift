@@ -33,7 +33,16 @@ public func transformContentSpecificToFeed(doc: Document, url: URL) {
 private func matchaTravel(doc: Document) throws {
     // Collapse spaces.
     guard let articleTitle = try doc.getElementById("reader-title") else { return }
-    try articleTitle.text(articleTitle.text().replace(regex: emptySpaceRegex, template: ""))
+    let originalTitle = try articleTitle.text()
+    let updatedTitle = originalTitle.replace(regex: emptySpaceRegex, template: "")
+    try articleTitle.text(updatedTitle)
+    if originalTitle != updatedTitle {
+        debugPrint(
+            "# READERMODETITLE transform.matchaTravel",
+            "old=\(originalTitle)",
+            "new=\(updatedTitle)"
+        )
+    }
     
     // Collapse spaces. /*Remove (※) which reference Matcha vocab definitions that we remove.*/
     guard let articleDiv = try doc.getElementById("reader-content")?.getElementsByClass("page").first() else { return }
@@ -64,7 +73,8 @@ private func wataNoC(doc: Document) throws {
     
     // Remove the " –freeweb manage ..." title suffix.
     guard let titleElement = try doc.getElementById("reader-title") else { return }
-    var title = try titleElement.text()
+    let originalTitle = try titleElement.text()
+    var title = originalTitle
     if let range = title.range(of: " – free web magazine", options: .backwards) {
         title = title[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
         try titleElement.text(title)
@@ -72,6 +82,13 @@ private func wataNoC(doc: Document) throws {
     if let range = title.range(of: ")") {
         title.insert(" ", at: range.upperBound)
         try titleElement.text(title)
+    }
+    if originalTitle != title {
+        debugPrint(
+            "# READERMODETITLE transform.wataNoC",
+            "old=\(originalTitle)",
+            "new=\(title)"
+        )
     }
     
     // Remove the author header which can remain in the article body, duplicated.
@@ -230,7 +247,15 @@ private func cnn(doc: Document) throws {
     guard let titleElement = try doc.getElementById("reader-title") else { return }
     let title = try titleElement.text()
     if let range = title.range(of: "CNN.co.jp : ") {
-        try titleElement.text(title[range.upperBound...].trimmingCharacters(in: .whitespaces))
+        let updated = title[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        try titleElement.text(updated)
+        if title != updated {
+            debugPrint(
+                "# READERMODETITLE transform.cnn",
+                "old=\(title)",
+                "new=\(updated)"
+            )
+        }
     }
 }
 
@@ -295,6 +320,13 @@ public func fixAnnoyingTitlesWithPipes(doc: Document) throws {
         let original = node.getWholeText()
         let updated = fixAnnoyingTitlesWithPipes(title: original)
         node.text(updated)
+        if original != updated {
+            debugPrint(
+                "# READERMODETITLE transform.pipes",
+                "old=\(original)",
+                "new=\(updated)"
+            )
+        }
     }
 }
 

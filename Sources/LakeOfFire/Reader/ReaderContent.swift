@@ -33,6 +33,14 @@ public class ReaderContent: ObservableObject {
 //                debugPrint("# new content", newContent?.url)
                 self.locationBarTitle = newContent?.locationBarTitle
                 let newTitle = newContent?.title ?? ""
+                if self.contentTitle != newTitle {
+                    debugPrint(
+                        "# READERMODETITLE content.titleDidSet",
+                        "pageURL=\(self.pageURL.absoluteString)",
+                        "old=\(self.contentTitle)",
+                        "new=\(newTitle)"
+                    )
+                }
                 self.contentTitle = newTitle
                 if !newTitle.isEmpty {
                     self.contentTitleSubject.send(newTitle)
@@ -210,6 +218,12 @@ public class ReaderContent: ObservableObject {
         guard let content else { return }
         guard trimmed != content.title else { return }
 
+        debugPrint(
+            "# READERMODETITLE content.updateTitle",
+            "pageURL=\(pageURL.absoluteString)",
+            "old=\(content.title)",
+            "new=\(trimmed)"
+        )
         contentTitle = trimmed
         contentTitleSubject.send(trimmed)
 
