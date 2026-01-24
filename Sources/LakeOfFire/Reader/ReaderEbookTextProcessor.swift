@@ -182,8 +182,6 @@ internal func ebookTextProcessor(
         var doc: SwiftSoup.Document?
 
         if let processReadabilityContent {
-            let readabilityStart = Date()
-            debugPrint("# EBOOKPROCESS processor.readability.start", sectionLocation, "cacheWarmer:", isCacheWarmer)
             doc = await processReadabilityContent(
                 content,
                 contentURL,
@@ -191,22 +189,18 @@ internal func ebookTextProcessor(
                 isCacheWarmer,
                 preprocessEbookContent(doc:)
             )
-            debugPrint("# EBOOKPROCESS processor.readability.finish", sectionLocation, "cacheWarmer:", isCacheWarmer, "duration:", Date().timeIntervalSince(readabilityStart), "hasDoc:", doc != nil)
         }
 
         if doc == nil {
             // TODO: Consolidate our parsing boilerplate
             let isXML = content.hasPrefix("<?xml") || content.hasPrefix("<?XML") // TODO: Case insensitive
             let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
-            let parseStart = Date()
-            debugPrint("# EBOOKPROCESS processor.parse.start", sectionLocation, "cacheWarmer:", isCacheWarmer, "isXML:", isXML)
             doc = try SwiftSoup.parse(content, sectionLocationURL.absoluteString, parser)
             doc?.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
             doc?.outputSettings().charset(.utf8)
             if isXML {
                 doc?.outputSettings().escapeMode(.xhtml)
             }
-            debugPrint("# EBOOKPROCESS processor.parse.finish", sectionLocation, "cacheWarmer:", isCacheWarmer, "duration:", Date().timeIntervalSince(parseStart), "hasDoc:", doc != nil)
         }
 
         guard let doc else {
@@ -214,8 +208,6 @@ internal func ebookTextProcessor(
             return content
         }
 
-        let processStart = Date()
-        debugPrint("# EBOOKPROCESS processor.processForReaderMode.start", sectionLocation, "cacheWarmer:", isCacheWarmer)
         try processForReaderMode(
             doc: doc,
             url: sectionLocationURL, //nil,
@@ -227,22 +219,18 @@ internal func ebookTextProcessor(
             injectEntryImageIntoHeader: false,
             defaultFontSize: 20 // TODO: Pass this in from ReaderViewModel...
         )
-        debugPrint("# EBOOKPROCESS processor.processForReaderMode.finish", sectionLocation, "cacheWarmer:", isCacheWarmer, "duration:", Date().timeIntervalSince(processStart))
 
         ensureRubyFontCustomProperty(in: doc)
 
         var html = try doc.outerHtml()
 
         if let processHTML {
-            let htmlStart = Date()
-            debugPrint("# EBOOKPROCESS processor.processHTML.start", sectionLocation, "cacheWarmer:", isCacheWarmer)
             html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
                 await processHTML(
                     html,
                     isCacheWarmer
                 )
             }
-            debugPrint("# EBOOKPROCESS processor.processHTML.finish", sectionLocation, "cacheWarmer:", isCacheWarmer, "duration:", Date().timeIntervalSince(htmlStart), "respLen:", html.count)
         }
 
         return html

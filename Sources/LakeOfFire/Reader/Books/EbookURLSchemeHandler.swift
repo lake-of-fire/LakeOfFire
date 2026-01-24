@@ -33,7 +33,6 @@ fileprivate actor EBookProcessingActor {
         if isCacheWarmer,
            let ebookTextProcessorCacheHits,
            (try? await ebookTextProcessorCacheHits(sectionLocationURL, text)) ?? false {
-            debugPrint("# EBOOKPROCESS process-text.cache-hit", location, "cacheWarmer:", isCacheWarmer)
             // Bail early if we are already cached
             return ""
         }
@@ -41,8 +40,6 @@ fileprivate actor EBookProcessingActor {
         var respText = text
         if let ebookTextProcessor {
             do {
-                let start = Date()
-                debugPrint("# EBOOKPROCESS process-text.invoke-processor", location, "cacheWarmer:", isCacheWarmer)
                 respText = try await ebookTextProcessor(
                     contentURL,
                     location,
@@ -51,7 +48,6 @@ fileprivate actor EBookProcessingActor {
                     processReadabilityContent,
                     processHTML
                 )
-                debugPrint("# EBOOKPROCESS process-text.processor-finished", location, "cacheWarmer:", isCacheWarmer, "duration:", Date().timeIntervalSince(start), "respLen:", respText.count)
             } catch {
                 print("Error processing Ebook text: \(error)")
             }
@@ -230,8 +226,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             processReadabilityContent: processReadabilityContent,
                             processHTML: processHTML
                         )
-                        let requestStart = Date()
-                        debugPrint("# EBOOKPROCESS process-text.start", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "payloadLen:", payload.count)
                         debugPrint("# EBOOKPERF process-text.recv", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "payloadLen:", payload.count)
 
                         //                        print("# ebook proc text endpoint", replacedTextLocation)
@@ -244,7 +238,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             text: text,
                             isCacheWarmer: isCacheWarmer
                         )
-                        debugPrint("# EBOOKPROCESS process-text.finish", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "duration:", Date().timeIntervalSince(requestStart), "respLen:", respText.count)
                         debugPrint("# EBOOKPERF process-text.processed", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "respLen:", respText.count)
                         if let respData = respText.data(using: .utf8) {
                             let resp = HTTPURLResponse(

@@ -89,27 +89,22 @@ public struct ContentCategoryButtons<NavigationValue: Hashable, AdditionalCatego
         }
     }
     
-    private func chunked<T>(_ items: [T], into columns: Int) -> [[T]] {
-        guard columns > 0 else { return [items] }
-        var result: [[T]] = []
-        var row: [T] = []
-        row.reserveCapacity(columns)
-        for item in items {
-            row.append(item)
-            if row.count == columns {
-                result.append(row)
-                row.removeAll(keepingCapacity: true)
-            }
-        }
-        if !row.isEmpty {
-            result.append(row)
+    private func chunkedSlices<T>(_ items: [T], into columns: Int) -> [ArraySlice<T>] {
+        guard columns > 0 else { return [items[...]] }
+        var result: [ArraySlice<T>] = []
+        result.reserveCapacity((items.count / columns) + 1)
+        var startIndex = items.startIndex
+        while startIndex < items.endIndex {
+            let endIndex = items.index(startIndex, offsetBy: columns, limitedBy: items.endIndex) ?? items.endIndex
+            result.append(items[startIndex..<endIndex])
+            startIndex = endIndex
         }
         return result
     }
     
     public var body: some View {
         let columns = max(Int(max(availableWidth, 1) / max(minWidth, 1)), 1)
-        let rows = chunked(viewModel.filteredCategories, into: columns)
+        let rows = chunkedSlices(viewModel.filteredCategories, into: columns)
 
         return VStack(alignment: .leading, spacing: 6) {
             additionalCategories
