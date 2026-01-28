@@ -334,16 +334,16 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                 .contentShape(Rectangle())
         }
     }
-
+    
     private var summaryView: some View {
         Group {
             if let resolvedSummary {
-                ExpandableText(resolvedSummary)
+                ExpandableText(LocalizedStringKey(resolvedSummary))
                     .lineLimit(3)
                     .foregroundColor(.secondary)
                     .moreButtonText("MORE")
                     .moreButtonFont(.footnote)
-                    .moreButtonColor(.primary)
+                    .moreButtonForegroundStyle(.primary)
                     .expandAnimation(.easeIn)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
