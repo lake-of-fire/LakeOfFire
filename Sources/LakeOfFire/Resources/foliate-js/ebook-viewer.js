@@ -145,46 +145,102 @@ const ensureCustomFontsForDoc = (doc) => {
 globalThis.manabiWaitForFontCSS = waitForFontCSSReady;
 globalThis.manabiEnsureCustomFonts = ensureCustomFontsForDoc;
 
+const MAX_ERROR_LENGTH = 4000;
+const ERROR_TRUNCATION_SUFFIX = '...(truncated)';
+
+const clampErrorString = (value) => {
+    if (value === null || value === undefined) return null;
+    const text = String(value);
+    if (text.length <= MAX_ERROR_LENGTH) return text;
+    const headLength = Math.max(0, MAX_ERROR_LENGTH - ERROR_TRUNCATION_SUFFIX.length);
+    return text.slice(0, headLength) + ERROR_TRUNCATION_SUFFIX;
+};
+
+const sanitizeErrorValue = (value) => {
+    if (value === null || value === undefined) return null;
+    const t = typeof value;
+    if (t === 'string' || t === 'number' || t === 'boolean') return clampErrorString(value);
+    try {
+        if (value instanceof Error) {
+            return clampErrorString(value.stack || value.message || String(value));
+        }
+    } catch (_) {}
+    try {
+        const name = value?.name;
+        const message = value?.message;
+        const code = value?.code;
+        const stack = value?.stack;
+        const parts = [];
+        if (name) parts.push(String(name));
+        if (message) parts.push(String(message));
+        if (code !== undefined && code !== null) parts.push(`code=${code}`);
+        if (stack) parts.push(String(stack));
+        if (parts.length) return clampErrorString(parts.join(' | '));
+    } catch (_) {}
+    try {
+        return clampErrorString(String(value));
+    } catch (_) {
+        return 'unknown-error';
+    }
+};
+
+const postReaderOnError = (payload) => {
+    try {
+        window.webkit?.messageHandlers?.readerOnError?.postMessage?.(payload);
+    } catch (_error) {
+        // ignore to avoid recursive crash loops
+    }
+};
+
 window.onerror = function(msg, source, lineno, colno, error) {
-window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
-message: msg,
-source: source,
-lineno: lineno,
-colno: colno,
-error: String(error)
-});
+    const safeMessage = sanitizeErrorValue(msg) ?? 'Unknown error';
+    const safeSource = sanitizeErrorValue(source);
+    const safeError = sanitizeErrorValue(error);
+    postReaderOnError({
+        message: safeMessage,
+        source: safeSource,
+        lineno: lineno,
+        colno: colno,
+        error: safeError
+    });
 };
 
 window.onunhandledrejection = function(event) {
-window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
-message: event.reason?.message ?? "Unhandled rejection",
-source: window.location.href,
-lineno: null,
-colno: null,
-error: event.reason?.stack ?? String(event.reason)
-});
+    const safeMessage = sanitizeErrorValue(event.reason?.message) ?? "Unhandled rejection";
+    const safeError = sanitizeErrorValue(event.reason?.stack ?? event.reason);
+    postReaderOnError({
+        message: safeMessage,
+        source: window.location.href,
+        lineno: null,
+        colno: null,
+        error: safeError
+    });
 };
 
 function forwardShadowErrors(root) {
-if (!root) return;
-root.addEventListener('error', e => {
-window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
-message: e.message || e.error?.message || 'Shadow-DOM error',
-source: window.location.href,
-lineno: e.lineno || 0,
-colno: e.colno || 0,
-error: e.error?.stack || String(e.error || e)
-});
-});
-root.addEventListener('unhandledrejection', e => {
-window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
-message: e.reason?.message || 'Shadow-DOM unhandled rejection',
-source: window.location.href,
-lineno: 0,
-colno: 0,
-error: e.reason?.stack || String(e.reason)
-});
-});
+    if (!root) return;
+    root.addEventListener('error', e => {
+        const safeMessage = sanitizeErrorValue(e.message || e.error?.message) ?? 'Shadow-DOM error';
+        const safeError = sanitizeErrorValue(e.error || e);
+        postReaderOnError({
+            message: safeMessage,
+            source: window.location.href,
+            lineno: e.lineno || 0,
+            colno: e.colno || 0,
+            error: safeError
+        });
+    });
+    root.addEventListener('unhandledrejection', e => {
+        const safeMessage = sanitizeErrorValue(e.reason?.message) ?? 'Shadow-DOM unhandled rejection';
+        const safeError = sanitizeErrorValue(e.reason?.stack ?? e.reason);
+        postReaderOnError({
+            message: safeMessage,
+            source: window.location.href,
+            lineno: 0,
+            colno: 0,
+            error: safeError
+        });
+    });
 }
 
 const installFontDiagnostics = () => {
