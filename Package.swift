@@ -97,6 +97,7 @@ let package = Package(
             dependencies: [
                 .product(name: "AsyncView", package: "AsyncView"),
                 .product(name: "LakeKit", package: "LakeKit"),
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ]
@@ -123,6 +124,7 @@ let package = Package(
                 .product(name: "LakeKit", package: "LakeKit"),
                 .product(name: "MarkdownKit", package: "Swift-MarkdownKit"),
                 .product(name: "OPML", package: "OPML"),
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
@@ -146,6 +148,7 @@ let package = Package(
                 .product(name: "LakeImage", package: "LakeImage"),
                 .product(name: "LakeKit", package: "LakeKit"),
                 .product(name: "Pow", package: "Pow"),
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
@@ -159,6 +162,7 @@ let package = Package(
                 "LakeOfFireContent",
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
             ]
@@ -188,6 +192,7 @@ let package = Package(
                 .product(name: "MarkdownKit", package: "Swift-MarkdownKit"),
                 .product(name: "OpenGraph", package: "OpenGraph"),
                 .product(name: "OPML", package: "OPML"),
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftUIBackports", package: "SwiftUIBackports"),
@@ -222,6 +227,7 @@ let package = Package(
                 .product(name: "OrderedCollections", package: "swift-collections"),
                 .product(name: "Pow", package: "Pow"),
                 .product(name: "ReadiumOPDS", package: "readium-swift-toolkit"),
+                .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
