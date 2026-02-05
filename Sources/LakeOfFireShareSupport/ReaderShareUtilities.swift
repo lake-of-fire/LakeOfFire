@@ -1,7 +1,7 @@
 import Foundation
 import SwiftSoup
 import SwiftUtilities
-import LakeOfFire
+import LakeOfFireContent
 
 public enum ReaderShareUtilities {
     public static func snippetURL(forKey key: String) -> URL? {

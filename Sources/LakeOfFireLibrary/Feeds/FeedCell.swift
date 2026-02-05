@@ -1,0 +1,57 @@
+import SwiftUI
+import RealmSwift
+import LakeOfFireCore
+import LakeOfFireAdblock
+import LakeOfFireContent
+import LakeOfFireContentUI
+
+public struct FeedCell: View {
+    @ObservedRealmObject var feed: Feed
+    var includesDescription = true
+    var horizontalSpacing: CGFloat = 10
+    
+    @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 26
+    
+    public var body: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            VStack(alignment: .leading) {
+                HStack(spacing: horizontalSpacing) {
+                    ReaderContentSourceIconImage(
+                        sourceIconURL: feed.iconUrl,
+                        iconSize: scaledIconHeight
+                    )
+                    .saturation(feed.isArchived ? 0 : 1)
+                    .opacity(feed.isArchived ? 0.8 : 1)
+                    .padding(4)
+                    
+                    Group {
+                        if feed.title.isEmpty {
+                            Text("Untitled Feed")
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text(feed.title)
+                                .foregroundColor(feed.isArchived ? .secondary : nil)
+                        }
+                    }
+                    .font(.headline.bold())
+                    Spacer()
+                }
+                if includesDescription, let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {
+                    Text(markdownDescription)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(Int.max)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .tag(feed.id.uuidString)
+    }
+    
+    public init(feed: Feed, includesDescription: Bool = true, horizontalSpacing: CGFloat = 10) {
+        self.feed = feed
+        self.includesDescription = includesDescription
+        self.horizontalSpacing = horizontalSpacing
+    }
+}
