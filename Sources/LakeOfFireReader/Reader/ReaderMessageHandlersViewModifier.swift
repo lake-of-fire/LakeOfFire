@@ -158,7 +158,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
 
     // Cache baked tracking-section sizes keyed by section href + book, with per-key snapshots.
-    private let trackingSizeCache = LRUSQLiteCache<String, ReaderSizeTrackingCacheBucket>(
+    private let trackingSizeCache = LRUFileCache<String, ReaderSizeTrackingCacheBucket>(
         namespace: "reader-pagination-size-tracking-cache-v2",
         version: 2,
         totalBytesLimit: 20 * 1024 * 1024,

@@ -7,33 +7,39 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		01912B341441E1FBC10C0FAA /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = DD8D6DBA0EE54D93927A767F /* SwiftCloudDrive.xcframework */; };
 		01EFDA9F827E56F28B89A8F5 /* String+StrippingHTML.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7864C63653918DC62961A70B /* String+StrippingHTML.swift */; };
-		02EA8B118472F1DBF8E34EED /* DebouncedOnChange.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */; };
 		02F6DB915875489675BEE0C4 /* Archive+Data.swift in Sources */ = {isa = PBXBuildFile; fileRef = B885C5D3CABCD8999BB380AF /* Archive+Data.swift */; };
+		03F1814B31D25CD5EDC389EE /* OPML.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C88234EE5602605A3331D5F5 /* OPML.xcframework */; };
 		0444EA5C50C87D43827B918D /* ReaderFileURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93F5F5CC64BBF7FE53837251 /* ReaderFileURLSchemeHandler.swift */; };
+		04CB04E7C716BE207149CBE1 /* RealmSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */; };
+		0683EBB65A8E714F49CB3609 /* MarkdownKit.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 360D2F488A9EB6A6D52BDE1F /* MarkdownKit.xcframework */; };
 		074910AF80321DAD5539A1C6 /* CSS in Resources */ = {isa = PBXBuildFile; fileRef = 71FBF0C1DA553663DD278EAD /* CSS */; };
 		0759D3D4AF2F45B28657ACBC /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
 		0957D1D3B4D072B36E510C9A /* BookLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64238F6B2BCE65AB3D1E2032 /* BookLibraryView.swift */; };
-		098DD2BA9FF20EB7DDFA0577 /* MarkdownKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 19804300D047EDE18FB8708A /* MarkdownKit.framework */; };
+		099215AAA82FC1550C882C95 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */; };
 		09A2E4A0D1A61DBC6440B073 /* TuistBundle+LakeOfFireContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE815231DC25AA1BBDE7C35E /* TuistBundle+LakeOfFireContent.swift */; };
 		09C951CAF82A49704471FAF9 /* ReaderModeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F928AF6884694ED6E488E4D6 /* ReaderModeViewModel.swift */; };
 		0E905AFAD8F6B2B385C54E59 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		1047412051B9446CDBB5C540 /* DefaultRealmConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91D0420AF9E12FDF8404AAE3 /* DefaultRealmConfiguration.swift */; };
 		1139809140D3006BFEB86E8A /* ContentCategoryButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FBA97862E4F1167F707D81F /* ContentCategoryButtons.swift */; };
-		11AB4693821D804DF96B4378 /* AsyncView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
-		11CAFB4F5FE211EB4B210B64 /* FilePicker.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 9C70D45904D4F0928CCAC4EE /* FilePicker.framework */; };
+		129E3C5550D01013464CC69C /* SwiftUIBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 1DF20017665E4487960C6D6B /* SwiftUIBackports.xcframework */; };
 		132A7077150E14F78FFF3679 /* ReaderContentProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = D214A28DA8C9BF920485CEB0 /* ReaderContentProtocol.swift */; };
 		14091FC3930123C94A09DDBA /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
 		1448F2E205CD5AFC9E0CFE95 /* UserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0E0729E124F758E59DB56B4 /* UserScript.swift */; };
+		15B04501BA6D0E30D2077A4A /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
 		165FF7F0A5D42E66529D3A0F /* EPub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102FAB3669EAF9C880015307 /* EPub.swift */; };
 		16A5F3335847BF83044A3C18 /* FeedCategoryImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7BB6A0CFAB3BE542C6180B6 /* FeedCategoryImage.swift */; };
 		174D83407D362BD0D1C33361 /* LibraryDataManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */; };
 		1986403F82646CC361C83CA4 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
 		19AE9D394A65661F7F599AEE /* BigSyncKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */; };
 		1AC34EFD8998A532D4CADD08 /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
-		1B36565B8373EAE37C547676 /* Collections.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = C61C089C1B653DE60FEEFBE1 /* Collections.framework */; };
-		1C295B88374A33500435FFC1 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
+		1B9623145CB5954CB251AB17 /* NukeUI.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */; };
+		1BFC0839F1F6B979FB00C4DF /* SwiftUIBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 1DF20017665E4487960C6D6B /* SwiftUIBackports.xcframework */; };
+		1C3A71C42C767CB80CC0BF07 /* Html.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 203A4C9986EBB2E845703EE9 /* Html.xcframework */; };
 		1C547B18077736B243213EF2 /* foliate-js in Resources */ = {isa = PBXBuildFile; fileRef = CA92F856353D8F32BE2AA800 /* foliate-js */; };
+		1CA85A1445AD23BB05F77EE0 /* LakeImage.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */; };
+		1D30EEE59B773D72DB2ADB43 /* RealmSwiftGaps.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9DD94234161599ED23FF959 /* RealmSwiftGaps.xcframework */; };
 		1DD99F8B86F5139FAF89395A /* ContentBlockingEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CAF69D789FE196EF8EC4FDA /* ContentBlockingEnvironment.swift */; };
 		2035E4B128481E027CD0FB24 /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
 		221E5837DDF30B7164E59399 /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
@@ -41,191 +47,181 @@
 		230759FF4A0CFEF36AB397A9 /* AdblockRulesModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BCDA574ECC78281E3EAC5E /* AdblockRulesModel.swift */; };
 		232FD0784B8890F9CC067C33 /* SwiftReadability.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 1FB405D7349D3C50BEF4D8FF /* SwiftReadability.framework */; };
 		250CAC2C80079F0BC17ECF10 /* ReaderContentProtocol Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6108EBAEB0ECE7A9CCE9EEDE /* ReaderContentProtocol Extensions.swift */; };
-		25DC51881DE376172D637791 /* MarkdownKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 19804300D047EDE18FB8708A /* MarkdownKit.framework */; };
 		26ABE53AB93FA53D59990D9D /* LibraryDataManager+Categories.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24A0B13B27611AD2A533FE15 /* LibraryDataManager+Categories.swift */; };
+		281E8BC2A4CC056DBD6E2F8F /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
+		28B1BB31E214F4616659CFD2 /* OpenGraph.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2E2F7C0D4067237AE2F4225F /* OpenGraph.xcframework */; };
 		2A6972BC4D653489D45109A0 /* BookmarkButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4033A8D7C0803299FF506B4F /* BookmarkButton.swift */; };
-		2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */; };
+		2BFB121902DE69E54916C4D0 /* AsyncView.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C4CE3C6128A4BF5462A1BF94 /* AsyncView.xcframework */; };
+		2C5CA4BC050B94C57424B51F /* NukeUI.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */; };
+		2D237D21DB6BB654446AA025 /* SwiftBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */; };
 		2F7554D92ABFBD1CB3574D75 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
+		301FF6428C03C27F13DD3369 /* BraveAdblock.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = CEE60D2E68CFA835B1AF5C57 /* BraveAdblock.xcframework */; };
 		31468B7EF1F8A8831C8C3DE6 /* InjectionImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */; };
 		33A7DACD7C6B5B016FAA9987 /* InternalReaderProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */; };
 		33CC9909CA5E197BFED3B045 /* LibraryScriptsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DAC56FCCA2E942C1845B876 /* LibraryScriptsListView.swift */; };
 		346AB819113016A861919749 /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 		34C22366A2DA7CFD263E6169 /* Book Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD7EC6D5CE496DC6F2C5317E /* Book Views.swift */; };
-		379818BA6B837BAAE6015EAA /* OpenGraph.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0DBF1743F0462956A696C598 /* OpenGraph.framework */; };
+		3A314DCC48464CCF8B5BE943 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
+		3AA2C9D577663FB4E09E8211 /* FeedKit.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = F135F49810E7BF5364256A32 /* FeedKit.xcframework */; };
 		3AAAFB6251905A8071DEBCDD /* URL+ReaderCanonical.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42130BBDD30500801F64BF97 /* URL+ReaderCanonical.swift */; };
-		3D663C25247533C9C2AA1F32 /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
+		3AB3DE3488BF162757933980 /* LakeImage.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */; };
+		3D354D58ACBFB52CE5A56C75 /* Html.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 203A4C9986EBB2E845703EE9 /* Html.xcframework */; };
 		3E681597EDF8A53E6C0AA90D /* HistoryRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9750CAAE830F61E0631B8239 /* HistoryRecord.swift */; };
 		3EA61F32BC64DD1337C1535A /* EbookURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E18D0EF549BDEF032346A8D /* EbookURLSchemeHandler.swift */; };
+		3F2109ECDD5D98822F7C1B00 /* NukeUI.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */; };
 		40680DAF97CA5C7EFCAC30B6 /* EbookReaderProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1DC7352A947E0860D33ECE /* EbookReaderProtocol.swift */; };
-		42CAEC906AE9AED02E7EE294 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
-		45DA7A147DACC42EF780B40A /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
-		4613E52C3705D82D492FF4F4 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
+		41A40B8D25F12C36AFD62DDA /* Nuke.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 3E21A00F93F2EB5B53F017EE /* Nuke.xcframework */; };
+		442613DD2DF3FE7C010D8F03 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
+		45F6C89AA9F38FBD1033AD15 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
 		4616EFFA78DCC44B6CD2ADB9 /* File Loading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CE64FB8B7901EC62ED969F8 /* File Loading.swift */; };
 		47A69DF3F189601AE6C16F3B /* LibraryCategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C40F5457F51A6FA437BAA9C /* LibraryCategoriesView.swift */; };
 		48B3652A23EF7495FE606008 /* LakeOfFireContentUI.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		4A8F85B2E6B5D7075EC68CDE /* ReadingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1989CC0362096CC0054800DD /* ReadingSession.swift */; };
 		4AA46CE4FBD9AF256F479244 /* EbookFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D46E0204024D29E3136178D /* EbookFileManager.swift */; };
 		4AFCA40A35D3BC836EAE559A /* ReaderContentLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC939A838622FC9266773A65 /* ReaderContentLoader.swift */; };
-		4B86F977A3E4AF5A0055A8B3 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		4D02FBDA153FF131473A8002 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 1727F4123F8595B844950D30 /* User Scripts */; };
-		508631947927ADFC0087F287 /* MarkdownKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 19804300D047EDE18FB8708A /* MarkdownKit.framework */; };
-		50E8C51C79DF640151744F19 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
+		510FBEC58EC7B39DACE54914 /* RealmSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */; };
 		51652B02A2CB419BEB48D78F /* ReaderMediaPlayerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7351A4FB774D9A62D45A567 /* ReaderMediaPlayerViewModel.swift */; };
 		529E84665CF64691CF763F85 /* Document+Ebooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = F871493FDE55348A1BB7D54F /* Document+Ebooks.swift */; };
 		52D8958BD4ADE6D4F0CFABBD /* EditorsPicksLibraryCategoryButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B13980BCB335D340A73ECB /* EditorsPicksLibraryCategoryButtons.swift */; };
 		52E9D564CC7C6233AA680257 /* ReaderEnvironmentViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */; };
+		534539D5AC297B3DB822E2D9 /* RealmSwiftGaps.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9DD94234161599ED23FF959 /* RealmSwiftGaps.xcframework */; };
 		55B3C919EB749CBABFDE1A78 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
-		573C56DF2F5FE8279A3822B2 /* FeedKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
-		598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
+		56B1394F5D40E296B5B86C23 /* RealmSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */; };
+		571FAC316F8524B9008D5E07 /* AsyncView.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C4CE3C6128A4BF5462A1BF94 /* AsyncView.xcframework */; };
+		598DACE867CCB5EAAF23F421 /* OPML.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C88234EE5602605A3331D5F5 /* OPML.xcframework */; };
 		59FF7DE4EF12E96FE29A26E1 /* ReaderToastsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D232EF9DFC289EF1F9D2B6 /* ReaderToastsView.swift */; };
 		5A96F584C1590884AA55785A /* ReaderLoadingProgressOverlayViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEACDFF35BB3C511190E95F2 /* ReaderLoadingProgressOverlayViewModifier.swift */; };
+		5B19F8503F764E379B9F9FFE /* Nuke.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 3E21A00F93F2EB5B53F017EE /* Nuke.xcframework */; };
 		5BAC9222B03E4BADCC527F28 /* AdblockStatsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65FFA60D0376D0A46ABD68E2 /* AdblockStatsModel.swift */; };
-		5EE805A99A9C35F1D531BF0C /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
 		5F02C6DB385F1DEF4212ACA8 /* URL+EBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */; };
-		5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
 		5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */; };
 		602A9980815C4D77EE598621 /* LibraryScriptFormSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */; };
-		60ED02EE46222D64EB6AE1B8 /* LakeImage.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
 		619936BCC4D239752919BF05 /* EPubParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8CF30D23C857DABADD4F9B9 /* EPubParser.swift */; };
 		630DA6856F4DE0B19E344505 /* SwiftSoup.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */; };
-		643D4C08F7C6C42705DD0766 /* Collections.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = C61C089C1B653DE60FEEFBE1 /* Collections.framework */; };
 		6452F3FABCAED36212C68897 /* SwiftSoup.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */; };
 		649C9DBAF3406DCD979A961C /* FeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DA26D8E9078F7930EE6D2EC /* FeedView.swift */; };
+		65A343A54F8F591713E8CB2B /* Nuke.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 3E21A00F93F2EB5B53F017EE /* Nuke.xcframework */; };
 		66D0683AB772D738D785AF1F /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
 		67132D6A9585B7DAE5055254 /* WebViewNavigatorEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B55CD346F10F29329D0B7E6 /* WebViewNavigatorEnvironment.swift */; };
 		68E162EC1CC1309508E161A2 /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
-		69BB7456E3FBAF5A4C374CEF /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
-		69E7638756A1E0ACC91A24A3 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
 		6ACF6EE4F619ED0BEE29F134 /* ReaderToastBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A9E2BDEC10079CE6CED146 /* ReaderToastBar.swift */; };
 		6C7D1FD4EA7F65D2C12847F6 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
-		6D478D35B3E9F42F96AFE5BB /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
-		6D91DDF89993CED1182642C4 /* Logging.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = BAFD50164A82B1A58BD8ACEF /* Logging.framework */; };
 		6F00024FF3B7EC7C3C1DA1EE /* URL+ReaderFileURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72660A52642E1A0CEF58E180 /* URL+ReaderFileURL.swift */; };
 		70B31DF3E2495D1932A98979 /* AsyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30563D3E749EE4190578870E /* AsyncView.swift */; };
-		70C0387A7E516592AA359A95 /* LakeImage.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
 		744588F3F8042D1985945E50 /* WebFeedButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C257921AF7AD599679F761F7 /* WebFeedButton.swift */; };
+		749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C61C089C1B653DE60FEEFBE1 /* Collections.framework */; };
 		753ADCD5A87C3A0D016E3C91 /* ReaderContentList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ABCCFDB971B5C888BE1180E /* ReaderContentList.swift */; };
 		763044613154FD7BF689E236 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 498DFDA5ADCDD665A18EF048 /* User Scripts */; };
 		793E22245AC31BCA04D92EAF /* Feed Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58665BB5C4CA1B4D6F5B559 /* Feed Models.swift */; };
+		7A68998915514626DBD0C967 /* DebouncedOnChange.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 06EE3131A2BF24F2FA31349C /* DebouncedOnChange.xcframework */; };
 		7BB80508A803B8DC9FC7F6F4 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
 		7BBE994659EFBE1563D938AB /* Bookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E12213CF1250504A9D195A1 /* Bookmark.swift */; };
+		7D3D32ADF33936F7F2725611 /* FilePicker.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = E1BB7A5EF0552112CC248DA9 /* FilePicker.xcframework */; };
 		7DF24F4976F89C361D42519B /* ArticleReadingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 292523064730D827A6710BA5 /* ArticleReadingProgress.swift */; };
 		7FEB58022ED37809244910BE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
-		80A18D1E0A580AF8086744CF /* Pow.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
 		80E05426241473182B1338A2 /* ReaderSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 355678653CC5882AE9C4748C /* ReaderSettings.swift */; };
-		82497BC913FDE752F4CDEE8D /* FilePicker.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 9C70D45904D4F0928CCAC4EE /* FilePicker.framework */; };
-		827D2DAC3EE7D4F2DB47C90B /* OrderedCollections.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
+		817F6560B2C9AAA02C30257D /* ZIPFoundation.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */; };
 		828F155DE207C911011ED3D7 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 8016AAC472FE654B02DB6492 /* User Scripts */; };
-		82C1F5AB0E6040DAD76156CD /* LRUCache.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 31ED82BC038DAB511FEE78AE /* LRUCache.framework */; };
 		831062A6E6EAAC47FEFC72CD /* FlashLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BEBB200185722685FD99D0B /* FlashLog.swift */; };
 		836A11C9F2D9929F06A80FD0 /* ContentPackageFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75D9E6388FFDD5F7C0F4294 /* ContentPackageFile.swift */; };
 		8415580E0CE2D12FF9F736C5 /* URL+Internal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C49D6E629C02F2EEA97E380 /* URL+Internal.swift */; };
 		845BE8FB9903B9BD14565EE7 /* Reader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AA574E96149E47844F7F66 /* Reader.swift */; };
-		847D1840A086D6418AFFBF4B /* LakeImage.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0A07E441969025DDD60958D1 /* LakeImage.framework */; };
 		85FCF04F84F676E948878ABB /* LibraryFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDF670F54377EEB0720CA648 /* LibraryFeedView.swift */; };
 		86DCC30516DAF8D4E925CB8C /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
-		87AC8179EDD92C03E10BA186 /* Pow.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
 		88163DF75BD02B4A16991373 /* UTType+EPub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18482AF17295B2CF26728AF5 /* UTType+EPub.swift */; };
-		888ABEFBE854CFC4BCB9E116 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		8A3F0E04EA80C3C503F5A753 /* FaviconFinder.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 44214EC7D4875D6794B8842B /* FaviconFinder.framework */; };
 		8A8F7A9547174A85D5E0FE10 /* TuistBundle+LakeOfFireReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590BB72CD030D9F284EC87EE /* TuistBundle+LakeOfFireReader.swift */; };
-		8B85B40F5E7D21FDB5ED4F44 /* AsyncView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
+		8AACA23714BDC0050F206ECA /* Logging.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = D99243617F875E32C1EBA880 /* Logging.xcframework */; };
 		8B999BE209FC100F1B7810BF /* MediaStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C356CA34B7D184955219C3 /* MediaStatus.swift */; };
 		8BC08B3D53F78059047C5A42 /* OPDSCatalogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B999F3B6F3DC53882B4DD23 /* OPDSCatalogsView.swift */; };
-		8C0E291CD8F6E880DBC3C2F5 /* OpenGraph.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0DBF1743F0462956A696C598 /* OpenGraph.framework */; };
+		8C56415481F8145928D0D8AF /* RealmSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */; };
+		8D87E3D0875CD87770FC5043 /* RealmSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */; };
 		8F83E3E0D028AB91C912C310 /* ReaderModeButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB3093361E7F10B9B618FEA /* ReaderModeButton.swift */; };
 		8FB6AF011166D0B829C8402D /* ReaderEbookTextProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */; };
 		903B51BDA1AABDC47FE5421F /* ReadabilityScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8625A31BA38EBA3A697ABC3 /* ReadabilityScript.swift */; };
-		903E710F8450685A30CAC7C3 /* FeedKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5126A6F6B4DB514C3874C507 /* FeedKit.framework */; };
 		904D7665C2D44BD7789E9EE3 /* Feed Model Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2685ABB176319217D80A76B /* Feed Model Extensions.swift */; };
 		90CB3289582C5298DAB5E2C7 /* AdblockStatsUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AACB1DB248432581D82792C /* AdblockStatsUserScript.swift */; };
 		91296B41B50B271356D2BC85 /* UserScriptAllowedDomainCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10F789EFF1222C6A701E0E6 /* UserScriptAllowedDomainCell.swift */; };
 		9241FAE8F084B37417D46233 /* UserLibraryCategoryButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F059AA2317C283232A0DB30 /* UserLibraryCategoryButtons.swift */; };
 		94F504531CE5AC44C222E0A6 /* ReaderContentCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = FECE32BA7953906A59D3AD88 /* ReaderContentCell.swift */; };
 		9698ECA908D8785FCB9C32FC /* URL+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE1C1D617EC7AA8E290627A /* URL+ReaderView.swift */; };
-		975FAE37A395F924E758A8BC /* OPML.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 20D77CA7B347A9568C453FE8 /* OPML.framework */; };
 		993045C9816D79E9C2785E47 /* ReaderFileManagerSetupModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B11E43A2FD82E69D4CC4A3 /* ReaderFileManagerSetupModifier.swift */; };
-		99860DD112268BE58155F788 /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
 		99A1E1DB4C820A806F6F2124 /* LakeOfFireFiles.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */; };
+		9A28F40B10A42CD7C93C7675 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */; };
 		9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
-		A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
+		9D6A0B3802A9E7CD3970AAD0 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */; };
 		A35BCC9172FDA64D24751A4B /* ContentFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF2E0FE2DC03E3D0F9EAA88 /* ContentFile.swift */; };
 		A648E4AF80F0406F68DFC089 /* ReadabilityImagesUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = E25057F44128F064A752E967 /* ReadabilityImagesUserScript.swift */; };
 		A773AB96AC13AEFFCB80098D /* LibraryManagerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 476A1FF22BB7B9AE50A7A5D4 /* LibraryManagerViewModel.swift */; };
-		A7BE5EDB18360A051F0D3978 /* SwiftUIBackports.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */; };
+		A7BBCD3B5BF8F55724ED9594 /* RealmSwiftGaps.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9DD94234161599ED23FF959 /* RealmSwiftGaps.xcframework */; };
 		AA493B17C6FE821D1B3CF3E0 /* TuistBundle+LakeOfFireAdblock.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C0EC5AF704C86CEF05B26 /* TuistBundle+LakeOfFireAdblock.swift */; };
 		AA6816B37B97B7D2B14A8741 /* ReadabilityContentTransformations.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E318A7F5F91BA58335060 /* ReadabilityContentTransformations.swift */; };
-		AB551666734931A888FBF44D /* SwiftCloudDrive.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */; };
 		AD2253430928B7CBBD12F2DC /* URL+ContentTypeTitle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2087E0C0462C479BEC4635D5 /* URL+ContentTypeTitle.swift */; };
 		AD4D97351AB3A66D03CE5BE9 /* WebViewNavigator+ReaderContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF8B2522DB031E91ACC8409 /* WebViewNavigator+ReaderContent.swift */; };
+		AD4DFF76109BEF051ADFAF57 /* RealmSwiftGaps.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E9DD94234161599ED23FF959 /* RealmSwiftGaps.xcframework */; };
 		AD544CE378C00564F13058EB /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 		AFA92416B096FFE8C80AE573 /* JapaneseLanguageTools.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */; };
 		B0BBFF74349009B9CC800F36 /* ReaderConsoleLogsUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCC96841DC7C835DF335520B /* ReaderConsoleLogsUserScript.swift */; };
-		B0E55E460BB6394E70120B3D /* Realm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */; };
 		B1D278604B45FC9EC1E13ED9 /* BaseReadingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F56AFD6057D9BF2D3E9ACB1 /* BaseReadingProgress.swift */; };
 		B314E13B3112276D24ABACB1 /* URL+GoogleQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B5DBD524B1DA313BA8C068 /* URL+GoogleQuery.swift */; };
+		B323BF3A0890103EC6F489DD /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
 		B7D972F268641334FA733C5D /* LakeOfFireReader.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */; };
-		B7E61932BBC42C3823124BBF /* SwiftSoup.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */; };
 		B8B2A183DF6A5B204CB3F869 /* ReaderDateFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D368550632212CD59E14EFC7 /* ReaderDateFormatter.swift */; };
-		B9DFC50C7F09F14D279CD4DB /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
+		B8F99E0544744D39497905B7 /* Pow.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 132CF5DE9B9B22114B069049 /* Pow.xcframework */; };
 		BB5ACFE3BC82697CEF723ACB /* Color+Presets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84EE5AD646FA4689A146F785 /* Color+Presets.swift */; };
 		BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 252359C3746A321FE34487F6 /* SwiftDOMPurify.framework */; };
-		BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
-		C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
-		C8831530B425A5B96226A5BB /* OPML.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 20D77CA7B347A9568C453FE8 /* OPML.framework */; };
-		CF7E1793B8C1593BEBF023F4 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
-		CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
+		C5326CD2DFA1418CBC30EAF0 /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = DD8D6DBA0EE54D93927A767F /* SwiftCloudDrive.xcframework */; };
 		D04B81EE4DAF2A18194F87A2 /* CloudDriveSyncStatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D3E99961AAEC5C03051E6A /* CloudDriveSyncStatusModel.swift */; };
 		D08307802D0C0BF718FBB70E /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
+		D0CE59060CADAD4D8354C03C /* SwiftBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */; };
 		D1056C22353520428B5BFCED /* ReaderWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F63913BA3B001236DF672E24 /* ReaderWebView.swift */; };
 		D11ED284EE0F55DCE567AB0A /* ReadiumOPDS.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = B019428C65E559262FCEA21A /* ReadiumOPDS.framework */; };
 		D135450BB88CC44FF9A74256 /* URL+HashlessComparison.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDC5FF6B5096B69511853D5 /* URL+HashlessComparison.swift */; };
 		D34E1024C466414FC550351A /* PhysicalMediaCapableProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89794E4F53FDE88FD9453CC4 /* PhysicalMediaCapableProtocol.swift */; };
-		D3AFF935D01F727AEF6DDE13 /* AsyncView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
 		D3DA08E16596B64A28AB036A /* ReaderContentHorizontalList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD853F2C49D88DEC789CAE8 /* ReaderContentHorizontalList.swift */; };
 		D4015DF5625ECC2253B8C2AF /* BigSyncKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */; };
-		D51997E936A2C61BD2031D14 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		D560BCEB05A1946708A6DAC0 /* ReaderModeLoadHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD4783945D30E816EB3BBB0 /* ReaderModeLoadHandling.swift */; };
-		D6B5850EBE0F9128B1ED4EE0 /* FaviconFinder.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 44214EC7D4875D6794B8842B /* FaviconFinder.framework */; };
+		D5C72D5FCBB5B4DF1B2887C1 /* OrderedCollections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		D82000EF3020955AD1B51FCE /* ReaderProtocolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956AC9927465D95F2E19CBB0 /* ReaderProtocolRegistry.swift */; };
+		D83EA047AD1F739B5468F58E /* LakeImage.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */; };
 		DA6811FE24397BC1EBFD3561 /* LakeOfFireAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */; };
 		DA7826797D7F9A9F7F066AE4 /* NetflixUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6CB23099E4D7B6EA5B9AC45 /* NetflixUserScript.swift */; };
 		DAE2A736CE100AC4E9DAA4DF /* AdblockStatsSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C44EA1601DD1C75903EEC5 /* AdblockStatsSheetView.swift */; };
+		DBC9FBB406940CE9ED177D2A /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
 		DBE2F767346DD5FF86DC4FE6 /* LakeOfFireContentUI.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		DE8643AA823ED4BB529A919D /* LibraryManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6014A3319E03F979A559A27C /* LibraryManagerView.swift */; };
+		DE91CC083EA5EE75A731569F /* BraveAdblockCore.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B29CADB358D3DFFE80A8048 /* BraveAdblockCore.xcframework */; };
 		DEA10EBF7958877E6E5E41B2 /* FeedCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93EB0B118916B63BC76CB86C /* FeedCell.swift */; };
-		DF5EFF4666A4BDF4FD9C0E50 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
-		E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
-		E2772EB660A1390075D6AE7F /* BraveAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */; };
-		E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 362415398327404708608B86 /* ZIPFoundation.framework */; };
+		DECFC62578281A2AF069AA97 /* ExpandableText.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 1C9B4CA0D063F3A0DA55734A /* ExpandableText.xcframework */; };
 		E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */; };
 		E47875329F47EC333928799F /* ReaderImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
+		E5EF2EF46C782D8892A8F35C /* R2Shared.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4BB2208086E250223E3C6577 /* R2Shared.framework */; };
 		E7E3D2C99B45173435E98B02 /* BookGridCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C42D6E7E1ACFA977D35C9E /* BookGridCell.swift */; };
 		E9266CEF96F206AF24F0084D /* ReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8DB8BE5FC8753325BDABE3 /* ReaderViewModel.swift */; };
 		E93D8B027EAA158D32354DCA /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
-		E9A5FBE5A9EE1B46BC1642B5 /* OPML.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 20D77CA7B347A9568C453FE8 /* OPML.framework */; };
 		E9B6BDE3B59772370140A998 /* ReaderUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C53D3486FAC510F64D97141 /* ReaderUserScript.swift */; };
-		E9FC23C72A226DB3D62AA905 /* RealmSwiftGaps.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */; };
 		EB4C7754AE95B62C023795E2 /* ReaderContentSourceIconImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8CF732A4D704EC0B2AD050D /* ReaderContentSourceIconImage.swift */; };
-		ED786D9E19DD9A9A419F258E /* ExpandableText.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 2D1235D7683CF901922B01A2 /* ExpandableText.framework */; };
 		EDC134BBE0EA04456AA7B3D0 /* LibraryCategoriesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13849EE84EAEA7363556428B /* LibraryCategoriesViewModel.swift */; };
 		EE18294F8009B8E0A5729DC5 /* ReaderFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63C862B081B81E9DCD4CC5E9 /* ReaderFileManager.swift */; };
 		EEAAA647CD83080360D5EB6C /* LibraryCategoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E5090C3B0565E597051BF78 /* LibraryCategoryView.swift */; };
 		EEB14862EB4CE90561A2C4F8 /* ReaderContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAFB8F45684C4D923369DC75 /* ReaderContent.swift */; };
+		EEDC2F059FC092478E08D358 /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
 		EF3F4D73B963AE26D93BC7ED /* NavigationTaskManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 878E05D9D239C170DFDE2C3A /* NavigationTaskManager.swift */; };
 		F019EFC3A98215BE15157C35 /* PlainTextHTMLConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70B61E847844877510DCDEC5 /* PlainTextHTMLConverter.swift */; };
+		F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31ED82BC038DAB511FEE78AE /* LRUCache.framework */; };
 		F20D070F298129461504D5FD /* InternalURLSchemeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C45893AA23B27EB6A020D51 /* InternalURLSchemeHandler.swift */; };
 		F34D8484E4579795DD47EE9C /* YoutubeAdSkipUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = B69E886C77D5440750153EFF /* YoutubeAdSkipUserScript.swift */; };
 		F38E441C562EC57A31CA2AFD /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
-		F40EEED73EE4D8ECF4AB2167 /* OrderedCollections.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		F4F9B4AF34EE7401B91A9B47 /* ReaderMessageHandlersViewModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */; };
 		F510C5073A7A0E5E2E59EA32 /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
+		F590C3FC06D9B4D5E79D81A1 /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
 		F5C3EAB8FD833E799FC77347 /* OPDS Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28811599CCF9F57680CE6B42 /* OPDS Models.swift */; };
-		F7746BBD1F45F311A2C9081E /* SwiftUIBackports.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */; };
-		F902851CBCF814BD00F93A3A /* DebouncedOnChange.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */; };
+		F8C0F6FDE44BBB2A5F011E88 /* Pow.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 132CF5DE9B9B22114B069049 /* Pow.xcframework */; };
 		FA920CEAEB2A6C87C0902E76 /* MediaTranscript.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A7C654FB182EEA94098FEB /* MediaTranscript.swift */; };
 		FACF9D426AC37711D4C57F71 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
+		FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		FC4FBC9CD92098606B6ADB0B /* LakeKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */; };
 		FF7D151D745C112D798DDC35 /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 /* End PBXBuildFile section */
@@ -315,13 +311,6 @@
 			remoteGlobalIDString = B06A980F8A44621BC7CDFEC2;
 			remoteInfo = LakeOfFireAdblock;
 		};
-		9CCEB76788E005C8110298C8 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = BB89F349C49AD326D105E98A /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = CF5D0C4318963583EC78CF78;
-			remoteInfo = LakeOfFireContent;
-		};
 		9E1014B3C8EF00B1034A3040 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BB89F349C49AD326D105E98A /* Project object */;
@@ -367,62 +356,23 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		0228A6869762CBC7D26A79FD /* Dependencies */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 8;
-			dstSubfolderSpec = 16;
-			files = (
-				E2772EB660A1390075D6AE7F /* BraveAdblock.framework in Dependencies */,
-				F40EEED73EE4D8ECF4AB2167 /* OrderedCollections.framework in Dependencies */,
-			);
-			name = Dependencies;
-			runOnlyForDeploymentPostprocessing = 1;
-		};
-		1273BBDD15BAAB21938F4BD2 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		25872132147CDF4C2011B14B /* Dependencies */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
 			dstSubfolderSpec = 16;
 			files = (
-				D3AFF935D01F727AEF6DDE13 /* AsyncView.framework in Dependencies */,
 				19AE9D394A65661F7F599AEE /* BigSyncKit.framework in Dependencies */,
-				643D4C08F7C6C42705DD0766 /* Collections.framework in Dependencies */,
-				02EA8B118472F1DBF8E34EED /* DebouncedOnChange.framework in Dependencies */,
-				ED786D9E19DD9A9A419F258E /* ExpandableText.framework in Dependencies */,
-				D6B5850EBE0F9128B1ED4EE0 /* FaviconFinder.framework in Dependencies */,
-				903E710F8450685A30CAC7C3 /* FeedKit.framework in Dependencies */,
-				82497BC913FDE752F4CDEE8D /* FilePicker.framework in Dependencies */,
-				82C1F5AB0E6040DAD76156CD /* LRUCache.framework in Dependencies */,
-				847D1840A086D6418AFFBF4B /* LakeImage.framework in Dependencies */,
 				6C7D1FD4EA7F65D2C12847F6 /* LakeKit.framework in Dependencies */,
 				DA6811FE24397BC1EBFD3561 /* LakeOfFireAdblock.framework in Dependencies */,
 				AD544CE378C00564F13058EB /* LakeOfFireContent.framework in Dependencies */,
 				48B3652A23EF7495FE606008 /* LakeOfFireContentUI.framework in Dependencies */,
 				FACF9D426AC37711D4C57F71 /* LakeOfFireCore.framework in Dependencies */,
 				99A1E1DB4C820A806F6F2124 /* LakeOfFireFiles.framework in Dependencies */,
-				6D91DDF89993CED1182642C4 /* Logging.framework in Dependencies */,
-				508631947927ADFC0087F287 /* MarkdownKit.framework in Dependencies */,
-				975FAE37A395F924E758A8BC /* OPML.framework in Dependencies */,
-				379818BA6B837BAAE6015EAA /* OpenGraph.framework in Dependencies */,
-				827D2DAC3EE7D4F2DB47C90B /* OrderedCollections.framework in Dependencies */,
-				87AC8179EDD92C03E10BA186 /* Pow.framework in Dependencies */,
+				E5EF2EF46C782D8892A8F35C /* R2Shared.framework in Dependencies */,
 				D11ED284EE0F55DCE567AB0A /* ReadiumOPDS.framework in Dependencies */,
-				A19663146890EAC4A30CF1E6 /* SwiftCloudDrive.framework in Dependencies */,
 				BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */,
 				232FD0784B8890F9CC067C33 /* SwiftReadability.framework in Dependencies */,
 				6452F3FABCAED36212C68897 /* SwiftSoup.framework in Dependencies */,
-				A7BE5EDB18360A051F0D3978 /* SwiftUIBackports.framework in Dependencies */,
-				C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */,
-				E29BD7DCFF05069BB0B00131 /* ZIPFoundation.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -453,19 +403,78 @@
 			dstSubfolderSpec = 16;
 			files = (
 				D4015DF5625ECC2253B8C2AF /* BigSyncKit.framework in Dependencies */,
-				1B36565B8373EAE37C547676 /* Collections.framework in Dependencies */,
-				573C56DF2F5FE8279A3822B2 /* FeedKit.framework in Dependencies */,
 				1986403F82646CC361C83CA4 /* LakeKit.framework in Dependencies */,
 				14091FC3930123C94A09DDBA /* LakeOfFireAdblock.framework in Dependencies */,
 				7BB80508A803B8DC9FC7F6F4 /* LakeOfFireCore.framework in Dependencies */,
-				098DD2BA9FF20EB7DDFA0577 /* MarkdownKit.framework in Dependencies */,
-				E9A5FBE5A9EE1B46BC1642B5 /* OPML.framework in Dependencies */,
-				AB551666734931A888FBF44D /* SwiftCloudDrive.framework in Dependencies */,
 				630DA6856F4DE0B19E344505 /* SwiftSoup.framework in Dependencies */,
-				CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */,
-				5F7E11601F82D88A3949831A /* ZIPFoundation.framework in Dependencies */,
 			);
 			name = Dependencies;
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		739ED0B9B4563306152438CE /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireReader;
+			dstSubfolderSpec = 16;
+			files = (
+				2D237D21DB6BB654446AA025 /* SwiftBackports.xcframework in Static XCFramework Dependencies */,
+				129E3C5550D01013464CC69C /* SwiftUIBackports.xcframework in Static XCFramework Dependencies */,
+				DECFC62578281A2AF069AA97 /* ExpandableText.xcframework in Static XCFramework Dependencies */,
+				3AB3DE3488BF162757933980 /* LakeImage.xcframework in Static XCFramework Dependencies */,
+				099215AAA82FC1550C882C95 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
+				41A40B8D25F12C36AFD62DDA /* Nuke.xcframework in Static XCFramework Dependencies */,
+				8AACA23714BDC0050F206ECA /* Logging.xcframework in Static XCFramework Dependencies */,
+				45F6C89AA9F38FBD1033AD15 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
+				2C5CA4BC050B94C57424B51F /* NukeUI.xcframework in Static XCFramework Dependencies */,
+				F8C0F6FDE44BBB2A5F011E88 /* Pow.xcframework in Static XCFramework Dependencies */,
+				01912B341441E1FBC10C0FAA /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		79BD09431895EEB54A456ED2 /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireCore;
+			dstSubfolderSpec = 16;
+			files = (
+				571FAC316F8524B9008D5E07 /* AsyncView.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		7D3FCBC70AABCE7EEF3E5203 /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireAdblock;
+			dstSubfolderSpec = 16;
+			files = (
+				301FF6428C03C27F13DD3369 /* BraveAdblock.xcframework in Static XCFramework Dependencies */,
+				DE91CC083EA5EE75A731569F /* BraveAdblockCore.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		9839B5B30188F2A499CDDC85 /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireLibrary;
+			dstSubfolderSpec = 16;
+			files = (
+				D0CE59060CADAD4D8354C03C /* SwiftBackports.xcframework in Static XCFramework Dependencies */,
+				7D3D32ADF33936F7F2725611 /* FilePicker.xcframework in Static XCFramework Dependencies */,
+				1BFC0839F1F6B979FB00C4DF /* SwiftUIBackports.xcframework in Static XCFramework Dependencies */,
+				2BFB121902DE69E54916C4D0 /* AsyncView.xcframework in Static XCFramework Dependencies */,
+				1CA85A1445AD23BB05F77EE0 /* LakeImage.xcframework in Static XCFramework Dependencies */,
+				7A68998915514626DBD0C967 /* DebouncedOnChange.xcframework in Static XCFramework Dependencies */,
+				03F1814B31D25CD5EDC389EE /* OPML.xcframework in Static XCFramework Dependencies */,
+				65A343A54F8F591713E8CB2B /* Nuke.xcframework in Static XCFramework Dependencies */,
+				1C3A71C42C767CB80CC0BF07 /* Html.xcframework in Static XCFramework Dependencies */,
+				28B1BB31E214F4616659CFD2 /* OpenGraph.xcframework in Static XCFramework Dependencies */,
+				3A314DCC48464CCF8B5BE943 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
+				1B9623145CB5954CB251AB17 /* NukeUI.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
 			runOnlyForDeploymentPostprocessing = 1;
 		};
 		9B86051378A717249575D75E /* Embed Frameworks */ = {
@@ -483,14 +492,10 @@
 			buildActionMask = 8;
 			dstSubfolderSpec = 16;
 			files = (
-				60ED02EE46222D64EB6AE1B8 /* LakeImage.framework in Dependencies */,
 				55B3C919EB749CBABFDE1A78 /* LakeKit.framework in Dependencies */,
 				0759D3D4AF2F45B28657ACBC /* LakeOfFireAdblock.framework in Dependencies */,
 				1AC34EFD8998A532D4CADD08 /* LakeOfFireContent.framework in Dependencies */,
 				66D0683AB772D738D785AF1F /* LakeOfFireCore.framework in Dependencies */,
-				80A18D1E0A580AF8086744CF /* Pow.framework in Dependencies */,
-				4B86F977A3E4AF5A0055A8B3 /* SwiftUtilities.framework in Dependencies */,
-				6D478D35B3E9F42F96AFE5BB /* ZIPFoundation.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -515,6 +520,17 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BF2CA35F4888E4F3B6675E1A /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireFiles;
+			dstSubfolderSpec = 16;
+			files = (
+				9D6A0B3802A9E7CD3970AAD0 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
+			runOnlyForDeploymentPostprocessing = 1;
+		};
 		C3E1E675F3E25CCC2164857D /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -525,25 +541,29 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		CB11EED5B7FEDA38EABF5AF3 /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireContent;
+			dstSubfolderSpec = 16;
+			files = (
+				0683EBB65A8E714F49CB3609 /* MarkdownKit.xcframework in Static XCFramework Dependencies */,
+				598DACE867CCB5EAAF23F421 /* OPML.xcframework in Static XCFramework Dependencies */,
+				817F6560B2C9AAA02C30257D /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
+				3AA2C9D577663FB4E09E8211 /* FeedKit.xcframework in Static XCFramework Dependencies */,
+				3D354D58ACBFB52CE5A56C75 /* Html.xcframework in Static XCFramework Dependencies */,
+				442613DD2DF3FE7C010D8F03 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
+				C5326CD2DFA1418CBC30EAF0 /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
+			runOnlyForDeploymentPostprocessing = 1;
+		};
 		E2BBDED3AD9FE529D61F5330 /* Dependencies */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
 			dstSubfolderSpec = 16;
 			files = (
-				11AB4693821D804DF96B4378 /* AsyncView.framework in Dependencies */,
 				FC4FBC9CD92098606B6ADB0B /* LakeKit.framework in Dependencies */,
-			);
-			name = Dependencies;
-			runOnlyForDeploymentPostprocessing = 1;
-		};
-		E8BB9E09992F7067E2113937 /* Dependencies */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 8;
-			dstSubfolderSpec = 16;
-			files = (
-				B9DFC50C7F09F14D279CD4DB /* LakeOfFireContent.framework in Dependencies */,
-				B7E61932BBC42C3823124BBF /* SwiftSoup.framework in Dependencies */,
-				1C295B88374A33500435FFC1 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -553,22 +573,13 @@
 			buildActionMask = 8;
 			dstSubfolderSpec = 16;
 			files = (
-				8B85B40F5E7D21FDB5ED4F44 /* AsyncView.framework in Dependencies */,
-				F902851CBCF814BD00F93A3A /* DebouncedOnChange.framework in Dependencies */,
 				8A3F0E04EA80C3C503F5A753 /* FaviconFinder.framework in Dependencies */,
-				11CAFB4F5FE211EB4B210B64 /* FilePicker.framework in Dependencies */,
-				70C0387A7E516592AA359A95 /* LakeImage.framework in Dependencies */,
 				F510C5073A7A0E5E2E59EA32 /* LakeKit.framework in Dependencies */,
 				2035E4B128481E027CD0FB24 /* LakeOfFireAdblock.framework in Dependencies */,
 				346AB819113016A861919749 /* LakeOfFireContent.framework in Dependencies */,
 				DBE2F767346DD5FF86DC4FE6 /* LakeOfFireContentUI.framework in Dependencies */,
 				E93D8B027EAA158D32354DCA /* LakeOfFireCore.framework in Dependencies */,
 				B7D972F268641334FA733C5D /* LakeOfFireReader.framework in Dependencies */,
-				25DC51881DE376172D637791 /* MarkdownKit.framework in Dependencies */,
-				C8831530B425A5B96226A5BB /* OPML.framework in Dependencies */,
-				8C0E291CD8F6E880DBC3C2F5 /* OpenGraph.framework in Dependencies */,
-				F7746BBD1F45F311A2C9081E /* SwiftUIBackports.framework in Dependencies */,
-				D51997E936A2C61BD2031D14 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -591,38 +602,50 @@
 				86DCC30516DAF8D4E925CB8C /* LakeOfFireAdblock.framework in Dependencies */,
 				FF7D151D745C112D798DDC35 /* LakeOfFireContent.framework in Dependencies */,
 				2F7554D92ABFBD1CB3574D75 /* LakeOfFireCore.framework in Dependencies */,
-				DF5EFF4666A4BDF4FD9C0E50 /* ZIPFoundation.framework in Dependencies */,
 			);
 			name = Dependencies;
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		F92FA39CA1EC70DAC3D059A1 /* Static XCFramework Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstPath = _StaticXCFrameworkDependencies/LakeOfFireContentUI;
+			dstSubfolderSpec = 16;
+			files = (
+				D83EA047AD1F739B5468F58E /* LakeImage.xcframework in Static XCFramework Dependencies */,
+				9A28F40B10A42CD7C93C7675 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
+				5B19F8503F764E379B9F9FFE /* Nuke.xcframework in Static XCFramework Dependencies */,
+				B323BF3A0890103EC6F489DD /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
+				3F2109ECDD5D98822F7C1B00 /* NukeUI.xcframework in Static XCFramework Dependencies */,
+				B8F99E0544744D39497905B7 /* Pow.xcframework in Static XCFramework Dependencies */,
+			);
+			name = "Static XCFramework Dependencies";
 			runOnlyForDeploymentPostprocessing = 1;
 		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireShareSupport.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = JapaneseLanguageTools.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		0A07E441969025DDD60958D1 /* LakeImage.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeImage.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		0ACFBB587A7997D2F15BBE19 /* Pow.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pow.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		06EE3131A2BF24F2FA31349C /* DebouncedOnChange.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = DebouncedOnChange.xcframework; path = /Users/alex/.cache/tuist/Binaries/6982d5f7631e26625177510604d42033/DebouncedOnChange.xcframework; sourceTree = "<absolute>"; };
 		0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSelectionEnvironment.swift; sourceTree = "<group>"; };
 		0CE64FB8B7901EC62ED969F8 /* File Loading.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "File Loading.swift"; sourceTree = "<group>"; };
-		0DBF1743F0462956A696C598 /* OpenGraph.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OpenGraph.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0E267DA04D9DFBAE6197B193 /* CodeEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditor.swift; sourceTree = "<group>"; };
-		0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RealmSwift.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		102FAB3669EAF9C880015307 /* EPub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPub.swift; sourceTree = "<group>"; };
+		132CF5DE9B9B22114B069049 /* Pow.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Pow.xcframework; path = /Users/alex/.cache/tuist/Binaries/e44a1c628b6380c250883fdc874ccc9c/Pow.xcframework; sourceTree = "<absolute>"; };
 		13849EE84EAEA7363556428B /* LibraryCategoriesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoriesViewModel.swift; sourceTree = "<group>"; };
 		1727F4123F8595B844950D30 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
 		172FF3A7BCA8ABCEB46E3520 /* LakeOfFireLibrary.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireLibrary.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		18482AF17295B2CF26728AF5 /* UTType+EPub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "UTType+EPub.swift"; sourceTree = "<group>"; };
-		19804300D047EDE18FB8708A /* MarkdownKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = MarkdownKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		1989CC0362096CC0054800DD /* ReadingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingSession.swift; sourceTree = "<group>"; };
 		1B34438AE89F0D68C099A43A /* ReaderMessageHandlersViewModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderMessageHandlersViewModifier.swift; sourceTree = "<group>"; };
 		1B55CD346F10F29329D0B7E6 /* WebViewNavigatorEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebViewNavigatorEnvironment.swift; sourceTree = "<group>"; };
-		1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIBackports.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		1C9B4CA0D063F3A0DA55734A /* ExpandableText.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ExpandableText.xcframework; path = /Users/alex/.cache/tuist/Binaries/3cf67c2fd2e51f9f2b06611e8b12914c/ExpandableText.xcframework; sourceTree = "<absolute>"; };
+		1DF20017665E4487960C6D6B /* SwiftUIBackports.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SwiftUIBackports.xcframework; path = /Users/alex/.cache/tuist/Binaries/33a572d6fbed5a4071b1ec526d1c1907/SwiftUIBackports.xcframework; sourceTree = "<absolute>"; };
 		1E5090C3B0565E597051BF78 /* LibraryCategoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoryView.swift; sourceTree = "<group>"; };
 		1FB405D7349D3C50BEF4D8FF /* SwiftReadability.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftReadability.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		1FBA97862E4F1167F707D81F /* ContentCategoryButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentCategoryButtons.swift; sourceTree = "<group>"; };
+		203A4C9986EBB2E845703EE9 /* Html.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Html.xcframework; path = /Users/alex/.cache/tuist/Binaries/aef5ffa810f4f0d2dcf7a8828e709d70/Html.xcframework; sourceTree = "<absolute>"; };
 		2087E0C0462C479BEC4635D5 /* URL+ContentTypeTitle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ContentTypeTitle.swift"; sourceTree = "<group>"; };
-		20D77CA7B347A9568C453FE8 /* OPML.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OPML.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		21B11E43A2FD82E69D4CC4A3 /* ReaderFileManagerSetupModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileManagerSetupModifier.swift; sourceTree = "<group>"; };
 		23BCDA574ECC78281E3EAC5E /* AdblockRulesModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdblockRulesModel.swift; sourceTree = "<group>"; };
 		24A0B13B27611AD2A533FE15 /* LibraryDataManager+Categories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LibraryDataManager+Categories.swift"; sourceTree = "<group>"; };
@@ -630,18 +653,19 @@
 		28811599CCF9F57680CE6B42 /* OPDS Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OPDS Models.swift"; sourceTree = "<group>"; };
 		292523064730D827A6710BA5 /* ArticleReadingProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleReadingProgress.swift; sourceTree = "<group>"; };
 		2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEbookTextProcessor.swift; sourceTree = "<group>"; };
+		2B29CADB358D3DFFE80A8048 /* BraveAdblockCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = BraveAdblockCore.xcframework; sourceTree = "<group>"; };
+		2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SwiftUtilities.xcframework; path = /Users/alex/.cache/tuist/Binaries/c8d8debbff6e8af9c0539851f7ba7a61/SwiftUtilities.xcframework; sourceTree = "<absolute>"; };
 		2C40F5457F51A6FA437BAA9C /* LibraryCategoriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoriesView.swift; sourceTree = "<group>"; };
 		2C53D3486FAC510F64D97141 /* ReaderUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderUserScript.swift; sourceTree = "<group>"; };
-		2D1235D7683CF901922B01A2 /* ExpandableText.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ExpandableText.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireFiles.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		2E2F7C0D4067237AE2F4225F /* OpenGraph.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = OpenGraph.xcframework; path = /Users/alex/.cache/tuist/Binaries/bfbe7a0c2a2696e99e9e90c7b881ef53/OpenGraph.xcframework; sourceTree = "<absolute>"; };
 		2F56AFD6057D9BF2D3E9ACB1 /* BaseReadingProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BaseReadingProgress.swift; sourceTree = "<group>"; };
 		30563D3E749EE4190578870E /* AsyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncView.swift; sourceTree = "<group>"; };
 		31ED82BC038DAB511FEE78AE /* LRUCache.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LRUCache.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		355678653CC5882AE9C4748C /* ReaderSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSettings.swift; sourceTree = "<group>"; };
-		362415398327404708608B86 /* ZIPFoundation.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ZIPFoundation.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = AsyncView.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		360D2F488A9EB6A6D52BDE1F /* MarkdownKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = MarkdownKit.xcframework; path = /Users/alex/.cache/tuist/Binaries/50242e0578913ba155d64a10c0d471a3/MarkdownKit.xcframework; sourceTree = "<absolute>"; };
 		3B999F3B6F3DC53882B4DD23 /* OPDSCatalogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPDSCatalogsView.swift; sourceTree = "<group>"; };
-		3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Realm.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		3E21A00F93F2EB5B53F017EE /* Nuke.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Nuke.xcframework; path = /Users/alex/.cache/tuist/Binaries/87671b5a9cad8dfbae19486dd88d74bf/Nuke.xcframework; sourceTree = "<absolute>"; };
 		3FF2E0FE2DC03E3D0F9EAA88 /* ContentFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentFile.swift; sourceTree = "<group>"; };
 		4033A8D7C0803299FF506B4F /* BookmarkButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkButton.swift; sourceTree = "<group>"; };
 		42130BBDD30500801F64BF97 /* URL+ReaderCanonical.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderCanonical.swift"; sourceTree = "<group>"; };
@@ -654,6 +678,7 @@
 		48C42D6E7E1ACFA977D35C9E /* BookGridCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookGridCell.swift; sourceTree = "<group>"; };
 		498DFDA5ADCDD665A18EF048 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
 		4AACB1DB248432581D82792C /* AdblockStatsUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdblockStatsUserScript.swift; sourceTree = "<group>"; };
+		4BB2208086E250223E3C6577 /* R2Shared.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = R2Shared.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireContentUI.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C49D6E629C02F2EEA97E380 /* URL+Internal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+Internal.swift"; sourceTree = "<group>"; };
 		4CAF69D789FE196EF8EC4FDA /* ContentBlockingEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentBlockingEnvironment.swift; sourceTree = "<group>"; };
@@ -661,7 +686,6 @@
 		4E12213CF1250504A9D195A1 /* Bookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bookmark.swift; sourceTree = "<group>"; };
 		4E18D0EF549BDEF032346A8D /* EbookURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookURLSchemeHandler.swift; sourceTree = "<group>"; };
 		4EDC5FF6B5096B69511853D5 /* URL+HashlessComparison.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+HashlessComparison.swift"; sourceTree = "<group>"; };
-		5126A6F6B4DB514C3874C507 /* FeedKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FeedKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		52D3E99961AAEC5C03051E6A /* CloudDriveSyncStatusModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDriveSyncStatusModel.swift; sourceTree = "<group>"; };
 		555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryScriptFormSections.swift; sourceTree = "<group>"; };
 		590BB72CD030D9F284EC87EE /* TuistBundle+LakeOfFireReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TuistBundle+LakeOfFireReader.swift"; sourceTree = "<group>"; };
@@ -672,11 +696,11 @@
 		5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6014A3319E03F979A559A27C /* LibraryManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryManagerView.swift; sourceTree = "<group>"; };
 		6108EBAEB0ECE7A9CCE9EEDE /* ReaderContentProtocol Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ReaderContentProtocol Extensions.swift"; sourceTree = "<group>"; };
+		615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Realm.xcframework; path = /Users/alex/.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f/Realm.xcframework; sourceTree = "<absolute>"; };
 		63C862B081B81E9DCD4CC5E9 /* ReaderFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileManager.swift; sourceTree = "<group>"; };
 		64238F6B2BCE65AB3D1E2032 /* BookLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookLibraryView.swift; sourceTree = "<group>"; };
 		65FFA60D0376D0A46ABD68E2 /* AdblockStatsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdblockStatsModel.swift; sourceTree = "<group>"; };
 		685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireReader.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderShareUtilities.swift; sourceTree = "<group>"; };
 		6ABCCFDB971B5C888BE1180E /* ReaderContentList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentList.swift; sourceTree = "<group>"; };
 		6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireContent.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -686,12 +710,11 @@
 		71FBF0C1DA553663DD278EAD /* CSS */ = {isa = PBXFileReference; path = CSS; sourceTree = "<group>"; };
 		72660A52642E1A0CEF58E180 /* URL+ReaderFileURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderFileURL.swift"; sourceTree = "<group>"; };
 		7864C63653918DC62961A70B /* String+StrippingHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+StrippingHTML.swift"; sourceTree = "<group>"; };
-		787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireShareSupport-Info.plist"; sourceTree = "<group>"; };
 		79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalReaderProtocol.swift; sourceTree = "<group>"; };
 		7AD853F2C49D88DEC789CAE8 /* ReaderContentHorizontalList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentHorizontalList.swift; sourceTree = "<group>"; };
-		7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUtilities.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		8016AAC472FE654B02DB6492 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
 		84EE5AD646FA4689A146F785 /* Color+Presets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Presets.swift"; sourceTree = "<group>"; };
+		85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NukeUI.xcframework; path = /Users/alex/.cache/tuist/Binaries/d3c03fc0531ae6fa6295ee9c583a076d/NukeUI.xcframework; sourceTree = "<absolute>"; };
 		878E05D9D239C170DFDE2C3A /* NavigationTaskManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationTaskManager.swift; sourceTree = "<group>"; };
 		89794E4F53FDE88FD9453CC4 /* PhysicalMediaCapableProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalMediaCapableProtocol.swift; sourceTree = "<group>"; };
 		8BEBB200185722685FD99D0B /* FlashLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashLog.swift; sourceTree = "<group>"; };
@@ -699,11 +722,11 @@
 		91D0420AF9E12FDF8404AAE3 /* DefaultRealmConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultRealmConfiguration.swift; sourceTree = "<group>"; };
 		93EB0B118916B63BC76CB86C /* FeedCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedCell.swift; sourceTree = "<group>"; };
 		93F5F5CC64BBF7FE53837251 /* ReaderFileURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderFileURLSchemeHandler.swift; sourceTree = "<group>"; };
+		94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ZIPFoundation.xcframework; path = /Users/alex/.cache/tuist/Binaries/7553e8fc00dc4378a0b16d648628d0c9/ZIPFoundation.xcframework; sourceTree = "<absolute>"; };
 		956AC9927465D95F2E19CBB0 /* ReaderProtocolRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderProtocolRegistry.swift; sourceTree = "<group>"; };
 		96D232EF9DFC289EF1F9D2B6 /* ReaderToastsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderToastsView.swift; sourceTree = "<group>"; };
 		9750CAAE830F61E0631B8239 /* HistoryRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryRecord.swift; sourceTree = "<group>"; };
 		9AD4783945D30E816EB3BBB0 /* ReaderModeLoadHandling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderModeLoadHandling.swift; sourceTree = "<group>"; };
-		9C70D45904D4F0928CCAC4EE /* FilePicker.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FilePicker.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9F059AA2317C283232A0DB30 /* UserLibraryCategoryButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserLibraryCategoryButtons.swift; sourceTree = "<group>"; };
 		9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDataManager.swift; sourceTree = "<group>"; };
 		9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InjectionImport.swift; sourceTree = "<group>"; };
@@ -711,7 +734,7 @@
 		A0D512450D8EC517DDA7A82D /* LakeOfFireLibrary-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireLibrary-Info.plist"; sourceTree = "<group>"; };
 		A0E0729E124F758E59DB56B4 /* UserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserScript.swift; sourceTree = "<group>"; };
 		A6CB23099E4D7B6EA5B9AC45 /* NetflixUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetflixUserScript.swift; sourceTree = "<group>"; };
-		AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RealmSwiftGaps.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LakeImage.xcframework; path = /Users/alex/.cache/tuist/Binaries/5bd481dfa1c2b2963002e6a539706eb0/LakeImage.xcframework; sourceTree = "<absolute>"; };
 		AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD8C0EC5AF704C86CEF05B26 /* TuistBundle+LakeOfFireAdblock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TuistBundle+LakeOfFireAdblock.swift"; sourceTree = "<group>"; };
 		ADE1C1D617EC7AA8E290627A /* URL+ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderView.swift"; sourceTree = "<group>"; };
@@ -723,37 +746,44 @@
 		B75D9E6388FFDD5F7C0F4294 /* ContentPackageFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentPackageFile.swift; sourceTree = "<group>"; };
 		B7C356CA34B7D184955219C3 /* MediaStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaStatus.swift; sourceTree = "<group>"; };
 		B885C5D3CABCD8999BB380AF /* Archive+Data.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Archive+Data.swift"; sourceTree = "<group>"; };
-		BAFD50164A82B1A58BD8ACEF /* Logging.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Logging.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BCC96841DC7C835DF335520B /* ReaderConsoleLogsUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderConsoleLogsUserScript.swift; sourceTree = "<group>"; };
 		BE815231DC25AA1BBDE7C35E /* TuistBundle+LakeOfFireContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TuistBundle+LakeOfFireContent.swift"; sourceTree = "<group>"; };
 		C10F789EFF1222C6A701E0E6 /* UserScriptAllowedDomainCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserScriptAllowedDomainCell.swift; sourceTree = "<group>"; };
 		C257921AF7AD599679F761F7 /* WebFeedButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebFeedButton.swift; sourceTree = "<group>"; };
+		C4CE3C6128A4BF5462A1BF94 /* AsyncView.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = AsyncView.xcframework; path = /Users/alex/.cache/tuist/Binaries/48602502e5cb21b458decbfda842fb4f/AsyncView.xcframework; sourceTree = "<absolute>"; };
 		C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderJavascriptMessages.swift; sourceTree = "<group>"; };
 		C61C089C1B653DE60FEEFBE1 /* Collections.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Collections.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		C8625A31BA38EBA3A697ABC3 /* ReadabilityScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityScript.swift; sourceTree = "<group>"; };
+		C88234EE5602605A3331D5F5 /* OPML.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = OPML.xcframework; path = /Users/alex/.cache/tuist/Binaries/70e706603c8c4f0772ee13e26039d169/OPML.xcframework; sourceTree = "<absolute>"; };
 		C8CF732A4D704EC0B2AD050D /* ReaderContentSourceIconImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentSourceIconImage.swift; sourceTree = "<group>"; };
+		C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SwiftBackports.xcframework; path = /Users/alex/.cache/tuist/Binaries/17f0bf1ad6a3e2363efe7ba29a30cd13/SwiftBackports.xcframework; sourceTree = "<absolute>"; };
 		CA92F856353D8F32BE2AA800 /* foliate-js */ = {isa = PBXFileReference; path = "foliate-js"; sourceTree = "<group>"; };
 		CBA7E8D3FD3C4303EB10951D /* LakeOfFireCore-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireCore-Info.plist"; sourceTree = "<group>"; };
 		CD7EC6D5CE496DC6F2C5317E /* Book Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Book Views.swift"; sourceTree = "<group>"; };
+		CEE60D2E68CFA835B1AF5C57 /* BraveAdblock.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = BraveAdblock.xcframework; path = /Users/alex/.cache/tuist/Binaries/6eefe4df9bd996b0533597580eea30dc/BraveAdblock.xcframework; sourceTree = "<absolute>"; };
 		D214A28DA8C9BF920485CEB0 /* ReaderContentProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentProtocol.swift; sourceTree = "<group>"; };
 		D368550632212CD59E14EFC7 /* ReaderDateFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderDateFormatter.swift; sourceTree = "<group>"; };
 		D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+EBook.swift"; sourceTree = "<group>"; };
+		D99243617F875E32C1EBA880 /* Logging.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Logging.xcframework; path = /Users/alex/.cache/tuist/Binaries/c6c3923fe1ac77438b46bfc004f48555/Logging.xcframework; sourceTree = "<absolute>"; };
 		D9A9E2BDEC10079CE6CED146 /* ReaderToastBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderToastBar.swift; sourceTree = "<group>"; };
 		DAFB8F45684C4D923369DC75 /* ReaderContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContent.swift; sourceTree = "<group>"; };
 		DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEnvironmentViewModifier.swift; sourceTree = "<group>"; };
-		DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = DebouncedOnChange.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD8D6DBA0EE54D93927A767F /* SwiftCloudDrive.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SwiftCloudDrive.xcframework; path = /Users/alex/.cache/tuist/Binaries/e6a55f77162239051c72a236f9abd45e/SwiftCloudDrive.xcframework; sourceTree = "<absolute>"; };
+		E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = RealmSwift.xcframework; path = /Users/alex/.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee/RealmSwift.xcframework; sourceTree = "<absolute>"; };
+		E1BB7A5EF0552112CC248DA9 /* FilePicker.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FilePicker.xcframework; path = /Users/alex/.cache/tuist/Binaries/277c4180bae89afae2295c0546d69221/FilePicker.xcframework; sourceTree = "<absolute>"; };
 		E25057F44128F064A752E967 /* ReadabilityImagesUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityImagesUserScript.swift; sourceTree = "<group>"; };
 		E58665BB5C4CA1B4D6F5B559 /* Feed Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Feed Models.swift"; sourceTree = "<group>"; };
 		E7AA3BDFAFA51183D09410BB /* LakeOfFireContentUI-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireContentUI-Info.plist"; sourceTree = "<group>"; };
 		E7BB6A0CFAB3BE542C6180B6 /* FeedCategoryImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedCategoryImage.swift; sourceTree = "<group>"; };
 		E9AA574E96149E47844F7F66 /* Reader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reader.swift; sourceTree = "<group>"; };
+		E9DD94234161599ED23FF959 /* RealmSwiftGaps.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = RealmSwiftGaps.xcframework; path = /Users/alex/.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3/RealmSwiftGaps.xcframework; sourceTree = "<absolute>"; };
 		EBB3093361E7F10B9B618FEA /* ReaderModeButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderModeButton.swift; sourceTree = "<group>"; };
 		EC939A838622FC9266773A65 /* ReaderContentLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentLoader.swift; sourceTree = "<group>"; };
 		EEF8B2522DB031E91ACC8409 /* WebViewNavigator+ReaderContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WebViewNavigator+ReaderContent.swift"; sourceTree = "<group>"; };
 		F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIDownloads.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		F135F49810E7BF5364256A32 /* FeedKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FeedKit.xcframework; path = /Users/alex/.cache/tuist/Binaries/aaf8dfb86a483cfd4b6427cfb219a8b5/FeedKit.xcframework; sourceTree = "<absolute>"; };
 		F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUIWebView.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OrderedCollections.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftCloudDrive.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F63913BA3B001236DF672E24 /* ReaderWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderWebView.swift; sourceTree = "<group>"; };
 		F7351A4FB774D9A62D45A567 /* ReaderMediaPlayerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderMediaPlayerViewModel.swift; sourceTree = "<group>"; };
 		F7A7C654FB182EEA94098FEB /* MediaTranscript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaTranscript.swift; sourceTree = "<group>"; };
@@ -763,7 +793,6 @@
 		F99E318A7F5F91BA58335060 /* ReadabilityContentTransformations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityContentTransformations.swift; sourceTree = "<group>"; };
 		FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftSoup.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FDF670F54377EEB0720CA648 /* LibraryFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryFeedView.swift; sourceTree = "<group>"; };
-		FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BraveAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FECE32BA7953906A59D3AD88 /* ReaderContentCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentCell.swift; sourceTree = "<group>"; };
 		FF1DC7352A947E0860D33ECE /* EbookReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookReaderProtocol.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -773,10 +802,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				69BB7456E3FBAF5A4C374CEF /* Realm.framework in Frameworks */,
-				888ABEFBE854CFC4BCB9E116 /* RealmSwift.framework in Frameworks */,
-				E9FC23C72A226DB3D62AA905 /* RealmSwiftGaps.framework in Frameworks */,
 				68E162EC1CC1309508E161A2 /* SwiftUIWebView.framework in Frameworks */,
+				AD4DFF76109BEF051ADFAF57 /* RealmSwiftGaps.xcframework in Frameworks */,
+				04CB04E7C716BE207149CBE1 /* RealmSwift.xcframework in Frameworks */,
+				F590C3FC06D9B4D5E79D81A1 /* Realm.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -784,6 +813,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D5C72D5FCBB5B4DF1B2887C1 /* OrderedCollections.framework in Frameworks */,
 				7FEB58022ED37809244910BE /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -792,8 +822,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B0E55E460BB6394E70120B3D /* Realm.framework in Frameworks */,
-				42CAEC906AE9AED02E7EE294 /* RealmSwift.framework in Frameworks */,
 				F38E441C562EC57A31CA2AFD /* SwiftUIWebView.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -802,11 +830,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				3D663C25247533C9C2AA1F32 /* Realm.framework in Frameworks */,
-				E1F101FA7F9EE76D00622B10 /* RealmSwift.framework in Frameworks */,
-				69E7638756A1E0ACC91A24A3 /* RealmSwiftGaps.framework in Frameworks */,
+				749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */,
 				0E905AFAD8F6B2B385C54E59 /* SwiftUIDownloads.framework in Frameworks */,
 				D08307802D0C0BF718FBB70E /* SwiftUIWebView.framework in Frameworks */,
+				1D30EEE59B773D72DB2ADB43 /* RealmSwiftGaps.xcframework in Frameworks */,
+				56B1394F5D40E296B5B86C23 /* RealmSwift.xcframework in Frameworks */,
+				15B04501BA6D0E30D2077A4A /* Realm.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -814,10 +843,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				99860DD112268BE58155F788 /* Realm.framework in Frameworks */,
-				50E8C51C79DF640151744F19 /* RealmSwift.framework in Frameworks */,
-				CF7E1793B8C1593BEBF023F4 /* RealmSwiftGaps.framework in Frameworks */,
 				221E5837DDF30B7164E59399 /* SwiftUIWebView.framework in Frameworks */,
+				534539D5AC297B3DB822E2D9 /* RealmSwiftGaps.xcframework in Frameworks */,
+				510FBEC58EC7B39DACE54914 /* RealmSwift.xcframework in Frameworks */,
+				281E8BC2A4CC056DBD6E2F8F /* Realm.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -825,15 +854,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				5EE805A99A9C35F1D531BF0C /* Realm.framework in Frameworks */,
-				4613E52C3705D82D492FF4F4 /* RealmSwift.framework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		A3250CE7A56291C759305F81 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
+				8C56415481F8145928D0D8AF /* RealmSwift.xcframework in Frameworks */,
+				EEDC2F059FC092478E08D358 /* Realm.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -842,11 +864,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				AFA92416B096FFE8C80AE573 /* JapaneseLanguageTools.framework in Frameworks */,
-				45DA7A147DACC42EF780B40A /* Realm.framework in Frameworks */,
-				598438DF1D64F8A1828A0B71 /* RealmSwift.framework in Frameworks */,
-				BF1C4B8EF2AD10F8ED21E881 /* RealmSwiftGaps.framework in Frameworks */,
+				F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */,
+				FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */,
 				5FF92E4DF4CA42A53CDDBBD3 /* SwiftUIDownloads.framework in Frameworks */,
 				9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */,
+				A7BBCD3B5BF8F55724ED9594 /* RealmSwiftGaps.xcframework in Frameworks */,
+				8D87E3D0875CD87770FC5043 /* RealmSwift.xcframework in Frameworks */,
+				DBC9FBB406940CE9ED177D2A /* Realm.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -871,6 +895,14 @@
 				4DA26D8E9078F7930EE6D2EC /* FeedView.swift */,
 			);
 			path = Feeds;
+			sourceTree = "<group>";
+		};
+		32442089CE4341BF5566BEBF /* artifacts */ = {
+			isa = PBXGroup;
+			children = (
+				9A0B4470FF4F3A3934B8DB3F /* swift-brave */,
+			);
+			path = artifacts;
 			sourceTree = "<group>";
 		};
 		329A9D86F84BFAD064B142E6 /* OPDS */ = {
@@ -921,6 +953,36 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		36803370BA380483361E6044 /* Cache */ = {
+			isa = PBXGroup;
+			children = (
+				C4CE3C6128A4BF5462A1BF94 /* AsyncView.xcframework */,
+				CEE60D2E68CFA835B1AF5C57 /* BraveAdblock.xcframework */,
+				06EE3131A2BF24F2FA31349C /* DebouncedOnChange.xcframework */,
+				1C9B4CA0D063F3A0DA55734A /* ExpandableText.xcframework */,
+				F135F49810E7BF5364256A32 /* FeedKit.xcframework */,
+				E1BB7A5EF0552112CC248DA9 /* FilePicker.xcframework */,
+				203A4C9986EBB2E845703EE9 /* Html.xcframework */,
+				AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */,
+				D99243617F875E32C1EBA880 /* Logging.xcframework */,
+				360D2F488A9EB6A6D52BDE1F /* MarkdownKit.xcframework */,
+				3E21A00F93F2EB5B53F017EE /* Nuke.xcframework */,
+				85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */,
+				2E2F7C0D4067237AE2F4225F /* OpenGraph.xcframework */,
+				C88234EE5602605A3331D5F5 /* OPML.xcframework */,
+				132CF5DE9B9B22114B069049 /* Pow.xcframework */,
+				615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */,
+				E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */,
+				E9DD94234161599ED23FF959 /* RealmSwiftGaps.xcframework */,
+				C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */,
+				DD8D6DBA0EE54D93927A767F /* SwiftCloudDrive.xcframework */,
+				1DF20017665E4487960C6D6B /* SwiftUIBackports.xcframework */,
+				2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */,
+				94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */,
+			);
+			name = Cache;
+			sourceTree = "<group>";
+		};
 		52E7D7FCEDF8AC17EA4BB734 /* Reader Content */ = {
 			isa = PBXGroup;
 			children = (
@@ -949,6 +1011,14 @@
 				9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */,
 			);
 			path = Library;
+			sourceTree = "<group>";
+		};
+		5B2DE4AF5D7DE38FC8E4220C /* BraveAdblockCore */ = {
+			isa = PBXGroup;
+			children = (
+				2B29CADB358D3DFFE80A8048 /* BraveAdblockCore.xcframework */,
+			);
+			path = BraveAdblockCore;
 			sourceTree = "<group>";
 		};
 		5CF5A90F0EA7DB019325019D /* Files */ = {
@@ -1026,6 +1096,7 @@
 			children = (
 				DB100243173F688C8DE3DD44 /* Derived */,
 				F8A7FC1F78993DBDCF7F30FA /* Sources */,
+				9571C274D8AC5E1EB2A5080B /* Tuist */,
 			);
 			name = Project;
 			sourceTree = "<group>";
@@ -1047,20 +1118,30 @@
 			path = "User Scripts";
 			sourceTree = "<group>";
 		};
+		9571C274D8AC5E1EB2A5080B /* Tuist */ = {
+			isa = PBXGroup;
+			children = (
+				DE90EDD0D79234582FEB541A /* .build */,
+			);
+			name = Tuist;
+			path = ../../Tuist;
+			sourceTree = "<group>";
+		};
+		9A0B4470FF4F3A3934B8DB3F /* swift-brave */ = {
+			isa = PBXGroup;
+			children = (
+				5B2DE4AF5D7DE38FC8E4220C /* BraveAdblockCore */,
+			);
+			path = "swift-brave";
+			sourceTree = "<group>";
+		};
 		9C8F3949A2A0930CDC25DF0B /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */,
 				6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */,
-				FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */,
 				C61C089C1B653DE60FEEFBE1 /* Collections.framework */,
-				DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */,
-				2D1235D7683CF901922B01A2 /* ExpandableText.framework */,
 				44214EC7D4875D6794B8842B /* FaviconFinder.framework */,
-				5126A6F6B4DB514C3874C507 /* FeedKit.framework */,
-				9C70D45904D4F0928CCAC4EE /* FilePicker.framework */,
 				01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */,
-				0A07E441969025DDD60958D1 /* LakeImage.framework */,
 				5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */,
 				6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */,
 				6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */,
@@ -1069,27 +1150,15 @@
 				2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */,
 				172FF3A7BCA8ABCEB46E3520 /* LakeOfFireLibrary.framework */,
 				685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */,
-				0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */,
-				BAFD50164A82B1A58BD8ACEF /* Logging.framework */,
 				31ED82BC038DAB511FEE78AE /* LRUCache.framework */,
-				19804300D047EDE18FB8708A /* MarkdownKit.framework */,
-				0DBF1743F0462956A696C598 /* OpenGraph.framework */,
-				20D77CA7B347A9568C453FE8 /* OPML.framework */,
 				F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */,
-				0ACFBB587A7997D2F15BBE19 /* Pow.framework */,
+				4BB2208086E250223E3C6577 /* R2Shared.framework */,
 				B019428C65E559262FCEA21A /* ReadiumOPDS.framework */,
-				3DD1B5236A5D7FA1DF8FC464 /* Realm.framework */,
-				0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */,
-				AA90D3D47C92C4C33CE477A2 /* RealmSwiftGaps.framework */,
-				F59DCA22F6A9A89879058FFA /* SwiftCloudDrive.framework */,
 				252359C3746A321FE34487F6 /* SwiftDOMPurify.framework */,
 				1FB405D7349D3C50BEF4D8FF /* SwiftReadability.framework */,
 				FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */,
-				1E0BE3387862373A9E2E1829 /* SwiftUIBackports.framework */,
 				F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */,
 				F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */,
-				7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */,
-				362415398327404708608B86 /* ZIPFoundation.framework */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1126,6 +1195,7 @@
 			children = (
 				9C8F3949A2A0930CDC25DF0B /* Products */,
 				883F9DAE286C43244573BE08 /* Project */,
+				36803370BA380483361E6044 /* Cache */,
 			);
 			sourceTree = "<group>";
 		};
@@ -1185,14 +1255,6 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
-		D6CC5E594E2053381817CCB1 /* LakeOfFireShareSupport */ = {
-			isa = PBXGroup;
-			children = (
-				69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */,
-			);
-			path = LakeOfFireShareSupport;
-			sourceTree = "<group>";
-		};
 		D8EDC276A62F2FC732403F48 /* LakeOfFireReader */ = {
 			isa = PBXGroup;
 			children = (
@@ -1247,6 +1309,14 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		DE90EDD0D79234582FEB541A /* .build */ = {
+			isa = PBXGroup;
+			children = (
+				32442089CE4341BF5566BEBF /* artifacts */,
+			);
+			path = .build;
+			sourceTree = "<group>";
+		};
 		DF6931740E07264B11A3EFFD /* Books */ = {
 			isa = PBXGroup;
 			children = (
@@ -1284,7 +1354,6 @@
 				5C2689383782F215ABF1C389 /* LakeOfFireFiles-Info.plist */,
 				A0D512450D8EC517DDA7A82D /* LakeOfFireLibrary-Info.plist */,
 				5C3B133F49C23777962510FA /* LakeOfFireReader-Info.plist */,
-				787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */,
 			);
 			path = InfoPlists;
 			sourceTree = "<group>";
@@ -1309,7 +1378,6 @@
 				81B8E4884C33B6EAE9B4523A /* LakeOfFireFiles */,
 				70E42B9677110909C3BD996D /* LakeOfFireLibrary */,
 				D8EDC276A62F2FC732403F48 /* LakeOfFireReader */,
-				D6CC5E594E2053381817CCB1 /* LakeOfFireShareSupport */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -1326,6 +1394,7 @@
 				5F482982BA13B26825C05E68 /* Frameworks */,
 				4E646E17E056B196DD799B38 /* Embed Frameworks */,
 				E2BBDED3AD9FE529D61F5330 /* Dependencies */,
+				79BD09431895EEB54A456ED2 /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1338,28 +1407,6 @@
 			productReference = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */;
 			productType = "com.apple.product-type.framework";
 		};
-		9EA0B5B3CF194D555F2C04E2 /* LakeOfFireShareSupport */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BC2A2E0BBCB0DC9037215558 /* Build configuration list for PBXNativeTarget "LakeOfFireShareSupport" */;
-			buildPhases = (
-				7CA993240942981A243446D2 /* Sources */,
-				F44FD8FA5BB87771DCE173DC /* Resources */,
-				A3250CE7A56291C759305F81 /* Frameworks */,
-				1273BBDD15BAAB21938F4BD2 /* Embed Frameworks */,
-				E8BB9E09992F7067E2113937 /* Dependencies */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				288FEE9CACAEE6A707100217 /* PBXTargetDependency */,
-			);
-			name = LakeOfFireShareSupport;
-			packageProductDependencies = (
-			);
-			productName = LakeOfFireShareSupport;
-			productReference = 0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */;
-			productType = "com.apple.product-type.framework";
-		};
 		B06A980F8A44621BC7CDFEC2 /* LakeOfFireAdblock */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 90882B1D0613BFF9300A3D94 /* Build configuration list for PBXNativeTarget "LakeOfFireAdblock" */;
@@ -1368,7 +1415,7 @@
 				F81ED70D317354B2D3A0BEA6 /* Resources */,
 				3ABB7B70E669267FF169B4E4 /* Frameworks */,
 				4A873EB17C17403338AB28F3 /* Embed Frameworks */,
-				0228A6869762CBC7D26A79FD /* Dependencies */,
+				7D3FCBC70AABCE7EEF3E5203 /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1390,6 +1437,7 @@
 				6F869A28DE18440A3577036F /* Frameworks */,
 				B08DFFDE882448F46E39B46B /* Embed Frameworks */,
 				ECDE37FE32EE610ABF0DA8D9 /* Dependencies */,
+				9839B5B30188F2A499CDDC85 /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1416,6 +1464,7 @@
 				F4BC054913FF18F41E9B1539 /* Frameworks */,
 				C3E1E675F3E25CCC2164857D /* Embed Frameworks */,
 				25872132147CDF4C2011B14B /* Dependencies */,
+				739ED0B9B4563306152438CE /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1442,6 +1491,7 @@
 				836F9E561A7E54CBA03E98E3 /* Frameworks */,
 				B03173D89E5218F29AA9EBF3 /* Embed Frameworks */,
 				F6BD6E6A366A307402CBD8CF /* Dependencies */,
+				BF2CA35F4888E4F3B6675E1A /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1466,6 +1516,7 @@
 				6EE2DBB78FC28B799FED7C3A /* Frameworks */,
 				EF03F631F48C685C6CCC703A /* Embed Frameworks */,
 				5CB8CE2ADE5780665BCA6AA2 /* Dependencies */,
+				CB11EED5B7FEDA38EABF5AF3 /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1489,6 +1540,7 @@
 				21AD1F086C7AE9E6AF5D0DB4 /* Frameworks */,
 				9B86051378A717249575D75E /* Embed Frameworks */,
 				A8D1BB9B689A11E5053DE09C /* Dependencies */,
+				F92FA39CA1EC70DAC3D059A1 /* Static XCFramework Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1535,7 +1587,6 @@
 				B957D50F079A8034A05BA512 /* LakeOfFireFiles */,
 				B5D143BF30AAA096BB742F75 /* LakeOfFireLibrary */,
 				B656107E0271F658CAF85968 /* LakeOfFireReader */,
-				9EA0B5B3CF194D555F2C04E2 /* LakeOfFireShareSupport */,
 			);
 		};
 /* End PBXProject section */
@@ -1581,13 +1632,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		F149480F27E9FD5DC63A3C4F /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		F44FD8FA5BB87771DCE173DC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1744,14 +1788,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		7CA993240942981A243446D2 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		89545F40B6C1BFE8D9292281 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1795,12 +1831,6 @@
 			name = LakeOfFireContent;
 			target = CF5D0C4318963583EC78CF78 /* LakeOfFireContent */;
 			targetProxy = EC9331200A94C0DDFF85F903 /* PBXContainerItemProxy */;
-		};
-		288FEE9CACAEE6A707100217 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = LakeOfFireContent;
-			target = CF5D0C4318963583EC78CF78 /* LakeOfFireContent */;
-			targetProxy = 9CCEB76788E005C8110298C8 /* PBXContainerItemProxy */;
 		};
 		464523E525A056AC0FE5DC8E /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -2035,7 +2065,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireCore-Info.plist";
@@ -2055,11 +2084,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2068,15 +2095,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -2085,12 +2108,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireCore;
 				PRODUCT_NAME = LakeOfFireCore;
@@ -2121,6 +2138,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2133,7 +2156,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireContentUI-Info.plist";
@@ -2153,12 +2175,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2167,8 +2187,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2177,8 +2195,6 @@
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2186,12 +2202,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireContentUI;
 				PRODUCT_NAME = LakeOfFireContentUI;
@@ -2218,6 +2228,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2230,7 +2246,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireContentUI-Info.plist";
@@ -2250,12 +2265,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2264,8 +2277,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2274,8 +2285,6 @@
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2283,12 +2292,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireContentUI;
 				PRODUCT_NAME = LakeOfFireContentUI;
@@ -2319,6 +2322,11 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2331,7 +2339,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireFiles-Info.plist";
@@ -2351,12 +2358,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2365,8 +2370,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2375,8 +2378,6 @@
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2384,12 +2385,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireFiles;
 				PRODUCT_NAME = LakeOfFireFiles;
@@ -2416,6 +2411,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2428,7 +2429,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireContent-Info.plist";
@@ -2448,12 +2448,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2462,8 +2460,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2472,8 +2468,6 @@
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2481,12 +2475,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireContent;
 				PRODUCT_NAME = LakeOfFireContent;
@@ -2558,6 +2546,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2570,7 +2564,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireContent-Info.plist";
@@ -2590,12 +2583,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2604,8 +2595,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2614,8 +2603,6 @@
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2623,12 +2610,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireContent;
 				PRODUCT_NAME = LakeOfFireContent;
@@ -2728,6 +2709,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2741,7 +2728,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireReader-Info.plist";
@@ -2761,12 +2747,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2776,8 +2760,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2785,8 +2767,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -2797,12 +2777,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireReader;
 				PRODUCT_NAME = LakeOfFireReader;
@@ -2840,7 +2814,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireCore-Info.plist";
@@ -2860,11 +2833,9 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2873,15 +2844,11 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -2890,12 +2857,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireCore;
 				PRODUCT_NAME = LakeOfFireCore;
@@ -2922,6 +2883,11 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -2934,7 +2900,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireFiles-Info.plist";
@@ -2954,12 +2919,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2968,8 +2931,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2978,8 +2939,6 @@
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
@@ -2987,12 +2946,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireFiles;
 				PRODUCT_NAME = LakeOfFireFiles;
@@ -3015,103 +2968,6 @@
 			};
 			name = Debug;
 		};
-		C2EA3D1D7B4B35DCE1FE8476 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Source/c/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/IntelRDFPMathLib20U2/LIBRARY/src",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
-				);
-				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireShareSupport-Info.plist";
-				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				OTHER_CFLAGS = (
-					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-				);
-				OTHER_SWIFT_FLAGS = (
-					"$(inherited)",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireShareSupport;
-				PRODUCT_NAME = LakeOfFireShareSupport;
-				SDKROOT = auto;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VERSIONING_SYSTEM = "apple-generic";
-				VERSION_INFO_PREFIX = "";
-			};
-			name = Release;
-		};
 		CB5BE7D5C38540797C9C1195 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -3120,6 +2976,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -3133,7 +2995,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireReader-Info.plist";
@@ -3153,12 +3014,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -3168,8 +3027,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -3177,8 +3034,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -3189,12 +3044,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireReader;
 				PRODUCT_NAME = LakeOfFireReader;
@@ -3225,6 +3074,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -3238,7 +3093,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireLibrary-Info.plist";
@@ -3258,12 +3112,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -3273,8 +3125,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -3282,8 +3132,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -3294,12 +3142,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireLibrary;
 				PRODUCT_NAME = LakeOfFireLibrary;
@@ -3326,6 +3168,12 @@
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/786e92f510133bc302d021d6fa3f26b3",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/c04324282f370fa4d7b7590bfd2b35ee",
+					"$(SRCROOT)/../../../../../.cache/tuist/Binaries/dd4e058dd6f913425f7925225bc2db7f",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
@@ -3339,7 +3187,6 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireLibrary-Info.plist";
@@ -3359,12 +3206,10 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -3374,8 +3219,6 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -3383,8 +3226,6 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -3395,116 +3236,9 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireLibrary;
 				PRODUCT_NAME = LakeOfFireLibrary;
-				SDKROOT = auto;
-				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = (
-					"$(inherited)",
-					DEBUG,
-				);
-				SWIFT_COMPILATION_MODE = singlefile;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VERSIONING_SYSTEM = "apple-generic";
-				VERSION_INFO_PREFIX = "";
-			};
-			name = Debug;
-		};
-		FE60CB03D0E6621FAAEFD57F /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CURRENT_PROJECT_VERSION = 1;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				DYLIB_INSTALL_NAME_BASE = "@rpath";
-				HEADER_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Classes",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/Brotli/Brotli/Source/c/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/IntelRDFPMathLib20U2/LIBRARY/src",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/external/s2",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
-					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
-				);
-				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireShareSupport-Info.plist";
-				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				OTHER_CFLAGS = (
-					"$(inherited)",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-				);
-				OTHER_SWIFT_FLAGS = (
-					"$(inherited)",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
-					"-Xcc",
-					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/PerceptionMacros#PerceptionMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesMacros#StructuredQueriesMacros",
-					"-load-plugin-executable",
-					"$BUILD_DIR/Debug$EFFECTIVE_PLATFORM_NAME/StructuredQueriesSQLiteMacros#StructuredQueriesSQLiteMacros",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireShareSupport;
-				PRODUCT_NAME = LakeOfFireShareSupport;
 				SDKROOT = auto;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -3595,15 +3329,6 @@
 			buildConfigurations = (
 				4439D8BB5B6C84F01528C3C1 /* Debug */,
 				906D20A438D963F4D9D6CC9B /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		BC2A2E0BBCB0DC9037215558 /* Build configuration list for PBXNativeTarget "LakeOfFireShareSupport" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				FE60CB03D0E6621FAAEFD57F /* Debug */,
-				C2EA3D1D7B4B35DCE1FE8476 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

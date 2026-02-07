@@ -155,7 +155,10 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     
     @RealmBackgroundActor
     public static func getConsolidatedOrCreate() async throws -> LibraryConfiguration {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
+        let realm = try await Realm(
+            configuration: LibraryDataManager.realmConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
         
         // Take oldest as primary. Consolidate newer ones into it.
         let configurations = Array(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted } .sorted(by: \.modifiedAt, ascending: true))
@@ -288,7 +291,7 @@ extension OPMLEntry {
 public class LibraryDataManager: NSObject {
     public static let shared = LibraryDataManager()
     
-    public static var realmConfiguration: Realm.Configuration = .defaultConfiguration
+    public static var realmConfiguration: Realm.Configuration = DefaultRealmConfiguration.configuration
     public static var currentUsername: String? = nil
 
     private var importOPMLTask: Task<(), Error>?
@@ -363,7 +366,10 @@ public class LibraryDataManager: NSObject {
         //            .store(in: &cancellables)
         
         Task { @RealmBackgroundActor in
-            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: Self.realmConfiguration)
+            let realm = try await Realm(
+                configuration: Self.realmConfiguration,
+                actor: RealmBackgroundActor.shared
+            )
             
             realm.objects(LibraryConfiguration.self)
                 .collectionPublisher
@@ -415,7 +421,10 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func createEmptyCategory(addToLibrary: Bool) async throws -> FeedCategory {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realm = try await Realm(
+            configuration: LibraryDataManager.realmConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
         let category = FeedCategory()
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
@@ -513,7 +522,10 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func createEmptyScript(addToLibrary: Bool) async throws -> UserScript {
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
+        let realm = try await Realm(
+            configuration: LibraryDataManager.realmConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
         let script = UserScript()
         script.title = ""
         if addToLibrary {
@@ -753,7 +765,10 @@ public class LibraryDataManager: NSObject {
         if let rawUUID = opmlEntry.attributeStringValue("uuid") {
             uuid = UUID(uuidString: rawUUID)
         }
-        let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
+        let realm = try await Realm(
+            configuration: LibraryDataManager.realmConfiguration,
+            actor: RealmBackgroundActor.shared
+        )
 
         if opmlEntry.feedURL != nil {
             if let uuid = uuid, let feed = realm.object(ofType: Feed.self, forPrimaryKey: uuid) {
