@@ -82,6 +82,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     public private(set) var pendingReaderModeURL: URL?
     private var loadTraceRecords: [String: ReaderModeLoadTraceRecord] = [:]
     private var loadStartTimes: [String: Date] = [:]
+    private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
+    private var activeRenderGenerationByURL: [String: UUID] = [:]
 
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
@@ -321,6 +323,159 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
     private func pendingKeysMatch(_ lhs: URL?, _ rhs: URL?) -> Bool {
         normalizedPendingMatchKey(for: lhs) == normalizedPendingMatchKey(for: rhs)
+    }
+
+    private func canonicalRenderKey(_ url: URL) -> String {
+        let canonicalURL = url.canonicalReaderContentURL()
+        return normalizedPendingMatchKey(for: canonicalURL) ?? canonicalURL.absoluteString
+    }
+
+    private func activeRenderGenerationDescription(for key: String) -> String {
+        activeRenderGenerationByURL[key]?.uuidString ?? "nil"
+    }
+
+    private func hasActiveRender(for url: URL) -> Bool {
+        let key = canonicalRenderKey(url)
+        guard let task = activeRenderTaskByURL[key] else {
+            return false
+        }
+        if task.isCancelled {
+            activeRenderTaskByURL.removeValue(forKey: key)
+            activeRenderGenerationByURL.removeValue(forKey: key)
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    public func isReadabilityRenderInFlight(for url: URL) -> Bool {
+        hasActiveRender(for: url)
+    }
+
+    private func finishRenderTask(for url: URL, generation: UUID, reason: String) {
+        let key = canonicalRenderKey(url)
+        guard let activeGeneration = activeRenderGenerationByURL[key] else {
+            return
+        }
+        guard activeGeneration == generation else {
+            debugPrint(
+                "# READERPERF readerMode.render.singleFlight.finish",
+                "url=\(url.absoluteString)",
+                "reason=\(reason)",
+                "generation=\(generation.uuidString)",
+                "activeGeneration=\(activeGeneration.uuidString)",
+                "status=stale",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "isReaderModeLoading=\(isReaderModeLoading)",
+                "isReaderMode=\(isReaderMode)"
+            )
+            return
+        }
+        activeRenderTaskByURL.removeValue(forKey: key)
+        activeRenderGenerationByURL.removeValue(forKey: key)
+        debugPrint(
+            "# READERPERF readerMode.render.singleFlight.finish",
+            "url=\(url.absoluteString)",
+            "reason=\(reason)",
+            "generation=\(generation.uuidString)",
+            "status=completed",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)"
+        )
+    }
+
+    private func cancelActiveRender(for url: URL, reason: String) {
+        let canonicalURL = url.canonicalReaderContentURL()
+        let key = canonicalRenderKey(canonicalURL)
+        guard let task = activeRenderTaskByURL[key] else {
+            return
+        }
+        let generation = activeRenderGenerationDescription(for: key)
+        task.cancel()
+        activeRenderTaskByURL.removeValue(forKey: key)
+        activeRenderGenerationByURL.removeValue(forKey: key)
+        debugPrint(
+            "# READERPERF readerMode.render.singleFlight.cancel",
+            "url=\(canonicalURL.absoluteString)",
+            "reason=\(reason)",
+            "generation=\(generation)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)"
+        )
+    }
+
+    private func cancelOtherActiveRenders(except keyToKeep: String, requestedURL: URL, reason: String) {
+        let staleKeys = activeRenderTaskByURL.keys.filter { $0 != keyToKeep }
+        for staleKey in staleKeys {
+            let generation = activeRenderGenerationDescription(for: staleKey)
+            let task = activeRenderTaskByURL[staleKey]
+            task?.cancel()
+            activeRenderTaskByURL.removeValue(forKey: staleKey)
+            activeRenderGenerationByURL.removeValue(forKey: staleKey)
+            debugPrint(
+                "# READERPERF readerMode.render.singleFlight.cancel",
+                "url=\(requestedURL.absoluteString)",
+                "reason=\(reason).replaced",
+                "generation=\(generation)",
+                "staleKey=\(staleKey)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "isReaderModeLoading=\(isReaderModeLoading)",
+                "isReaderMode=\(isReaderMode)"
+            )
+        }
+    }
+
+    @discardableResult
+    @MainActor
+    func startRenderTaskIfNeeded(
+        for url: URL,
+        reason: String,
+        operation: @escaping @MainActor (_ generation: UUID) async -> Void
+    ) -> Bool {
+        let canonicalURL = url.canonicalReaderContentURL()
+        let key = canonicalRenderKey(canonicalURL)
+        cancelOtherActiveRenders(except: key, requestedURL: canonicalURL, reason: reason)
+
+        if let existingTask = activeRenderTaskByURL[key], !existingTask.isCancelled {
+            debugPrint(
+                "# READERPERF readerMode.render.singleFlight.skip",
+                "url=\(canonicalURL.absoluteString)",
+                "reason=\(reason)",
+                "generation=\(activeRenderGenerationDescription(for: key))",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "isReaderModeLoading=\(isReaderModeLoading)",
+                "isReaderMode=\(isReaderMode)"
+            )
+            return false
+        }
+
+        activeRenderTaskByURL.removeValue(forKey: key)
+        activeRenderGenerationByURL.removeValue(forKey: key)
+
+        let generation = UUID()
+        activeRenderGenerationByURL[key] = generation
+        debugPrint(
+            "# READERPERF readerMode.render.singleFlight.start",
+            "url=\(canonicalURL.absoluteString)",
+            "reason=\(reason)",
+            "generation=\(generation.uuidString)",
+            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isReaderModeLoading=\(isReaderModeLoading)",
+            "isReaderMode=\(isReaderMode)"
+        )
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
+            }
+            await operation(generation)
+        }
+
+        activeRenderTaskByURL[key] = task
+        return true
     }
 
     private func logTrace(
@@ -662,6 +817,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             return
         }
         guard let pendingReaderModeURL else {
+            if let url {
+                cancelActiveRender(for: url, reason: "cancelReaderModeLoad.noPending")
+            }
             debugPrint(
                 "# READER readerMode.cancel",
                 "url=\(url?.absoluteString ?? "nil")",
@@ -736,6 +894,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
         )
         let traceURL = pendingReaderModeURL
+        cancelActiveRender(for: traceURL, reason: "cancelReaderModeLoad")
         logStateSnapshot("cancel.requested", url: traceURL)
         updatePendingReaderModeURL(nil, reason: "cancelReaderModeLoad")
         logTrace(.cancel, url: traceURL, details: "cancelReaderModeLoad invoked")
@@ -753,7 +912,37 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     }
 
     @MainActor
-    public func markReaderModeLoadComplete(for url: URL) {
+    public func markReaderModeLoadComplete(for url: URL, renderGeneration: UUID? = nil) {
+        let canonicalURL = url.canonicalReaderContentURL()
+        let renderKey = canonicalRenderKey(canonicalURL)
+        if let activeGeneration = activeRenderGenerationByURL[renderKey] {
+            if let renderGeneration, renderGeneration != activeGeneration {
+                debugPrint(
+                    "# READERPERF readerMode.render.singleFlight.skip",
+                    "url=\(canonicalURL.absoluteString)",
+                    "reason=markReaderModeLoadComplete.staleGeneration",
+                    "generation=\(renderGeneration.uuidString)",
+                    "activeGeneration=\(activeGeneration.uuidString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "isReaderModeLoading=\(isReaderModeLoading)",
+                    "isReaderMode=\(isReaderMode)"
+                )
+                return
+            }
+            if renderGeneration == nil {
+                debugPrint(
+                    "# READERPERF readerMode.render.singleFlight.skip",
+                    "url=\(canonicalURL.absoluteString)",
+                    "reason=markReaderModeLoadComplete.activeGenerationInFlight",
+                    "generation=nil",
+                    "activeGeneration=\(activeGeneration.uuidString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "isReaderModeLoading=\(isReaderModeLoading)",
+                    "isReaderMode=\(isReaderMode)"
+                )
+                return
+            }
+        }
         debugPrint(
             "# READERRELOAD complete.enter",
             "url=\(url.absoluteString)",
@@ -917,6 +1106,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")"
         )
         guard shouldClear else { return }
+        cancelActiveRender(for: canonicalURL, reason: "clearReadabilityCache.\(reason)")
         readabilityContent = nil
         readabilityContainerSelector = nil
         readabilityContainerFrameInfo = nil
@@ -931,6 +1121,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             return true
         }
         if let lastRenderedReadabilityURL, pendingKeysMatch(lastRenderedReadabilityURL, url) {
+            return true
+        }
+        if hasActiveRender(for: url) {
             return true
         }
         return false
@@ -1027,7 +1220,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             suppressSpinner: false,
             reason: "showReaderView"
         )
-        Task { @MainActor in
+        _ = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
+            guard let self else { return }
             guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
                 debugPrint("# READER readerMode.showReaderView.urlMismatch", contentURL, readerContent.pageURL)
                 cancelReaderModeLoad(for: contentURL)
@@ -1039,7 +1233,18 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     readabilityContent: readabilityContent,
                     renderToSelector: readabilityContainerSelector,
                     in: readabilityContainerFrameInfo,
-                    scriptCaller: scriptCaller
+                    scriptCaller: scriptCaller,
+                    renderGeneration: generation
+                )
+            } catch is CancellationError {
+                debugPrint(
+                    "# READERPERF readerMode.render.singleFlight.cancel",
+                    "url=\(contentURL.absoluteString)",
+                    "reason=showReaderView.taskCancelled",
+                    "generation=\(generation.uuidString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "isReaderModeLoading=\(isReaderModeLoading)",
+                    "isReaderMode=\(isReaderMode)"
                 )
             } catch {
                 debugPrint("# READER readerMode.showReaderView.loadFailed", error.localizedDescription)
@@ -1066,157 +1271,200 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             suppressSpinner: false,
             reason: "showReaderView.swiftProcessing"
         )
-        Task { @MainActor in
-            guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
-                debugPrint("# READER readerMode.showReaderView.swiftProcessing.urlMismatch", contentURL, readerContent.pageURL)
-                debugPrint(
-                    "# READERINJECT showReaderView.swiftProcessing.abort",
-                    "reason=urlMismatch",
-                    "contentURL=\(contentURL.absoluteString)",
-                    "pageURL=\(readerContent.pageURL.absoluteString)"
-                )
-                cancelReaderModeLoad(for: contentURL)
-                return
-            }
-            guard let content = try await readerContent.getContent() else {
-                debugPrint("# READER readerMode.showReaderView.swiftProcessing.missingContent", contentURL)
-                debugPrint(
-                    "# READERINJECT showReaderView.swiftProcessing.abort",
-                    "reason=missingContent",
-                    "contentURL=\(contentURL.absoluteString)"
-                )
-                cancelReaderModeLoad(for: contentURL)
-                return
-            }
-
-            let resolvedURL = content.url
-            let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
-            var htmlResult = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
-            if htmlResult == nil, resolvedURL.isSnippetURL {
-                htmlResult = content.html
-            }
-            debugPrint(
-                "# READERINJECT showReaderView.swiftProcessing.htmlFetched",
-                "contentURL=\(resolvedURL.absoluteString)",
-                "bytes=\(htmlResult?.utf8.count ?? 0)",
-                "hasHTML=\(htmlResult != nil)",
-                "readerDefault=\(content.isReaderModeByDefault)",
-                "rssFull=\(content.rssContainsFullContent)",
-                "fromClipboard=\(content.isFromClipboard)",
-                "isSnippet=\(resolvedURL.isSnippetURL)"
-            )
-
-            if shouldProcessReadabilityInSwift(content: content, url: resolvedURL), let html = htmlResult {
-                let minChars = max(content.meaningfulContentMinLength, 1)
-                debugPrint(
-                    "# READERINJECT showReaderView.swiftProcessing.swiftEligible",
-                    "contentURL=\(resolvedURL.absoluteString)",
-                    "minChars=\(minChars)"
-                )
-                let swiftOutcome = await processReadabilityHTMLInSwift(
-                    html: html,
-                    url: resolvedURL,
-                    meaningfulContentMinChars: minChars
-                )
-                switch swiftOutcome {
-                case .success(let result):
+        _ = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView.swiftProcessing") { [weak self] generation in
+            guard let self else { return }
+            do {
+                guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
+                    debugPrint("# READER readerMode.showReaderView.swiftProcessing.urlMismatch", contentURL, readerContent.pageURL)
                     debugPrint(
-                        "# READERINJECT showReaderView.swiftProcessing.swiftSuccess",
-                        "contentURL=\(resolvedURL.absoluteString)",
-                        "bytes=\(result.outputHTML.utf8.count)",
-                        "published=\(result.publishedTime ?? "nil")"
+                        "# READERINJECT showReaderView.swiftProcessing.abort",
+                        "reason=urlMismatch",
+                        "contentURL=\(contentURL.absoluteString)",
+                        "pageURL=\(readerContent.pageURL.absoluteString)"
                     )
-                    readabilityContent = result.outputHTML
-                    readabilityPublishedTime = result.publishedTime
-                    readabilityContainerSelector = nil
-                    readabilityContainerFrameInfo = nil
+                    cancelReaderModeLoad(for: contentURL)
+                    return
+                }
+                guard let content = try await readerContent.getContent() else {
+                    debugPrint("# READER readerMode.showReaderView.swiftProcessing.missingContent", contentURL)
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.abort",
+                        "reason=missingContent",
+                        "contentURL=\(contentURL.absoluteString)"
+                    )
+                    cancelReaderModeLoad(for: contentURL)
+                    return
+                }
+
+                let resolvedURL = content.url
+                let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
+                var htmlResult = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
+                if htmlResult == nil, resolvedURL.isSnippetURL {
+                    htmlResult = content.html
+                }
+                debugPrint(
+                    "# READERINJECT showReaderView.swiftProcessing.htmlFetched",
+                    "contentURL=\(resolvedURL.absoluteString)",
+                    "bytes=\(htmlResult?.utf8.count ?? 0)",
+                    "hasHTML=\(htmlResult != nil)",
+                    "readerDefault=\(content.isReaderModeByDefault)",
+                    "rssFull=\(content.rssContainsFullContent)",
+                    "fromClipboard=\(content.isFromClipboard)",
+                    "isSnippet=\(resolvedURL.isSnippetURL)"
+                )
+
+                if shouldProcessReadabilityInSwift(content: content, url: resolvedURL), let html = htmlResult {
+                    let minChars = max(content.meaningfulContentMinLength, 1)
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.swiftEligible",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "minChars=\(minChars)"
+                    )
+                    let swiftOutcome = await processReadabilityHTMLInSwift(
+                        html: html,
+                        url: resolvedURL,
+                        meaningfulContentMinChars: minChars
+                    )
+                    switch swiftOutcome {
+                    case .success(let result):
+                        debugPrint(
+                            "# READERINJECT showReaderView.swiftProcessing.swiftSuccess",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "bytes=\(result.outputHTML.utf8.count)",
+                            "published=\(result.publishedTime ?? "nil")"
+                        )
+                        readabilityContent = result.outputHTML
+                        readabilityPublishedTime = result.publishedTime
+                        readabilityContainerSelector = nil
+                        readabilityContainerFrameInfo = nil
+                        do {
+                            try await showReadabilityContent(
+                                readerContent: readerContent,
+                                readabilityContent: result.outputHTML,
+                                renderToSelector: nil,
+                                in: nil,
+                                scriptCaller: scriptCaller,
+                                renderGeneration: generation
+                            )
+                            debugPrint(
+                                "# READERINJECT showReaderView.swiftProcessing.rendered",
+                                "contentURL=\(resolvedURL.absoluteString)",
+                                "bytes=\(result.outputHTML.utf8.count)"
+                            )
+                            return
+                        } catch is CancellationError {
+                            debugPrint(
+                                "# READERPERF readerMode.render.singleFlight.cancel",
+                                "url=\(contentURL.absoluteString)",
+                                "reason=showReaderView.swiftProcessing.renderCancelled",
+                                "generation=\(generation.uuidString)",
+                                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                                "isReaderModeLoading=\(isReaderModeLoading)",
+                                "isReaderMode=\(isReaderMode)"
+                            )
+                            return
+                        } catch {
+                            debugPrint("# READER readerMode.showReaderView.swiftProcessing.loadFailed", error.localizedDescription)
+                            debugPrint(
+                                "# READERINJECT showReaderView.swiftProcessing.abort",
+                                "reason=renderFailed",
+                                "contentURL=\(resolvedURL.absoluteString)",
+                                "error=\(error.localizedDescription)"
+                            )
+                            cancelReaderModeLoad(for: contentURL)
+                            return
+                        }
+                    case .unavailable(let reason):
+                        debugPrint(
+                            "# READER readerMode.showReaderView.swiftProcessing.unavailable",
+                            "url=\(resolvedURL.absoluteString)",
+                            "reason=\(reason)"
+                        )
+                        debugPrint(
+                            "# READERINJECT showReaderView.swiftProcessing.swiftUnavailable",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "reason=\(reason)"
+                        )
+                    case .failed(let reason):
+                        debugPrint(
+                            "# READER readerMode.showReaderView.swiftProcessing.failed",
+                            "url=\(resolvedURL.absoluteString)",
+                            "reason=\(reason)"
+                        )
+                        debugPrint(
+                            "# READERINJECT showReaderView.swiftProcessing.swiftFailed",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "reason=\(reason)"
+                        )
+                    }
+                } else {
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.swiftBypass",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "eligible=\(shouldProcessReadabilityInSwift(content: content, url: resolvedURL))",
+                        "hasHTML=\(htmlResult != nil)"
+                    )
+                }
+
+                if let fallbackReadability = readabilityContent {
+                    debugPrint(
+                        "# READERINJECT showReaderView.swiftProcessing.fallbackRender",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "bytes=\(fallbackReadability.utf8.count)"
+                    )
                     do {
                         try await showReadabilityContent(
                             readerContent: readerContent,
-                            readabilityContent: result.outputHTML,
-                            renderToSelector: nil,
-                            in: nil,
-                            scriptCaller: scriptCaller
+                            readabilityContent: fallbackReadability,
+                            renderToSelector: readabilityContainerSelector,
+                            in: readabilityContainerFrameInfo,
+                            scriptCaller: scriptCaller,
+                            renderGeneration: generation
                         )
+                    } catch is CancellationError {
                         debugPrint(
-                            "# READERINJECT showReaderView.swiftProcessing.rendered",
-                            "contentURL=\(resolvedURL.absoluteString)",
-                            "bytes=\(result.outputHTML.utf8.count)"
+                            "# READERPERF readerMode.render.singleFlight.cancel",
+                            "url=\(contentURL.absoluteString)",
+                            "reason=showReaderView.swiftProcessing.fallbackCancelled",
+                            "generation=\(generation.uuidString)",
+                            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                            "isReaderModeLoading=\(isReaderModeLoading)",
+                            "isReaderMode=\(isReaderMode)"
                         )
-                        return
                     } catch {
-                        debugPrint("# READER readerMode.showReaderView.swiftProcessing.loadFailed", error.localizedDescription)
+                        debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackFailed", error.localizedDescription)
                         debugPrint(
                             "# READERINJECT showReaderView.swiftProcessing.abort",
-                            "reason=renderFailed",
+                            "reason=fallbackFailed",
                             "contentURL=\(resolvedURL.absoluteString)",
                             "error=\(error.localizedDescription)"
                         )
                         cancelReaderModeLoad(for: contentURL)
-                        return
                     }
-                case .unavailable(let reason):
-                    debugPrint(
-                        "# READER readerMode.showReaderView.swiftProcessing.unavailable",
-                        "url=\(resolvedURL.absoluteString)",
-                        "reason=\(reason)"
-                    )
-                    debugPrint(
-                        "# READERINJECT showReaderView.swiftProcessing.swiftUnavailable",
-                        "contentURL=\(resolvedURL.absoluteString)",
-                        "reason=\(reason)"
-                    )
-                case .failed(let reason):
-                    debugPrint(
-                        "# READER readerMode.showReaderView.swiftProcessing.failed",
-                        "url=\(resolvedURL.absoluteString)",
-                        "reason=\(reason)"
-                    )
-                    debugPrint(
-                        "# READERINJECT showReaderView.swiftProcessing.swiftFailed",
-                        "contentURL=\(resolvedURL.absoluteString)",
-                        "reason=\(reason)"
-                    )
-                }
-            } else {
-                debugPrint(
-                    "# READERINJECT showReaderView.swiftProcessing.swiftBypass",
-                    "contentURL=\(resolvedURL.absoluteString)",
-                    "eligible=\(shouldProcessReadabilityInSwift(content: content, url: resolvedURL))",
-                    "hasHTML=\(htmlResult != nil)"
-                )
-            }
-
-            if let fallbackReadability = readabilityContent {
-                debugPrint(
-                    "# READERINJECT showReaderView.swiftProcessing.fallbackRender",
-                    "contentURL=\(resolvedURL.absoluteString)",
-                    "bytes=\(fallbackReadability.utf8.count)"
-                )
-                do {
-                    try await showReadabilityContent(
-                        readerContent: readerContent,
-                        readabilityContent: fallbackReadability,
-                        renderToSelector: readabilityContainerSelector,
-                        in: readabilityContainerFrameInfo,
-                        scriptCaller: scriptCaller
-                    )
-                } catch {
-                    debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackFailed", error.localizedDescription)
+                } else {
+                    debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackMissing", contentURL)
                     debugPrint(
                         "# READERINJECT showReaderView.swiftProcessing.abort",
-                        "reason=fallbackFailed",
-                        "contentURL=\(resolvedURL.absoluteString)",
-                        "error=\(error.localizedDescription)"
+                        "reason=fallbackMissing",
+                        "contentURL=\(contentURL.absoluteString)"
                     )
                     cancelReaderModeLoad(for: contentURL)
                 }
-            } else {
-                debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackMissing", contentURL)
+            } catch is CancellationError {
                 debugPrint(
-                    "# READERINJECT showReaderView.swiftProcessing.abort",
-                    "reason=fallbackMissing",
-                    "contentURL=\(contentURL.absoluteString)"
+                    "# READERPERF readerMode.render.singleFlight.cancel",
+                    "url=\(contentURL.absoluteString)",
+                    "reason=showReaderView.swiftProcessing.taskCancelled",
+                    "generation=\(generation.uuidString)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "isReaderModeLoading=\(isReaderModeLoading)",
+                    "isReaderMode=\(isReaderMode)"
+                )
+            } catch {
+                debugPrint(
+                    "# READER readerMode.showReaderView.swiftProcessing.unhandled",
+                    "url=\(contentURL.absoluteString)",
+                    "error=\(error.localizedDescription)"
                 )
                 cancelReaderModeLoad(for: contentURL)
             }
@@ -1230,7 +1478,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         readabilityContent: String,
         renderToSelector: String?,
         in frameInfo: WKFrameInfo?,
-        scriptCaller: WebViewScriptCaller
+        scriptCaller: WebViewScriptCaller,
+        renderGeneration: UUID? = nil
     ) async throws {
         guard let content = try await readerContent.getContent() else {
             print("No content set to show in reader mode")
@@ -1293,7 +1542,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
            pendingKeysMatch(lastRenderedReadabilityURL, url),
            readabilityContent == nil {
             debugPrint("# FLASH readability.render.skipAlreadyRendered", "url=\(url.absoluteString)")
-            markReaderModeLoadComplete(for: url)
+            markReaderModeLoadComplete(for: url, renderGeneration: renderGeneration)
             return
         }
 
@@ -1637,7 +1886,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         return
                     }
                     logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
-                    markReaderModeLoadComplete(for: url)
+                    markReaderModeLoadComplete(for: url, renderGeneration: renderGeneration)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
                     guard let navigator else {
                         print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
@@ -1731,7 +1980,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "url=\(canonicalURL.absoluteString)",
                     "elapsed=\(String(format: "%.3f", totalRenderElapsed))s"
                 )
-                markReaderModeLoadComplete(for: canonicalURL)
+                markReaderModeLoadComplete(for: canonicalURL, renderGeneration: renderGeneration)
             }()
         }()
     }

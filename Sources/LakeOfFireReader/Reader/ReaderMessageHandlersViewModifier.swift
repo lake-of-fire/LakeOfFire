@@ -810,22 +810,35 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                 }
                 if content.isReaderModeByDefault || forceReaderModeWhenAvailable {
-                    debugPrint(
-                        "# FLASH readability.showReaderView.dispatch",
-                        "contentURL=\(flashURLDescription(resolvedURL))",
-                        "outputBytes=\(result.outputHTML.utf8.count)",
-                        "frameIsMain=\(message.frameInfo.isMainFrame)"
-                    )
-                    debugPrint(
-                        "# READERRELOAD showReaderView.dispatch",
-                        "contentURL=\(resolvedURL.absoluteString)",
-                        "outputBytes=\(result.outputHTML.utf8.count)",
-                        "frameIsMain=\(message.frameInfo.isMainFrame)"
-                    )
-                    readerModeViewModel.showReaderView(
-                        readerContent: readerContent,
-                        scriptCaller: scriptCaller
-                    )
+                    let renderInFlight = readerModeViewModel.isReadabilityRenderInFlight(for: resolvedURL)
+                    if renderInFlight {
+                        debugPrint(
+                            "# READERPERF readerMode.render.singleFlight.skip",
+                            "url=\(resolvedURL.absoluteString)",
+                            "reason=readabilityParsed.dispatch",
+                            "generation=nil",
+                            "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                            "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
+                            "isReaderMode=\(readerModeViewModel.isReaderMode)"
+                        )
+                    } else {
+                        debugPrint(
+                            "# FLASH readability.showReaderView.dispatch",
+                            "contentURL=\(flashURLDescription(resolvedURL))",
+                            "outputBytes=\(result.outputHTML.utf8.count)",
+                            "frameIsMain=\(message.frameInfo.isMainFrame)"
+                        )
+                        debugPrint(
+                            "# READERRELOAD showReaderView.dispatch",
+                            "contentURL=\(resolvedURL.absoluteString)",
+                            "outputBytes=\(result.outputHTML.utf8.count)",
+                            "frameIsMain=\(message.frameInfo.isMainFrame)"
+                        )
+                        readerModeViewModel.showReaderView(
+                            readerContent: readerContent,
+                            scriptCaller: scriptCaller
+                        )
+                    }
                 } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {

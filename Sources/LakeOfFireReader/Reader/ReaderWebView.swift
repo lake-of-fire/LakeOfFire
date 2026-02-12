@@ -208,15 +208,18 @@ private class ReaderWebViewHandler {
                 let cachedHTML = content.html
                 let allowDuringLoading = self.readerModeViewModel.isReaderModeLoading
                     && self.readerModeViewModel.isReaderModeHandlingURL(content.url)
+                let renderInFlight = self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
                 let canShowCached = self.readerModeViewModel.readabilityContent == nil
                     && cachedHTMLBytes > 0
                     && (!self.readerModeViewModel.isReaderModeLoading || allowDuringLoading)
+                    && !renderInFlight
                 debugPrint(
                     "# READERRELOAD cachedReadability.check",
                     "pageURL=\(state.pageURL.absoluteString)",
                     "contentURL=\(content.url.absoluteString)",
                     "canShow=\(canShowCached)",
                     "allowDuringLoading=\(allowDuringLoading)",
+                    "renderInFlight=\(renderInFlight)",
                     "isReaderMode=\(self.readerModeViewModel.isReaderMode)",
                     "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
                     "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)",
@@ -233,6 +236,18 @@ private class ReaderWebViewHandler {
                         Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 250_000_000)
                             guard self.scriptCaller.hasAsyncCaller else { return }
+                            guard !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url) else {
+                                debugPrint(
+                                    "# READERPERF readerMode.render.singleFlight.skip",
+                                    "url=\(content.url.absoluteString)",
+                                    "reason=cachedReadability.defer",
+                                    "generation=nil",
+                                    "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                                    "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
+                                    "isReaderMode=\(self.readerModeViewModel.isReaderMode)"
+                                )
+                                return
+                            }
                             debugPrint(
                                 "# READERRELOAD cachedReadability.show",
                                 "pageURL=\(state.pageURL.absoluteString)",
@@ -248,6 +263,18 @@ private class ReaderWebViewHandler {
                             )
                         }
                     } else {
+                        guard !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url) else {
+                            debugPrint(
+                                "# READERPERF readerMode.render.singleFlight.skip",
+                                "url=\(content.url.absoluteString)",
+                                "reason=cachedReadability.show",
+                                "generation=nil",
+                                "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                                "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
+                                "isReaderMode=\(self.readerModeViewModel.isReaderMode)"
+                            )
+                            return
+                        }
                         debugPrint(
                             "# READERRELOAD cachedReadability.show",
                             "pageURL=\(state.pageURL.absoluteString)",
