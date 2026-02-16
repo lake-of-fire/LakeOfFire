@@ -107,18 +107,6 @@
         return text.slice(0, max) + `...(truncated ${text.length - max} chars)`
     }
 
-    function normalizeBylineText(rawByline) {
-        if (typeof rawByline !== "string") {
-            return ""
-        }
-        const trimmed = rawByline.trim()
-        if (!trimmed) {
-            return ""
-        }
-        const withoutPrefix = trimmed.replace(/^(by|par)\s+/i, "")
-        return (withoutPrefix || trimmed).trim()
-    }
-    
     function captureBodyMetrics() {
         const body = document.body
         const readerContent = document.getElementById("reader-content")
@@ -251,10 +239,6 @@
         }
     }
     
-    function isInternalURL(url) {
-        return /^internal:\/\/local\//.test(url);
-    }
-    
     let manabi_readability = function () {
         const body = document.body
         const hasReadabilityMode = body?.classList.contains('readability-mode')
@@ -373,11 +357,8 @@
                         windowURL: windowURL,
                     })
                 } else {
-                    let contentIsInternal = isInternalURL(uri.spec)
                     let title = DOMPurify.sanitize(rawTitle)
                     let byline = DOMPurify.sanitize(rawByline)
-                    const displayByline = normalizeBylineText(byline)
-                    const hasByline = displayByline.length > 0
                     var content = DOMPurify.sanitize(rawContent)
                     const sanitizedContentBytes = content && typeof content === "string" ? content.length : 0
                     const hasReaderBodyInContent = typeof content === "string" && content.indexOf('id="reader-content"') !== -1
@@ -387,112 +368,7 @@
                         hasMarkup: !!(content && typeof content === "string" && content.indexOf("<body") !== -1),
                         preview: previewText(content, 512),
                     })
-                    let viewOriginal = contentIsInternal ? '' : `<a class="reader-view-original">View Original</a>`
-
-                    const bylineLine = hasByline
-                        ? `<div id="reader-byline-line" class="byline-line"><span class="byline-label">By</span> <span id="reader-byline" class="byline">${displayByline}</span></div>`
-                        : ''
-                    const metaLine = `<div id="reader-meta-line" class="byline-meta-line"><span id="reader-publication-date"></span>${viewOriginal ? `<span class="reader-meta-divider"></span>${viewOriginal}` : ''}</div>`
                     
-                    /*
-                     let openGraphImage = document.head.querySelector('meta[property="og:image"]')
-                     if (openGraphImage) {
-                     let url = openGraphImage.getAttribute('content')
-                     if (url) {
-                     let path = new URL(url).pathname
-                     if (path && !content.includes(path)) {
-                     content = DOMPurify.sanitize(`<img src='${url}'>`) + content
-                     }
-                     }
-                     }
-                     */
-                    
-                    // IMPORTANT: Keep `<body class="readability-mode">` text fragment, or update Reader.swift's check for it.
-                    
-                    // Forked off https://github.com/mozilla/firefox-ios/blob/5238e873e77e9ad3e699f926d12f61ccafabdc11/Client/Frontend/Reader/Reader.html
-                    // IMPORTANT: Match this template to ReaderContentProtocol.htmlToDisplay
-                    let html = `
-<!DOCTYPE html>
-<html>
-    <head>
-        <meta content="text/html; charset=UTF-8" http-equiv="content-type">
-        <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
-        <meta name="referrer" content="never">
-        <style id='swiftuiwebview-readability-styles'>
-            ##CSS##
-        </style>
-        <title>${title}</title>
-    </head>
-
-    <body class="readability-mode">
-        <div id="reader-header" class="header">
-            <h1 id="reader-title">${title}</h1>
-            <div id="reader-byline-container">
-                ${bylineLine}
-                ${metaLine}
-            </div>
-        </div>
-        <div id="reader-content">
-            ${content}
-        </div>
-        <script>
-            ##SCRIPT##
-        </script>
-        <script>
-            (function () {
-                function logDocumentState(reason) {
-                    try {
-                        const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
-                        if (!handler || typeof handler.postMessage !== "function") {
-                            return
-                        }
-                        const readerContent = document.getElementById("reader-content")
-                        const payload = {
-                            message: "# READER snippetLoader.documentReady",
-                            reason: reason,
-                            bodyHTMLBytes: document.body && typeof document.body.innerHTML === "string" ? document.body.innerHTML.length : 0,
-                            bodyTextBytes: document.body && typeof document.body.textContent === "string" ? document.body.textContent.length : 0,
-                            hasReaderContent: !!readerContent,
-                            readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
-                            readerContentTextBytes: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0,
-                            readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null,
-                            windowURL: window.location.href,
-                            pageURL: document.location.href
-                        }
-                        handler.postMessage(payload)
-                    } catch (error) {
-                        try {
-                            console.log("snippetLoader.documentReady log error", error)
-                        } catch (_) {}
-                    }
-                }
-                if (document.readyState === "complete" || document.readyState === "interactive") {
-                    logDocumentState("immediate")
-                } else {
-                    document.addEventListener("DOMContentLoaded", function () {
-                        logDocumentState("domcontentloaded")
-                    }, { once: true })
-                }
-            })();
-        </script>
-    </body>
-</html>
-`
-                    const htmlBytes = typeof html === "string" ? html.length : 0
-                    const hasReaderBody = typeof html === "string" ? html.indexOf('id="reader-content"') !== -1 : false
-                    readerLog("htmlTemplatePrepared", {
-                        outputBytes: htmlBytes,
-                        contentBytes: sanitizedContentBytes,
-                        hasReaderBody: hasReaderBody,
-                        readerContentPreview: previewText(content, 512),
-                    })
-                    if (!hasReaderBody) {
-                        readerLog("missingReaderContent", {
-                            reason: "htmlTemplatePrepared",
-                            contentBytes: sanitizedContentBytes,
-                            outputBytes: htmlBytes,
-                        })
-                    }
 
                     // 0 is innermost.
                     // Currently only supports optional [shadowRoot][shadowRoot][iframe] nesting
@@ -506,23 +382,14 @@
                         if (content) {
                             document.body.dataset.manabiReaderModeAvailable = 'true';
                             document.body.dataset.manabiReaderModeAvailableFor = windowURL;
-                            const hasReaderBody = html.indexOf('id="reader-content"') !== -1
                             readerLog("outputPrepared", {
                                 contentBytes: content.length,
-                                outputBytes: html.length,
-                                hasReaderBody: hasReaderBody,
+                                titleBytes: title.length,
+                                bylineBytes: byline.length,
                                 contentPreview: previewText(content, 512),
                             })
-                            if (!hasReaderBody) {
-                                readerLog("missingReaderContent", {
-                                    reason: "outputPrepared",
-                                    contentBytes: content.length,
-                                    outputBytes: html.length,
-                                })
-                            }
                             readerLog("readabilityParsedPayload", {
                                 contentBytes: content.length,
-                                outputBytes: html.length,
                                 windowURL: windowURL,
                                 pageURL: loc.href,
                             })
@@ -536,11 +403,9 @@
                                 publishedTime: publishedTime,
                                 content: content,
                                 inputHTML: inputHTML,
-                                outputHTML: html,
                             })
                             readerModeLog("readability.posted", {
                                 result: "readabilityParsed",
-                                outputBytes: htmlBytes,
                                 contentBytes: sanitizedContentBytes
                             })
                         } else {
@@ -553,7 +418,6 @@
                             })
                             readerModeLog("readability.unavailable", {
                                 reason: "noContent",
-                                outputBytes: htmlBytes,
                                 contentBytes: sanitizedContentBytes
                             })
                         }

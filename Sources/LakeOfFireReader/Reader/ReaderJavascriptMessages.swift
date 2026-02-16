@@ -91,7 +91,7 @@ public struct ReadabilityParsedMessage {
         publishedTime = body["publishedTime"] as? String
         content = body["content"] as! String
         inputHTML = body["inputHTML"] as! String
-        outputHTML = body["outputHTML"] as! String
+        outputHTML = body["outputHTML"] as? String ?? ""
     }
 }
 

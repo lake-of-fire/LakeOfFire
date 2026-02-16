@@ -118,12 +118,29 @@ const ensureCustomFontsForDoc = (doc) => {
     try {
         const css = getSharedFontCSSText();
         if (!css || !doc?.head) return;
-        if (!doc.getElementById('manabi-custom-fonts-inline')) {
-            const style = doc.createElement('style');
+        const horizontalFamily = globalThis.manabiHorizontalFontFamilyName || 'YuKyokasho Yoko';
+        const verticalFamily = globalThis.manabiVerticalFontFamilyName || 'YuKyokasho';
+        const writingDirection = globalThis.manabiEbookWritingDirection || 'original';
+        const shouldUseVertical = writingDirection === 'vertical'
+            || (writingDirection === 'original' && globalThis.manabiTrackingVertical === true);
+        const targetFamily = shouldUseVertical ? verticalFamily : horizontalFamily;
+        let style = doc.getElementById('manabi-custom-fonts-inline');
+        if (!style) {
+            style = doc.createElement('style');
             style.id = 'manabi-custom-fonts-inline';
-            style.textContent = css;
+            style.dataset.manabiOriginalCSS = css;
             doc.head.appendChild(style);
             logEBookPerf('font-inline-insert', { bytes: css.length });
+        } else if (!style.dataset.manabiOriginalCSS) {
+            style.dataset.manabiOriginalCSS = style.textContent || css;
+        }
+        if (style.dataset.manabiInjectedFontFamily !== targetFamily) {
+            const sourceCSS = style.dataset.manabiOriginalCSS || css;
+            style.textContent = sourceCSS.replace(
+                /font-family:\s*['"][^'"]+['"]\s*;/g,
+                "font-family: '" + targetFamily + "';"
+            );
+            style.dataset.manabiInjectedFontFamily = targetFamily;
         }
 
         // Log when the iframe's FontSet finishes loading the custom faces without forcing additional font loads.
@@ -2274,8 +2291,33 @@ window.setEbookViewerLayout = (layoutMode) => {
     //    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
 }
 
-window.setEbookViewerWritingDirection = (layoutMode) => {
-    globalThis.reader.view.renderer.setAttribute('flow', layoutMode)
+window.setEbookViewerWritingDirection = async (writingDirection) => {
+    globalThis.manabiEbookWritingDirection = writingDirection || 'original';
+    try {
+        const currentDoc = globalThis.reader?.view?.document;
+        if (currentDoc) {
+            globalThis.manabiEnsureCustomFonts?.(currentDoc);
+        }
+    } catch (_) {}
+    const renderer = globalThis.reader?.view?.renderer;
+    if (renderer && typeof renderer.render === 'function') {
+        try {
+            await renderer.render();
+        } catch (_) {
+            // best effort
+        }
+    }
+}
+
+window.manabiGetWritingDirectionSnapshot = () => {
+    return {
+        pageURL: window.location.href,
+        writingDirectionOverride: globalThis.manabiEbookWritingDirection || 'original',
+        vertical: globalThis.manabiTrackingVertical === true,
+        verticalRTL: globalThis.manabiTrackingVerticalRTL === true,
+        rtl: globalThis.manabiTrackingRTL === true,
+        writingMode: globalThis.manabiTrackingWritingMode || null,
+    };
 }
 
 window.loadNextCacheWarmerSection = async () => {

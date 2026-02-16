@@ -620,13 +620,20 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 let isSnippetURL = resolvedURL.isSnippetURL
+                let outputHTML = buildCanonicalReadabilityHTML(
+                    title: result.title,
+                    byline: result.byline,
+                    publishedTime: result.publishedTime,
+                    content: result.content,
+                    contentURL: resolvedURL
+                )
                 debugPrint(
                     "# READERMODE readabilityParsed",
                     "windowURL=\(rawWindowURL.absoluteString)",
                     "contentURL=\(resolvedURL.absoluteString)",
                     "frameIsMain=\(message.frameInfo.isMainFrame)",
                     "isSnippet=\(isSnippetURL)",
-                    "outputBytes=\(result.outputHTML.utf8.count)",
+                    "outputBytes=\(outputHTML.utf8.count)",
                     "readerAvailable=\(content.isReaderModeAvailable)",
                     "readerDefault=\(content.isReaderModeByDefault)",
                     "forceReader=\(forceReaderModeWhenAvailable)",
@@ -636,7 +643,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 debugPrint(
                     "# READERRELOAD readabilityParsed",
                     "contentURL=\(resolvedURL.absoluteString)",
-                    "outputBytes=\(result.outputHTML.utf8.count)",
+                    "outputBytes=\(outputHTML.utf8.count)",
                     "frameIsMain=\(message.frameInfo.isMainFrame)",
                     "readerDefault=\(content.isReaderModeByDefault)",
                     "isReaderMode=\(readerModeViewModel.isReaderMode)",
@@ -654,10 +661,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(
                         "# READER snippet.readabilityHTML",
                         "windowURL=\(rawWindowURL.absoluteString)",
-                        "bytes=\(result.outputHTML.utf8.count)",
-                        "html=\(result.outputHTML)"
+                        "bytes=\(outputHTML.utf8.count)",
+                        "html=\(outputHTML)"
                     )
-                    let hasReaderContent = result.outputHTML.contains("id=\"reader-content\"")
+                    let hasReaderContent = outputHTML.contains("id=\"reader-content\"")
                     debugPrint(
                         "# READER readability.snippetOutput",
                         "windowURL=\(resolvedURL.absoluteString)",
@@ -665,11 +672,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "hasReaderContent=\(hasReaderContent)"
                     )
                 }
-                if let bodySummary = summarizeBodyMarkup(from: result.outputHTML) {
+                if let bodySummary = summarizeBodyMarkup(from: outputHTML) {
                     debugPrint(
                         "# READER readability.parsedBody",
                         "windowURL=\(resolvedURL.absoluteString)",
-                        "contentBytes=\(result.outputHTML.utf8.count)",
+                        "contentBytes=\(outputHTML.utf8.count)",
                         "body=\(bodySummary)"
                     )
                 }
@@ -679,7 +686,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     // Don't override a parent window readability result.
                     return
                 }
-                guard !result.outputHTML.isEmpty else {
+                let hasMeaningfulContent = !result.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                guard hasMeaningfulContent else {
                     if isSnippetURL {
                         debugPrint(
                             "# READER readability.empty",
@@ -783,7 +791,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                 }
 
-                readerModeViewModel.readabilityContent = result.outputHTML
+                readerModeViewModel.readabilityContent = outputHTML
                 readerModeViewModel.readabilityPublishedTime = result.publishedTime
                 readerModeViewModel.readabilityContainerSelector = result.readabilityContainerSelector
                 readerModeViewModel.readabilityContainerFrameInfo = message.frameInfo
@@ -791,21 +799,21 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "# FLASH readability.parsed",
                         "contentURL=\(flashURLDescription(resolvedURL))",
                         "frameURL=\(flashURLDescription(message.frameInfo.request.url))",
-                        "outputBytes=\(result.outputHTML.utf8.count)",
+                        "outputBytes=\(outputHTML.utf8.count)",
                         "frameIsMain=\(message.frameInfo.isMainFrame)"
                     )
                 debugPrint(
                     "# READER readabilityParsed.dispatch",
                     "contentURL=\(resolvedURL.absoluteString)",
                     "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")",
-                    "outputBytes=\(result.outputHTML.utf8.count)",
+                    "outputBytes=\(outputHTML.utf8.count)",
                     "frameIsMain=\(message.frameInfo.isMainFrame)"
                 )
                 if isSnippetURL {
                     debugPrint(
                         "# READER snippet.readabilityDispatch",
                         "contentURL=\(resolvedURL.absoluteString)",
-                        "outputBytes=\(result.outputHTML.utf8.count)",
+                        "outputBytes=\(outputHTML.utf8.count)",
                         "willRenderImmediately=\(content.isReaderModeByDefault || forceReaderModeWhenAvailable)"
                     )
                 }
@@ -825,13 +833,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         debugPrint(
                             "# FLASH readability.showReaderView.dispatch",
                             "contentURL=\(flashURLDescription(resolvedURL))",
-                            "outputBytes=\(result.outputHTML.utf8.count)",
+                            "outputBytes=\(outputHTML.utf8.count)",
                             "frameIsMain=\(message.frameInfo.isMainFrame)"
                         )
                         debugPrint(
                             "# READERRELOAD showReaderView.dispatch",
                             "contentURL=\(resolvedURL.absoluteString)",
-                            "outputBytes=\(result.outputHTML.utf8.count)",
+                            "outputBytes=\(outputHTML.utf8.count)",
                             "frameIsMain=\(message.frameInfo.isMainFrame)"
                         )
                         readerModeViewModel.showReaderView(
@@ -839,7 +847,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             scriptCaller: scriptCaller
                         )
                     }
-                } else if result.outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
+                } else if outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
                     try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.manabiReaderModeAvailableConfidently = 'true';

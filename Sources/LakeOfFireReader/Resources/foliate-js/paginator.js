@@ -1388,19 +1388,34 @@ async function getBodylessComputedStyle(sourceDoc) {
 
 /**
  * Determines writing mode and directionality (vertical, verticalRTL, rtl) by using a computed style from a cloned iframe.
- * @param {Document} sourceDoc - The source document to analyze.
+ * Shared foliate direction resolver (mirrored by reader-mode runtime).
  * @returns {Promise<{vertical: boolean, verticalRTL: boolean, rtl: boolean}>}
  */
-async function getDirection({ bodylessStyle, bodylessDoc }) {
+function resolvePaginatorDirection({
+    bodylessStyle,
+    bodylessDoc,
+    writingDirectionOverride = globalThis.manabiEbookWritingDirection || 'original',
+}) {
     const writingMode = bodylessStyle.writingMode;
     const direction = bodylessStyle.direction;
-    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
-    const verticalRTL = writingMode === 'vertical-rl';
     const rtl =
         bodylessDoc.body.dir === 'rtl' ||
         direction === 'rtl' ||
         bodylessDoc.documentElement.dir === 'rtl';
+    if (writingDirectionOverride === 'vertical') {
+        return { vertical: true, verticalRTL: true, rtl };
+    }
+    if (writingDirectionOverride === 'horizontal') {
+        return { vertical: false, verticalRTL: false, rtl };
+    }
+    const vertical = writingMode === 'vertical-rl' || writingMode === 'vertical-lr';
+    const verticalRTL = writingMode === 'vertical-rl';
     return { vertical, verticalRTL, rtl };
+}
+globalThis.manabiResolvePaginatorDirection = resolvePaginatorDirection;
+
+async function getDirection({ bodylessStyle, bodylessDoc }) {
+    return resolvePaginatorDirection({ bodylessStyle, bodylessDoc });
 }
 
 const makeMarginals = (length, part) => Array.from({

@@ -63,6 +63,126 @@ private let readabilityClassesToPreserve: [String] = [
 ]
 
 private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
+private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
+
+internal func buildCanonicalReadabilityHTML(
+    title: String,
+    byline: String,
+    publishedTime _: String?,
+    content: String,
+    contentURL: URL
+) -> String {
+    let normalizedByline = normalizeReadabilityBylineText(byline)
+    let hasByline = !normalizedByline.isEmpty
+    let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
+    let bylineLine = hasByline
+        ? "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(normalizedByline)</span></div>"
+        : ""
+    let metaLine = "<div id=\"reader-meta-line\" class=\"byline-meta-line\"><span id=\"reader-publication-date\"></span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>"
+    let css = Readability.shared.css
+    let scripts = Readability.shared.scripts
+    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\""
+    let documentReadyScript = """
+    (function () {
+        function logDocumentState(reason) {
+            try {
+                const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
+                if (!handler || typeof handler.postMessage !== "function") {
+                    return
+                }
+                const readerContent = document.getElementById("reader-content")
+                const payload = {
+                    message: "# READER snippetLoader.documentReady",
+                    reason: reason,
+                    bodyHTMLBytes: document.body && typeof document.body.innerHTML === "string" ? document.body.innerHTML.length : 0,
+                    bodyTextBytes: document.body && typeof document.body.textContent === "string" ? document.body.textContent.length : 0,
+                    hasReaderContent: !!readerContent,
+                    readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
+                    readerContentTextBytes: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0,
+                    readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null,
+                    windowURL: window.location.href,
+                    pageURL: document.location.href
+                }
+                handler.postMessage(payload)
+            } catch (error) {
+                try {
+                    console.log("snippetLoader.documentReady log error", error)
+                } catch (_) {}
+            }
+        }
+        if (document.readyState === "complete" || document.readyState === "interactive") {
+            logDocumentState("immediate")
+        } else {
+            document.addEventListener("DOMContentLoaded", function () {
+                logDocumentState("domcontentloaded")
+            }, { once: true })
+        }
+    })();
+    """
+
+    return """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <meta content="text/html; charset=UTF-8" http-equiv="content-type">
+            <meta name="viewport" content="\(readabilityViewportMetaContent)">
+            <meta name="referrer" content="never">
+            <style id='swiftuiwebview-readability-styles'>
+                \(css)
+            </style>
+            <title>\(title)</title>
+        </head>
+
+        <body class="readability-mode" \(availabilityAttributes)>
+            <div id="reader-header" class="header">
+                <h1 id="reader-title">\(title)</h1>
+                <div id="reader-byline-container">
+                    \(bylineLine)
+                    \(metaLine)
+                </div>
+            </div>
+            <div id="reader-content">
+                \(content)
+            </div>
+            <script>
+                \(scripts)
+            </script>
+            <script>
+                \(documentReadyScript)
+            </script>
+        </body>
+    </html>
+    """
+}
+
+internal func canonicalReadabilityViewportMetaContent() -> String {
+    readabilityViewportMetaContent
+}
+
+private func normalizeReadabilityBylineText(_ rawByline: String) -> String {
+    let trimmed = rawByline.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    let nsByline = trimmed as NSString
+    let range = NSRange(location: 0, length: nsByline.length)
+    let stripped = readabilityBylinePrefixRegex.stringByReplacingMatches(
+        in: trimmed,
+        options: [],
+        range: range,
+        withTemplate: ""
+    )
+    let cleaned = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.isEmpty ? trimmed : cleaned
+}
+
+private func isInternalReaderURL(_ url: URL) -> Bool {
+    url.scheme == "internal" && url.host == "local"
+}
+
+private func escapeReadabilityHTMLAttribute(_ raw: String) -> String {
+    let settings = OutputSettings().escapeMode(Entities.EscapeMode.extended).charset(String.Encoding.utf8)
+    let escaped = Entities.escape(raw, settings)
+    return escaped.replacingOccurrences(of: "\"", with: "&quot;")
+}
 
 @MainActor
 public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
@@ -2843,13 +2963,22 @@ private extension ReaderModeViewModel {
         let js = """
         (function() {
             try {
-                if (document.documentElement?.dataset?.manabiFontInjected === '1') { return; }
-                const css = atob('\(base64)');
-                const style = document.createElement('style');
-                style.id = 'manabi-custom-fonts-inline';
-                style.textContent = css;
-                (document.head || document.documentElement).appendChild(style);
-                document.documentElement.dataset.manabiFontInjected = '1';
+                const root = document.documentElement;
+                let style = document.getElementById('manabi-custom-fonts-inline');
+                if (!style) {
+                    const css = atob('\(base64)');
+                    style = document.createElement('style');
+                    style.id = 'manabi-custom-fonts-inline';
+                    style.textContent = css;
+                    style.dataset.manabiOriginalCSS = css;
+                    (document.head || document.documentElement).appendChild(style);
+                    root.dataset.manabiFontInjected = '1';
+                } else if (!style.dataset.manabiOriginalCSS) {
+                    style.dataset.manabiOriginalCSS = style.textContent || '';
+                }
+                if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
+                    window.manabiApplyDirectionalInjectedFont();
+                }
             } catch (e) {
                 try { console.log('manabi font inject error', e); } catch (_) {}
             }
@@ -3151,7 +3280,7 @@ private func processReadabilityHTMLInSwift(
     let title = SwiftDOMPurify.DOMPurify.sanitize(rawTitle)
     let byline = SwiftDOMPurify.DOMPurify.sanitize(rawByline)
     let content = SwiftDOMPurify.DOMPurify.sanitize(rawContentForSanitize)
-    let outputHTML = buildReadabilityHTML(
+    let outputHTML = buildCanonicalReadabilityHTML(
         title: title,
         byline: byline,
         publishedTime: result.publishedTime,
@@ -3208,122 +3337,6 @@ private func stripTemplateTagsForSanitize(_ html: String) -> String {
         with: "",
         options: .regularExpression
     )
-}
-
-private func buildReadabilityHTML(
-    title: String,
-    byline: String,
-    publishedTime: String?,
-    content: String,
-    contentURL: URL
-) -> String {
-    let normalizedByline = normalizeBylineText(byline)
-    let hasByline = !normalizedByline.isEmpty
-    let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
-    let bylineLine = hasByline
-        ? "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(normalizedByline)</span></div>"
-        : ""
-    let metaLine = "<div id=\"reader-meta-line\" class=\"byline-meta-line\"><span id=\"reader-publication-date\"></span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>"
-    let css = Readability.shared.css
-    let scripts = Readability.shared.scripts
-    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeHTMLAttribute(contentURL.absoluteString))\""
-    let documentReadyScript = """
-    (function () {
-        function logDocumentState(reason) {
-            try {
-                const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
-                if (!handler || typeof handler.postMessage !== "function") {
-                    return
-                }
-                const readerContent = document.getElementById("reader-content")
-                const payload = {
-                    message: "# READER snippetLoader.documentReady",
-                    reason: reason,
-                    bodyHTMLBytes: document.body && typeof document.body.innerHTML === "string" ? document.body.innerHTML.length : 0,
-                    bodyTextBytes: document.body && typeof document.body.textContent === "string" ? document.body.textContent.length : 0,
-                    hasReaderContent: !!readerContent,
-                    readerContentHTMLBytes: readerContent && typeof readerContent.innerHTML === "string" ? readerContent.innerHTML.length : 0,
-                    readerContentTextBytes: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.length : 0,
-                    readerContentPreview: readerContent && typeof readerContent.textContent === "string" ? readerContent.textContent.slice(0, 240) : null,
-                    windowURL: window.location.href,
-                    pageURL: document.location.href
-                }
-                handler.postMessage(payload)
-            } catch (error) {
-                try {
-                    console.log("snippetLoader.documentReady log error", error)
-                } catch (_) {}
-            }
-        }
-        if (document.readyState === "complete" || document.readyState === "interactive") {
-            logDocumentState("immediate")
-        } else {
-            document.addEventListener("DOMContentLoaded", function () {
-                logDocumentState("domcontentloaded")
-            }, { once: true })
-        }
-    })();
-    """
-    let escapedTitle = title
-    let escapedContent = content
-    return """
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <meta content="text/html; charset=UTF-8" http-equiv="content-type">
-            <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
-            <meta name="referrer" content="never">
-            <style id='swiftuiwebview-readability-styles'>
-                \(css)
-            </style>
-            <title>\(escapedTitle)</title>
-        </head>
-
-        <body class="readability-mode" \(availabilityAttributes)>
-            <div id="reader-header" class="header">
-                <h1 id="reader-title">\(escapedTitle)</h1>
-                <div id="reader-byline-container">
-                    \(bylineLine)
-                    \(metaLine)
-                </div>
-            </div>
-            <div id="reader-content">
-                \(escapedContent)
-            </div>
-            <script>
-                \(scripts)
-            </script>
-            <script>
-                \(documentReadyScript)
-            </script>
-        </body>
-    </html>
-    """
-}
-
-private func normalizeBylineText(_ rawByline: String) -> String {
-    let trimmed = rawByline.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return "" }
-    let nsByline = trimmed as NSString
-    let range = NSRange(location: 0, length: nsByline.length)
-    let stripped = readabilityBylinePrefixRegex.stringByReplacingMatches(
-        in: trimmed,
-        options: [],
-        range: range,
-        withTemplate: ""
-    )
-    let cleaned = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
-    return cleaned.isEmpty ? trimmed : cleaned
-}
-
-private func isInternalReaderURL(_ url: URL) -> Bool {
-    return url.scheme == "internal" && url.host == "local"
-}
-
-private func escapeHTMLAttribute(_ raw: String) -> String {
-    let settings = OutputSettings().escapeMode(Entities.EscapeMode.extended).charset(String.Encoding.utf8)
-    let escaped = Entities.escape(raw, settings)
-    return escaped.replacingOccurrences(of: "\"", with: "&quot;")
 }
 
 @MainActor

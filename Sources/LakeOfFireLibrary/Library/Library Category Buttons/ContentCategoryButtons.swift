@@ -186,6 +186,9 @@ public struct ContentCategoryButtons<NavigationValue: Hashable, AdditionalCatego
                     )
                 }
                 .buttonStyle(ReaderCategoryButtonStyle())
+                .simultaneousGesture(TapGesture().onEnded {
+                    logNavigationCategoryTap(category: category, navigationValue: navigationValue)
+                })
             } else {
                 NBNavigationLink(value: navigationValue) {
                     FeedCategoryButtonLabel(
@@ -195,6 +198,9 @@ public struct ContentCategoryButtons<NavigationValue: Hashable, AdditionalCatego
                     )
                 }
                 .buttonStyle(ReaderCategoryButtonStyle())
+                .simultaneousGesture(TapGesture().onEnded {
+                    logNavigationCategoryTap(category: category, navigationValue: navigationValue)
+                })
             }
         } else {
             FeedCategoryButton(
@@ -204,6 +210,22 @@ public struct ContentCategoryButtons<NavigationValue: Hashable, AdditionalCatego
                 isCompact: isCompact
             )
         }
+    }
+
+    private func logNavigationCategoryTap(category: FeedCategory, navigationValue: NavigationValue) {
+        let feeds = category.getFeeds() ?? []
+        let activeFeedCount = feeds.filter { !$0.isArchived }.count
+        debugPrint(
+            "# FEEDCATEGORY",
+            [
+                "stage": "home.category.tap",
+                "categoryID": category.id.uuidString,
+                "categoryTitle": category.title,
+                "navigationValue": String(describing: navigationValue),
+                "totalFeedCount": feeds.count,
+                "activeFeedCount": activeFeedCount
+            ] as [String: Any]
+        )
     }
 }
 
