@@ -169,6 +169,34 @@ public enum EbookHTMLProcessingContext {
     @TaskLocal public static var isEbookHTML: Bool = false
 }
 
+private let ebookHTMLDebugMarker = "芥川賞"
+private let ebookHTMLTargetSectionFragments = [
+    "item/xhtml/title.xhtml",
+    "item/xhtml/0001.xhtml",
+]
+
+private func shouldLogEbookHTMLPayload(_ html: String, sectionLocation: String? = nil) -> Bool {
+    if html.contains(ebookHTMLDebugMarker) {
+        return true
+    }
+    if let sectionLocation {
+        return ebookHTMLTargetSectionFragments.contains(where: { sectionLocation.contains($0) })
+    }
+    return false
+}
+
+private func logEbookHTML(
+    stage: String,
+    contentURL: URL,
+    sectionLocation: String,
+    isCacheWarmer: Bool,
+    html: String
+) {
+    let segmentCount = html.components(separatedBy: "<manabi-segment").count - 1
+    let hasTrackingFlag = html.contains("data-manabi-tracking-enabled")
+    print("# EBOOKHTML stage=\(stage) cacheWarmer=\(isCacheWarmer) contentURL=\(contentURL.absoluteString) sectionLocation=\(sectionLocation) length=\(html.utf8.count) segmentCount=\(max(segmentCount, 0)) hasTrackingFlag=\(hasTrackingFlag)")
+}
+
 @ReaderViewModelActor
 internal func ebookTextProcessor(
     contentURL: URL,
@@ -180,6 +208,16 @@ internal func ebookTextProcessor(
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])
+    var shouldLogPipeline = shouldLogEbookHTMLPayload(content, sectionLocation: sectionLocation)
+    if shouldLogPipeline {
+        logEbookHTML(
+            stage: "swift.rawInput",
+            contentURL: contentURL,
+            sectionLocation: sectionLocation,
+            isCacheWarmer: isCacheWarmer,
+            html: content
+        )
+    }
     
     do {
         var doc: SwiftSoup.Document?
@@ -211,6 +249,18 @@ internal func ebookTextProcessor(
             return content
         }
 
+        if let htmlSnapshot = try? doc.outerHtml(),
+           shouldLogPipeline || shouldLogEbookHTMLPayload(htmlSnapshot, sectionLocation: sectionLocation) {
+            shouldLogPipeline = true
+            logEbookHTML(
+                stage: "swift.afterProcessReadabilityContent",
+                contentURL: contentURL,
+                sectionLocation: sectionLocation,
+                isCacheWarmer: isCacheWarmer,
+                html: htmlSnapshot
+            )
+        }
+
         try processForReaderMode(
             doc: doc,
             url: sectionLocationURL, //nil,
@@ -226,6 +276,16 @@ internal func ebookTextProcessor(
         ensureRubyFontCustomProperty(in: doc)
 
         var html = try doc.outerHtml()
+        if shouldLogPipeline || shouldLogEbookHTMLPayload(html, sectionLocation: sectionLocation) {
+            shouldLogPipeline = true
+            logEbookHTML(
+                stage: "swift.afterProcessForReaderMode",
+                contentURL: contentURL,
+                sectionLocation: sectionLocation,
+                isCacheWarmer: isCacheWarmer,
+                html: html
+            )
+        }
 
         if let processHTML {
             html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {
@@ -234,6 +294,15 @@ internal func ebookTextProcessor(
                     isCacheWarmer
                 )
             }
+        }
+        if shouldLogPipeline || shouldLogEbookHTMLPayload(html, sectionLocation: sectionLocation) {
+            logEbookHTML(
+                stage: "swift.afterProcessHTML",
+                contentURL: contentURL,
+                sectionLocation: sectionLocation,
+                isCacheWarmer: isCacheWarmer,
+                html: html
+            )
         }
 
         return html

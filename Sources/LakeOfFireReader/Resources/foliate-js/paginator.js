@@ -12,6 +12,74 @@ const CSS_DEFAULTS = {
     maxColumnCountPortrait: 1,
 };
 
+const COLUMNIZATION_CHARACTER_THRESHOLDS = {
+    verticalFullWidthCharacters: 40,
+    horizontalFullWidthCharacters: 30,
+    sampleCount: 20,
+}
+
+const parsePixelValue = value => {
+    if (value == null) return null
+    const parsed = Number.parseFloat(String(value).trim())
+    return Number.isFinite(parsed) ? parsed : null
+}
+
+const fallbackFullWidthCharacterAdvancePx = doc => {
+    const style = doc?.defaultView?.getComputedStyle?.(doc?.body || doc?.documentElement)
+    const fontSize = parsePixelValue(style?.fontSize || style?.getPropertyValue?.('font-size'))
+    return Math.max(1, fontSize || 16)
+}
+
+const measureFullWidthCharacterAdvancePx = ({ doc, vertical }) => {
+    const container = doc?.body || doc?.documentElement
+    if (!(container instanceof HTMLElement)) {
+        return fallbackFullWidthCharacterAdvancePx(doc)
+    }
+
+    const probe = doc.createElement('span')
+    probe.textContent = '漢'.repeat(COLUMNIZATION_CHARACTER_THRESHOLDS.sampleCount)
+    probe.setAttribute('aria-hidden', 'true')
+    Object.assign(probe.style, {
+        position: 'absolute',
+        visibility: 'hidden',
+        pointerEvents: 'none',
+        whiteSpace: 'nowrap',
+        inset: '0',
+        font: 'inherit',
+        lineHeight: 'inherit',
+        letterSpacing: 'normal',
+        writingMode: vertical ? 'vertical-rl' : 'horizontal-tb',
+        textOrientation: vertical ? 'upright' : 'mixed',
+    })
+
+    container.appendChild(probe)
+    const rect = probe.getBoundingClientRect()
+    probe.remove()
+
+    const measuredSpan = vertical ? rect.height : rect.width
+    if (measuredSpan > 0) return measuredSpan / COLUMNIZATION_CHARACTER_THRESHOLDS.sampleCount
+    return fallbackFullWidthCharacterAdvancePx(doc)
+}
+
+const resolveColumnizationThreshold = ({ doc, vertical }) => {
+    const fullWidthCharacterAdvancePx = Math.max(
+        1,
+        measureFullWidthCharacterAdvancePx({ doc, vertical })
+    )
+    const fullWidthCharacterThreshold = vertical
+        ? COLUMNIZATION_CHARACTER_THRESHOLDS.verticalFullWidthCharacters
+        : COLUMNIZATION_CHARACTER_THRESHOLDS.horizontalFullWidthCharacters
+    const columnizationThresholdPx = Math.max(
+        1,
+        fullWidthCharacterAdvancePx * fullWidthCharacterThreshold
+    )
+    return {
+        fullWidthCharacterAdvancePx,
+        fullWidthCharacterThreshold,
+        columnizationThresholdPx,
+    }
+}
+
 // Chevron visual animations toggle (restored to enabled)
 const CHEVRON_VISUALS_ENABLED = true;
 // Preview chevrons during a swipe before navigation triggers
@@ -1724,20 +1792,30 @@ class View {
     }
     async scrolled({
         gap,
-        columnWidth
+        columnWidth,
+        shouldColumnizeForThreshold = true
     }, { skipExpand = false } = {}) {
         await this.#awaitDirection();
         const vertical = this.#vertical
         const doc = this.document
         const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
+        const constrainedSize = shouldColumnizeForThreshold
+            ? `${columnWidth}px`
+            : 'none'
+        const margin = shouldColumnizeForThreshold ? 'auto' : '0'
+        const padding = shouldColumnizeForThreshold
+            ? (vertical ? `${gap}px 0` : `0 ${gap}px`)
+            : '0'
+        const effectiveGap = shouldColumnizeForThreshold ? `${gap}px` : '0px'
         logEBookPerf('EXPAND.scrolled-entry', {
             skipExpand,
+            shouldColumnizeForThreshold,
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
         })
         setStylesImportant(doc.documentElement, {
             'box-sizing': 'border-box',
-            'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
+            'padding': padding,
             //            border: `${gap}px solid transparent`,
             //            borderWidth: vertical ? `${gap}px 0` : `0 ${gap}px`,
             'column-width': 'auto',
@@ -1746,8 +1824,8 @@ class View {
 
             //            // columnize parity
             // columnGap: '0',
-            '--paginator-column-gap': `${gap}px`,
-            'column-gap': `${gap}px`,
+            '--paginator-column-gap': effectiveGap,
+            'column-gap': effectiveGap,
             'column-fill': 'auto',
             'overflow': 'hidden',
             // force wrap long words
@@ -1768,8 +1846,8 @@ class View {
         })
         // columnize parity
         setStylesImportant(doc.body, {
-            [vertical ? 'max-height' : 'max-width']: `${columnWidth}px`,
-            'margin': 'auto',
+            [vertical ? 'max-height' : 'max-width']: constrainedSize,
+            'margin': margin,
         })
         const canExpand = !skipExpand
         if (canExpand) {
@@ -3669,6 +3747,15 @@ export class Paginator extends HTMLElement {
             height
         } = await this.sizes()
         const size = vertical ? height : width
+        const {
+            fullWidthCharacterAdvancePx,
+            fullWidthCharacterThreshold,
+            columnizationThresholdPx,
+        } = resolveColumnizationThreshold({
+            doc: this.#view.document,
+            vertical,
+        })
+        const shouldColumnizeForThreshold = size > columnizationThresholdPx
 
         // New:
         const {
@@ -3746,8 +3833,9 @@ export class Paginator extends HTMLElement {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
             this.#top.style.padding = '0'
-            //            const columnWidth = maxInlineSize
-            const columnWidth = maxInlineSize
+            const columnWidth = shouldColumnizeForThreshold
+                ? columnizationThresholdPx
+                : size
 
             this.heads = null
             this.feet = null
@@ -3760,6 +3848,10 @@ export class Paginator extends HTMLElement {
                 bottomMargin,
                 gap,
                 columnWidth,
+                shouldColumnizeForThreshold,
+                fullWidthCharacterAdvancePx,
+                fullWidthCharacterThreshold,
+                columnizationThresholdPx,
                 usePaginate: false,
                 writingMode,
                 direction: resolvedDir,
@@ -3773,19 +3865,23 @@ export class Paginator extends HTMLElement {
             this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
             this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
-            // retro way:
-            divisor = Math.min(maxColumnCount, Math.ceil(size / maxInlineSize))
-            //                        divisor = Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize))
-            //            divisor = Math.min(maxColumnCountSpread, Math.ceil(size / maxInlineSize))
-            //            console.log("Divisor", Math.min(oldmaxColumnCount, Math.ceil(size / oldmaxInlineSize)), divisor)
-            columnWidth = (size / divisor) - gap
+            if (!shouldColumnizeForThreshold) {
+                divisor = 1
+                columnWidth = size - gap
+            } else {
+                const effectiveInlineSize = columnizationThresholdPx
+                divisor = Math.min(maxColumnCount, Math.ceil(size / effectiveInlineSize))
+                columnWidth = (size / divisor) - gap
+            }
         }
 
         this.setAttribute('dir', rtl ? 'rtl' : 'ltr')
 
-        const marginalDivisor = vertical ?
-            Math.min(2, Math.ceil(width / maxInlineSize)) :
-            divisor
+        const marginalDivisor = shouldColumnizeForThreshold
+            ? (vertical
+                ? Math.min(2, Math.ceil(width / maxInlineSize))
+                : divisor)
+            : 1
         const marginalStyle = {
             gridTemplateColumns: `repeat(${marginalDivisor}, 1fr)`,
             gap: `${gap}px`,
@@ -3808,6 +3904,10 @@ export class Paginator extends HTMLElement {
             gap,
             columnWidth,
             divisor,
+            shouldColumnizeForThreshold,
+            fullWidthCharacterAdvancePx,
+            fullWidthCharacterThreshold,
+            columnizationThresholdPx,
             usePaginate: false,
             writingMode,
             direction: resolvedDir,

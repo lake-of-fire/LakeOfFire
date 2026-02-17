@@ -95,6 +95,79 @@ const replaceSeries = async (str, regex, f) => {
     return str.replace(regex, () => results.shift())
 }
 
+const logEBookHTMLDiagnostic = (detail = {}) => {
+    const line = `# EBOOKHTML ${JSON.stringify(detail)}`
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line)
+    } catch (_error) {
+        try { console.log(line) } catch (_) {}
+    }
+}
+
+const parseParserErrorLocation = (message = '') => {
+    const lineMatch = message.match(/line\s+(\d+)/i)
+    const columnMatch = message.match(/column\s+(\d+)/i)
+    return {
+        line: lineMatch ? Number.parseInt(lineMatch[1], 10) : null,
+        column: columnMatch ? Number.parseInt(columnMatch[1], 10) : null,
+    }
+}
+
+const countTag = (html, tagName) => {
+    const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const open = html.match(new RegExp(`<${escaped}(\\s|>|/)`, 'gi'))?.length ?? 0
+    const close = html.match(new RegExp(`</${escaped}>`, 'gi'))?.length ?? 0
+    return { open, close }
+}
+
+const logParserErrorExcerpt = ({ href, mediaType, html, message, radius = 8 }) => {
+    const { line, column } = parseParserErrorLocation(message)
+    if (!line || !Number.isFinite(line)) {
+        logEBookHTMLDiagnostic({
+            stage: 'js.epub.loadReplaced.parserError.noLineInfo',
+            href,
+            mediaType,
+            message,
+            length: html.length,
+        })
+        return
+    }
+    const lines = html.split(/\r?\n/)
+    const lineCount = lines.length
+    const lineIndex = Math.max(0, Math.min(lineCount - 1, line - 1))
+    const start = Math.max(0, lineIndex - radius)
+    const end = Math.min(lineCount, lineIndex + radius + 1)
+    const styleCount = countTag(html, 'style')
+    const numberCount = countTag(html, 'number')
+    logEBookHTMLDiagnostic({
+        stage: 'js.epub.loadReplaced.parserError.contextMeta',
+        href,
+        mediaType,
+        message,
+        errorLine: line,
+        errorColumn: column,
+        lineCount,
+        excerptStartLine: start + 1,
+        excerptEndLine: end,
+        styleOpen: styleCount.open,
+        styleClose: styleCount.close,
+        numberOpen: numberCount.open,
+        numberClose: numberCount.close,
+    })
+    for (let idx = start; idx < end; idx += 1) {
+        const rawLine = lines[idx] ?? ''
+        const clipped = rawLine.length > 500 ? `${rawLine.slice(0, 500)}…` : rawLine
+        logEBookHTMLDiagnostic({
+            stage: 'js.epub.loadReplaced.parserError.contextLine',
+            href,
+            mediaType,
+            line: idx + 1,
+            isErrorLine: idx === lineIndex,
+            text: clipped,
+        })
+    }
+}
+
 const regexEscape = str => str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
 
 const LANGS = {
@@ -668,13 +741,61 @@ class Loader {
         if (!replacedStr) {
             return null
         }
+        const shouldForceHTMLLogging = globalThis.manabiMaybeLogEBookHTML?.(
+            'js.epub.loadReplaced.beforeDOMParser',
+            {
+                href,
+                mediaType,
+                html: replacedStr,
+            }) === true
+        if (shouldForceHTMLLogging) {
+            logEBookHTMLDiagnostic({
+                stage: 'js.epub.loadReplaced.segmentCount.raw',
+                href,
+                mediaType,
+                segmentCount: (replacedStr.match(/<manabi-segment(\s|>)/g) || []).length,
+                hasTrackingEnabledFlag: replacedStr.includes('data-manabi-tracking-enabled'),
+            })
+        }
 
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
             let doc = new DOMParser().parseFromString(replacedStr, mediaType)
+            if (shouldForceHTMLLogging) {
+                logEBookHTMLDiagnostic({
+                    stage: 'js.epub.loadReplaced.segmentCount.parsed',
+                    href,
+                    mediaType,
+                    segmentCount: doc.querySelectorAll('manabi-segment').length,
+                    trackingEnabled: doc.body?.getAttribute?.('data-manabi-tracking-enabled') ?? null,
+                    bodyClass: doc.body?.getAttribute?.('class') ?? null,
+                })
+            }
             // change to HTML if it's not valid XHTML
-            if (mediaType === MIME.XHTML && doc.querySelector('parsererror')) {
-                console.warn(doc.querySelector('parsererror').innerText)
+            const parserErrorNode = doc.querySelector('parsererror')
+            if (mediaType === MIME.XHTML && parserErrorNode) {
+                const parserErrorMessage = parserErrorNode.innerText
+                logEBookHTMLDiagnostic({
+                    stage: 'js.epub.loadReplaced.parserError',
+                    href,
+                    mediaType,
+                    message: parserErrorMessage,
+                })
+                logParserErrorExcerpt({
+                    href,
+                    mediaType,
+                    html: replacedStr,
+                    message: parserErrorMessage,
+                })
+                globalThis.manabiMaybeLogEBookHTML?.(
+                    'js.epub.loadReplaced.parserErrorInput',
+                    {
+                        href,
+                        mediaType,
+                        html: replacedStr,
+                        force: true,
+                    })
+                console.warn(parserErrorMessage)
                 item.mediaType = MIME.HTML
                 doc = new DOMParser().parseFromString(replacedStr, item.mediaType)
             }
@@ -719,6 +840,21 @@ class Loader {
                     await this.replaceCSS(el.getAttribute('style'), href, parents))
             // TODO: replace inline scripts? probably not worth the trouble
             const textResult = new XMLSerializer().serializeToString(doc)
+            if (shouldForceHTMLLogging) {
+                logEBookHTMLDiagnostic({
+                    stage: 'js.epub.loadReplaced.segmentCount.serialized',
+                    href,
+                    mediaType: item.mediaType,
+                    segmentCount: (textResult.match(/<manabi-segment(\s|>)/g) || []).length,
+                    hasTrackingEnabledFlag: textResult.includes('data-manabi-tracking-enabled'),
+                })
+            }
+            globalThis.manabiMaybeLogEBookHTML?.('js.epub.loadReplaced.afterSerialize', {
+                href,
+                mediaType: item.mediaType,
+                html: textResult,
+                force: shouldForceHTMLLogging,
+            })
             return this.createURL(href, textResult, item.mediaType, parent)
         }
 

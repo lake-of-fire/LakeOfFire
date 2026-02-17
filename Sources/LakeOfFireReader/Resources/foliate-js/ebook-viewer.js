@@ -37,6 +37,55 @@ const logBug = (event, detail = {}) => {
     }
 };
 
+const EBOOK_HTML_MARKER = '芥川賞';
+const EBOOK_HTML_TARGET_HREFS = [
+    'item/xhtml/title.xhtml',
+    'item/xhtml/0001.xhtml',
+];
+const EBOOK_HTML_VERBOSE_DUMP = false;
+
+const logEBookHTMLLine = (line) => {
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(line);
+    } catch (_err) {
+        try { console.log(line); } catch (_) {}
+    }
+};
+
+const maybeLogEBookHTML = (
+    stage,
+    {
+        href = null,
+        mediaType = null,
+        isCacheWarmer = null,
+        html = null,
+        force = false,
+    } = {}
+) => {
+    if (typeof html !== 'string') return false;
+    const normalizedHref = typeof href === 'string' ? href : '';
+    const isTargetHref = EBOOK_HTML_TARGET_HREFS.some((fragment) => normalizedHref.includes(fragment));
+    const hasMarker = html.includes(EBOOK_HTML_MARKER);
+    if (!force && !hasMarker && !isTargetHref) return false;
+    logEBookHTMLLine(`# EBOOKHTML ${JSON.stringify({
+        stage,
+        href,
+        mediaType,
+        isCacheWarmer,
+        length: html.length,
+        segmentCount: (html.match(/<manabi-segment(\s|>)/g) || []).length,
+        hasMarker,
+        isTargetHref,
+        force,
+    })}`);
+    if (EBOOK_HTML_VERBOSE_DUMP) {
+        logEBookHTMLLine(`# EBOOKHTML stage=${stage} verboseDumpDisabled=false`);
+        logEBookHTMLLine(html);
+    }
+    return true;
+};
+globalThis.manabiMaybeLogEBookHTML = maybeLogEBookHTML;
+
 const logNavHide = (event, detail = {}) => {
     const payload = { event, ...detail };
     const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
@@ -370,6 +419,12 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
         return text;
     }
+    const shouldForceHTMLLogging = maybeLogEBookHTML('js.replaceText.requestRaw', {
+        href,
+        mediaType,
+        isCacheWarmer,
+        html: text,
+    });
     const headers = {
         "Content-Type": mediaType,
         "X-Replaced-Text-Location": href,
@@ -408,6 +463,13 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     durationMs,
     })
     let html = await response.text()
+    maybeLogEBookHTML('js.replaceText.responseProcessed', {
+    href,
+    mediaType,
+    isCacheWarmer,
+    html,
+    force: shouldForceHTMLLogging,
+    });
     if (isCacheWarmer && html.replace) {
     html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ")
     }

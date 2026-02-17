@@ -7,6 +7,34 @@ import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
 
+fileprivate let ebookHTMLDebugMarker = "芥川賞"
+fileprivate let ebookHTMLTargetSectionFragments = [
+    "item/xhtml/title.xhtml",
+    "item/xhtml/0001.xhtml",
+]
+
+fileprivate func shouldLogEbookHTMLPayload(_ html: String, location: String? = nil) -> Bool {
+    if html.contains(ebookHTMLDebugMarker) {
+        return true
+    }
+    if let location {
+        return ebookHTMLTargetSectionFragments.contains(where: { location.contains($0) })
+    }
+    return false
+}
+
+fileprivate func logEbookHTML(
+    stage: String,
+    location: String,
+    contentURL: URL,
+    isCacheWarmer: Bool,
+    html: String
+) {
+    let segmentCount = html.components(separatedBy: "<manabi-segment").count - 1
+    let hasTrackingFlag = html.contains("data-manabi-tracking-enabled")
+    print("# EBOOKHTML stage=\(stage) cacheWarmer=\(isCacheWarmer) contentURL=\(contentURL.absoluteString) location=\(location) length=\(html.utf8.count) segmentCount=\(max(segmentCount, 0)) hasTrackingFlag=\(hasTrackingFlag)")
+}
+
 fileprivate actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
     let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
@@ -217,6 +245,16 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
                     if let ebookTextProcessor, let processReadabilityContent, let processHTML {
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
+                        let shouldLogRequest = shouldLogEbookHTMLPayload(text, location: replacedTextLocation)
+                        if shouldLogRequest {
+                            logEbookHTML(
+                                stage: "swift.scheme.processText.requestRaw",
+                                location: replacedTextLocation,
+                                contentURL: contentURL,
+                                isCacheWarmer: isCacheWarmer,
+                                html: text
+                            )
+                        }
                         let processingActor = EBookProcessingActor(
                             ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
                             ebookTextProcessor: ebookTextProcessor,
@@ -235,6 +273,15 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             text: text,
                             isCacheWarmer: isCacheWarmer
                         )
+                        if shouldLogRequest || shouldLogEbookHTMLPayload(respText, location: replacedTextLocation) {
+                            logEbookHTML(
+                                stage: "swift.scheme.processText.responseToViewer",
+                                location: replacedTextLocation,
+                                contentURL: contentURL,
+                                isCacheWarmer: isCacheWarmer,
+                                html: respText
+                            )
+                        }
                         debugPrint("# EBOOKPERF process-text.processed", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "respLen:", respText.count)
                         if let respData = respText.data(using: .utf8) {
                             let resp = HTTPURLResponse(
@@ -256,6 +303,16 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             }()
                         }
                     } else if let respData = text.data(using: .utf8) {
+                        let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
+                        if shouldLogEbookHTMLPayload(text, location: replacedTextLocation) {
+                            logEbookHTML(
+                                stage: "swift.scheme.processText.passthroughResponse",
+                                location: replacedTextLocation,
+                                contentURL: contentURL,
+                                isCacheWarmer: isCacheWarmer,
+                                html: text
+                            )
+                        }
                         let resp = HTTPURLResponse(
                             url: url,
                             mimeType: nil,
