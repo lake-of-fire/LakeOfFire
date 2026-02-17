@@ -2728,6 +2728,7 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
+					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireReader-Info.plist";
@@ -2747,10 +2748,12 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -2760,6 +2763,8 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -2767,6 +2772,8 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -2777,6 +2784,12 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/32a5b8753e5971f3a6611547cee138fd/StructuredQueriesMacros.macro#StructuredQueriesMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/c1cd7b80de66aaf7695a14a1e17b0994/PerceptionMacros.macro#PerceptionMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/fa426fe741c42cd784d4467084bec1c1/StructuredQueriesSQLiteMacros.macro#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireReader;
 				PRODUCT_NAME = LakeOfFireReader;
@@ -2995,6 +3008,7 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
+					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireReader-Info.plist";
@@ -3014,10 +3028,12 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -3027,6 +3043,8 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -3034,6 +3052,8 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -3044,6 +3064,12 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/32a5b8753e5971f3a6611547cee138fd/StructuredQueriesMacros.macro#StructuredQueriesMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/c1cd7b80de66aaf7695a14a1e17b0994/PerceptionMacros.macro#PerceptionMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/fa426fe741c42cd784d4467084bec1c1/StructuredQueriesSQLiteMacros.macro#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireReader;
 				PRODUCT_NAME = LakeOfFireReader;
@@ -3093,6 +3119,7 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
+					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireLibrary-Info.plist";
@@ -3112,10 +3139,12 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -3125,6 +3154,8 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -3132,6 +3163,8 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -3142,6 +3175,12 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/32a5b8753e5971f3a6611547cee138fd/StructuredQueriesMacros.macro#StructuredQueriesMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/c1cd7b80de66aaf7695a14a1e17b0994/PerceptionMacros.macro#PerceptionMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/fa426fe741c42cd784d4467084bec1c1/StructuredQueriesSQLiteMacros.macro#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireLibrary;
 				PRODUCT_NAME = LakeOfFireLibrary;
@@ -3187,6 +3226,7 @@
 					"$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include",
+					"$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include",
 					"$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib",
 				);
 				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireLibrary-Info.plist";
@@ -3206,10 +3246,12 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Bid/Bid.modulemap",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Brotli/Brotli.modulemap",
@@ -3219,6 +3261,8 @@
 				OTHER_SWIFT_FLAGS = (
 					"$(inherited)",
 					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
+					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-swift/include/module.modulemap",
@@ -3226,6 +3270,8 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-numerics/Sources/_NumericsShims/include/module.modulemap",
+					"-Xcc",
+					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/swift-syntax/Sources/_SwiftSyntaxCShims/include/module.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/zstd/lib/module.modulemap",
 					"-Xcc",
@@ -3236,6 +3282,12 @@
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/Minizip/Minizip.modulemap",
 					"-Xcc",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/tuist-derived/s2geometry/s2geometry.modulemap",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/32a5b8753e5971f3a6611547cee138fd/StructuredQueriesMacros.macro#StructuredQueriesMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/c1cd7b80de66aaf7695a14a1e17b0994/PerceptionMacros.macro#PerceptionMacros",
+					"-load-plugin-executable",
+					"/Users/alex/.cache/tuist/Binaries/fa426fe741c42cd784d4467084bec1c1/StructuredQueriesSQLiteMacros.macro#StructuredQueriesSQLiteMacros",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireLibrary;
 				PRODUCT_NAME = LakeOfFireLibrary;
