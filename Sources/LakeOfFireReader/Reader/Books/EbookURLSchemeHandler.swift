@@ -35,6 +35,45 @@ fileprivate func logEbookHTML(
     print("# EBOOKHTML stage=\(stage) cacheWarmer=\(isCacheWarmer) contentURL=\(contentURL.absoluteString) location=\(location) length=\(html.utf8.count) segmentCount=\(max(segmentCount, 0)) hasTrackingFlag=\(hasTrackingFlag)")
 }
 
+struct EBookProcessTextRequestKey: Hashable {
+    let contentURLString: String
+    let location: String
+    let isCacheWarmer: Bool
+    let textFingerprint: String
+
+    init(contentURL: URL, location: String, isCacheWarmer: Bool, text: String) {
+        contentURLString = contentURL.absoluteString
+        self.location = location
+        self.isCacheWarmer = isCacheWarmer
+        // Keep the key compact while still distinguishing different request bodies.
+        textFingerprint = "\(text.utf8.count)-\(stableHash(text))"
+    }
+}
+
+actor EBookProcessTextRequestDeduper {
+    private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<String, Never>]] = [:]
+
+    func process(
+        key: EBookProcessTextRequestKey,
+        operation: () async -> String
+    ) async -> (responseText: String, didCoalesce: Bool) {
+        if inFlightWaitersByKey[key] != nil {
+            let responseText = await withCheckedContinuation { continuation in
+                inFlightWaitersByKey[key, default: []].append(continuation)
+            }
+            return (responseText, true)
+        }
+
+        inFlightWaitersByKey[key] = []
+        let responseText = await operation()
+        let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
+        for waiter in waiters {
+            waiter.resume(returning: responseText)
+        }
+        return (responseText, false)
+    }
+}
+
 fileprivate actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
     let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
@@ -219,6 +258,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     var sharedFontCSSBase64Provider: (() async -> String?)?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
+    private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
 
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -255,11 +295,11 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                                 html: text
                             )
                         }
-                        let processingActor = EBookProcessingActor(
-                            ebookTextProcessorCacheHits: ebookTextProcessorCacheHits,
-                            ebookTextProcessor: ebookTextProcessor,
-                            processReadabilityContent: processReadabilityContent,
-                            processHTML: processHTML
+                        let processRequestKey = EBookProcessTextRequestKey(
+                            contentURL: contentURL,
+                            location: replacedTextLocation,
+                            isCacheWarmer: isCacheWarmer,
+                            text: text
                         )
                         debugPrint("# EBOOKPERF process-text.recv", replacedTextLocation, "cacheWarmer:", isCacheWarmer, "task:", taskHash, "payloadLen:", payload.count)
 
@@ -267,12 +307,36 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         //                        if !isCacheWarmer {
                         //                            print("# ebook proc", replacedTextLocation, text)
                         //                        }
-                        let respText = await processingActor.process(
-                            contentURL: contentURL,
-                            location: replacedTextLocation,
-                            text: text,
-                            isCacheWarmer: isCacheWarmer
-                        )
+                        let cacheHitsHandler = ebookTextProcessorCacheHits
+                        let processor = ebookTextProcessor
+                        let readabilityProcessor = processReadabilityContent
+                        let htmlProcessor = processHTML
+                        let (respText, didCoalesce) = await self.processTextRequestDeduper.process(
+                            key: processRequestKey
+                        ) {
+                            let processingActor = EBookProcessingActor(
+                                ebookTextProcessorCacheHits: cacheHitsHandler,
+                                ebookTextProcessor: processor,
+                                processReadabilityContent: readabilityProcessor,
+                                processHTML: htmlProcessor
+                            )
+                            return await processingActor.process(
+                                contentURL: contentURL,
+                                location: replacedTextLocation,
+                                text: text,
+                                isCacheWarmer: isCacheWarmer
+                            )
+                        }
+                        if didCoalesce {
+                            debugPrint(
+                                "# EBOOKPERF process-text.coalesced",
+                                replacedTextLocation,
+                                "cacheWarmer:",
+                                isCacheWarmer,
+                                "task:",
+                                taskHash
+                            )
+                        }
                         if shouldLogRequest || shouldLogEbookHTMLPayload(respText, location: replacedTextLocation) {
                             logEbookHTML(
                                 stage: "swift.scheme.processText.responseToViewer",
