@@ -49,8 +49,8 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: "../swiftui-webview"),
-        .package(path: "../swift-brave"),
+        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
+        .package(url: "https://github.com/lake-of-fire/swift-brave.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/RealmSwiftGaps.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/BigSyncKit.git", branch: "main"),
