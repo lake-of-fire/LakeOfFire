@@ -36,6 +36,7 @@
 		1AC34EFD8998A532D4CADD08 /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 		1B9623145CB5954CB251AB17 /* NukeUI.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */; };
 		1BFC0839F1F6B979FB00C4DF /* SwiftUIBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 1DF20017665E4487960C6D6B /* SwiftUIBackports.xcframework */; };
+		1C295B88374A33500435FFC1 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		1C3A71C42C767CB80CC0BF07 /* Html.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 203A4C9986EBB2E845703EE9 /* Html.xcframework */; };
 		1C547B18077736B243213EF2 /* foliate-js in Resources */ = {isa = PBXBuildFile; fileRef = CA92F856353D8F32BE2AA800 /* foliate-js */; };
 		1CA85A1445AD23BB05F77EE0 /* LakeImage.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */; };
@@ -51,17 +52,16 @@
 		281E8BC2A4CC056DBD6E2F8F /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
 		28B1BB31E214F4616659CFD2 /* OpenGraph.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2E2F7C0D4067237AE2F4225F /* OpenGraph.xcframework */; };
 		2A6972BC4D653489D45109A0 /* BookmarkButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4033A8D7C0803299FF506B4F /* BookmarkButton.swift */; };
+		2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */; };
 		2BFB121902DE69E54916C4D0 /* AsyncView.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C4CE3C6128A4BF5462A1BF94 /* AsyncView.xcframework */; };
 		2C5CA4BC050B94C57424B51F /* NukeUI.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */; };
 		2D237D21DB6BB654446AA025 /* SwiftBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */; };
 		2F7554D92ABFBD1CB3574D75 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
-		301FF6428C03C27F13DD3369 /* BraveAdblock.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = CEE60D2E68CFA835B1AF5C57 /* BraveAdblock.xcframework */; };
 		31468B7EF1F8A8831C8C3DE6 /* InjectionImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */; };
 		33A7DACD7C6B5B016FAA9987 /* InternalReaderProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */; };
 		33CC9909CA5E197BFED3B045 /* LibraryScriptsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DAC56FCCA2E942C1845B876 /* LibraryScriptsListView.swift */; };
 		346AB819113016A861919749 /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
 		34C22366A2DA7CFD263E6169 /* Book Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD7EC6D5CE496DC6F2C5317E /* Book Views.swift */; };
-		3A314DCC48464CCF8B5BE943 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
 		3AA2C9D577663FB4E09E8211 /* FeedKit.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = F135F49810E7BF5364256A32 /* FeedKit.xcframework */; };
 		3AAAFB6251905A8071DEBCDD /* URL+ReaderCanonical.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42130BBDD30500801F64BF97 /* URL+ReaderCanonical.swift */; };
 		3AB3DE3488BF162757933980 /* LakeImage.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = AB0FE6C55AF11FAA376B393C /* LakeImage.xcframework */; };
@@ -71,14 +71,13 @@
 		3F2109ECDD5D98822F7C1B00 /* NukeUI.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */; };
 		40680DAF97CA5C7EFCAC30B6 /* EbookReaderProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF1DC7352A947E0860D33ECE /* EbookReaderProtocol.swift */; };
 		41A40B8D25F12C36AFD62DDA /* Nuke.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 3E21A00F93F2EB5B53F017EE /* Nuke.xcframework */; };
-		442613DD2DF3FE7C010D8F03 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
-		45F6C89AA9F38FBD1033AD15 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
 		4616EFFA78DCC44B6CD2ADB9 /* File Loading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CE64FB8B7901EC62ED969F8 /* File Loading.swift */; };
 		47A69DF3F189601AE6C16F3B /* LibraryCategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C40F5457F51A6FA437BAA9C /* LibraryCategoriesView.swift */; };
 		48B3652A23EF7495FE606008 /* LakeOfFireContentUI.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		4A8F85B2E6B5D7075EC68CDE /* ReadingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1989CC0362096CC0054800DD /* ReadingSession.swift */; };
 		4AA46CE4FBD9AF256F479244 /* EbookFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D46E0204024D29E3136178D /* EbookFileManager.swift */; };
 		4AFCA40A35D3BC836EAE559A /* ReaderContentLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC939A838622FC9266773A65 /* ReaderContentLoader.swift */; };
+		4B86F977A3E4AF5A0055A8B3 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		4D02FBDA153FF131473A8002 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 1727F4123F8595B844950D30 /* User Scripts */; };
 		510FBEC58EC7B39DACE54914 /* RealmSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E19E0B5EB444F7FFE2E676C7 /* RealmSwift.xcframework */; };
 		51652B02A2CB419BEB48D78F /* ReaderMediaPlayerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7351A4FB774D9A62D45A567 /* ReaderMediaPlayerViewModel.swift */; };
@@ -165,13 +164,14 @@
 		B0BBFF74349009B9CC800F36 /* ReaderConsoleLogsUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCC96841DC7C835DF335520B /* ReaderConsoleLogsUserScript.swift */; };
 		B1D278604B45FC9EC1E13ED9 /* BaseReadingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F56AFD6057D9BF2D3E9ACB1 /* BaseReadingProgress.swift */; };
 		B314E13B3112276D24ABACB1 /* URL+GoogleQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B5DBD524B1DA313BA8C068 /* URL+GoogleQuery.swift */; };
-		B323BF3A0890103EC6F489DD /* SwiftUtilities.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */; };
 		B7D972F268641334FA733C5D /* LakeOfFireReader.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */; };
 		B8B2A183DF6A5B204CB3F869 /* ReaderDateFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D368550632212CD59E14EFC7 /* ReaderDateFormatter.swift */; };
 		B8F99E0544744D39497905B7 /* Pow.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 132CF5DE9B9B22114B069049 /* Pow.xcframework */; };
 		BB5ACFE3BC82697CEF723ACB /* Color+Presets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84EE5AD646FA4689A146F785 /* Color+Presets.swift */; };
 		BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 252359C3746A321FE34487F6 /* SwiftDOMPurify.framework */; };
+		C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		C5326CD2DFA1418CBC30EAF0 /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = DD8D6DBA0EE54D93927A767F /* SwiftCloudDrive.xcframework */; };
+		CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		D04B81EE4DAF2A18194F87A2 /* CloudDriveSyncStatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D3E99961AAEC5C03051E6A /* CloudDriveSyncStatusModel.swift */; };
 		D08307802D0C0BF718FBB70E /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
 		D0CE59060CADAD4D8354C03C /* SwiftBackports.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */; };
@@ -181,6 +181,7 @@
 		D34E1024C466414FC550351A /* PhysicalMediaCapableProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89794E4F53FDE88FD9453CC4 /* PhysicalMediaCapableProtocol.swift */; };
 		D3DA08E16596B64A28AB036A /* ReaderContentHorizontalList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD853F2C49D88DEC789CAE8 /* ReaderContentHorizontalList.swift */; };
 		D4015DF5625ECC2253B8C2AF /* BigSyncKit.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */; };
+		D51997E936A2C61BD2031D14 /* SwiftUtilities.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */; };
 		D560BCEB05A1946708A6DAC0 /* ReaderModeLoadHandling.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD4783945D30E816EB3BBB0 /* ReaderModeLoadHandling.swift */; };
 		D5C72D5FCBB5B4DF1B2887C1 /* OrderedCollections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */; };
 		D82000EF3020955AD1B51FCE /* ReaderProtocolRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956AC9927465D95F2E19CBB0 /* ReaderProtocolRegistry.swift */; };
@@ -191,9 +192,9 @@
 		DBC9FBB406940CE9ED177D2A /* Realm.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 615A3A8E9DBBE80FABB1E2D0 /* Realm.xcframework */; };
 		DBE2F767346DD5FF86DC4FE6 /* LakeOfFireContentUI.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 4C353C1052A57746AB75EB69 /* LakeOfFireContentUI.framework */; };
 		DE8643AA823ED4BB529A919D /* LibraryManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6014A3319E03F979A559A27C /* LibraryManagerView.swift */; };
-		DE91CC083EA5EE75A731569F /* BraveAdblockCore.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 2B29CADB358D3DFFE80A8048 /* BraveAdblockCore.xcframework */; };
 		DEA10EBF7958877E6E5E41B2 /* FeedCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93EB0B118916B63BC76CB86C /* FeedCell.swift */; };
 		DECFC62578281A2AF069AA97 /* ExpandableText.xcframework in Static XCFramework Dependencies */ = {isa = PBXBuildFile; fileRef = 1C9B4CA0D063F3A0DA55734A /* ExpandableText.xcframework */; };
+		E2772EB660A1390075D6AE7F /* BraveAdblock.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */; };
 		E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */; };
 		E47875329F47EC333928799F /* ReaderImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
@@ -356,6 +357,26 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		0228A6869762CBC7D26A79FD /* Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstSubfolderSpec = 16;
+			files = (
+				E2772EB660A1390075D6AE7F /* BraveAdblock.framework in Dependencies */,
+			);
+			name = Dependencies;
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		1273BBDD15BAAB21938F4BD2 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		25872132147CDF4C2011B14B /* Dependencies */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 8;
@@ -373,6 +394,7 @@
 				BE844450DDDF2252A053ABD1 /* SwiftDOMPurify.framework in Dependencies */,
 				232FD0784B8890F9CC067C33 /* SwiftReadability.framework in Dependencies */,
 				6452F3FABCAED36212C68897 /* SwiftSoup.framework in Dependencies */,
+				C2FF6FF353F4D8A768546D91 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -407,6 +429,7 @@
 				14091FC3930123C94A09DDBA /* LakeOfFireAdblock.framework in Dependencies */,
 				7BB80508A803B8DC9FC7F6F4 /* LakeOfFireCore.framework in Dependencies */,
 				630DA6856F4DE0B19E344505 /* SwiftSoup.framework in Dependencies */,
+				CF9AC24070EC7C77B7EE52C0 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -424,7 +447,6 @@
 				099215AAA82FC1550C882C95 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
 				41A40B8D25F12C36AFD62DDA /* Nuke.xcframework in Static XCFramework Dependencies */,
 				8AACA23714BDC0050F206ECA /* Logging.xcframework in Static XCFramework Dependencies */,
-				45F6C89AA9F38FBD1033AD15 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
 				2C5CA4BC050B94C57424B51F /* NukeUI.xcframework in Static XCFramework Dependencies */,
 				F8C0F6FDE44BBB2A5F011E88 /* Pow.xcframework in Static XCFramework Dependencies */,
 				01912B341441E1FBC10C0FAA /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */,
@@ -439,18 +461,6 @@
 			dstSubfolderSpec = 16;
 			files = (
 				571FAC316F8524B9008D5E07 /* AsyncView.xcframework in Static XCFramework Dependencies */,
-			);
-			name = "Static XCFramework Dependencies";
-			runOnlyForDeploymentPostprocessing = 1;
-		};
-		7D3FCBC70AABCE7EEF3E5203 /* Static XCFramework Dependencies */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 8;
-			dstPath = _StaticXCFrameworkDependencies/LakeOfFireAdblock;
-			dstSubfolderSpec = 16;
-			files = (
-				301FF6428C03C27F13DD3369 /* BraveAdblock.xcframework in Static XCFramework Dependencies */,
-				DE91CC083EA5EE75A731569F /* BraveAdblockCore.xcframework in Static XCFramework Dependencies */,
 			);
 			name = "Static XCFramework Dependencies";
 			runOnlyForDeploymentPostprocessing = 1;
@@ -471,7 +481,6 @@
 				65A343A54F8F591713E8CB2B /* Nuke.xcframework in Static XCFramework Dependencies */,
 				1C3A71C42C767CB80CC0BF07 /* Html.xcframework in Static XCFramework Dependencies */,
 				28B1BB31E214F4616659CFD2 /* OpenGraph.xcframework in Static XCFramework Dependencies */,
-				3A314DCC48464CCF8B5BE943 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
 				1B9623145CB5954CB251AB17 /* NukeUI.xcframework in Static XCFramework Dependencies */,
 			);
 			name = "Static XCFramework Dependencies";
@@ -496,6 +505,7 @@
 				0759D3D4AF2F45B28657ACBC /* LakeOfFireAdblock.framework in Dependencies */,
 				1AC34EFD8998A532D4CADD08 /* LakeOfFireContent.framework in Dependencies */,
 				66D0683AB772D738D785AF1F /* LakeOfFireCore.framework in Dependencies */,
+				4B86F977A3E4AF5A0055A8B3 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -552,7 +562,6 @@
 				817F6560B2C9AAA02C30257D /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
 				3AA2C9D577663FB4E09E8211 /* FeedKit.xcframework in Static XCFramework Dependencies */,
 				3D354D58ACBFB52CE5A56C75 /* Html.xcframework in Static XCFramework Dependencies */,
-				442613DD2DF3FE7C010D8F03 /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
 				C5326CD2DFA1418CBC30EAF0 /* SwiftCloudDrive.xcframework in Static XCFramework Dependencies */,
 			);
 			name = "Static XCFramework Dependencies";
@@ -564,6 +573,16 @@
 			dstSubfolderSpec = 16;
 			files = (
 				FC4FBC9CD92098606B6ADB0B /* LakeKit.framework in Dependencies */,
+			);
+			name = Dependencies;
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+		E8BB9E09992F7067E2113937 /* Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 8;
+			dstSubfolderSpec = 16;
+			files = (
+				1C295B88374A33500435FFC1 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -580,6 +599,7 @@
 				DBE2F767346DD5FF86DC4FE6 /* LakeOfFireContentUI.framework in Dependencies */,
 				E93D8B027EAA158D32354DCA /* LakeOfFireCore.framework in Dependencies */,
 				B7D972F268641334FA733C5D /* LakeOfFireReader.framework in Dependencies */,
+				D51997E936A2C61BD2031D14 /* SwiftUtilities.framework in Dependencies */,
 			);
 			name = Dependencies;
 			runOnlyForDeploymentPostprocessing = 1;
@@ -615,7 +635,6 @@
 				D83EA047AD1F739B5468F58E /* LakeImage.xcframework in Static XCFramework Dependencies */,
 				9A28F40B10A42CD7C93C7675 /* ZIPFoundation.xcframework in Static XCFramework Dependencies */,
 				5B19F8503F764E379B9F9FFE /* Nuke.xcframework in Static XCFramework Dependencies */,
-				B323BF3A0890103EC6F489DD /* SwiftUtilities.xcframework in Static XCFramework Dependencies */,
 				3F2109ECDD5D98822F7C1B00 /* NukeUI.xcframework in Static XCFramework Dependencies */,
 				B8F99E0544744D39497905B7 /* Pow.xcframework in Static XCFramework Dependencies */,
 			);
@@ -625,6 +644,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireShareSupport.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = JapaneseLanguageTools.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		06EE3131A2BF24F2FA31349C /* DebouncedOnChange.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = DebouncedOnChange.xcframework; path = /Users/alex/.cache/tuist/Binaries/6982d5f7631e26625177510604d42033/DebouncedOnChange.xcframework; sourceTree = "<absolute>"; };
 		0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSelectionEnvironment.swift; sourceTree = "<group>"; };
@@ -653,8 +673,6 @@
 		28811599CCF9F57680CE6B42 /* OPDS Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OPDS Models.swift"; sourceTree = "<group>"; };
 		292523064730D827A6710BA5 /* ArticleReadingProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArticleReadingProgress.swift; sourceTree = "<group>"; };
 		2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEbookTextProcessor.swift; sourceTree = "<group>"; };
-		2B29CADB358D3DFFE80A8048 /* BraveAdblockCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = BraveAdblockCore.xcframework; sourceTree = "<group>"; };
-		2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SwiftUtilities.xcframework; path = /Users/alex/.cache/tuist/Binaries/c8d8debbff6e8af9c0539851f7ba7a61/SwiftUtilities.xcframework; sourceTree = "<absolute>"; };
 		2C40F5457F51A6FA437BAA9C /* LibraryCategoriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoriesView.swift; sourceTree = "<group>"; };
 		2C53D3486FAC510F64D97141 /* ReaderUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderUserScript.swift; sourceTree = "<group>"; };
 		2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireFiles.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -701,6 +719,7 @@
 		64238F6B2BCE65AB3D1E2032 /* BookLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookLibraryView.swift; sourceTree = "<group>"; };
 		65FFA60D0376D0A46ABD68E2 /* AdblockStatsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdblockStatsModel.swift; sourceTree = "<group>"; };
 		685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireReader.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderShareUtilities.swift; sourceTree = "<group>"; };
 		6ABCCFDB971B5C888BE1180E /* ReaderContentList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentList.swift; sourceTree = "<group>"; };
 		6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireContent.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -710,8 +729,10 @@
 		71FBF0C1DA553663DD278EAD /* CSS */ = {isa = PBXFileReference; path = CSS; sourceTree = "<group>"; };
 		72660A52642E1A0CEF58E180 /* URL+ReaderFileURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderFileURL.swift"; sourceTree = "<group>"; };
 		7864C63653918DC62961A70B /* String+StrippingHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+StrippingHTML.swift"; sourceTree = "<group>"; };
+		787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireShareSupport-Info.plist"; sourceTree = "<group>"; };
 		79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalReaderProtocol.swift; sourceTree = "<group>"; };
 		7AD853F2C49D88DEC789CAE8 /* ReaderContentHorizontalList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentHorizontalList.swift; sourceTree = "<group>"; };
+		7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftUtilities.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		8016AAC472FE654B02DB6492 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
 		84EE5AD646FA4689A146F785 /* Color+Presets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Presets.swift"; sourceTree = "<group>"; };
 		85E89CF6A53A9F55FEC35B01 /* NukeUI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NukeUI.xcframework; path = /Users/alex/.cache/tuist/Binaries/d3c03fc0531ae6fa6295ee9c583a076d/NukeUI.xcframework; sourceTree = "<absolute>"; };
@@ -760,7 +781,6 @@
 		CA92F856353D8F32BE2AA800 /* foliate-js */ = {isa = PBXFileReference; path = "foliate-js"; sourceTree = "<group>"; };
 		CBA7E8D3FD3C4303EB10951D /* LakeOfFireCore-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireCore-Info.plist"; sourceTree = "<group>"; };
 		CD7EC6D5CE496DC6F2C5317E /* Book Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Book Views.swift"; sourceTree = "<group>"; };
-		CEE60D2E68CFA835B1AF5C57 /* BraveAdblock.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = BraveAdblock.xcframework; path = /Users/alex/.cache/tuist/Binaries/6eefe4df9bd996b0533597580eea30dc/BraveAdblock.xcframework; sourceTree = "<absolute>"; };
 		D214A28DA8C9BF920485CEB0 /* ReaderContentProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentProtocol.swift; sourceTree = "<group>"; };
 		D368550632212CD59E14EFC7 /* ReaderDateFormatter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderDateFormatter.swift; sourceTree = "<group>"; };
 		D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+EBook.swift"; sourceTree = "<group>"; };
@@ -793,6 +813,7 @@
 		F99E318A7F5F91BA58335060 /* ReadabilityContentTransformations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityContentTransformations.swift; sourceTree = "<group>"; };
 		FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftSoup.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FDF670F54377EEB0720CA648 /* LibraryFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryFeedView.swift; sourceTree = "<group>"; };
+		FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BraveAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FECE32BA7953906A59D3AD88 /* ReaderContentCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentCell.swift; sourceTree = "<group>"; };
 		FF1DC7352A947E0860D33ECE /* EbookReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookReaderProtocol.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -859,6 +880,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A3250CE7A56291C759305F81 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F4BC054913FF18F41E9B1539 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -895,14 +923,6 @@
 				4DA26D8E9078F7930EE6D2EC /* FeedView.swift */,
 			);
 			path = Feeds;
-			sourceTree = "<group>";
-		};
-		32442089CE4341BF5566BEBF /* artifacts */ = {
-			isa = PBXGroup;
-			children = (
-				9A0B4470FF4F3A3934B8DB3F /* swift-brave */,
-			);
-			path = artifacts;
 			sourceTree = "<group>";
 		};
 		329A9D86F84BFAD064B142E6 /* OPDS */ = {
@@ -957,7 +977,6 @@
 			isa = PBXGroup;
 			children = (
 				C4CE3C6128A4BF5462A1BF94 /* AsyncView.xcframework */,
-				CEE60D2E68CFA835B1AF5C57 /* BraveAdblock.xcframework */,
 				06EE3131A2BF24F2FA31349C /* DebouncedOnChange.xcframework */,
 				1C9B4CA0D063F3A0DA55734A /* ExpandableText.xcframework */,
 				F135F49810E7BF5364256A32 /* FeedKit.xcframework */,
@@ -977,7 +996,6 @@
 				C8D5D54CE1453CEE7BED8DC4 /* SwiftBackports.xcframework */,
 				DD8D6DBA0EE54D93927A767F /* SwiftCloudDrive.xcframework */,
 				1DF20017665E4487960C6D6B /* SwiftUIBackports.xcframework */,
-				2B96B45C459D0D82378B9359 /* SwiftUtilities.xcframework */,
 				94A498D2EA236FB552B316B9 /* ZIPFoundation.xcframework */,
 			);
 			name = Cache;
@@ -1011,14 +1029,6 @@
 				9F5447BC17A5D00BAE24D6CC /* LibraryDataManager.swift */,
 			);
 			path = Library;
-			sourceTree = "<group>";
-		};
-		5B2DE4AF5D7DE38FC8E4220C /* BraveAdblockCore */ = {
-			isa = PBXGroup;
-			children = (
-				2B29CADB358D3DFFE80A8048 /* BraveAdblockCore.xcframework */,
-			);
-			path = BraveAdblockCore;
 			sourceTree = "<group>";
 		};
 		5CF5A90F0EA7DB019325019D /* Files */ = {
@@ -1096,7 +1106,6 @@
 			children = (
 				DB100243173F688C8DE3DD44 /* Derived */,
 				F8A7FC1F78993DBDCF7F30FA /* Sources */,
-				9571C274D8AC5E1EB2A5080B /* Tuist */,
 			);
 			name = Project;
 			sourceTree = "<group>";
@@ -1118,27 +1127,11 @@
 			path = "User Scripts";
 			sourceTree = "<group>";
 		};
-		9571C274D8AC5E1EB2A5080B /* Tuist */ = {
-			isa = PBXGroup;
-			children = (
-				DE90EDD0D79234582FEB541A /* .build */,
-			);
-			name = Tuist;
-			path = ../../Tuist;
-			sourceTree = "<group>";
-		};
-		9A0B4470FF4F3A3934B8DB3F /* swift-brave */ = {
-			isa = PBXGroup;
-			children = (
-				5B2DE4AF5D7DE38FC8E4220C /* BraveAdblockCore */,
-			);
-			path = "swift-brave";
-			sourceTree = "<group>";
-		};
 		9C8F3949A2A0930CDC25DF0B /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */,
+				FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */,
 				C61C089C1B653DE60FEEFBE1 /* Collections.framework */,
 				44214EC7D4875D6794B8842B /* FaviconFinder.framework */,
 				01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */,
@@ -1150,6 +1143,7 @@
 				2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */,
 				172FF3A7BCA8ABCEB46E3520 /* LakeOfFireLibrary.framework */,
 				685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */,
+				0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */,
 				31ED82BC038DAB511FEE78AE /* LRUCache.framework */,
 				F2EF167FD61F0E4955E7FDB8 /* OrderedCollections.framework */,
 				4BB2208086E250223E3C6577 /* R2Shared.framework */,
@@ -1159,6 +1153,7 @@
 				FC77B529231E1ABE8BE0E68A /* SwiftSoup.framework */,
 				F0EE620C1E15346F9A00D8EE /* SwiftUIDownloads.framework */,
 				F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */,
+				7CFA40FAA3716E54AC2D2750 /* SwiftUtilities.framework */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1255,6 +1250,14 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		D6CC5E594E2053381817CCB1 /* LakeOfFireShareSupport */ = {
+			isa = PBXGroup;
+			children = (
+				69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */,
+			);
+			path = LakeOfFireShareSupport;
+			sourceTree = "<group>";
+		};
 		D8EDC276A62F2FC732403F48 /* LakeOfFireReader */ = {
 			isa = PBXGroup;
 			children = (
@@ -1309,14 +1312,6 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
-		DE90EDD0D79234582FEB541A /* .build */ = {
-			isa = PBXGroup;
-			children = (
-				32442089CE4341BF5566BEBF /* artifacts */,
-			);
-			path = .build;
-			sourceTree = "<group>";
-		};
 		DF6931740E07264B11A3EFFD /* Books */ = {
 			isa = PBXGroup;
 			children = (
@@ -1354,6 +1349,7 @@
 				5C2689383782F215ABF1C389 /* LakeOfFireFiles-Info.plist */,
 				A0D512450D8EC517DDA7A82D /* LakeOfFireLibrary-Info.plist */,
 				5C3B133F49C23777962510FA /* LakeOfFireReader-Info.plist */,
+				787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */,
 			);
 			path = InfoPlists;
 			sourceTree = "<group>";
@@ -1378,6 +1374,7 @@
 				81B8E4884C33B6EAE9B4523A /* LakeOfFireFiles */,
 				70E42B9677110909C3BD996D /* LakeOfFireLibrary */,
 				D8EDC276A62F2FC732403F48 /* LakeOfFireReader */,
+				D6CC5E594E2053381817CCB1 /* LakeOfFireShareSupport */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -1407,6 +1404,27 @@
 			productReference = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */;
 			productType = "com.apple.product-type.framework";
 		};
+		9EA0B5B3CF194D555F2C04E2 /* LakeOfFireShareSupport */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BC2A2E0BBCB0DC9037215558 /* Build configuration list for PBXNativeTarget "LakeOfFireShareSupport" */;
+			buildPhases = (
+				7CA993240942981A243446D2 /* Sources */,
+				F44FD8FA5BB87771DCE173DC /* Resources */,
+				A3250CE7A56291C759305F81 /* Frameworks */,
+				1273BBDD15BAAB21938F4BD2 /* Embed Frameworks */,
+				E8BB9E09992F7067E2113937 /* Dependencies */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LakeOfFireShareSupport;
+			packageProductDependencies = (
+			);
+			productName = LakeOfFireShareSupport;
+			productReference = 0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */;
+			productType = "com.apple.product-type.framework";
+		};
 		B06A980F8A44621BC7CDFEC2 /* LakeOfFireAdblock */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 90882B1D0613BFF9300A3D94 /* Build configuration list for PBXNativeTarget "LakeOfFireAdblock" */;
@@ -1415,7 +1433,7 @@
 				F81ED70D317354B2D3A0BEA6 /* Resources */,
 				3ABB7B70E669267FF169B4E4 /* Frameworks */,
 				4A873EB17C17403338AB28F3 /* Embed Frameworks */,
-				7D3FCBC70AABCE7EEF3E5203 /* Static XCFramework Dependencies */,
+				0228A6869762CBC7D26A79FD /* Dependencies */,
 			);
 			buildRules = (
 			);
@@ -1587,6 +1605,7 @@
 				B957D50F079A8034A05BA512 /* LakeOfFireFiles */,
 				B5D143BF30AAA096BB742F75 /* LakeOfFireLibrary */,
 				B656107E0271F658CAF85968 /* LakeOfFireReader */,
+				9EA0B5B3CF194D555F2C04E2 /* LakeOfFireShareSupport */,
 			);
 		};
 /* End PBXProject section */
@@ -1632,6 +1651,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		F149480F27E9FD5DC63A3C4F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F44FD8FA5BB87771DCE173DC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1785,6 +1811,14 @@
 				33CC9909CA5E197BFED3B045 /* LibraryScriptsListView.swift in Sources */,
 				91296B41B50B271356D2BC85 /* UserScriptAllowedDomainCell.swift in Sources */,
 				744588F3F8042D1985945E50 /* WebFeedButton.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7CA993240942981A243446D2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2981,6 +3015,47 @@
 			};
 			name = Debug;
 		};
+		C2EA3D1D7B4B35DCE1FE8476 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireShareSupport-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACH_O_TYPE = staticlib;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				OTHER_SWIFT_FLAGS = "$(inherited)";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireShareSupport;
+				PRODUCT_NAME = LakeOfFireShareSupport;
+				SDKROOT = auto;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Release;
+		};
 		CB5BE7D5C38540797C9C1195 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -3310,6 +3385,51 @@
 			};
 			name = Debug;
 		};
+		FE60CB03D0E6621FAAEFD57F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				INFOPLIST_FILE = "Derived/InfoPlists/LakeOfFireShareSupport-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACH_O_TYPE = staticlib;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				OTHER_SWIFT_FLAGS = "$(inherited)";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireShareSupport;
+				PRODUCT_NAME = LakeOfFireShareSupport;
+				SDKROOT = auto;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = (
+					"$(inherited)",
+					DEBUG,
+				);
+				SWIFT_COMPILATION_MODE = singlefile;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -3381,6 +3501,15 @@
 			buildConfigurations = (
 				4439D8BB5B6C84F01528C3C1 /* Debug */,
 				906D20A438D963F4D9D6CC9B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BC2A2E0BBCB0DC9037215558 /* Build configuration list for PBXNativeTarget "LakeOfFireShareSupport" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FE60CB03D0E6621FAAEFD57F /* Debug */,
+				C2EA3D1D7B4B35DCE1FE8476 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
