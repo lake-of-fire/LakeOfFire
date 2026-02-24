@@ -14,6 +14,28 @@ fileprivate extension URL {
 
 fileprivate let zipArchiveExtensions = ["zip", "epub"]
 
+func readerImageData(url: URL) throws -> Data? {
+    guard url.scheme == "reader-file" && url.host == "file" else { return nil }
+
+    guard let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
+
+    guard let readerFileURL = url.deletingQuery else { return nil }
+    let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
+
+    if try isPackageFile(at: fileURL) || isDirectory(fileURL) {
+        let filePath = fileURL.appendingPathComponent(subpathValue)
+        return try? Data(contentsOf: filePath)
+    }
+
+    guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+    guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
+    guard let entry = archive[subpathValue], entry.type == .file else { return nil }
+    var imageData = Data()
+    try archive.extract(entry, consumer: { imageData.append($0) })
+    return imageData
+}
+
 public struct ReaderImage: View {
     let url: URL
     let contentMode: ContentMode
@@ -47,25 +69,7 @@ public struct ReaderImage: View {
             maxHeight: maxHeight,
             cornerRadius: cornerRadius,
             imageProvider: { url in
-                guard url.scheme == "reader-file" && url.host == "file" else { return nil }
-                
-                guard let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
-                      let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
-                
-                guard let readerFileURL = url.deletingQuery else { return nil }
-                let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
-
-                if try isPackageFile(at: fileURL) || isDirectory(fileURL) {
-                    let filePath = fileURL.appendingPathComponent(subpathValue)
-                    return try? Data(contentsOf: filePath)
-                }
-                
-                guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-                guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
-                guard let entry = archive[subpathValue], entry.type == .file else { return nil }
-                var imageData = Data()
-                try archive.extract(entry, consumer: { imageData.append($0) })
-                return imageData
+                try readerImageData(url: url)
             }
         )
     }

@@ -53,8 +53,43 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
     @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
     @Environment(\.stackListStyle) private var stackListStyle
-    
-    private var cardWidth: CGFloat { maxCellHeight * 2.5 }
+    @State private var measuredPhysicalCoverWidth: CGFloat?
+
+    private var baseCardWidth: CGFloat { maxCellHeight * 2.5 }
+    private var reservedThumbnailSlotWidth: CGFloat { maxCellHeight }
+    private var measuredThumbnailWidth: CGFloat? {
+        guard let measuredPhysicalCoverWidth, measuredPhysicalCoverWidth > 0 else { return nil }
+        return min(measuredPhysicalCoverWidth, reservedThumbnailSlotWidth)
+    }
+    private var thumbnailSlackWidth: CGFloat {
+        guard let measuredThumbnailWidth else { return 0 }
+        return max(0, reservedThumbnailSlotWidth - measuredThumbnailWidth)
+    }
+
+    private var cardWidth: CGFloat {
+        guard content.isPhysicalMedia, measuredThumbnailWidth != nil else {
+            return baseCardWidth
+        }
+        let collapsedWidth = baseCardWidth - thumbnailSlackWidth
+        return min(baseCardWidth, collapsedWidth)
+    }
+
+    private func logBookHorizontal(_ event: String, preferenceWidth: CGFloat? = nil) {
+        guard content.isPhysicalMedia else { return }
+        debugPrint(
+            "# BOOKHORIZ",
+            "event=\(event)",
+            "key=\(content.compoundKey)",
+            "url=\(content.url.absoluteString)",
+            "preferenceWidth=\(preferenceWidth?.description ?? "nil")",
+            "measured=\(measuredPhysicalCoverWidth?.description ?? "nil")",
+            "slot=\(reservedThumbnailSlotWidth)",
+            "measuredThumbnail=\(measuredThumbnailWidth?.description ?? "nil")",
+            "slack=\(thumbnailSlackWidth)",
+            "baseCardWidth=\(baseCardWidth)",
+            "cardWidth=\(cardWidth)"
+        )
+    }
 
     var body: some View {
         Button {
@@ -193,6 +228,26 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             if let item = content as? ContentFile {
                 await cloudDriveSyncStatusModel.refreshAsync(item: item)
             }
+        }
+        .onAppear {
+            logBookHorizontal("onAppear")
+        }
+        .onPreferenceChange(ReaderContentBookCoverRenderedWidthPreferenceKey.self) { width in
+            guard content.isPhysicalMedia else { return }
+            guard width > 0 else {
+                logBookHorizontal("preferenceIgnoredNonPositive", preferenceWidth: width)
+                return
+            }
+            if let measuredPhysicalCoverWidth, abs(measuredPhysicalCoverWidth - width) < 0.5 {
+                logBookHorizontal("preferenceIgnoredNoChange", preferenceWidth: width)
+                return
+            }
+            measuredPhysicalCoverWidth = width
+            logBookHorizontal("preferenceApplied", preferenceWidth: width)
+        }
+        .onChange(of: content.compoundKey) { _ in
+            measuredPhysicalCoverWidth = nil
+            logBookHorizontal("contentChangedResetMeasurement")
         }
         //.enableInjection()
     }

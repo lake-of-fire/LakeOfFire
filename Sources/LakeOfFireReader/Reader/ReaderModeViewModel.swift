@@ -65,6 +65,102 @@ private let readabilityClassesToPreserve: [String] = [
 private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
 private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
 
+private enum ReaderModeWritingDirectionBootstrap: String {
+    case horizontal
+    case vertical
+}
+
+private let readerModeVerticalBootstrapStyleIdentifier = "manabi-writing-direction-bootstrap"
+private let readerModeVerticalBootstrapCSS = """
+body.readability-mode,
+body.readability-mode #reader-content,
+body.readability-mode #reader-content .page,
+body.readability-mode #reader-content .manabi-tracking-section {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    direction: ltr;
+}
+body.readability-mode #reader-title,
+body.readability-mode #reader-byline-container {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    direction: ltr;
+}
+"""
+
+private func initialReaderModeWritingDirectionBootstrap() -> ReaderModeWritingDirectionBootstrap {
+    let rawValue = UserDefaults.standard.string(forKey: "webpageWritingDirectionSetting") ?? "horizontal"
+    return rawValue == ReaderModeWritingDirectionBootstrap.vertical.rawValue
+        ? .vertical
+        : .horizontal
+}
+
+private func readerModeVerticalBootstrapStyleTag() -> String {
+    """
+    <style id="\(readerModeVerticalBootstrapStyleIdentifier)">
+    \(readerModeVerticalBootstrapCSS)
+    </style>
+    """
+}
+
+private func upsertReaderModeVerticalBootstrapStyle(
+    in doc: SwiftSoup.Document,
+    enabled: Bool
+) {
+    if let existingStyle = try? doc.getElementById(readerModeVerticalBootstrapStyleIdentifier) {
+        if enabled {
+            try? existingStyle.html(readerModeVerticalBootstrapCSS)
+        } else {
+            try? existingStyle.remove()
+        }
+        return
+    }
+
+    guard enabled else { return }
+    let styleTag = readerModeVerticalBootstrapStyleTag()
+
+    if let head = doc.head() {
+        try? head.append(styleTag)
+        return
+    }
+
+    if let html = try? doc.getElementsByTag("html").first() {
+        try? html.prepend("<head>\(styleTag)</head>")
+        return
+    }
+
+    if let body = doc.body() {
+        try? body.before("<head>\(styleTag)</head>")
+        return
+    }
+
+    try? doc.append(styleTag)
+}
+
+private func applyReaderModeWritingDirectionBootstrap(to doc: SwiftSoup.Document) {
+    guard let body = doc.body() else { return }
+
+    let writingDirectionBootstrap = initialReaderModeWritingDirectionBootstrap()
+    _ = try? body.attr("data-manabi-writing-direction", writingDirectionBootstrap.rawValue)
+
+    var classNames = ((try? body.attr("class")) ?? "")
+        .split(whereSeparator: \.isWhitespace)
+        .map(String.init)
+    if !classNames.contains("readability-mode") {
+        classNames.append("readability-mode")
+    }
+    classNames.removeAll { $0 == "reader-vertical-writing" }
+    if writingDirectionBootstrap == .vertical {
+        classNames.append("reader-vertical-writing")
+    }
+    _ = try? body.attr("class", classNames.joined(separator: " "))
+
+    upsertReaderModeVerticalBootstrapStyle(
+        in: doc,
+        enabled: writingDirectionBootstrap == .vertical
+    )
+}
+
 internal func buildCanonicalReadabilityHTML(
     title: String,
     byline: String,
@@ -72,6 +168,7 @@ internal func buildCanonicalReadabilityHTML(
     content: String,
     contentURL: URL
 ) -> String {
+    let writingDirectionBootstrap = initialReaderModeWritingDirectionBootstrap()
     let normalizedByline = normalizeReadabilityBylineText(byline)
     let hasByline = !normalizedByline.isEmpty
     let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
@@ -82,6 +179,11 @@ internal func buildCanonicalReadabilityHTML(
     let css = Readability.shared.css
     let scripts = Readability.shared.scripts
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\""
+    let writingDirectionAttribute = "data-manabi-writing-direction=\"\(writingDirectionBootstrap.rawValue)\""
+    let bodyClasses = "readability-mode"
+    let bootstrapWritingDirectionStyle = writingDirectionBootstrap == .vertical
+        ? readerModeVerticalBootstrapStyleTag()
+        : ""
     let documentReadyScript = """
     (function () {
         function logDocumentState(reason) {
@@ -127,13 +229,14 @@ internal func buildCanonicalReadabilityHTML(
             <meta content="text/html; charset=UTF-8" http-equiv="content-type">
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
             <meta name="referrer" content="never">
+            \(bootstrapWritingDirectionStyle)
             <style id='swiftuiwebview-readability-styles'>
                 \(css)
             </style>
             <title>\(title)</title>
         </head>
 
-        <body class="readability-mode" \(availabilityAttributes)>
+        <body class="\(bodyClasses)" \(availabilityAttributes) \(writingDirectionAttribute)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(title)</h1>
                 <div id="reader-byline-container">
@@ -3589,6 +3692,10 @@ public func processForReaderMode(
     }
 
     if !isCacheWarmer {
+        if !isEBook {
+            applyReaderModeWritingDirectionBootstrap(to: doc)
+        }
+
         if let bodyTag = doc.body() {
             // TODO: font size and theme set elsewhere already..?
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize

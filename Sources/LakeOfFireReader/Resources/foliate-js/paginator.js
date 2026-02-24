@@ -286,6 +286,18 @@ const applyVerticalWritingClass = (doc, isVertical) => {
     try { doc?.body?.classList?.toggle('reader-vertical-writing', enable) } catch (_) {}
 }
 
+const applyTategakiDisplayTransform = (doc, isVertical) => {
+    if (!doc?.body) return
+    try {
+        globalThis.manabiApplyTategakiDisplayTransformToDocument?.(doc, {
+            vertical: !!isVertical,
+            isReaderMode: doc.body.classList.contains('readability-mode'),
+            isEbook: true,
+            root: doc.getElementById?.('reader-content') || doc.body,
+        })
+    } catch (_) {}
+}
+
 const summarizeAnchor = anchor => {
     if (anchor == null) return 'null'
     if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
@@ -1708,6 +1720,7 @@ class View {
                     this.#verticalRTL = direction.verticalRTL;
                     this.#rtl = direction.rtl;
                     applyVerticalWritingClass(doc, this.#vertical)
+                    applyTategakiDisplayTransform(doc, this.#vertical)
                     globalThis.manabiTrackingVertical = this.#vertical
                     globalThis.manabiTrackingVerticalRTL = this.#verticalRTL
                     globalThis.manabiTrackingRTL = this.#rtl
@@ -1766,6 +1779,7 @@ class View {
         this.layout = layout
 
         applyVerticalWritingClass(this.document, this.#vertical)
+        applyTategakiDisplayTransform(this.document, this.#vertical)
 
         if (this.#column) {
             //            console.log("render(layout)... await columnize(layout)")

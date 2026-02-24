@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import ImageIO
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
@@ -116,6 +117,14 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
 private let ebookAbsoluteDateFormatter: DateFormatter = {
     ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
 }()
+
+struct ReaderContentBookCoverRenderedWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
 
 public struct ReaderContentCellAppearance {
     public var maxCellHeight: CGFloat
@@ -731,6 +740,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 public struct BookCoverImageView: View {
     public let imageURL: URL
     public let dimension: CGFloat
+    @State private var renderedCoverWidth: CGFloat = 0
 
     public var body: some View {
         Color.clear
@@ -748,11 +758,68 @@ public struct BookCoverImageView: View {
                     alignment: .center
                 )
             }
+            .preference(
+                key: ReaderContentBookCoverRenderedWidthPreferenceKey.self,
+                value: renderedCoverWidth
+            )
+            .task(id: "\(imageURL.absoluteString)|\(dimension)") {
+                let resolvedWidth = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
+                guard abs(renderedCoverWidth - resolvedWidth) >= 0.5 else { return }
+                renderedCoverWidth = resolvedWidth
+                debugPrint(
+                    "# BOOKHORIZ",
+                    "event=coverPreferenceEmitResolved",
+                    "url=\(imageURL.absoluteString)",
+                    "dimension=\(dimension)",
+                    "renderedWidth=\(resolvedWidth)"
+                )
+            }
     }
 
     public init(imageURL: URL, dimension: CGFloat) {
         self.imageURL = imageURL
         self.dimension = dimension
+    }
+
+    private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
+        guard dimension > 0 else { return 0 }
+        guard let pixelSize = await imagePixelSize(for: imageURL) else { return 0 }
+        guard pixelSize.height > 0 else { return 0 }
+
+        let aspectRatio = pixelSize.width / pixelSize.height
+        guard aspectRatio.isFinite, aspectRatio > 0 else { return 0 }
+
+        return min(dimension, dimension * aspectRatio)
+    }
+
+    private func imagePixelSize(for url: URL) async -> CGSize? {
+        await Task.detached(priority: .utility) {
+            if let readerFileImageData = try? readerImageData(url: url),
+               let pixelSize = imagePixelSize(from: readerFileImageData) {
+                return pixelSize
+            }
+
+            if url.isFileURL, let fileImageData = try? Data(contentsOf: url),
+               let pixelSize = imagePixelSize(from: fileImageData) {
+                return pixelSize
+            }
+
+            return nil
+        }.value
+    }
+
+    private func imagePixelSize(from data: Data) -> CGSize? {
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let widthValue = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let heightValue = properties[kCGImagePropertyPixelHeight] as? NSNumber else {
+            return nil
+        }
+
+        let width = CGFloat(widthValue.doubleValue)
+        let height = CGFloat(heightValue.doubleValue)
+        guard width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
     }
 }
 
