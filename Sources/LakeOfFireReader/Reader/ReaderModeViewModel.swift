@@ -161,6 +161,38 @@ private func applyReaderModeWritingDirectionBootstrap(to doc: SwiftSoup.Document
     )
 }
 
+internal func upsertSharedReaderFontStyle(
+    in doc: SwiftSoup.Document,
+    css: String
+) throws {
+    let trimmedCSS = css.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedCSS.isEmpty else { return }
+
+    if let existingStyle = try doc.getElementById("manabi-custom-fonts-inline") {
+        try existingStyle.text(trimmedCSS)
+        return
+    }
+
+    let styleElement = try doc.createElement("style")
+    try styleElement.attr("id", "manabi-custom-fonts-inline")
+    try styleElement.text(trimmedCSS)
+
+    if let head = doc.head() {
+        try head.appendChild(styleElement)
+        return
+    }
+
+    if let html = try doc.getElementsByTag("html").first() {
+        try html.prepend("<head></head>")
+        if let head = doc.head() {
+            try head.appendChild(styleElement)
+            return
+        }
+    }
+
+    try doc.appendChild(styleElement)
+}
+
 internal func buildCanonicalReadabilityHTML(
     title: String,
     byline: String,
@@ -1845,6 +1877,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
+        let sharedReaderFontCSS = await resolveSharedReaderFontCSS()
 
         if !isReaderMode {
             isReaderMode = true
@@ -1959,6 +1992,26 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
+            if let sharedReaderFontCSS {
+                do {
+                    try upsertSharedReaderFontStyle(in: doc, css: sharedReaderFontCSS)
+                    await MainActor.run {
+                        debugPrint(
+                            "# FONTLOAD readerMode.embedFontCSS.applied",
+                            "url=\(url.absoluteString)",
+                            "cssBytes=\(sharedReaderFontCSS.utf8.count)"
+                        )
+                    }
+                } catch {
+                    await MainActor.run {
+                        debugPrint(
+                            "# FONTLOAD readerMode.embedFontCSS.failed",
+                            "url=\(url.absoluteString)",
+                            "error=\(error.localizedDescription)"
+                        )
+                    }
+                }
+            }
             let segmentCountAfterProcessing = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
             debugPrint(
                 "# READERINJECT readability.docSegments",
@@ -3049,40 +3102,99 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
 @MainActor
 private extension ReaderModeViewModel {
+    func resolveSharedReaderFontCSSBase64() async -> String? {
+        let base64: String?
+        if let sharedFontCSSBase64 {
+            base64 = sharedFontCSSBase64
+        } else if let sharedFontCSSBase64Provider {
+            base64 = await sharedFontCSSBase64Provider()
+        } else {
+            base64 = nil
+        }
+        guard let base64, !base64.isEmpty else { return nil }
+        return base64
+    }
+
+    func resolveSharedReaderFontCSS() async -> String? {
+        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return nil }
+        guard let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]) else {
+            return nil
+        }
+        guard let css = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let trimmedCSS = css.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedCSS.isEmpty ? nil : trimmedCSS
+    }
+
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard isReaderMode || isReaderModeLoading else { return }
         guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
         guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
-        let base64: String?
-        if let inline = sharedFontCSSBase64 {
-            base64 = inline
-        } else if let provider = sharedFontCSSBase64Provider {
-            base64 = await provider()
-        } else {
-            base64 = nil
-        }
-        guard let base64, !base64.isEmpty else { return }
+        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
         let js = """
         (function() {
+            const postFontLoad = (event, payload) => {
+                try {
+                    const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print;
+                    handler && handler.postMessage && handler.postMessage(Object.assign({
+                        message: "# FONTLOAD js.readerInjection." + event,
+                        pageURL: window.location.href
+                    }, payload || {}));
+                } catch (_) {}
+            };
+            const ensureReaderFontStyle = () => {
+                const root = document.documentElement;
+                if (!root) return null;
+                let style = document.getElementById('manabi-custom-fonts-inline');
+                if (style) {
+                    if (!style.dataset.manabiOriginalCSS) {
+                        style.dataset.manabiOriginalCSS = style.textContent || '';
+                    }
+                    return style;
+                }
+                const css = globalThis.manabiReaderFontCSSText || '';
+                if (!css) return null;
+                style = document.createElement('style');
+                style.id = 'manabi-custom-fonts-inline';
+                style.textContent = css;
+                style.dataset.manabiOriginalCSS = css;
+                (document.head || document.documentElement).appendChild(style);
+                postFontLoad('reinsertedFromCache', { cssBytes: css.length });
+                return style;
+            };
+            globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
             try {
                 const root = document.documentElement;
-                let style = document.getElementById('manabi-custom-fonts-inline');
+                let style = ensureReaderFontStyle();
                 if (!style) {
                     const css = atob('\(base64)');
+                    globalThis.manabiReaderFontCSSText = css;
                     style = document.createElement('style');
                     style.id = 'manabi-custom-fonts-inline';
                     style.textContent = css;
                     style.dataset.manabiOriginalCSS = css;
                     (document.head || document.documentElement).appendChild(style);
                     root.dataset.manabiFontInjected = '1';
+                    postFontLoad('inserted', { cssBytes: css.length });
                 } else if (!style.dataset.manabiOriginalCSS) {
                     style.dataset.manabiOriginalCSS = style.textContent || '';
+                    postFontLoad('reusedWithoutOriginal', { cssBytes: (style.textContent || '').length });
+                } else {
+                    if (!globalThis.manabiReaderFontCSSText) {
+                        globalThis.manabiReaderFontCSSText = style.dataset.manabiOriginalCSS || style.textContent || '';
+                    }
+                    postFontLoad('reusedExisting', { cssBytes: (style.textContent || '').length });
                 }
                 if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
+                    postFontLoad('applyDirectional.call', {});
                     window.manabiApplyDirectionalInjectedFont();
+                } else {
+                    postFontLoad('applyDirectional.missing', {});
                 }
             } catch (e) {
+                postFontLoad('error', { error: String(e) });
                 try { console.log('manabi font inject error', e); } catch (_) {}
             }
         })();
