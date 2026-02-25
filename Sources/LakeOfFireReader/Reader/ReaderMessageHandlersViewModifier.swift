@@ -708,27 +708,58 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let hasProcessedReadability = readerModeViewModel.readabilityContent != nil
                 var shouldShortCircuit = readerModeViewModel.isReaderMode && hasProcessedReadability
                 if shouldShortCircuit && !isSnippetURL {
-                    let rawHasReadabilityClass = try? await scriptCaller.evaluateJavaScript(
-                        "document.body?.classList.contains('readability-mode') ? 1 : 0"
+                    let rawReadabilityMarkers = try? await scriptCaller.evaluateJavaScript(
+                        """
+                        (() => {
+                            const body = document.body;
+                            return {
+                                hasReadabilityClass: body?.classList.contains("readability-mode") === true,
+                                hasReaderContent: document.getElementById("reader-content") !== null
+                            };
+                        })()
+                        """
                     )
-                    let hasReadabilityClass: Bool? = {
-                        guard let unwrapped = self.unwrapJavaScriptValue(rawHasReadabilityClass) else {
+                    let readabilityMarkers: (hasReadabilityClass: Bool?, hasReaderContent: Bool?) = {
+                        guard let unwrapped = self.unwrapJavaScriptValue(rawReadabilityMarkers) else {
+                            return (nil, nil)
+                        }
+                        guard let dictionary = unwrapped as? [String: Any] else {
+                            return (nil, nil)
+                        }
+                        func boolValue(_ value: Any?) -> Bool? {
+                            guard let value else { return nil }
+                            if let number = value as? NSNumber {
+                                return number.intValue != 0
+                            }
+                            if let bool = value as? Bool {
+                                return bool
+                            }
                             return nil
                         }
-                        if let number = unwrapped as? NSNumber {
-                            return number.intValue == 1
-                        }
-                        if let bool = unwrapped as? Bool {
-                            return bool
-                        }
-                        return nil
+                        return (
+                            boolValue(dictionary["hasReadabilityClass"]),
+                            boolValue(dictionary["hasReaderContent"])
+                        )
                     }()
-                    if hasReadabilityClass == false {
+                    let hasReadabilityMarkers = readabilityMarkers.hasReadabilityClass == true
+                        || readabilityMarkers.hasReaderContent == true
+                    debugPrint(
+                        "# READERPERF readerMode.shortCircuit.precheck",
+                        "url=\(resolvedURL.absoluteString)",
+                        "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
+                        "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))",
+                        "hasMarkers=\(hasReadabilityMarkers)",
+                        "isReaderMode=\(readerModeViewModel.isReaderMode)",
+                        "hasProcessedReadability=\(hasProcessedReadability)"
+                    )
+                    if !hasReadabilityMarkers {
                         debugPrint(
                             "# WRONGREADERMODE shortCircuitMismatch",
                             "windowURL=\(resolvedURL.absoluteString)",
                             "contentURL=\(resolvedURL.absoluteString)",
-                            "reason=missingReadabilityClass"
+                            "reason=missingReadabilityMarkers",
+                            "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
+                            "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))"
                         )
                         readerModeViewModel.isReaderMode = false
                         shouldShortCircuit = false
