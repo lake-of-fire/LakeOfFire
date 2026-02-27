@@ -552,6 +552,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "contentURL=\(resolvedURL.absoluteString)",
                         "readerDefault=\(content.isReaderModeByDefault)"
                     )
+                    debugPrint(
+                        "# WRITINGDIR readerMode.stateChange",
+                        "reason=readabilityUnavailable",
+                        "newValue=false",
+                        "vm=\(ObjectIdentifier(readerModeViewModel).debugDescription)",
+                        "resolvedURL=\(resolvedURL.absoluteString)",
+                        "pageURL=\(readerViewModel.state.pageURL.absoluteString)",
+                        "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "isLoading=\(readerModeViewModel.isReaderModeLoading)",
+                        "hasRenderedReadability=\(readerModeViewModel.hasRenderedReadabilityContent)"
+                    )
                     readerModeViewModel.isReaderMode = false
                 }
                 
@@ -714,17 +725,18 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             const body = document.body;
                             return {
                                 hasReadabilityClass: body?.classList.contains("readability-mode") === true,
-                                hasReaderContent: document.getElementById("reader-content") !== null
+                                hasReaderContent: document.getElementById("reader-content") !== null,
+                                hasReaderHeader: document.getElementById("reader-header") !== null
                             };
                         })()
                         """
                     )
-                    let readabilityMarkers: (hasReadabilityClass: Bool?, hasReaderContent: Bool?) = {
+                    let readabilityMarkers: (hasReadabilityClass: Bool?, hasReaderContent: Bool?, hasReaderHeader: Bool?) = {
                         guard let unwrapped = self.unwrapJavaScriptValue(rawReadabilityMarkers) else {
-                            return (nil, nil)
+                            return (nil, nil, nil)
                         }
                         guard let dictionary = unwrapped as? [String: Any] else {
-                            return (nil, nil)
+                            return (nil, nil, nil)
                         }
                         func boolValue(_ value: Any?) -> Bool? {
                             guard let value else { return nil }
@@ -738,31 +750,66 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         }
                         return (
                             boolValue(dictionary["hasReadabilityClass"]),
-                            boolValue(dictionary["hasReaderContent"])
+                            boolValue(dictionary["hasReaderContent"]),
+                            boolValue(dictionary["hasReaderHeader"])
                         )
                     }()
                     let hasReadabilityMarkers = readabilityMarkers.hasReadabilityClass == true
-                        || readabilityMarkers.hasReaderContent == true
+                        && readabilityMarkers.hasReaderContent == true
+                        && readabilityMarkers.hasReaderHeader == true
                     debugPrint(
                         "# READERPERF readerMode.shortCircuit.precheck",
                         "url=\(resolvedURL.absoluteString)",
                         "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
                         "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))",
+                        "hasReaderHeader=\(String(describing: readabilityMarkers.hasReaderHeader))",
                         "hasMarkers=\(hasReadabilityMarkers)",
                         "isReaderMode=\(readerModeViewModel.isReaderMode)",
                         "hasProcessedReadability=\(hasProcessedReadability)"
                     )
                     if !hasReadabilityMarkers {
-                        debugPrint(
-                            "# WRONGREADERMODE shortCircuitMismatch",
-                            "windowURL=\(resolvedURL.absoluteString)",
-                            "contentURL=\(resolvedURL.absoluteString)",
-                            "reason=missingReadabilityMarkers",
-                            "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
-                            "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))"
-                        )
-                        readerModeViewModel.isReaderMode = false
-                        shouldShortCircuit = false
+                        let hasPendingReadabilityLoad = readerModeViewModel.isReaderModeLoading
+                            && readerModeViewModel.isReaderModeLoadPending(for: resolvedURL)
+                        if hasPendingReadabilityLoad {
+                            debugPrint(
+                                "# WRONGREADERMODE shortCircuitMismatchDeferred",
+                                "windowURL=\(resolvedURL.absoluteString)",
+                                "contentURL=\(resolvedURL.absoluteString)",
+                                "reason=missingReadabilityMarkers.whilePendingReadabilityLoad",
+                                "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
+                                "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))",
+                                "hasReaderHeader=\(String(describing: readabilityMarkers.hasReaderHeader))",
+                                "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                                "isLoading=\(readerModeViewModel.isReaderModeLoading)"
+                            )
+                            shouldShortCircuit = false
+                        } else {
+                            debugPrint(
+                                "# WRONGREADERMODE shortCircuitMismatch",
+                                "windowURL=\(resolvedURL.absoluteString)",
+                                "contentURL=\(resolvedURL.absoluteString)",
+                                "reason=missingReadabilityMarkers",
+                                "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
+                                "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))",
+                                "hasReaderHeader=\(String(describing: readabilityMarkers.hasReaderHeader))"
+                            )
+                            debugPrint(
+                                "# WRITINGDIR readerMode.stateChange",
+                                "reason=shortCircuitMismatch.missingReadabilityMarkers",
+                                "newValue=false",
+                                "vm=\(ObjectIdentifier(readerModeViewModel).debugDescription)",
+                                "resolvedURL=\(resolvedURL.absoluteString)",
+                                "pageURL=\(readerViewModel.state.pageURL.absoluteString)",
+                                "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                                "isLoading=\(readerModeViewModel.isReaderModeLoading)",
+                                "hasRenderedReadability=\(readerModeViewModel.hasRenderedReadabilityContent)",
+                                "hasReadabilityClass=\(String(describing: readabilityMarkers.hasReadabilityClass))",
+                                "hasReaderContent=\(String(describing: readabilityMarkers.hasReaderContent))",
+                                "hasReaderHeader=\(String(describing: readabilityMarkers.hasReaderHeader))"
+                            )
+                            readerModeViewModel.isReaderMode = false
+                            shouldShortCircuit = false
+                        }
                     }
                 }
                 if shouldShortCircuit {
@@ -812,6 +859,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             }
                         }
                         if !readerModeViewModel.isReaderMode {
+                            debugPrint(
+                                "# WRITINGDIR readerMode.stateChange",
+                                "reason=readabilityParsed.shortCircuit",
+                                "newValue=true",
+                                "vm=\(ObjectIdentifier(readerModeViewModel).debugDescription)",
+                                "resolvedURL=\(resolvedURL.absoluteString)",
+                                "pageURL=\(readerViewModel.state.pageURL.absoluteString)",
+                                "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                                "isLoading=\(readerModeViewModel.isReaderModeLoading)",
+                                "hasRenderedReadability=\(readerModeViewModel.hasRenderedReadabilityContent)"
+                            )
                             readerModeViewModel.isReaderMode = true
                         }
                         if readerModeViewModel.isReaderModeLoadPending(for: resolvedURL) {
@@ -1219,6 +1277,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         debugPrint(
             "# READERRELOAD viewOriginal.persisted",
             "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
+        )
+        debugPrint(
+            "# WRITINGDIR readerMode.stateChange",
+            "reason=viewOriginal",
+            "newValue=false",
+            "vm=\(ObjectIdentifier(readerModeViewModel).debugDescription)",
+            "contentURL=\(contentURL.absoluteString)",
+            "pageURL=\(readerContent.pageURL.absoluteString)",
+            "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+            "isLoading=\(readerModeViewModel.isReaderModeLoading)",
+            "hasRenderedReadability=\(readerModeViewModel.hasRenderedReadabilityContent)"
         )
         readerModeViewModel.isReaderMode = false
         readerModeViewModel.clearReadabilityCache(for: contentURL, reason: "viewOriginal")

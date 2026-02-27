@@ -564,8 +564,17 @@ public struct ReaderContentLoader {
         let html = NSPasteboard.general.string(forType: .html)
         let text = NSPasteboard.general.string(forType: .string)
 #else
-        let html = UIPasteboard.general.string
-        let text: String? = html
+        let pasteboard = UIPasteboard.general
+        let htmlData = pasteboard.data(forPasteboardType: UTType.html.identifier)
+        let htmlFromData = htmlData.flatMap {
+            String(data: $0, encoding: .utf8)
+                ?? String(data: $0, encoding: .unicode)
+                ?? String(data: $0, encoding: .utf16LittleEndian)
+                ?? String(data: $0, encoding: .utf16BigEndian)
+        }
+        let htmlFromValue = pasteboard.value(forPasteboardType: UTType.html.identifier) as? String
+        let html = htmlFromData ?? htmlFromValue ?? pasteboard.string
+        let text = pasteboard.string
 #endif
         
         if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {

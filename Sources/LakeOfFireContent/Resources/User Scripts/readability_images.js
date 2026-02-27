@@ -9,6 +9,130 @@
     if (isEbook) {
         return;
     }
+    const MANAGED_APPLIED_DATASET_KEY = "manabiManagedReaderImageSizing";
+    const LEGACY_SIGNATURE_DATASET_KEY = "manabiLastCss";
+    const WRAPPER_INLINE_FLOW_CLASS = "manabi-vertical-inline-image-wrapper";
+    const MANAGED_DATASET_FLAG = "1";
+
+    function hasDatasetKey(element, key) {
+        return !!element && !!element.dataset && Object.prototype.hasOwnProperty.call(element.dataset, key);
+    }
+
+    function isLegacyManagedInlineValue(value, priority) {
+        const normalizedValue = (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (priority !== "important") {
+            return false;
+        }
+        return normalizedValue.includes("min(") && normalizedValue.includes("850px");
+    }
+
+    function clearManagedImageSizing(img) {
+        if (!(img instanceof HTMLImageElement)) {
+            return;
+        }
+        const maxWidthValue = img.style.getPropertyValue("max-width") || "";
+        const maxWidthPriority = img.style.getPropertyPriority("max-width") || "";
+        const widthValue = img.style.getPropertyValue("width") || "";
+        const widthPriority = img.style.getPropertyPriority("width") || "";
+        const shouldClear =
+            img.dataset[MANAGED_APPLIED_DATASET_KEY] === MANAGED_DATASET_FLAG
+            || hasDatasetKey(img, LEGACY_SIGNATURE_DATASET_KEY)
+            || isLegacyManagedInlineValue(maxWidthValue, maxWidthPriority)
+            || isLegacyManagedInlineValue(widthValue, widthPriority);
+        if (!shouldClear) {
+            return;
+        }
+        img.style.removeProperty("max-width");
+        img.style.removeProperty("width");
+        delete img.dataset[MANAGED_APPLIED_DATASET_KEY];
+        delete img.dataset[LEGACY_SIGNATURE_DATASET_KEY];
+    }
+
+    function applyManagedImageSizing(img, maxWidthStyle, widthStyle) {
+        if (!(img instanceof HTMLImageElement)) {
+            return;
+        }
+        img.style.setProperty("max-width", maxWidthStyle, "important");
+        if (widthStyle) {
+            img.style.setProperty("width", widthStyle, "important");
+        } else {
+            img.style.removeProperty("width");
+        }
+        img.dataset[MANAGED_APPLIED_DATASET_KEY] = MANAGED_DATASET_FLAG;
+        delete img.dataset[LEGACY_SIGNATURE_DATASET_KEY];
+    }
+
+    function imageOnlyWrapperForInlineFlow(img) {
+        if (!(img instanceof HTMLImageElement)) {
+            return null;
+        }
+        let chainNode = img;
+        while (true) {
+            const parent = chainNode.parentElement;
+            if (!parent) {
+                break;
+            }
+            const parentTagName = parent.tagName?.toUpperCase() || "";
+            const canInlineChainThrough = parentTagName === "PICTURE" || parentTagName === "A";
+            if (!canInlineChainThrough) {
+                break;
+            }
+            if (parent.children.length !== 1 || parent.firstElementChild !== chainNode) {
+                break;
+            }
+            chainNode = parent;
+        }
+
+        const wrapper = chainNode.parentElement;
+        if (!wrapper) {
+            return null;
+        }
+
+        const wrapperTagName = wrapper.tagName?.toUpperCase() || "";
+        if (wrapperTagName !== "P" && wrapperTagName !== "DIV") {
+            return null;
+        }
+
+        if (wrapper.children.length !== 1) {
+            return null;
+        }
+        if (wrapper.firstElementChild === chainNode) {
+            return wrapper;
+        }
+        return null;
+    }
+
+    function enforceReaderContentImagePresentation(img) {
+        if (!(img instanceof HTMLImageElement)) {
+            return;
+        }
+        img.style.setProperty("border-radius", "6px", "important");
+
+        const pictureParent = img.parentElement?.tagName?.toUpperCase() === "PICTURE"
+            ? img.parentElement
+            : null;
+        if (pictureParent instanceof HTMLElement) {
+            pictureParent.style.setProperty("border-radius", "6px", "important");
+            pictureParent.style.setProperty("overflow", "hidden", "important");
+        }
+    }
+
+    function applyVerticalInlineImageFlowForImage(img) {
+        const wrapper = imageOnlyWrapperForInlineFlow(img);
+        if (!(wrapper instanceof HTMLElement)) {
+            return;
+        }
+        wrapper.classList.add(WRAPPER_INLINE_FLOW_CLASS);
+    }
+
+    function clearVerticalInlineImageFlow() {
+        const wrappers = document.querySelectorAll(
+            `#reader-content .${WRAPPER_INLINE_FLOW_CLASS}`
+        );
+        wrappers.forEach((wrapper) => {
+            wrapper.classList.remove(WRAPPER_INLINE_FLOW_CLASS);
+        });
+    }
  
     function updateImageMargins() {
         var BLOCK_IMAGES_SELECTOR = "#reader-header > img, " +
@@ -23,10 +147,31 @@
         if (!document.body?.classList.contains('readability-mode')) {
             return;
         }
+        const writingDirectionOverride = document.body?.dataset?.manabiWritingDirection || "automatic";
+        const isVertical = writingDirectionOverride === "vertical"
+            || (
+                writingDirectionOverride !== "horizontal"
+                && document.body?.classList?.contains('reader-vertical-writing') === true
+            );
         const contentElement = document.getElementById("reader-content");
         if (contentElement === null) {
             return;
         }
+
+        if (isVertical) {
+            const managedOrLegacyImages = document.querySelectorAll(
+                "#reader-header > img, #reader-content img"
+            );
+            managedOrLegacyImages.forEach(clearManagedImageSizing);
+            clearVerticalInlineImageFlow();
+            const readerContentImages = document.querySelectorAll("#reader-content img");
+            readerContentImages.forEach((img) => {
+                enforceReaderContentImagePresentation(img);
+                applyVerticalInlineImageFlowForImage(img);
+            });
+            return;
+        }
+        clearVerticalInlineImageFlow();
         
         var contentWidth = contentElement.offsetWidth;
         
@@ -36,7 +181,7 @@
             delete img._originalHeight;
         });
         
-        var maxWidthStyle = "min(850px, 100%) !important";
+        var maxWidthStyle = "min(850px, 100%)";
         
         var setImageMargins = function (img) {
             if (!img._originalWidth) {
@@ -47,27 +192,18 @@
             }
             
             var imgWidth = img._originalWidth;
-            let imgHeight = img._originalHeight;
             
             var widthStyle = "";
             if (imgWidth < contentWidth * 0.2) {
-                widthStyle = "min(850px, 45%, " + imgWidth * 1.3 + "px) !important";
+                widthStyle = "min(850px, 45%, " + imgWidth * 1.3 + "px)";
             } else if (imgWidth < contentWidth * 0.5) {
-                widthStyle = "min(" + contentWidth.toString() + "px, 850px, " + (imgWidth * 2).toString() + "px) !important";
+                widthStyle = "min(" + contentWidth.toString() + "px, 850px, " + (imgWidth * 2).toString() + "px)";
             } else if (imgWidth < contentWidth) {
                 widthStyle = maxWidthStyle;
             }
             
-            // Compute CSS text first
-            var cssText =
-            "max-width: " + maxWidthStyle + ";" +
-            "width: " + widthStyle + ";";
-            // If style hasn’t changed, skip reapplying
-            if (img.dataset.manabiLastCss === cssText) {
-                return;
-            }
-            img.dataset.manabiLastCss = cssText;
-            img.style.cssText = cssText;
+            enforceReaderContentImagePresentation(img);
+            applyManagedImageSizing(img, maxWidthStyle, widthStyle);
             return;
         }
         
@@ -107,6 +243,7 @@
     }
     
     const debouncedUpdateImageMargins = debounce(updateImageMargins);
+    window.manabiUpdateReadabilityImageMargins = updateImageMargins;
     
     function initialize() {
         var observer = new MutationObserver(function (mutations) {

@@ -207,6 +207,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
                     "pageURL=\(state.pageURL.absoluteString)",
                     "title=\(content.title)"
                 )
+                debugPrint(
+                    "# READERHEADER swift.syncDocumentTitle.start",
+                    "pageURL=\(state.pageURL.absoluteString)",
+                    "titleBytes=\(content.title.count)"
+                )
                 try await scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
             }
         }
@@ -227,6 +232,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
             "raw=\(title)",
             "normalized=\(newTitle)"
         )
+        debugPrint(
+            "# READERHEADER swift.pageMetadataUpdated.received",
+            "pageURL=\(state.pageURL.absoluteString)",
+            "rawTitleBytes=\(title.count)",
+            "normalizedTitleBytes=\(newTitle.count)"
+        )
         let contentRefs = try await { @RealmBackgroundActor in
             let contents = try await ReaderContentLoader.loadAll(url: state.pageURL)
             return contents.compactMap { ReaderContentLoader.ContentReference(content: $0) }
@@ -240,6 +251,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 "contentURL=\(content.url.absoluteString)",
                 "final=\(finalTitle)",
                 "author=\(author ?? "")"
+            )
+            debugPrint(
+                "# READERHEADER swift.pageMetadataUpdated.apply",
+                "contentURL=\(content.url.absoluteString)",
+                "finalTitleBytes=\(finalTitle.count)",
+                "authorBytes=\((author ?? "").count)"
             )
             if !finalTitle.isEmpty,
                content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != finalTitle

@@ -70,9 +70,17 @@ private enum ReaderModeWritingDirectionBootstrap: String {
     case vertical
 }
 
+private enum ReaderModeWritingDirectionContract {
+    static let bodyClassReaderVerticalWriting = "reader-vertical-writing"
+    static let bodyDataAttributeWritingDirection = "data-manabi-writing-direction"
+    static let dataValueHorizontal = "horizontal"
+    static let dataValueVertical = "vertical"
+}
+
 private let readerModeVerticalBootstrapStyleIdentifier = "manabi-writing-direction-bootstrap"
 private let readerModeVerticalBootstrapCSS = """
 body.readability-mode,
+body.readability-mode #reader-header,
 body.readability-mode #reader-content,
 body.readability-mode #reader-content .page,
 body.readability-mode #reader-content .manabi-tracking-section {
@@ -89,7 +97,8 @@ body.readability-mode #reader-byline-container {
 """
 
 private func initialReaderModeWritingDirectionBootstrap() -> ReaderModeWritingDirectionBootstrap {
-    let rawValue = UserDefaults.standard.string(forKey: "webpageWritingDirectionSetting") ?? "horizontal"
+    let rawValue = UserDefaults.standard.string(forKey: "webpageWritingDirectionSetting")
+        ?? ReaderModeWritingDirectionContract.dataValueHorizontal
     return rawValue == ReaderModeWritingDirectionBootstrap.vertical.rawValue
         ? .vertical
         : .horizontal
@@ -141,7 +150,10 @@ private func applyReaderModeWritingDirectionBootstrap(to doc: SwiftSoup.Document
     guard let body = doc.body() else { return }
 
     let writingDirectionBootstrap = initialReaderModeWritingDirectionBootstrap()
-    _ = try? body.attr("data-manabi-writing-direction", writingDirectionBootstrap.rawValue)
+    _ = try? body.attr(
+        ReaderModeWritingDirectionContract.bodyDataAttributeWritingDirection,
+        writingDirectionBootstrap.rawValue
+    )
 
     var classNames = ((try? body.attr("class")) ?? "")
         .split(whereSeparator: \.isWhitespace)
@@ -149,9 +161,9 @@ private func applyReaderModeWritingDirectionBootstrap(to doc: SwiftSoup.Document
     if !classNames.contains("readability-mode") {
         classNames.append("readability-mode")
     }
-    classNames.removeAll { $0 == "reader-vertical-writing" }
+    classNames.removeAll { $0 == ReaderModeWritingDirectionContract.bodyClassReaderVerticalWriting }
     if writingDirectionBootstrap == .vertical {
-        classNames.append("reader-vertical-writing")
+        classNames.append(ReaderModeWritingDirectionContract.bodyClassReaderVerticalWriting)
     }
     _ = try? body.attr("class", classNames.joined(separator: " "))
 
@@ -211,8 +223,10 @@ internal func buildCanonicalReadabilityHTML(
     let css = Readability.shared.css
     let scripts = Readability.shared.scripts
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\""
-    let writingDirectionAttribute = "data-manabi-writing-direction=\"\(writingDirectionBootstrap.rawValue)\""
-    let bodyClasses = "readability-mode"
+    let writingDirectionAttribute = "\(ReaderModeWritingDirectionContract.bodyDataAttributeWritingDirection)=\"\(writingDirectionBootstrap.rawValue)\""
+    let bodyClasses = writingDirectionBootstrap == .vertical
+        ? "readability-mode \(ReaderModeWritingDirectionContract.bodyClassReaderVerticalWriting)"
+        : "readability-mode"
     let bootstrapWritingDirectionStyle = writingDirectionBootstrap == .vertical
         ? readerModeVerticalBootstrapStyleTag()
         : ""
@@ -340,7 +354,22 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
     private var activeRenderGenerationByURL: [String: UUID] = [:]
 
-    @Published public var isReaderMode = false
+    @Published public var isReaderMode = false {
+        didSet {
+            guard isReaderMode != oldValue else { return }
+            debugPrint(
+                "# WRITINGDIR readerMode.stateObserved",
+                "vm=\(ObjectIdentifier(self).debugDescription)",
+                "from=\(oldValue)",
+                "to=\(isReaderMode)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "isLoading=\(isReaderModeLoading)",
+                "hasRenderedReadability=\(hasRenderedReadabilityContent)",
+                "lastRendered=\(lastRenderedReadabilityURL?.absoluteString ?? "nil")",
+                "stack=\(Thread.callStackSymbols.prefix(5).joined(separator: " | "))"
+            )
+        }
+    }
     @Published public var isReaderModeLoading = false
     public var hasRenderedReadabilityContent: Bool { lastRenderedReadabilityURL != nil }
     @Published var readabilityContent: String?
@@ -2013,11 +2042,24 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 }
             }
             let segmentCountAfterProcessing = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
+            let readerTitleElement = try? doc.getElementById("reader-title")
+            let readerTitleTextBytes = (try? readerTitleElement?.text(trimAndNormaliseWhitespace: false).utf8.count) ?? 0
+            let readerTitleContainerCount = (try? readerTitleElement?.getElementsByTag("manabi-container").size()) ?? 0
+            let readerTitleDisplayTokenCount = (try? readerTitleElement?.select("[data-manabi-display-token='1']").size()) ?? 0
+            let readerTitlePreview = (try? readerTitleElement?.text(trimAndNormaliseWhitespace: false).truncate(96)) ?? ""
             debugPrint(
                 "# READERINJECT readability.docSegments",
                 "stage=afterProcessForReaderMode",
                 "url=\(url.absoluteString)",
                 "segments=\(segmentCountAfterProcessing)"
+            )
+            debugPrint(
+                "# READERHEADER swift.preloadSnapshot",
+                "url=\(url.absoluteString)",
+                "titleTextBytes=\(readerTitleTextBytes)",
+                "titleContainerCount=\(readerTitleContainerCount)",
+                "titleDisplayTokenCount=\(readerTitleDisplayTokenCount)",
+                "titlePreview=\(readerTitlePreview)"
             )
             let transformDuration = Date().timeIntervalSince(transformStartedAt)
             let transformSummary = String(format: "%.3fs", transformDuration)
@@ -2123,13 +2165,23 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             let style = document.createElement('style')
                             style.textContent = css
                             document.head.appendChild(style)
-                            document.body?.classList.add('readability-mode')
+                            const hasReaderHeader = document.getElementById('reader-header') !== null
+                            const hasReaderContent = document.getElementById('reader-content') !== null
+                            const hasCanonicalReaderDOM = hasReaderHeader && hasReaderContent
+                            if (hasCanonicalReaderDOM) {
+                                document.body?.classList.add('readability-mode')
+                            } else {
+                                document.body?.classList.remove('readability-mode')
+                            }
                             try {
                                 const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
                                 if (handler && typeof handler.postMessage === "function") {
                                     handler.postMessage({
-                                        message: "# WRONGREADERMODE readabilityModeClassAdded",
+                                        message: "# WRONGREADERMODE readabilityModeClassSync",
                                         context: "showReadabilityContent.frameInjected",
+                                        hasReaderHeader: hasReaderHeader,
+                                        hasReaderContent: hasReaderContent,
+                                        hasCanonicalReaderDOM: hasCanonicalReaderDOM,
                                         windowURL: window.location.href,
                                         pageURL: document.location.href
                                     })
@@ -2619,9 +2671,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     let bodyInnerHTML = bodyInnerHTML(from: html)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 {
                     let metrics = bodyMetrics(for: html)
-                    let hasReaderContentNode = html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil
-                    let hasReadabilityClass = html.range(of: #"<body[^>]*class=['\"][^>]*readability-mode"#, options: .regularExpression) != nil
-                    let readabilityMarkersPresent = hasReaderContentNode || hasReadabilityClass
+                    let hasReaderContentNode = hasReaderContentNodeMarkup(in: html)
+                    let hasReadabilityClass = hasReadabilityModeBodyClassMarkup(in: html)
+                    let readabilityMarkersPresent = hasCanonicalReadabilityMarkup(in: html)
                     let isEffectivelyEmpty = metrics.bodyHTMLBytes == 0 || (metrics.bodyTextBytes == 0 && !readabilityMarkersPresent) || bodyInnerHTML.isEmpty
                     if isEffectivelyEmpty && isSnippetURL {
                         debugPrint(
@@ -2705,34 +2757,30 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         return
                     }
 
-                    let hasReaderContentNode = html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil
-                    let hasReadabilityClass = html.range(of: #"<body[^>]*class=['\"].*?readability-mode.*?['\"]"#, options: .regularExpression) != nil
-                    let hasReaderModeAvailableFlag = html.range(
-                        of: #"data-manabi-reader-mode-available=['"]true['"]"#,
-                        options: [.regularExpression, .caseInsensitive]
-                    ) != nil
-                    var readerModeAvailableForMatchesURL = false
-                    if let regex = try? NSRegularExpression(
-                        pattern: #"data-manabi-reader-mode-available-for=['"]([^'"]+)['"]"#,
-                        options: [.caseInsensitive]
-                    ) {
-                        let nsHTML = html as NSString
-                        let nsRange = NSRange(location: 0, length: nsHTML.length)
-                        if let match = regex.firstMatch(in: html, options: [], range: nsRange) {
-                            let valueRange = match.range(at: 1)
-                            if valueRange.location != NSNotFound,
-                               let swiftRange = Range(valueRange, in: html) {
-                                let attrValue = String(html[swiftRange])
-                                if let attrURL = URL(string: attrValue),
-                                   attrURL.matchesReaderURL(committedURL) {
-                                    readerModeAvailableForMatchesURL = true
-                                }
-                            }
-                        }
-                    }
-                    let hasPreprocessedManabiReaderMarkup = hasReaderModeAvailableFlag && readerModeAvailableForMatchesURL
+                    let hasReaderContentNode = hasReaderContentNodeMarkup(in: html)
+                    let hasReadabilityClass = hasReadabilityModeBodyClassMarkup(in: html)
+                    let hasReaderHeaderNode = hasReaderHeaderNodeMarkup(in: html)
+                    let hasPreprocessedManabiReaderMarkup = hasMatchingReaderModeAvailableMarker(
+                        in: html,
+                        for: committedURL
+                    )
                     let hasNextLoadReadabilityMarker = html.range(of: #"<body.*?data-next-load-is-readability-mode=['\"]true['\"]"#, options: .regularExpression) != nil
-                    let hasReadabilityMarkup = hasReadabilityClass || hasReaderContentNode || hasNextLoadReadabilityMarker || hasPreprocessedManabiReaderMarkup
+                    let hasCanonicalReadability = hasCanonicalReadabilityMarkup(
+                        in: html,
+                        expectedContentURL: committedURL
+                    )
+                    let hasReadabilityMarkup = hasCanonicalReadability || hasNextLoadReadabilityMarker
+                    if (hasReadabilityClass || hasReaderContentNode) && !hasCanonicalReadability {
+                        debugPrint(
+                            "# READERHEADER cache.rejectNonCanonical",
+                            "url=\(committedURL.absoluteString)",
+                            "hasReadabilityClass=\(hasReadabilityClass)",
+                            "hasReaderContentNode=\(hasReaderContentNode)",
+                            "hasReaderHeaderNode=\(hasReaderHeaderNode)",
+                            "hasPreprocessedMarker=\(hasPreprocessedManabiReaderMarkup)",
+                            "hasNextLoadMarker=\(hasNextLoadReadabilityMarker)"
+                        )
+                    }
                     let snippetHasReaderContent = isSnippetURL && hasReaderContentNode
                     if snippetHasReaderContent {
                         debugPrint(
@@ -2742,7 +2790,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         )
                     }
                     let shouldSwiftReadability = shouldProcessReadabilityInSwift(content: content, url: committedURL)
-                    let shouldUseReadability = hasReadabilityMarkup
+                    let shouldUseReadability = hasCanonicalReadability
                     logHTMLBodyMetrics(
                         event: "beforePrepare",
                         html: html,
@@ -2755,6 +2803,12 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         "# READER readability.decision",
                         "url=\(committedURL.absoluteString)",
                         "hasMarkup=\(hasReadabilityMarkup)",
+                        "hasCanonicalMarkup=\(hasCanonicalReadability)",
+                        "hasReaderContentNode=\(hasReaderContentNode)",
+                        "hasReaderHeaderNode=\(hasReaderHeaderNode)",
+                        "hasReadabilityClass=\(hasReadabilityClass)",
+                        "hasPreprocessedMarker=\(hasPreprocessedManabiReaderMarkup)",
+                        "hasNextLoadMarker=\(hasNextLoadReadabilityMarker)",
                         "snippet=\(isSnippetURL)",
                         "shouldUse=\(shouldUseReadability)"
                     )
@@ -3188,8 +3242,24 @@ private extension ReaderModeViewModel {
                     postFontLoad('reusedExisting', { cssBytes: (style.textContent || '').length });
                 }
                 if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
-                    postFontLoad('applyDirectional.call', {});
-                    window.manabiApplyDirectionalInjectedFont();
+                    const root = document.documentElement;
+                    const body = document.body;
+                    const hasFamilyHints = !!(
+                        root?.dataset?.manabiHorizontalFontFamily
+                        || root?.dataset?.manabiVerticalFontFamily
+                        || globalThis.manabiHorizontalFontFamilyName
+                        || globalThis.manabiVerticalFontFamilyName
+                        || root?.style?.getPropertyValue?.('--manabi-content-font')
+                        || root?.style?.getPropertyValue?.('--manabi-content-vertical-font')
+                        || body?.style?.getPropertyValue?.('--manabi-content-font')
+                        || body?.style?.getPropertyValue?.('--manabi-content-vertical-font')
+                    );
+                    if (hasFamilyHints) {
+                        postFontLoad('applyDirectional.call', {});
+                        window.manabiApplyDirectionalInjectedFont();
+                    } else {
+                        postFontLoad('applyDirectional.skip.noFamilyHints', {});
+                    }
                 } else {
                     postFontLoad('applyDirectional.missing', {});
                 }
@@ -3299,6 +3369,10 @@ private let bodyStylePattern = #"(?i)(<body[^>]*\bstyle=")([^"]*)(")"#
 private let bodyStyleRegex = try! NSRegularExpression(pattern: bodyStylePattern, options: .caseInsensitive)
 
 private let bodyInnerHTMLRegex = try! NSRegularExpression(pattern: #"(?is)<body[^>]*>(.*?)</body>"#)
+private let readerModeAvailableForRegex = try! NSRegularExpression(
+    pattern: #"data-manabi-reader-mode-available-for=['"]([^'"]+)['"]"#,
+    options: [.caseInsensitive]
+)
 
 internal func bodyInnerHTML(from html: String) -> String? {
     let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
@@ -3361,9 +3435,50 @@ private func logHTMLBodyMetrics(
     debugPrint(parts.joined(separator: " "))
 }
 
+internal func hasReadabilityModeBodyClassMarkup(in html: String) -> Bool {
+    html.range(
+        of: #"<body[^>]*class=['\"].*?readability-mode.*?['\"]"#,
+        options: .regularExpression
+    ) != nil
+}
+
+internal func hasReaderContentNodeMarkup(in html: String) -> Bool {
+    html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil
+}
+
+internal func hasReaderHeaderNodeMarkup(in html: String) -> Bool {
+    html.range(of: #"id=['"]reader-header['"]"#, options: .regularExpression) != nil
+}
+
+internal func hasMatchingReaderModeAvailableMarker(in html: String, for url: URL) -> Bool {
+    let hasReaderModeAvailableFlag = html.range(
+        of: #"data-manabi-reader-mode-available=['"]true['"]"#,
+        options: [.regularExpression, .caseInsensitive]
+    ) != nil
+    guard hasReaderModeAvailableFlag else { return false }
+
+    let nsHTML = html as NSString
+    let nsRange = NSRange(location: 0, length: nsHTML.length)
+    guard let match = readerModeAvailableForRegex.firstMatch(in: html, options: [], range: nsRange) else {
+        return false
+    }
+    let valueRange = match.range(at: 1)
+    guard valueRange.location != NSNotFound,
+          let swiftRange = Range(valueRange, in: html)
+    else {
+        return false
+    }
+    let attrValue = String(html[swiftRange])
+    guard let attrURL = URL(string: attrValue) else { return false }
+    return attrURL.matchesReaderURL(url)
+}
+
+internal func hasCanonicalReadabilityMarkup(in html: String, expectedContentURL _: URL? = nil) -> Bool {
+    hasReaderContentNodeMarkup(in: html) && hasReaderHeaderNodeMarkup(in: html)
+}
+
 internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {
-    if html.range(of: #"<body[^>]*class=['\"].*?readability-mode.*?['\"]"#, options: .regularExpression) != nil
-        || html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil {
+    if hasCanonicalReadabilityMarkup(in: html) {
         return html
     }
     var updatedHTML: String
