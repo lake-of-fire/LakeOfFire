@@ -75,7 +75,7 @@ let package = Package(
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/readium-swift-toolkit.git", branch: "develop"),
-        .package(url: "https://github.com/EmergeTools/Pow.git", from: "1.0.5"),
+        .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/LakeKit.git", branch: "main"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
