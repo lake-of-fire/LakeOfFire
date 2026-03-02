@@ -158,6 +158,7 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
         content
             .onChange(of: readerMediaPlayerViewModel.audioURLs) { audioURLs in
                 Task { @MainActor in
+                    guard readerMediaPlayerViewModel.playbackSource == .recordedAudio else { return }
                     readerMediaPlayerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
                 }
             }

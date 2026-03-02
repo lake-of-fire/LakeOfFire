@@ -2284,6 +2284,128 @@ class CacheWarmer {
 //    .catch(e => console.error(e))
 //else dropTarget.style.visibility = 'visible'
 
+const getVisibleReaderFrames = () => {
+    const frames = Array.from(document.querySelectorAll('iframe'));
+    if (!frames.length) { return []; }
+    const viewportHeight = window.innerHeight || document.documentElement?.clientHeight || 0;
+    const viewportWidth = window.innerWidth || document.documentElement?.clientWidth || 0;
+    return frames
+        .map((frame) => {
+            try {
+                const frameWindow = frame.contentWindow;
+                const frameDocument = frameWindow?.document;
+                const hasReaderContent = !!frameDocument?.querySelector?.('manabi-sentence[data-sentence-identifier]');
+                if (!hasReaderContent) { return null; }
+                const rect = frame.getBoundingClientRect();
+                const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+                const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+                const visibleArea = visibleWidth * visibleHeight;
+                return { frame, visibleArea };
+            } catch (_error) {
+                return null;
+            }
+        })
+        .filter(Boolean)
+        .sort((lhs, rhs) => rhs.visibleArea - lhs.visibleArea)
+        .map((entry) => entry.frame);
+};
+
+const callFrameFunction = (frame, functionName, args = []) => {
+    try {
+        const frameWindow = frame?.contentWindow;
+        const fn = frameWindow?.[functionName];
+        if (typeof fn !== 'function') { return null; }
+        return fn.apply(frameWindow, args);
+    } catch (_error) {
+        return null;
+    }
+};
+
+const resolvePrimaryReaderFrame = () => {
+    const frames = getVisibleReaderFrames();
+    return frames[0] || null;
+};
+
+window.manabi_collectSentencesForAITTS = () => {
+    const frame = resolvePrimaryReaderFrame();
+    if (!frame) { return []; }
+    const rows = callFrameFunction(frame, 'manabi_collectSentencesForAITTS');
+    return Array.isArray(rows) ? rows : [];
+};
+
+window.manabi_captureVisibleSentenceIdentifier = () => {
+    const frame = resolvePrimaryReaderFrame();
+    if (!frame) { return null; }
+    return callFrameFunction(frame, 'manabi_captureVisibleSentenceIdentifier');
+};
+
+window.manabi_setAITTSCurrentSentence = (sentenceIdentifier) => {
+    let didApply = false;
+    const frames = getVisibleReaderFrames();
+    for (const frame of frames) {
+        const appliedInFrame = callFrameFunction(frame, 'manabi_setAITTSCurrentSentence', [sentenceIdentifier]);
+        if (appliedInFrame === true) {
+            didApply = true;
+        }
+    }
+    return didApply;
+};
+
+window.manabi_clearAITTSCurrentSentence = () => {
+    const frames = getVisibleReaderFrames();
+    for (const frame of frames) {
+        callFrameFunction(frame, 'manabi_clearAITTSCurrentSentence');
+    }
+    return true;
+};
+
+window.manabi_seekToSentenceIdentifierForReadAloud = (sentenceIdentifier) => {
+    if (!sentenceIdentifier) { return false; }
+    const frames = getVisibleReaderFrames();
+    for (const frame of frames) {
+        const didSeek = callFrameFunction(frame, 'manabi_seekToSentenceIdentifierForReadAloud', [sentenceIdentifier]);
+        if (didSeek === true) {
+            return true;
+        }
+    }
+    return false;
+};
+
+window.manabi_getPlaybackSyncAnchor = () => {
+    const frame = resolvePrimaryReaderFrame();
+    if (!frame) {
+        return {
+            sentenceIdentifier: null,
+            transcriptStartSeconds: null,
+        };
+    }
+    const anchor = callFrameFunction(frame, 'manabi_getPlaybackSyncAnchor');
+    if (anchor && typeof anchor === 'object') {
+        return anchor;
+    }
+    return {
+        sentenceIdentifier: null,
+        transcriptStartSeconds: null,
+    };
+};
+
+window.manabi_shouldSeekPlaybackAfterViewportCheck = async (options = {}) => {
+    const frame = resolvePrimaryReaderFrame();
+    if (!frame) {
+        return true;
+    }
+    const frameWindow = frame.contentWindow;
+    if (typeof frameWindow?.manabi_shouldSeekPlaybackAfterViewportCheck !== 'function') {
+        return true;
+    }
+    try {
+        const result = await frameWindow.manabi_shouldSeekPlaybackAfterViewportCheck(options);
+        return result !== false;
+    } catch (_error) {
+        return true;
+    }
+};
+
 
 const manabiEbookAudioBridge = {
     pausedForLoading: false,
