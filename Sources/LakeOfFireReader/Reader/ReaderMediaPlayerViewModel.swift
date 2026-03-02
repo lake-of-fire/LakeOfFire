@@ -25,6 +25,18 @@ public struct ReaderTTSUtterance: Equatable, Sendable {
     }
 }
 
+public enum AITTSMarkerApplyResultEvaluator {
+    public static func didApply(from rawResult: Any?) -> Bool {
+        if let boolResult = rawResult as? Bool {
+            return boolResult
+        }
+        if let numberResult = rawResult as? NSNumber {
+            return numberResult.boolValue
+        }
+        return false
+    }
+}
+
 @MainActor
 public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public var isMediaPlayerPresented = false
