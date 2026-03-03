@@ -50,40 +50,75 @@ struct EBookProcessTextRequestKey: Hashable {
     }
 }
 
+enum EBookProcessTextRequestDeduperError: Error, Sendable, Equatable, LocalizedError {
+    case failed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .failed(let message):
+            return message
+        }
+    }
+}
+
 actor EBookProcessTextRequestDeduper {
-    private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<String, Never>]] = [:]
+    private enum ProcessTextOutcome: Sendable {
+        case success(String)
+        case cancelled
+        case failure(String)
+    }
+
+    private var inFlightWaitersByKey: [EBookProcessTextRequestKey: [CheckedContinuation<ProcessTextOutcome, Never>]] = [:]
+
+    private func resolve(_ outcome: ProcessTextOutcome) throws -> String {
+        switch outcome {
+        case .success(let responseText):
+            return responseText
+        case .cancelled:
+            throw CancellationError()
+        case .failure(let message):
+            throw EBookProcessTextRequestDeduperError.failed(message)
+        }
+    }
 
     func process(
         key: EBookProcessTextRequestKey,
-        operation: () async -> String
-    ) async -> (responseText: String, didCoalesce: Bool) {
+        operation: () async throws -> String
+    ) async throws -> (responseText: String, didCoalesce: Bool) {
         if inFlightWaitersByKey[key] != nil {
-            let responseText = await withCheckedContinuation { continuation in
+            let response = await withCheckedContinuation { continuation in
                 inFlightWaitersByKey[key, default: []].append(continuation)
             }
-            return (responseText, true)
+            return (try resolve(response), true)
         }
 
         inFlightWaitersByKey[key] = []
-        let responseText = await operation()
+        let response: ProcessTextOutcome
+        do {
+            response = .success(try await operation())
+        } catch is CancellationError {
+            response = .cancelled
+        } catch {
+            response = .failure(error.localizedDescription)
+        }
         let waiters = inFlightWaitersByKey.removeValue(forKey: key) ?? []
         for waiter in waiters {
-            waiter.resume(returning: responseText)
+            waiter.resume(returning: response)
         }
-        return (responseText, false)
+        return (try resolve(response), false)
     }
 }
 
 fileprivate actor EBookProcessingActor {
     let ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
-    let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
-    let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
+    let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
+    let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
     let processHTML: ((String, Bool) async -> String)?
 
     init(
         ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?,
-        ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
-        processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?,
+        ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
+        processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
         processHTML: ((String, Bool) async -> String)?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
@@ -97,7 +132,7 @@ fileprivate actor EBookProcessingActor {
         location: String,
         text: String,
         isCacheWarmer: Bool
-    ) async -> String {
+    ) async throws -> String {
         // TODO: Consolidate sectionLocationURL creation with ebookTextProcessor's
         let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: location)])
         if isCacheWarmer,
@@ -107,23 +142,19 @@ fileprivate actor EBookProcessingActor {
             return ""
         }
 
-        var respText = text
-        if let ebookTextProcessor {
-            do {
-                respText = try await ebookTextProcessor(
-                    contentURL,
-                    location,
-                    text,
-                    isCacheWarmer,
-                    processReadabilityContent,
-                    processHTML
-                )
-            } catch {
-                print("Error processing Ebook text: \(error)")
-            }
+        guard let ebookTextProcessor else {
+            return text
         }
+
         //        debugPrint("# from: ", text.prefix(1000), "to:", respText)
-        return respText
+        return try await ebookTextProcessor(
+            contentURL,
+            location,
+            text,
+            isCacheWarmer,
+            processReadabilityContent,
+            processHTML
+        )
     }
 }
 
@@ -248,9 +279,9 @@ public actor EbookURLSchemeActor {
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
-    var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
+    var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
     var readerFileManager: ReaderFileManager?
-    var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
+    var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
     var processHTML: ((String, Bool) async -> String)?
     /// Optional base64-encoded shared font CSS supplied by the host app to avoid adding a dependency here.
     var sharedFontCSSBase64: String?
@@ -311,21 +342,55 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         let processor = ebookTextProcessor
                         let readabilityProcessor = processReadabilityContent
                         let htmlProcessor = processHTML
-                        let (respText, didCoalesce) = await self.processTextRequestDeduper.process(
-                            key: processRequestKey
-                        ) {
-                            let processingActor = EBookProcessingActor(
-                                ebookTextProcessorCacheHits: cacheHitsHandler,
-                                ebookTextProcessor: processor,
-                                processReadabilityContent: readabilityProcessor,
-                                processHTML: htmlProcessor
+                        var respText = text
+                        var didCoalesce = false
+                        do {
+                            (respText, didCoalesce) = try await self.processTextRequestDeduper.process(
+                                key: processRequestKey
+                            ) {
+                                let processingActor = EBookProcessingActor(
+                                    ebookTextProcessorCacheHits: cacheHitsHandler,
+                                    ebookTextProcessor: processor,
+                                    processReadabilityContent: readabilityProcessor,
+                                    processHTML: htmlProcessor
+                                )
+                                return try await processingActor.process(
+                                    contentURL: contentURL,
+                                    location: replacedTextLocation,
+                                    text: text,
+                                    isCacheWarmer: isCacheWarmer
+                                )
+                            }
+                        } catch {
+                            if error is CancellationError {
+                                let cancellationError = CancellationError()
+                                debugPrint(
+                                    "# EBOOKPERF process-text.cancelled",
+                                    replacedTextLocation,
+                                    "cacheWarmer:",
+                                    isCacheWarmer,
+                                    "task:",
+                                    taskHash
+                                )
+                                await { @MainActor in
+                                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                        urlSchemeTask.didFailWithError(cancellationError)
+                                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                                    }
+                                }()
+                                return
+                            }
+                            debugPrint(
+                                "# EBOOKPERF process-text.failed",
+                                replacedTextLocation,
+                                "cacheWarmer:",
+                                isCacheWarmer,
+                                "task:",
+                                taskHash,
+                                "error:",
+                                error.localizedDescription
                             )
-                            return await processingActor.process(
-                                contentURL: contentURL,
-                                location: replacedTextLocation,
-                                text: text,
-                                isCacheWarmer: isCacheWarmer
-                            )
+                            print("Error processing Ebook text: \(error)")
                         }
                         if didCoalesce {
                             debugPrint(

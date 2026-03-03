@@ -203,7 +203,7 @@ internal func ebookTextProcessor(
     sectionLocation: String,
     content: String,
     isCacheWarmer: Bool,
-    processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?,
+    processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
     processHTML: ((String, Bool) async -> String)?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
@@ -223,7 +223,7 @@ internal func ebookTextProcessor(
         var doc: SwiftSoup.Document?
 
         if let processReadabilityContent {
-            doc = await processReadabilityContent(
+            doc = try await processReadabilityContent(
                 content,
                 contentURL,
                 sectionLocationURL,
@@ -307,6 +307,9 @@ internal func ebookTextProcessor(
 
         return html
     } catch {
+        if error is CancellationError {
+            throw error
+        }
         debugPrint("Error processing readability content for ebook", error)
     }
     return content

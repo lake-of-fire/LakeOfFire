@@ -91,6 +91,7 @@ public class ReaderContent: ObservableObject {
     
     @MainActor
     public func load(url: URL) async throws {
+        let loadStartedAt = Date()
         debugPrint("# FLASH ReaderContent.load start", "page=\(flashURLDescription(url))")
         if url.isSnippetURL || url.isReaderURLLoaderURL {
             debugPrint("# SNIPPETLOAD readerContent.load.start", "pageURL=\(url.absoluteString)")
@@ -123,6 +124,13 @@ public class ReaderContent: ObservableObject {
         if let loadingTask, pageURL.matchesReaderURL(url) {
             debugPrint("# FLASH ReaderContent.load in-flight", "page=\(flashURLDescription(url))")
             _ = try await loadingTask.value
+            let elapsed = Date().timeIntervalSince(loadStartedAt)
+            debugPrint(
+                "# READERLOAD stage=readerContent.load.waitExisting",
+                "pageURL=\(url.absoluteString)",
+                "elapsed=\(String(format: "%.3fs", elapsed))",
+                "slow=\(elapsed >= 0.8)"
+            )
             return
         }
 
@@ -139,6 +147,14 @@ public class ReaderContent: ObservableObject {
                     "contentURL=\(existingContent.url.absoluteString)"
                 )
             }
+            let elapsed = Date().timeIntervalSince(loadStartedAt)
+            debugPrint(
+                "# READERLOAD stage=readerContent.load.reuse",
+                "pageURL=\(url.absoluteString)",
+                "contentURL=\(existingContent.url.absoluteString)",
+                "elapsed=\(String(format: "%.3fs", elapsed))",
+                "slow=\(elapsed >= 0.8)"
+            )
             return
         }
 
@@ -195,6 +211,15 @@ public class ReaderContent: ObservableObject {
         }
         try await loadingTask?.value
         debugPrint("# FLASH ReaderContent.load completed", "page=\(flashURLDescription(url))")
+        let elapsed = Date().timeIntervalSince(loadStartedAt)
+        debugPrint(
+            "# READERLOAD stage=readerContent.load.completed",
+            "pageURL=\(url.absoluteString)",
+            "resolvedURL=\(resolvedContentURL.absoluteString)",
+            "contentURL=\(content?.url.absoluteString ?? "nil")",
+            "elapsed=\(String(format: "%.3fs", elapsed))",
+            "slow=\(elapsed >= 0.8)"
+        )
         loadingTask = nil
 
         if shouldMarkProvisional && isReaderProvisionallyNavigating {

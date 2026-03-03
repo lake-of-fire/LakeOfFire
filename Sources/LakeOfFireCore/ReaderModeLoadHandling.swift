@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 public protocol ReaderModeLoadHandling: AnyObject {
     func beginReaderModeLoad(for url: URL, suppressSpinner: Bool, reason: String?)
     func cancelReaderModeLoad(for url: URL?)

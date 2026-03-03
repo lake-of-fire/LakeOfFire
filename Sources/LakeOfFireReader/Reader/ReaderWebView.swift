@@ -29,6 +29,8 @@ private class ReaderWebViewHandler {
     private var lastHandledURL: URL?
     private var lastHandledIsProvisionallyNavigating: Bool?
     private var lastHandledIsLoading: Bool?
+    private var readerLoadStartTimes: [String: Date] = [:]
+    private var readerLoadStartSources: [String: String] = [:]
 
     init(
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
@@ -50,6 +52,51 @@ private class ReaderWebViewHandler {
         self.readerModeViewModel = readerModeViewModel
         self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
         self.scriptCaller = scriptCaller
+    }
+
+    private func readerLoadKey(for url: URL) -> String {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        return resolvedURL.absoluteString
+    }
+
+    private func markReaderLoadStart(for url: URL, source: String) {
+        let key = readerLoadKey(for: url)
+        guard readerLoadStartTimes[key] == nil else { return }
+        readerLoadStartTimes[key] = Date()
+        readerLoadStartSources[key] = source
+        debugPrint(
+            "# READERLOAD stage=readerWebView.navigationStart",
+            "source=\(source)",
+            "url=\(url.absoluteString)",
+            "key=\(key)"
+        )
+    }
+
+    private func finishReaderLoad(for url: URL, outcome: String) {
+        let key = readerLoadKey(for: url)
+        let start = readerLoadStartTimes.removeValue(forKey: key)
+        let source = readerLoadStartSources.removeValue(forKey: key) ?? "unknown"
+        guard let start else {
+            debugPrint(
+                "# READERLOAD stage=readerWebView.navigationEnd",
+                "outcome=\(outcome)",
+                "source=\(source)",
+                "url=\(url.absoluteString)",
+                "key=\(key)",
+                "elapsed=nil"
+            )
+            return
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        debugPrint(
+            "# READERLOAD stage=readerWebView.navigationEnd",
+            "outcome=\(outcome)",
+            "source=\(source)",
+            "url=\(url.absoluteString)",
+            "key=\(key)",
+            "elapsed=\(String(format: "%.3fs", elapsed))",
+            "slow=\(elapsed >= 2.5)"
+        )
     }
 
     func handleNewURL(state: WebViewState, source: String) async throws {
@@ -85,6 +132,16 @@ private class ReaderWebViewHandler {
         if state.pageURL.absoluteString == "about:blank" {
             debugPrint("# FLASH ReaderWebViewHandler.handleNewURL native reader view", "page=\(flashURLDescription(state.pageURL))")
             let cancelURL = readerContent.content?.url ?? readerContent.pageURL
+            debugPrint(
+                "# READERLOAD stage=readerWebView.aboutBlankCancel",
+                "source=\(source)",
+                "stateURL=\(state.pageURL.absoluteString)",
+                "cancelURL=\(cancelURL.absoluteString)",
+                "contentURLBeforeLoad=\(readerContent.content?.url.absoluteString ?? "nil")",
+                "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
+            )
             readerModeViewModel.cancelReaderModeLoad(for: cancelURL)
         }
 
@@ -98,7 +155,17 @@ private class ReaderWebViewHandler {
         lastHandledIsLoading = state.isLoading
 
         try Task.checkCancellation()
+        let contentLoadStartedAt = Date()
         try await readerContent.load(url: state.pageURL)
+        let contentLoadElapsed = Date().timeIntervalSince(contentLoadStartedAt)
+        debugPrint(
+            "# READERLOAD stage=readerWebView.contentResolved",
+            "source=\(source)",
+            "stateURL=\(state.pageURL.absoluteString)",
+            "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
+            "elapsed=\(String(format: "%.3fs", contentLoadElapsed))",
+            "slow=\(contentLoadElapsed >= 0.8)"
+        )
         debugPrint(
             "# READERRELOAD webView.handleNewURL",
             "pageURL=\(state.pageURL.absoluteString)",
@@ -113,6 +180,16 @@ private class ReaderWebViewHandler {
            !readerModeViewModel.isReaderModeLoading,
            readerModeViewModel.pendingReaderModeURL == nil,
            !content.url.isNativeReaderView {
+            debugPrint(
+                "# READERLOAD stage=readerWebView.autoBeginReaderModeLoad",
+                "source=\(source)",
+                "stateURL=\(state.pageURL.absoluteString)",
+                "contentURL=\(content.url.absoluteString)",
+                "isReaderModeByDefault=\(content.isReaderModeByDefault)",
+                "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
+            )
             debugPrint(
                 "# READERRELOAD readerMode.beginLoad",
                 "reason=webView.handleNewURL",
@@ -167,6 +244,7 @@ private class ReaderWebViewHandler {
 
     func onNavigationCommitted(state: WebViewState) {
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationCommitted event", "page=\(flashURLDescription(state.pageURL))")
+        markReaderLoadStart(for: state.pageURL, source: "navigationCommitted")
         navigationTaskManager.startOnNavigationCommitted {
             let navigationToken = self.readerContent.beginMainFrameNavigationTask(to: state.pageURL)
             defer { self.readerContent.endMainFrameNavigationTask(navigationToken) }
@@ -186,6 +264,7 @@ private class ReaderWebViewHandler {
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished event", "page=\(flashURLDescription(state.pageURL))")
         navigationTaskManager.startOnNavigationFinished { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.finishReaderLoad(for: state.pageURL, outcome: "finished") }
             let currentContent = self.readerContent.content
             let cachedHTMLBytes = currentContent?.html?.utf8.count ?? 0
             debugPrint(
@@ -303,10 +382,12 @@ private class ReaderWebViewHandler {
     func onNavigationFailed(state: WebViewState) {
         if state.pageURL.absoluteString == "about:blank", readerContent.content != nil {
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed skipping about:blank")
+            finishReaderLoad(for: state.pageURL, outcome: "failed.aboutBlankSkipped")
             return
         }
         debugPrint("# FLASH ReaderWebViewHandler.onNavigationFailed event", "page=\(flashURLDescription(state.pageURL))")
         navigationTaskManager.startOnNavigationFailed { @MainActor in
+            defer { self.finishReaderLoad(for: state.pageURL, outcome: "failed") }
             if let error = state.error {
                 let nsError = error as NSError
                 debugPrint(
@@ -333,6 +414,7 @@ private class ReaderWebViewHandler {
             return
         }
         debugPrint("# FLASH ReaderWebViewHandler.onURLChanged event", "page=\(flashURLDescription(state.pageURL))")
+        markReaderLoadStart(for: state.pageURL, source: "urlChanged")
         navigationTaskManager.startOnURLChanged { @MainActor in
             let navigationToken = self.readerContent.beginMainFrameNavigationTask(to: state.pageURL)
             defer { self.readerContent.endMainFrameNavigationTask(navigationToken) }
