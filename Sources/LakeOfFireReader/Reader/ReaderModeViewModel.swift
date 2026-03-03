@@ -650,6 +650,28 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         hasActiveRender(for: url)
     }
 
+#if DEBUG
+    @MainActor
+    internal func isMetadataRefreshInFlightForTesting(for url: URL) -> Bool {
+        let canonicalURL = url.canonicalReaderContentURL()
+        let key = canonicalRenderKey(canonicalURL)
+        guard let task = metadataRefreshTaskByURL[key] else {
+            return false
+        }
+        if task.isCancelled {
+            metadataRefreshTaskByURL.removeValue(forKey: key)
+            metadataRefreshGenerationByURL.removeValue(forKey: key)
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    internal func metadataRefreshTaskCountForTesting() -> Int {
+        metadataRefreshTaskByURL.count
+    }
+#endif
+
     private func finishMetadataRefreshTask(for url: URL, generation: UUID, reason: String) {
         let key = canonicalRenderKey(url)
         guard let activeGeneration = metadataRefreshGenerationByURL[key] else {
@@ -2535,10 +2557,27 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         content: any ReaderContentProtocol,
         contentURL: URL
     ) {
+        _ = schedulePostRenderMetadataRefreshTaskIfNeededImpl(
+            contentURL: contentURL,
+            injectEntryImageIntoHeader: content.injectEntryImageIntoHeader,
+            cachedImageURL: content.imageUrl
+        ) {
+            try await content.imageURLToDisplay()
+        }
+    }
+
+    @discardableResult
+    @MainActor
+    private func schedulePostRenderMetadataRefreshTaskIfNeededImpl(
+        contentURL: URL,
+        injectEntryImageIntoHeader: Bool,
+        cachedImageURL: URL?,
+        imageLookup: @escaping @MainActor () async throws -> URL?
+    ) -> Bool {
         let canonicalURL = contentURL.canonicalReaderContentURL()
         let refreshKey = canonicalRenderKey(canonicalURL)
-        guard content.injectEntryImageIntoHeader else { return }
-        guard content.imageUrl == nil else { return }
+        guard injectEntryImageIntoHeader else { return false }
+        guard cachedImageURL == nil else { return false }
         cancelOtherMetadataRefreshTasks(except: refreshKey, reason: "schedulePostRenderMetadataRefreshIfNeeded")
         if let existingTask = metadataRefreshTaskByURL[refreshKey], !existingTask.isCancelled {
             debugPrint(
@@ -2547,7 +2586,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "url=\(canonicalURL.absoluteString)",
                 "generation=\(metadataRefreshGenerationDescription(for: refreshKey))"
             )
-            return
+            return false
         }
         metadataRefreshTaskByURL.removeValue(forKey: refreshKey)
         metadataRefreshGenerationByURL.removeValue(forKey: refreshKey)
@@ -2571,7 +2610,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 )
             }
             do {
-                let refreshedImageURL = try await content.imageURLToDisplay()
+                let refreshedImageURL = try await imageLookup()
                 let elapsed = formattedInterval(Date().timeIntervalSince(startedAt))
                 debugPrint(
                     "# READERLOAD stage=readerMode.metadataRefresh",
@@ -2599,7 +2638,26 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             }
         }
         metadataRefreshTaskByURL[refreshKey] = task
+        return true
     }
+
+#if DEBUG
+    @discardableResult
+    @MainActor
+    internal func schedulePostRenderMetadataRefreshTaskIfNeeded(
+        contentURL: URL,
+        injectEntryImageIntoHeader: Bool,
+        cachedImageURL: URL?,
+        imageLookup: @escaping @MainActor () async throws -> URL?
+    ) -> Bool {
+        schedulePostRenderMetadataRefreshTaskIfNeededImpl(
+            contentURL: contentURL,
+            injectEntryImageIntoHeader: injectEntryImageIntoHeader,
+            cachedImageURL: cachedImageURL,
+            imageLookup: imageLookup
+        )
+    }
+#endif
 
     private nonisolated func summarizeBodyMarkup(from html: String, maxLength: Int = 360) -> String? {
         guard let bodyRange = html.range(of: "<body", options: [.caseInsensitive]) else {

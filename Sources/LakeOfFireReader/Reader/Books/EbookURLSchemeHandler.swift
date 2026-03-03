@@ -81,6 +81,12 @@ actor EBookProcessTextRequestDeduper {
         }
     }
 
+#if DEBUG
+    func inFlightWaiterCountForTesting(key: EBookProcessTextRequestKey) -> Int {
+        inFlightWaitersByKey[key]?.count ?? 0
+    }
+#endif
+
     func process(
         key: EBookProcessTextRequestKey,
         operation: () async throws -> String
