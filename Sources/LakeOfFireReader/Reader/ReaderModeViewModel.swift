@@ -4334,6 +4334,23 @@ internal func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFontSiz
     return Array(updatedHtml.utf8)
 }
 
+private func readerModeProcessByteCount(for document: SwiftSoup.Document) -> Int {
+    ((try? document.outerHtml()) ?? "").utf8.count
+}
+
+private func readerModeProcessBodyByteCount(for document: SwiftSoup.Document) -> Int {
+    ((try? document.body()?.outerHtml()) ?? "").utf8.count
+}
+
+private func readerModeProcessSegmentCount(for document: SwiftSoup.Document) -> Int {
+    (try? document.getElementsByTag("manabi-segment").size()) ?? 0
+}
+
+private func readerModeProcessGrowthString(outputBytes: Int, inputBytes: Int) -> String {
+    let safeInputBytes = max(inputBytes, 1)
+    return String(format: "%.2fx", Double(outputBytes) / Double(safeInputBytes))
+}
+
 public func preprocessWebContentForReaderMode(
     doc: SwiftSoup.Document,
     url: URL,
@@ -4378,6 +4395,16 @@ public func processForReaderMode(
     injectEntryImageIntoHeader: Bool,
     defaultFontSize: CGFloat
 ) throws {
+    let processStartedAt = Date()
+    let inputDocBytes = readerModeProcessByteCount(for: doc)
+    let inputBodyBytes = readerModeProcessBodyByteCount(for: doc)
+    let inputSegmentCount = readerModeProcessSegmentCount(for: doc)
+    var writingDirectionElapsed: TimeInterval = 0
+    var bodyAttributeElapsed: TimeInterval = 0
+    var defaultTitleElapsed: TimeInterval = 0
+    var annoyingTitleFixElapsed: TimeInterval = 0
+    var headerImageElapsed: TimeInterval = 0
+
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
     if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {
@@ -4391,10 +4418,13 @@ public func processForReaderMode(
 
     if !isCacheWarmer {
         if !isEBook {
+            let writingDirectionStartedAt = Date()
             applyReaderModeWritingDirectionBootstrap(to: doc)
+            writingDirectionElapsed = Date().timeIntervalSince(writingDirectionStartedAt)
         }
 
         if let bodyTag = doc.body() {
+            let bodyAttributeStartedAt = Date()
             // TODO: font size and theme set elsewhere already..?
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
@@ -4423,9 +4453,11 @@ public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
+            bodyAttributeElapsed = Date().timeIntervalSince(bodyAttributeStartedAt)
         }
 
         if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
+            let defaultTitleStartedAt = Date()
             let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
             do {
                 try existing.html(escapedTitle)
@@ -4435,18 +4467,62 @@ public func processForReaderMode(
                     "new=\(defaultTitle)"
                 )
             } catch { }
+            defaultTitleElapsed = Date().timeIntervalSince(defaultTitleStartedAt)
         }
 
         if !isEBook {
+            let annoyingTitlesStartedAt = Date()
             do {
                 try fixAnnoyingTitlesWithPipes(doc: doc)
             } catch { }
+            annoyingTitleFixElapsed = Date().timeIntervalSince(annoyingTitlesStartedAt)
         }
 
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+            let headerImageStartedAt = Date()
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
             } catch { }
+            headerImageElapsed = Date().timeIntervalSince(headerImageStartedAt)
         }
+    }
+
+    let outputDocBytes = readerModeProcessByteCount(for: doc)
+    let outputBodyBytes = readerModeProcessBodyByteCount(for: doc)
+    let outputSegmentCount = readerModeProcessSegmentCount(for: doc)
+    let totalElapsed = Date().timeIntervalSince(processStartedAt)
+    let docGrowthBytes = outputDocBytes - inputDocBytes
+    let bodyGrowthBytes = outputBodyBytes - inputBodyBytes
+    let slowOrLarge = totalElapsed >= 0.8 || abs(docGrowthBytes) >= 250_000 || abs(bodyGrowthBytes) >= 250_000
+    debugPrint(
+        "# READERLOAD stage=readerMode.processForReaderModeRollup",
+        "url=\(url.absoluteString)",
+        "inputDocBytes=\(inputDocBytes)",
+        "outputDocBytes=\(outputDocBytes)",
+        "docGrowth=\(docGrowthBytes)",
+        "docGrowthFactor=\(readerModeProcessGrowthString(outputBytes: outputDocBytes, inputBytes: inputDocBytes))",
+        "inputBodyBytes=\(inputBodyBytes)",
+        "outputBodyBytes=\(outputBodyBytes)",
+        "bodyGrowth=\(bodyGrowthBytes)",
+        "bodyGrowthFactor=\(readerModeProcessGrowthString(outputBytes: outputBodyBytes, inputBytes: inputBodyBytes))",
+        "segmentsBefore=\(inputSegmentCount)",
+        "segmentsAfter=\(outputSegmentCount)",
+        "elapsed=\(String(format: "%.3fs", totalElapsed))",
+        "slow=\(slowOrLarge)"
+    )
+    if slowOrLarge {
+        debugPrint(
+            "# READERLOAD stage=readerMode.processForReaderModeRollupDetails",
+            "url=\(url.absoluteString)",
+            "writingDirection=\(String(format: "%.3fs", writingDirectionElapsed))",
+            "bodyAttributes=\(String(format: "%.3fs", bodyAttributeElapsed))",
+            "defaultTitle=\(String(format: "%.3fs", defaultTitleElapsed))",
+            "fixTitles=\(String(format: "%.3fs", annoyingTitleFixElapsed))",
+            "headerImage=\(String(format: "%.3fs", headerImageElapsed))",
+            "isEBook=\(isEBook)",
+            "isCacheWarmer=\(isCacheWarmer)",
+            "injectEntryImageIntoHeader=\(injectEntryImageIntoHeader)",
+            "hasImageURL=\(imageURL != nil)"
+        )
     }
 }
