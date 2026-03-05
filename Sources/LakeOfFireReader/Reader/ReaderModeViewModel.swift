@@ -2114,11 +2114,11 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             details: "duration=\(formattedInterval(imageLookupElapsed)) | mode=deterministic.cachedRecord | hasImage=\(imageURLToDisplay != nil)"
         )
 
-        let processReadabilityContent = processReadabilityContent
-        let processHTML = processHTML
-        let fontResolveStartedAt = Date()
-        logTrace(.fontResolveStart, url: url, details: "mode=deterministic.cacheOnly")
-        let sharedReaderFontCSS = resolveSharedReaderFontCSSFromCache()
+            let processReadabilityContent = processReadabilityContent
+            let processHTML = processHTML
+            let fontResolveStartedAt = Date()
+            logTrace(.fontResolveStart, url: url, details: "mode=deterministic.cacheOnly")
+            let sharedReaderFontCSS = resolveSharedReaderFontCSSFromCache()
         let fontResolveElapsed = Date().timeIntervalSince(fontResolveStartedAt)
         logTrace(
             .fontResolveFinish,
@@ -2139,6 +2139,29 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let readabilityBytes = readabilityContent.utf8.count
             let readabilityChars = readabilityContent.count
             let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML")
+            let formatInterval: (TimeInterval) -> String = { interval in
+                String(format: "%.3fs", interval)
+            }
+            let formatMultiplier: (Int, Int) -> String = { numerator, denominator in
+                let safeDenominator = max(denominator, 1)
+                return String(format: "%.2fx", Double(numerator) / Double(safeDenominator))
+            }
+            let processorStartedAt = Date()
+            var processorMethod = processReadabilityContent == nil ? "swiftSoup.parse" : "processReadabilityContent"
+            var processorCoreElapsed: TimeInterval = 0
+            var preprocessCallCount = 0
+            var preprocessTotalElapsed: TimeInterval = 0
+            var preprocessMaxElapsed: TimeInterval = 0
+            var preprocessSlowCallCount = 0
+            var parseFallbackElapsed: TimeInterval = 0
+            var propagateDefaultsElapsed: TimeInterval = 0
+            var bylineUpdateElapsed: TimeInterval = 0
+            var processForReaderModeElapsed: TimeInterval = 0
+            var fontEmbedElapsed: TimeInterval = 0
+            var serializeOuterHTMLElapsed: TimeInterval = 0
+            var processHTMLElapsed: TimeInterval = 0
+            var processHTMLInputBytes = 0
+            var processHTMLOutputBytes = 0
             await MainActor.run {
                 let pending = self?.pendingReaderModeURL?.absoluteString ?? "nil"
                 let expected = self?.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil"
@@ -2163,14 +2186,24 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             await MainActor.run {
                 self?.logTrace(.readabilityProcessorStart, url: url)
             }
-            let processorStartedAt = Date()
             try Task.checkCancellation()
             if let processReadabilityContent {
+                let processorCoreStartedAt = Date()
                 doc = try await processReadabilityContent(
                     readabilityContent,
                     url,
                     nil,
                     false, { doc in
+                        let preprocessStartedAt = Date()
+                        defer {
+                            let preprocessElapsed = Date().timeIntervalSince(preprocessStartedAt)
+                            preprocessCallCount += 1
+                            preprocessTotalElapsed += preprocessElapsed
+                            preprocessMaxElapsed = max(preprocessMaxElapsed, preprocessElapsed)
+                            if preprocessElapsed >= 0.4 {
+                                preprocessSlowCallCount += 1
+                            }
+                        }
                         do {
                             return try await preprocessWebContentForReaderMode(
                                 doc: doc,
@@ -2183,7 +2216,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         }
                     }
                 )
+                processorCoreElapsed = Date().timeIntervalSince(processorCoreStartedAt)
             } else {
+                processorMethod = "swiftSoup.parse"
+                let parseFallbackStartedAt = Date()
                 let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
                 doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
                 doc?.outputSettings().prettyPrint(pretty: false).syntax(syntax: isXML ? .xml : .html)
@@ -2191,11 +2227,30 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 if isXML {
                     doc?.outputSettings().escapeMode(.xhtml)
                 }
+                parseFallbackElapsed = Date().timeIntervalSince(parseFallbackStartedAt)
+                processorCoreElapsed = parseFallbackElapsed
             }
             try Task.checkCancellation()
             let processorElapsed = Date().timeIntervalSince(processorStartedAt)
+            let preprocessAverageElapsed = preprocessCallCount > 0
+            ? preprocessTotalElapsed / Double(preprocessCallCount)
+            : 0
             await MainActor.run {
-                self?.logTrace(.readabilityProcessorFinish, url: url, details: "duration=\(String(format: "%.3fs", processorElapsed))")
+                self?.logTrace(
+                    .readabilityProcessorFinish,
+                    url: url,
+                    details: [
+                        "duration=\(String(format: "%.3fs", processorElapsed))",
+                        "method=\(processorMethod)",
+                        "core=\(String(format: "%.3fs", processorCoreElapsed))",
+                        "preprocessCalls=\(preprocessCallCount)",
+                        "preprocessTotal=\(String(format: "%.3fs", preprocessTotalElapsed))",
+                        "preprocessAvg=\(String(format: "%.3fs", preprocessAverageElapsed))",
+                        "preprocessMax=\(String(format: "%.3fs", preprocessMaxElapsed))",
+                        "preprocessSlowCalls=\(preprocessSlowCallCount)",
+                        "fallbackParse=\(String(format: "%.3fs", parseFallbackElapsed))"
+                    ].joined(separator: " | ")
+                )
             }
 
             guard let doc else {
@@ -2210,6 +2265,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "segments=\(segmentCountAfterReadability)"
             )
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
+            let propagateDefaultsStartedAt = Date()
             await propagateReaderModeDefaults(
                 for: url,
                 primaryRecord: content,
@@ -2217,16 +2273,20 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle
             )
+            propagateDefaultsElapsed = Date().timeIntervalSince(propagateDefaultsStartedAt)
             debugPrint(
                 "# READERPERF readerMode.propagateDefaults",
-                "url=\(url.absoluteString)"
+                "url=\(url.absoluteString)",
+                "elapsed=\(formatInterval(propagateDefaultsElapsed))"
             )
             let parseDuration = Date().timeIntervalSince(parseStartedAt)
             let parseSummary = String(format: "%.3fs", parseDuration)
+            let bylineUpdateStartedAt = Date()
             try updateBylineSection(
                 in: doc,
                 publicationDateText: headerDateText
             )
+            bylineUpdateElapsed = Date().timeIntervalSince(bylineUpdateStartedAt)
             await MainActor.run {
                 self?.logTrace(.readabilityProcessingFinish, url: url, details: "duration=\(parseSummary)")
                 debugPrint(
@@ -2242,6 +2302,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 self?.logTrace(.processForReaderModeStart, url: url)
             }
             try Task.checkCancellation()
+            let processForReaderModeStartedAt = Date()
             try await processForReaderMode(
                 doc: doc,
                 url: url,
@@ -2253,8 +2314,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
+            processForReaderModeElapsed = Date().timeIntervalSince(processForReaderModeStartedAt)
             try Task.checkCancellation()
             if let sharedReaderFontCSS {
+                let fontEmbedStartedAt = Date()
                 do {
                     try upsertSharedReaderFontStyle(in: doc, css: sharedReaderFontCSS)
                     await MainActor.run {
@@ -2273,6 +2336,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         )
                     }
                 }
+                fontEmbedElapsed = Date().timeIntervalSince(fontEmbedStartedAt)
             }
             let segmentCountAfterProcessing = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
             let readerTitleElement = try? doc.getElementById("reader-title")
@@ -2306,15 +2370,21 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 )
             }
 
+            let serializeOuterHTMLStartedAt = Date()
             var html = try doc.outerHtml()
+            serializeOuterHTMLElapsed = Date().timeIntervalSince(serializeOuterHTMLStartedAt)
+            processHTMLInputBytes = html.utf8.count
 
             if let processHTML {
                 debugPrint("# READER readability.processHTML", url)
+                let processHTMLStartedAt = Date()
                 html = await processHTML(
                     html,
                     false
                 )
+                processHTMLElapsed = Date().timeIntervalSince(processHTMLStartedAt)
             }
+            processHTMLOutputBytes = html.utf8.count
             let htmlSegmentCount = max(html.components(separatedBy: "manabi-segment").count - 1, 0)
             debugPrint(
                 "# READERINJECT readability.htmlSegments",
@@ -2324,10 +2394,57 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             )
 
             let transformedContent = html
+            let transformedBytes = transformedContent.utf8.count
+            let totalProcessingElapsed = Date().timeIntervalSince(parseStartedAt)
+            let isSlowReadabilityProcessing = totalProcessingElapsed >= 2.5
+            || processorElapsed >= 2.5
+            || processHTMLElapsed >= 0.8
+            || transformedBytes >= 2_000_000
+            let processHTMLDeltaBytes = processHTMLOutputBytes - processHTMLInputBytes
+            debugPrint(
+                "# READERLOAD stage=readerMode.readabilityRollup",
+                "url=\(url.absoluteString)",
+                "inputBytes=\(readabilityBytes)",
+                "outputBytes=\(transformedBytes)",
+                "growth=\(formatMultiplier(transformedBytes, readabilityBytes))",
+                "processorTotal=\(formatInterval(processorElapsed))",
+                "processorCore=\(formatInterval(processorCoreElapsed))",
+                "processForReader=\(formatInterval(processForReaderModeElapsed))",
+                "processHTML=\(formatInterval(processHTMLElapsed))",
+                "outerHTML=\(formatInterval(serializeOuterHTMLElapsed))",
+                "preprocessCalls=\(preprocessCallCount)",
+                "preprocessTotal=\(formatInterval(preprocessTotalElapsed))",
+                "preprocessAvg=\(formatInterval(preprocessAverageElapsed))",
+                "preprocessMax=\(formatInterval(preprocessMaxElapsed))",
+                "docSegmentsReadability=\(segmentCountAfterReadability)",
+                "docSegmentsProcessed=\(segmentCountAfterProcessing)",
+                "htmlSegments=\(htmlSegmentCount)",
+                "slow=\(isSlowReadabilityProcessing)"
+            )
+            if isSlowReadabilityProcessing {
+                let pendingReaderModeDescription = await MainActor.run {
+                    self?.pendingReaderModeURL?.absoluteString ?? "nil"
+                }
+                debugPrint(
+                    "# READERLOAD stage=readerMode.readabilityRollupDetails",
+                    "url=\(url.absoluteString)",
+                    "method=\(processorMethod)",
+                    "total=\(formatInterval(totalProcessingElapsed))",
+                    "fallbackParse=\(formatInterval(parseFallbackElapsed))",
+                    "propagateDefaults=\(formatInterval(propagateDefaultsElapsed))",
+                    "bylineUpdate=\(formatInterval(bylineUpdateElapsed))",
+                    "fontEmbed=\(formatInterval(fontEmbedElapsed))",
+                    "processHTMLInputBytes=\(processHTMLInputBytes)",
+                    "processHTMLOutputBytes=\(processHTMLOutputBytes)",
+                    "processHTMLDeltaBytes=\(processHTMLDeltaBytes)",
+                    "preprocessSlowCalls=\(preprocessSlowCallCount)",
+                    "pending=\(pendingReaderModeDescription)"
+                )
+            }
             debugPrint(
                 "# READER readability.contentPrepared",
                 "url=\(url.absoluteString)",
-                "bytes=\(transformedContent.utf8.count)",
+                "bytes=\(transformedBytes)",
                 "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
             )
             if let bodySummary = summarizeBodyMarkup(from: transformedContent) {
