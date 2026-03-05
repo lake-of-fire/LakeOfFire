@@ -54,6 +54,9 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
     @Published public private(set) var hasPreparedAITTS = false
     @Published public private(set) var ttsQueueGeneration: Int = 0
 
+    // Test hook so unit tests can avoid real AVSpeechSynthesizer playback latency.
+    var shouldEnqueueSpeechSynthesizerUtterances = true
+
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var currentContentKey: String?
     private var ttsUtterances = [ReaderTTSUtterance]()
@@ -416,6 +419,21 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             speechSynthesizer.stopSpeaking(at: .immediate)
         }
 
+        guard shouldEnqueueSpeechSynthesizerUtterances else {
+            isPlaying = true
+            registerPlaybackStart(contentKey: currentContentKey)
+            updateAITTSProgress()
+            debugPrint(
+                "# READALOUD ai.speak.queued",
+                "startIndex=\(startIndex)",
+                "queuedCount=\(ttsUtterances.count - startIndex)",
+                "language=\(ttsVoiceLanguage)",
+                "missingPreferredVoice=false",
+                "synthesizerQueueingEnabled=false"
+            )
+            return
+        }
+
         var hasMissingVoice = false
         for index in startIndex..<ttsUtterances.count {
             let item = ttsUtterances[index]
@@ -437,7 +455,8 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
             "startIndex=\(startIndex)",
             "queuedCount=\(ttsUtterances.count - startIndex)",
             "language=\(ttsVoiceLanguage)",
-            "missingPreferredVoice=\(hasMissingVoice)"
+            "missingPreferredVoice=\(hasMissingVoice)",
+            "synthesizerQueueingEnabled=true"
         )
     }
 
