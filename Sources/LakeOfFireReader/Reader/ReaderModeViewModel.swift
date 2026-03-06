@@ -2403,17 +2403,39 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             "cssBytes=\(sharedFontCSSBytes)"
                         )
                     }
+            } catch {
+                await MainActor.run {
+                    debugPrint(
+                        "# FONTLOAD readerMode.embedFontCSS.deferFailed",
+                        "url=\(url.absoluteString)",
+                        "error=\(error.localizedDescription)"
+                    )
+                }
+            }
+            fontEmbedElapsed = Date().timeIntervalSince(fontEmbedStartedAt)
+            let sharedFontCSSStyleBytes = sharedReaderFontCSS?.utf8.count ?? 0
+            if sharedFontCSSStyleBytes > 0 {
+                do {
+                    try upsertSharedReaderFontStyle(in: doc, css: sharedReaderFontCSS ?? "")
+                    await MainActor.run {
+                        debugPrint(
+                            "# FONTLOAD readerMode.embedFontCSS.inline",
+                            "url=\(url.absoluteString)",
+                            "cssBytes=\(sharedFontCSSStyleBytes)"
+                        )
+                    }
                 } catch {
                     await MainActor.run {
                         debugPrint(
-                            "# FONTLOAD readerMode.embedFontCSS.deferFailed",
+                            "# FONTLOAD readerMode.embedFontCSS.inlineFailed",
                             "url=\(url.absoluteString)",
                             "error=\(error.localizedDescription)"
                         )
                     }
                 }
-                fontEmbedElapsed = Date().timeIntervalSince(fontEmbedStartedAt)
             }
+            fontEmbedElapsed = Date().timeIntervalSince(fontEmbedStartedAt)
+        }
             let docBytesAfterFontEmbed = documentByteCount(doc)
             let headBytesAfterFontEmbed = headByteCount(doc)
             let bodyBytesAfterFontEmbed = bodyByteCount(doc)
