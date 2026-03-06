@@ -3779,6 +3779,16 @@ private extension ReaderModeViewModel {
         decodeSharedReaderFontCSS(from: await resolveSharedReaderFontCSSBase64())
     }
 
+    public func awaitReaderFontReadinessForCompletionIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL
+    ) async -> Bool {
+        await waitForReaderFontReadinessIfNeeded(
+            scriptCaller: scriptCaller,
+            pageURL: pageURL
+        )
+    }
+
     func waitForReaderFontReadinessIfNeeded(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL
