@@ -3089,9 +3089,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "loaderURL=\(newState.pageURL.absoluteString)",
                 "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
             )
-            if let pendingReaderModeURL, pendingKeysMatch(pendingReaderModeURL, committedURL) {
-                markReaderModeLoadComplete(for: committedURL)
-            }
             if committedURL.isSnippetURL {
                 debugPrint(
                     "# SNIPPETLOAD readerMode.syntheticCommit.continue",
@@ -3709,7 +3706,23 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         }
 
         if let expectedSyntheticReaderLoaderURL {
-            return .synthetic(pendingURL: pendingReaderModeURL, expectedURL: expectedSyntheticReaderLoaderURL)
+            let pageURL = newState.pageURL
+            let pageMatchesPending = pendingKeysMatch(pendingReaderModeURL, pageURL)
+            let pageMatchesExpected = urlsMatchWithoutHash(expectedSyntheticReaderLoaderURL, pageURL)
+            if hasRenderedReadabilityContent && pageMatchesPending {
+                debugPrint(
+                    "# READERPERF readerMode.expectedLoader.reset",
+                    "from=\(expectedSyntheticReaderLoaderURL.absoluteString)",
+                    "to=nil",
+                    "reason=\(pageMatchesExpected ? "navFinished.expectedPageArrived" : "navFinished.realContentArrived")",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "pending=\(pendingReaderModeURL.absoluteString)",
+                    "ts=\(Date().timeIntervalSince1970)"
+                )
+                self.expectedSyntheticReaderLoaderURL = nil
+            } else {
+                return .synthetic(pendingURL: pendingReaderModeURL, expectedURL: expectedSyntheticReaderLoaderURL)
+            }
         }
 
         // If we're still in the pre-render phase, navigation finishing is a prerequisite

@@ -180,6 +180,11 @@ globalThis.MANABI_TRACKING_CACHE_HANDLER = MANABI_TRACKING_CACHE_HANDLER
 const MANABI_TRACKING_CACHE_VERSION = 'v1'
 const MANABI_SENTINEL_ROOT_MARGIN_PX = 64
 
+const getLiveChunkPageCount = doc => {
+    const count = doc?.querySelectorAll?.('.manabi-page')?.length ?? 0
+    return count > 0 ? count : null
+}
+
 const trackingSizeCacheResolvers = new Map()
 let trackingSizeCacheRequestCounter = 0
 
@@ -4152,6 +4157,17 @@ export class Paginator extends HTMLElement {
         return page
     }
     async pages() {
+        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        if (livePageCount != null && !this.scrolled) {
+            logEBookPageNumLimited('pages:live-chunk', {
+                sectionIndex: this.#index ?? null,
+                pages: livePageCount,
+                scrolled: this.scrolled,
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+            })
+            return livePageCount
+        }
         const viewSize = await this.viewSize()
         const size = await this.size()
         const pages = Math.round(viewSize / size)
@@ -4696,7 +4712,10 @@ export class Paginator extends HTMLElement {
         }
         const { pages } = this
         if (!pages) return
-        const textPages = await this.pages() - 2
+        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const textPages = livePageCount != null
+            ? livePageCount
+            : await this.pages() - 2
         const newPage = Math.round(anchor * (textPages - 1))
         logEBookPageNumLimited('scrollToAnchor:fraction', {
             reason,
@@ -4915,7 +4934,9 @@ export class Paginator extends HTMLElement {
                     this.size(),
                     this.start(),
                 ])
+            const livePageCount = getLiveChunkPageCount(this.#view?.document)
             const adjustForSentinels = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
+                && livePageCount == null
                 && this.#hasSentinels
                 && !this.scrolled
                 && !this.#vertical
@@ -5018,7 +5039,9 @@ export class Paginator extends HTMLElement {
                 this.size(),
                 this.viewSize(),
             ])
+            const livePageCount = getLiveChunkPageCount(this.#view?.document)
             const sentinelAdjusted = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
+                && livePageCount == null
                 && !this.scrolled
                 && !this.#vertical
                 && pageCountRaw > 2;
@@ -5332,10 +5355,14 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     async atStart() {
-        return this.#adjacentIndex(-1) == null && (await this.page()) <= 1
+        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const edgePage = livePageCount != null ? 0 : 1
+        return this.#adjacentIndex(-1) == null && (await this.page()) <= edgePage
     }
     async atEnd() {
-        return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - 2
+        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const edgeOffset = livePageCount != null ? 1 : 2
+        return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - edgeOffset
     }
     #adjacentIndex(dir) {
         for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
@@ -5450,7 +5477,9 @@ export class Paginator extends HTMLElement {
             return this.start > 0;
         }
         // If at the start page and no previous section, cannot turn
-        if ((await this.page()) <= 1 && this.#adjacentIndex(-1) == null) return false;
+        const livePageCount = getLiveChunkPageCount(this.#view?.document);
+        const edgePage = livePageCount != null ? 0 : 1;
+        if ((await this.page()) <= edgePage && this.#adjacentIndex(-1) == null) return false;
         return true;
     }
     async canTurnNext() {
@@ -5459,7 +5488,9 @@ export class Paginator extends HTMLElement {
             return this.viewSize - this.end > 2;
         }
         // If at the end page and no next section, cannot turn
-        if ((await this.page()) >= (await this.pages()) - 2 && this.#adjacentIndex(1) == null) return false;
+        const livePageCount = getLiveChunkPageCount(this.#view?.document);
+        const edgeOffset = livePageCount != null ? 1 : 2;
+        if ((await this.page()) >= (await this.pages()) - edgeOffset && this.#adjacentIndex(1) == null) return false;
         return true;
     }
 
@@ -5473,11 +5504,14 @@ export class Paginator extends HTMLElement {
 
     // Public: At first page of current section
     async isAtSectionStart() {
-        return (await this.page()) <= 1;
+        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        return (await this.page()) <= (livePageCount != null ? 0 : 1);
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
-        return (await this.page()) >= (await this.pages()) - 2;
+        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const edgeOffset = livePageCount != null ? 1 : 2
+        return (await this.page()) >= (await this.pages()) - edgeOffset;
     }
 }
 
