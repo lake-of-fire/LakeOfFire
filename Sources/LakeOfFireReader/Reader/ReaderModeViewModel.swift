@@ -5,6 +5,7 @@ import SwiftReadability
 import SwiftDOMPurify
 import RealmSwift
 import Combine
+import CryptoKit
 import RealmSwiftGaps
 import LakeKit
 import WebKit
@@ -22,6 +23,20 @@ public actor ReaderViewModelActor {
 }
 
 private let readerPerfStacksEnabled = false
+
+private func readerFontPayloadHash(_ payload: String) -> String {
+    let digest = SHA256.hash(data: Data(payload.utf8))
+    return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+}
+
+private struct ReaderFontReadinessProbeResult: Decodable {
+    let ready: Bool
+    let readyFlag: Bool
+    let pendingFlag: Bool
+    let fontStatus: String
+    let hasInjectedStyle: Bool
+    let timedOut: Bool
+}
 
 private let readabilityExcludedDomains: Set<String> = [
     "x.com",
@@ -188,6 +203,42 @@ internal func upsertSharedReaderFontStyle(
     let styleElement = try doc.createElement("style")
     try styleElement.attr("id", "manabi-custom-fonts-inline")
     try styleElement.text(trimmedCSS)
+
+    if let head = doc.head() {
+        try head.appendChild(styleElement)
+        return
+    }
+
+    if let html = try doc.getElementsByTag("html").first() {
+        try html.prepend("<head></head>")
+        if let head = doc.head() {
+            try head.appendChild(styleElement)
+            return
+        }
+    }
+
+    try doc.appendChild(styleElement)
+}
+
+internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
+    let gateCSS = """
+    html[data-manabi-font-pending="1"] body.readability-mode {
+        visibility: hidden !important;
+    }
+    """
+
+    let htmlElement = try doc.getElementsByTag("html").first()
+    try htmlElement?.attr("data-manabi-font-pending", "1")
+    try htmlElement?.attr("data-manabi-font-ready", "0")
+
+    if let existingStyle = try doc.getElementById("manabi-custom-font-gate") {
+        try existingStyle.text(gateCSS)
+        return
+    }
+
+    let styleElement = try doc.createElement("style")
+    try styleElement.attr("id", "manabi-custom-font-gate")
+    try styleElement.text(gateCSS)
 
     if let head = doc.head() {
         try head.appendChild(styleElement)
@@ -2146,6 +2197,18 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 let safeDenominator = max(denominator, 1)
                 return String(format: "%.2fx", Double(numerator) / Double(safeDenominator))
             }
+            let documentByteCount: (SwiftSoup.Document) -> Int = { document in
+                ((try? document.outerHtml()) ?? "").utf8.count
+            }
+            let headByteCount: (SwiftSoup.Document) -> Int = { document in
+                ((try? document.head()?.outerHtml()) ?? "").utf8.count
+            }
+            let bodyByteCount: (SwiftSoup.Document) -> Int = { document in
+                ((try? document.body()?.outerHtml()) ?? "").utf8.count
+            }
+            let styleElementByteCount: (SwiftSoup.Document, String) -> Int = { document, elementID in
+                ((try? document.head()?.getElementById(elementID)?.outerHtml()) ?? "").utf8.count
+            }
             let processorStartedAt = Date()
             var processorMethod = processReadabilityContent == nil ? "swiftSoup.parse" : "processReadabilityContent"
             var processorCoreElapsed: TimeInterval = 0
@@ -2257,6 +2320,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
+            let docBytesAfterProcessor = documentByteCount(doc)
+            let headBytesAfterProcessor = headByteCount(doc)
+            let bodyBytesAfterProcessor = bodyByteCount(doc)
             let segmentCountAfterReadability = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
             debugPrint(
                 "# READERINJECT readability.docSegments",
@@ -2274,6 +2340,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 derivedTitle: derivedTitle
             )
             propagateDefaultsElapsed = Date().timeIntervalSince(propagateDefaultsStartedAt)
+            let docBytesAfterPropagateDefaults = documentByteCount(doc)
+            let headBytesAfterPropagateDefaults = headByteCount(doc)
+            let bodyBytesAfterPropagateDefaults = bodyByteCount(doc)
             debugPrint(
                 "# READERPERF readerMode.propagateDefaults",
                 "url=\(url.absoluteString)",
@@ -2287,6 +2356,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 publicationDateText: headerDateText
             )
             bylineUpdateElapsed = Date().timeIntervalSince(bylineUpdateStartedAt)
+            let docBytesAfterBylineUpdate = documentByteCount(doc)
+            let headBytesAfterBylineUpdate = headByteCount(doc)
+            let bodyBytesAfterBylineUpdate = bodyByteCount(doc)
             await MainActor.run {
                 self?.logTrace(.readabilityProcessingFinish, url: url, details: "duration=\(parseSummary)")
                 debugPrint(
@@ -2315,22 +2387,26 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 defaultFontSize: defaultFontSize ?? 21
             )
             processForReaderModeElapsed = Date().timeIntervalSince(processForReaderModeStartedAt)
+            let docBytesAfterProcessForReaderMode = documentByteCount(doc)
+            let headBytesAfterProcessForReaderMode = headByteCount(doc)
+            let bodyBytesAfterProcessForReaderMode = bodyByteCount(doc)
             try Task.checkCancellation()
-            if let sharedReaderFontCSS {
+            let sharedFontCSSBytes = sharedReaderFontCSS?.utf8.count ?? 0
+            if sharedReaderFontCSS != nil {
                 let fontEmbedStartedAt = Date()
                 do {
-                    try upsertSharedReaderFontStyle(in: doc, css: sharedReaderFontCSS)
+                    try upsertDeferredSharedReaderFontGate(in: doc)
                     await MainActor.run {
                         debugPrint(
-                            "# FONTLOAD readerMode.embedFontCSS.applied",
+                            "# FONTLOAD readerMode.embedFontCSS.deferred",
                             "url=\(url.absoluteString)",
-                            "cssBytes=\(sharedReaderFontCSS.utf8.count)"
+                            "cssBytes=\(sharedFontCSSBytes)"
                         )
                     }
                 } catch {
                     await MainActor.run {
                         debugPrint(
-                            "# FONTLOAD readerMode.embedFontCSS.failed",
+                            "# FONTLOAD readerMode.embedFontCSS.deferFailed",
                             "url=\(url.absoluteString)",
                             "error=\(error.localizedDescription)"
                         )
@@ -2338,6 +2414,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 }
                 fontEmbedElapsed = Date().timeIntervalSince(fontEmbedStartedAt)
             }
+            let docBytesAfterFontEmbed = documentByteCount(doc)
+            let headBytesAfterFontEmbed = headByteCount(doc)
+            let bodyBytesAfterFontEmbed = bodyByteCount(doc)
+            let sharedFontStyleElementBytes = styleElementByteCount(doc, "manabi-custom-fonts-inline")
             let segmentCountAfterProcessing = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
             let readerTitleElement = try? doc.getElementById("reader-title")
             let readerTitleTextBytes = (try? readerTitleElement?.text(trimAndNormaliseWhitespace: false).utf8.count) ?? 0
@@ -2370,6 +2450,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 )
             }
 
+            let docBytesBeforeSerialization = documentByteCount(doc)
+            let headBytesBeforeSerialization = headByteCount(doc)
+            let bodyBytesBeforeSerialization = bodyByteCount(doc)
             let serializeOuterHTMLStartedAt = Date()
             var html = try doc.outerHtml()
             serializeOuterHTMLElapsed = Date().timeIntervalSince(serializeOuterHTMLStartedAt)
@@ -2401,6 +2484,20 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             || processHTMLElapsed >= 0.8
             || transformedBytes >= 2_000_000
             let processHTMLDeltaBytes = processHTMLOutputBytes - processHTMLInputBytes
+            debugPrint(
+                "# READERLOAD stage=readerMode.documentBoundaryRollup",
+                "url=\(url.absoluteString)",
+                "afterProcessorDocBytes=\(docBytesAfterProcessor)",
+                "afterPropagateDefaultsDocBytes=\(docBytesAfterPropagateDefaults)",
+                "afterBylineDocBytes=\(docBytesAfterBylineUpdate)",
+                "afterProcessForReaderModeDocBytes=\(docBytesAfterProcessForReaderMode)",
+                "afterFontEmbedDocBytes=\(docBytesAfterFontEmbed)",
+                "beforeSerializationDocBytes=\(docBytesBeforeSerialization)",
+                "serializedHTMLBytes=\(transformedBytes)",
+                "fontCSSBytes=\(sharedFontCSSBytes)",
+                "fontStyleElementBytes=\(sharedFontStyleElementBytes)",
+                "slow=\(isSlowReadabilityProcessing)"
+            )
             debugPrint(
                 "# READERLOAD stage=readerMode.readabilityRollup",
                 "url=\(url.absoluteString)",
@@ -2439,6 +2536,22 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "processHTMLDeltaBytes=\(processHTMLDeltaBytes)",
                     "preprocessSlowCalls=\(preprocessSlowCallCount)",
                     "pending=\(pendingReaderModeDescription)"
+                )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.documentBoundaryRollupDetails",
+                    "url=\(url.absoluteString)",
+                    "afterProcessorHeadBytes=\(headBytesAfterProcessor)",
+                    "afterProcessorBodyBytes=\(bodyBytesAfterProcessor)",
+                    "afterPropagateDefaultsHeadBytes=\(headBytesAfterPropagateDefaults)",
+                    "afterPropagateDefaultsBodyBytes=\(bodyBytesAfterPropagateDefaults)",
+                    "afterBylineHeadBytes=\(headBytesAfterBylineUpdate)",
+                    "afterBylineBodyBytes=\(bodyBytesAfterBylineUpdate)",
+                    "afterProcessForReaderModeHeadBytes=\(headBytesAfterProcessForReaderMode)",
+                    "afterProcessForReaderModeBodyBytes=\(bodyBytesAfterProcessForReaderMode)",
+                    "afterFontEmbedHeadBytes=\(headBytesAfterFontEmbed)",
+                    "afterFontEmbedBodyBytes=\(bodyBytesAfterFontEmbed)",
+                    "beforeSerializationHeadBytes=\(headBytesBeforeSerialization)",
+                    "beforeSerializationBodyBytes=\(bodyBytesBeforeSerialization)"
                 )
             }
             debugPrint(
@@ -2564,6 +2677,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         return
                     }
                     logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
+                    await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: url)
                     markReaderModeLoadComplete(for: url, renderGeneration: renderGeneration)
                 } else if let htmlData = transformedContent.data(using: .utf8) {
                     guard let navigator else {
@@ -2658,7 +2772,16 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "url=\(canonicalURL.absoluteString)",
                     "elapsed=\(String(format: "%.3f", totalRenderElapsed))s"
                 )
-                markReaderModeLoadComplete(for: canonicalURL, renderGeneration: renderGeneration)
+                if frameInfo != nil {
+                    markReaderModeLoadComplete(for: canonicalURL, renderGeneration: renderGeneration)
+                } else {
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.completeDeferred",
+                        "url=\(canonicalURL.absoluteString)",
+                        "reason=awaitFinalNavigationAndFontReady",
+                        "renderGeneration=\(renderGeneration?.uuidString ?? "nil")"
+                    )
+                }
                 if shouldRefreshImageMetadataPostRender {
                     schedulePostRenderMetadataRefreshIfNeeded(
                         content: content,
@@ -3544,6 +3667,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         }()
 
         if pendingMatchesPage, let pendingReaderModeURL {
+            _ = await waitForReaderFontReadinessIfNeeded(
+                scriptCaller: scriptCaller,
+                pageURL: newState.pageURL
+            )
             debugPrint(
                 "# READERPERF readerMode.navFinished.markComplete",
                 "ts=\(Date().timeIntervalSince1970)",
@@ -3652,12 +3779,116 @@ private extension ReaderModeViewModel {
         decodeSharedReaderFontCSS(from: await resolveSharedReaderFontCSSBase64())
     }
 
+    func waitForReaderFontReadinessIfNeeded(
+        scriptCaller: WebViewScriptCaller,
+        pageURL: URL
+    ) async -> Bool {
+        guard isReaderMode || isReaderModeLoading else { return true }
+        guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return true }
+        guard scriptCaller.hasAsyncCaller else { return true }
+        guard #available(iOS 16.4, macOS 14, *) else { return true }
+
+        debugPrint(
+            "# READERLOAD stage=readerMode.fontReadinessProbe",
+            "phase=start",
+            "url=\(pageURL.absoluteString)"
+        )
+
+        let js = """
+        return await (async function() {
+            const body = document.body;
+            const isReadabilityMode = !!body?.classList?.contains?.('readability-mode');
+            if (!isReadabilityMode) {
+                return JSON.stringify({
+                    ready: true,
+                    readyFlag: false,
+                    pendingFlag: false,
+                    fontStatus: 'nonReadabilityMode',
+                    hasInjectedStyle: false,
+                    timedOut: false
+                });
+            }
+
+            const snapshot = (timedOut) => {
+                const root = document.documentElement;
+                const fontSet = document.fonts;
+                const readyFlag = root?.dataset?.manabiFontReady === '1';
+                const pendingFlag = root?.dataset?.manabiFontPending === '1';
+                const fontStatus = fontSet?.status || 'unsupported';
+                const fontsLoaded = !fontSet || fontStatus === 'loaded';
+                const hasInjectedStyle = !!document.getElementById('manabi-custom-fonts-inline');
+                return {
+                    ready: readyFlag && fontsLoaded,
+                    readyFlag,
+                    pendingFlag,
+                    fontStatus,
+                    hasInjectedStyle,
+                    timedOut
+                };
+            };
+
+            let result = snapshot(false);
+            if (result.ready || !result.hasInjectedStyle) {
+                return JSON.stringify(result);
+            }
+
+            for (let attempt = 0; attempt < 120; attempt += 1) {
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                result = snapshot(false);
+                if (result.ready) {
+                    return JSON.stringify(result);
+                }
+            }
+
+            result = snapshot(true);
+            return JSON.stringify(result);
+        })();
+        """
+
+        do {
+            let rawResult = try await scriptCaller.evaluateJavaScript(js)
+            let rawString = rawResult as? String ?? String(describing: rawResult ?? "")
+            guard let data = rawString.data(using: .utf8),
+                  let probe = try? JSONDecoder().decode(ReaderFontReadinessProbeResult.self, from: data) else {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.fontReadinessProbe",
+                    "phase=decodeFailed",
+                    "url=\(pageURL.absoluteString)",
+                    "raw=\(rawString)"
+                )
+                return true
+            }
+
+            debugPrint(
+                "# READERLOAD stage=readerMode.fontReadinessProbe",
+                "phase=finish",
+                "url=\(pageURL.absoluteString)",
+                "ready=\(probe.ready)",
+                "readyFlag=\(probe.readyFlag)",
+                "pendingFlag=\(probe.pendingFlag)",
+                "fontStatus=\(probe.fontStatus)",
+                "hasInjectedStyle=\(probe.hasInjectedStyle)",
+                "timedOut=\(probe.timedOut)"
+            )
+            return probe.ready || !probe.hasInjectedStyle
+        } catch {
+            debugPrint(
+                "# READERLOAD stage=readerMode.fontReadinessProbe",
+                "phase=error",
+                "url=\(pageURL.absoluteString)",
+                "error=\(error.localizedDescription)"
+            )
+            return true
+        }
+    }
+
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard isReaderMode || isReaderModeLoading else { return }
         guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
         guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
+        let fontHash = readerFontPayloadHash(base64)
         let js = """
         (function() {
             const postFontLoad = (event, payload) => {
@@ -3669,48 +3900,95 @@ private extension ReaderModeViewModel {
                     }, payload || {}));
                 } catch (_) {}
             };
-            const ensureReaderFontStyle = () => {
+            const setFontPendingState = (pending) => {
+                const root = document.documentElement;
+                if (!root) return;
+                if (pending) {
+                    root.dataset.manabiFontPending = '1';
+                    root.dataset.manabiFontReady = '0';
+                } else {
+                    delete root.dataset.manabiFontPending;
+                    root.dataset.manabiFontReady = '1';
+                }
+            };
+            const replaceFontBlob = (css, fontHash, desiredFamily) => {
+                if (!css) return null;
+                const resolvedCSS = desiredFamily
+                    ? css.replace(/font-family:\\s*['"][^'"]+['"]\\s*;/g, "font-family: '" + desiredFamily + "';")
+                    : css;
+                const blob = new Blob([resolvedCSS], { type: 'text/css' });
+                const nextBlobURL = URL.createObjectURL(blob);
+                const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
+                globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
+                globalThis.manabiReaderFontCSSHash = fontHash;
+                if (previousBlobURL && previousBlobURL !== nextBlobURL) {
+                    try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
+                }
+                return nextBlobURL;
+            };
+            const ensureReaderFontStyle = (desiredFamily) => {
                 const root = document.documentElement;
                 if (!root) return null;
                 let style = document.getElementById('manabi-custom-fonts-inline');
                 if (style) {
-                    if (!style.dataset.manabiOriginalCSS) {
-                        style.dataset.manabiOriginalCSS = style.textContent || '';
-                    }
                     return style;
                 }
                 const css = globalThis.manabiReaderFontCSSText || '';
                 if (!css) return null;
-                style = document.createElement('style');
+                const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
+                if (!blobURL) return null;
+                style = document.createElement('link');
                 style.id = 'manabi-custom-fonts-inline';
-                style.textContent = css;
-                style.dataset.manabiOriginalCSS = css;
+                style.rel = 'stylesheet';
+                style.href = blobURL;
+                style.dataset.manabiFontHash = fontHash;
+                if (desiredFamily) {
+                    style.dataset.manabiInjectedFontFamily = desiredFamily;
+                }
                 (document.head || document.documentElement).appendChild(style);
-                postFontLoad('reinsertedFromCache', { cssBytes: css.length });
+                postFontLoad('reinsertedFromCache', { cssBytes: css.length, mode: 'blob-link' });
                 return style;
             };
             globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
-            try {
+            const waitForFontReady = async (desiredFamily) => {
+                const fontSet = document.fonts;
+                if (!fontSet) return;
+                if (desiredFamily && typeof fontSet.load === 'function') {
+                    try {
+                        await fontSet.load("1em '" + desiredFamily + "'");
+                    } catch (_) {}
+                }
+                if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
+                    try {
+                        await fontSet.ready;
+                    } catch (_) {}
+                }
+            };
+            return (async () => {
                 const root = document.documentElement;
-                let style = ensureReaderFontStyle();
+                const desiredFamily =
+                    root?.dataset?.manabiHorizontalFontFamily
+                    || globalThis.manabiHorizontalFontFamilyName
+                    || null;
+                setFontPendingState(true);
+                let style = ensureReaderFontStyle(desiredFamily);
                 if (!style) {
-                    const css = atob('\(base64)');
+                    const css = atob(fontCSSBase64);
                     globalThis.manabiReaderFontCSSText = css;
-                    style = document.createElement('style');
+                    const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
+                    style = document.createElement('link');
                     style.id = 'manabi-custom-fonts-inline';
-                    style.textContent = css;
-                    style.dataset.manabiOriginalCSS = css;
+                    style.rel = 'stylesheet';
+                    style.href = blobURL;
+                    style.dataset.manabiFontHash = fontHash;
+                    if (desiredFamily) {
+                        style.dataset.manabiInjectedFontFamily = desiredFamily;
+                    }
                     (document.head || document.documentElement).appendChild(style);
                     root.dataset.manabiFontInjected = '1';
-                    postFontLoad('inserted', { cssBytes: css.length });
-                } else if (!style.dataset.manabiOriginalCSS) {
-                    style.dataset.manabiOriginalCSS = style.textContent || '';
-                    postFontLoad('reusedWithoutOriginal', { cssBytes: (style.textContent || '').length });
+                    postFontLoad('inserted', { cssBytes: css.length, mode: 'blob-link' });
                 } else {
-                    if (!globalThis.manabiReaderFontCSSText) {
-                        globalThis.manabiReaderFontCSSText = style.dataset.manabiOriginalCSS || style.textContent || '';
-                    }
-                    postFontLoad('reusedExisting', { cssBytes: (style.textContent || '').length });
+                    postFontLoad('reusedExisting', { cssBytes: (globalThis.manabiReaderFontCSSText || '').length, mode: style.tagName });
                 }
                 if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
                     const root = document.documentElement;
@@ -3734,13 +4012,31 @@ private extension ReaderModeViewModel {
                 } else {
                     postFontLoad('applyDirectional.missing', {});
                 }
-            } catch (e) {
+                const resolvedFamily =
+                    document.documentElement?.dataset?.manabiInjectedFontFamily
+                    || desiredFamily
+                    || null;
+                await waitForFontReady(resolvedFamily);
+                setFontPendingState(false);
+                postFontLoad('fontReady', {
+                    family: resolvedFamily,
+                    status: document.fonts?.status || 'unknown'
+                });
+            })().catch((e) => {
+                setFontPendingState(false);
                 postFontLoad('error', { error: String(e) });
                 try { console.log('manabi font inject error', e); } catch (_) {}
-            }
+            });
         })();
         """
-        try? await scriptCaller.evaluateJavaScript(js, duplicateInMultiTargetFrames: true)
+        try? await scriptCaller.evaluateJavaScript(
+            js,
+            arguments: [
+                "fontCSSBase64": base64,
+                "fontHash": fontHash,
+            ],
+            duplicateInMultiTargetFrames: true
+        )
     }
 }
 
