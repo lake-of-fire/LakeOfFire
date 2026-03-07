@@ -1,3 +1,5 @@
+import { EbookSectionLayout } from './ebook-section-layout.js'
+
 // TODO: "prevent spread" for column mode: https://github.com/johnfactotum/foliate-js/commit/b7ff640943449e924da11abc9efa2ce6b0fead6d
 
 const CSS_DEFAULTS = {
@@ -2399,6 +2401,8 @@ export class Paginator extends HTMLElement {
     #header
     #footer
     #view
+    #ebookSectionLayout = new EbookSectionLayout()
+    #ebookLayoutEventTarget = null
     #vertical = null
     #verticalRTL = null
     #rtl = null
@@ -3517,10 +3521,14 @@ export class Paginator extends HTMLElement {
         this.#view.cachedSizes = null;
         this.#cachedStart = null;
 
+        const layoutSync = await this.#syncEbookSectionLayout({
+            reason: 'expand',
+        })
+
         if (this.#scrolledToAnchorOnLoad) {
             // wait a frame to ensure layout has settled before scrolling
             await new Promise(resolve => requestAnimationFrame(resolve));
-            await this.#scrollToAnchor(this.#anchor);
+            await this.#scrollToAnchor(layoutSync?.restoreAnchor ?? this.#anchor);
         }
 
         this.#trackingSizeBakeReady = true
@@ -3555,6 +3563,93 @@ export class Paginator extends HTMLElement {
             this.requestTrackingSectionSizeBake({ reason: pendingReason || 'expand' })
         }
     }
+
+    #getActiveEbookSectionLayout() {
+        const doc = this.#view?.document
+        if (!(doc instanceof Document)) return null
+        if (this.scrolled || doc.body?.dataset?.isEbook !== 'true') return null
+        return this.#ebookSectionLayout.getSourceDocument() ? this.#ebookSectionLayout : null
+    }
+
+    #getLiveChunkPageCount() {
+        return this.#getActiveEbookSectionLayout()?.pageCount() || getLiveChunkPageCount(this.#view?.document)
+    }
+
+    async #captureEbookRebuildLocation() {
+        const activeLayout = this.#getActiveEbookSectionLayout()
+        if (!activeLayout) return null
+        return activeLayout.captureLocationForPage(await this.page())
+    }
+
+    #handleEbookLayoutComplete = async () => {
+        if (this.#ebookLayoutEventTarget !== this.#view?.document?.defaultView) return
+        if (this.scrolled || !this.#view) return
+        try {
+            await this.#afterScroll('layout-complete')
+        } catch (error) {
+            console.error(error)
+        }
+    }
+
+    #bindEbookLayoutEvents(doc) {
+        const nextTarget = doc?.defaultView ?? null
+        if (this.#ebookLayoutEventTarget === nextTarget) return
+        this.#ebookLayoutEventTarget?.removeEventListener?.(
+            'manabi-ebook-layout-complete',
+            this.#handleEbookLayoutComplete
+        )
+        this.#ebookLayoutEventTarget = nextTarget
+        this.#ebookLayoutEventTarget?.addEventListener?.(
+            'manabi-ebook-layout-complete',
+            this.#handleEbookLayoutComplete
+        )
+    }
+
+    async #syncEbookSectionLayout({ reason = 'unknown', anchor = null } = {}) {
+        const doc = this.#view?.document
+        if (!(doc instanceof Document)) {
+            this.#bindEbookLayoutEvents(null)
+            this.#ebookSectionLayout.destroy()
+            return null
+        }
+        if (this.scrolled || doc.body?.dataset?.isEbook !== 'true') {
+            this.#bindEbookLayoutEvents(null)
+            this.#ebookSectionLayout.destroy()
+            return null
+        }
+        this.#ebookSectionLayout.attach(doc)
+        this.#bindEbookLayoutEvents(doc)
+        const rebuildLocation = anchor == null
+            ? await this.#captureEbookRebuildLocation()
+            : null
+        const result = await this.#ebookSectionLayout.build({
+            reason,
+            anchor: typeof anchor === 'function' ? null : anchor,
+            anchorResolver: typeof anchor === 'function' ? anchor : null,
+            location: rebuildLocation,
+        })
+        const restoreAnchor = rebuildLocation
+            ? this.#ebookSectionLayout.sourceRangeForLocation(rebuildLocation)
+            : null
+        return {
+            result,
+            restoreAnchor,
+        }
+    }
+
+    #resolveAnchorAgainstActiveLayout(anchor) {
+        if (typeof anchor !== 'function') return anchor
+        const activeLayout = this.#getActiveEbookSectionLayout()
+        const sourceDoc = activeLayout?.getSourceDocument()
+        const liveDoc = this.#view?.document
+        const preferredDoc = sourceDoc ?? liveDoc
+        let resolvedAnchor = preferredDoc ? anchor(preferredDoc) : anchor
+        if (resolvedAnchor == null && sourceDoc && liveDoc && sourceDoc !== liveDoc) {
+            resolvedAnchor = anchor(liveDoc)
+        }
+        return resolvedAnchor
+    }
+
     async #awaitDirection() {
         if (this.#vertical === null) await this.#directionReady;
     }
@@ -4157,7 +4252,7 @@ export class Paginator extends HTMLElement {
         return page
     }
     async pages() {
-        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const livePageCount = this.#getLiveChunkPageCount()
         if (livePageCount != null && !this.scrolled) {
             logEBookPageNumLimited('pages:live-chunk', {
                 sectionIndex: this.#index ?? null,
@@ -4659,6 +4754,12 @@ export class Paginator extends HTMLElement {
         })
     }
     async #scrollToPage(page, reason, smooth) {
+        const activeLayout = this.#getActiveEbookSectionLayout()
+        if (activeLayout?.hasPendingWarmup?.()) {
+            activeLayout.ensurePageBuilt?.(page, {
+                reason: reason ?? 'scrollToPage',
+            })
+        }
         const size = await this.size()
         const offset = size * (this.#rtl ? -page : page)
         logEBookPageNumLimited('scrollToPage', {
@@ -4693,6 +4794,16 @@ export class Paginator extends HTMLElement {
             containerHeight: this.#container?.clientHeight ?? null,
             containerWidth: this.#container?.clientWidth ?? null,
         })
+        const activeLayout = this.#getActiveEbookSectionLayout()
+        const sourceDoc = activeLayout?.getSourceDocument()
+        const anchorDoc = anchor?.startContainer?.getRootNode?.() ?? anchor?.ownerDocument ?? null
+        if (activeLayout && sourceDoc && anchorDoc === sourceDoc) {
+            const pageIndex = activeLayout.pageIndexForAnchor(anchor)
+            if (pageIndex != null) {
+                await this.#scrollToPage(pageIndex, reason)
+                return
+            }
+        }
         const rects = uncollapse(anchor)?.getClientRects?.()
         // if anchor is an element or a range
         if (rects) {
@@ -4710,22 +4821,22 @@ export class Paginator extends HTMLElement {
             await this.#scrollTo(anchor * (await this.viewSize()), reason)
             return
         }
-        const { pages } = this
-        if (!pages) return
-        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const pageCount = await this.pages()
+        if (!pageCount) return
+        const livePageCount = this.#getLiveChunkPageCount()
         const textPages = livePageCount != null
             ? livePageCount
-            : await this.pages() - 2
-        const newPage = Math.round(anchor * (textPages - 1))
+            : pageCount - 2
+        const newPage = Math.max(0, Math.round(anchor * Math.max(0, textPages - 1)))
         logEBookPageNumLimited('scrollToAnchor:fraction', {
             reason,
             sectionIndex: this.#index ?? null,
             anchorFraction: anchor,
             textPages,
-            targetPage: newPage + 1,
+            targetPage: livePageCount != null ? newPage : newPage + 1,
             viewSize: await this.viewSize(),
         })
-        await this.#scrollToPage(newPage + 1, reason)
+        await this.#scrollToPage(livePageCount != null ? newPage : newPage + 1, reason)
     }
     async #NscrollToAnchor(anchor, reason = 'anchor') {
         //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
@@ -4830,6 +4941,13 @@ export class Paginator extends HTMLElement {
     async #getVisibleRange() {
         //            console.log("getVisibleRange...")
         await this.#awaitDirection();
+        const activeLayout = this.#getActiveEbookSectionLayout()
+        if (activeLayout) {
+            const range = activeLayout.visibleSourceRange(await this.page())
+            if (range) {
+                return range
+            }
+        }
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
         const visibleSentinelIDs = await this.#getSentinelVisibilities()
         //            await new Promise(r => requestAnimationFrame(r));
@@ -4897,10 +5015,7 @@ export class Paginator extends HTMLElement {
         this.#cachedStart = null;
 
         const range = await this.#getVisibleRange()
-        // don't set new anchor if relocation was to scroll to anchor
-        if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor')
-            this.#anchor = range
-        else this.#justAnchored = true
+        const activeLayout = this.#getActiveEbookSectionLayout()
 
         const index = this.#index
         const detail = {
@@ -4934,13 +5049,13 @@ export class Paginator extends HTMLElement {
                     this.size(),
                     this.start(),
                 ])
-            const livePageCount = getLiveChunkPageCount(this.#view?.document)
-            const adjustForSentinels = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
-                && livePageCount == null
-                && this.#hasSentinels
-                && !this.scrolled
-                && !this.#vertical
-                && pages > 2
+                const livePageCount = this.#getLiveChunkPageCount()
+                const adjustForSentinels = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
+                    && livePageCount == null
+                    && this.#hasSentinels
+                    && !this.scrolled
+                    && !this.#vertical
+                    && pages > 2
                 const textPages = adjustForSentinels ? Math.max(1, pages - 2) : pages
                 const normalizedOffset = adjustForSentinels
                     ? Math.max(0, startOffset - pageSize) // drop lead sentinel
@@ -5016,6 +5131,19 @@ export class Paginator extends HTMLElement {
         if (pageNumberForDetail != null) detail.pageNumber = pageNumberForDetail
         if (pageCountForDetail != null) detail.pageCount = pageCountForDetail
 
+        if (activeLayout) {
+            activeLayout.setCurrentSourceAnchor?.(range)
+            if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor') {
+                this.#anchor = range
+            } else {
+                this.#justAnchored = true
+            }
+        } else if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor') {
+            this.#anchor = range
+        } else {
+            this.#justAnchored = true
+        }
+
         const detailForLog = {
             reason,
             sectionIndex: index,
@@ -5039,7 +5167,7 @@ export class Paginator extends HTMLElement {
                 this.size(),
                 this.viewSize(),
             ])
-            const livePageCount = getLiveChunkPageCount(this.#view?.document)
+            const livePageCount = this.#getLiveChunkPageCount()
             const sentinelAdjusted = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
                 && livePageCount == null
                 && !this.scrolled
@@ -5178,8 +5306,16 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display... call scroll to anchor")
 
-        await this.scrollToAnchor((typeof anchor === 'function' ?
-            anchor(this.#view.document) : anchor) ?? 0, select, reason)
+        const layoutSync = await this.#syncEbookSectionLayout({
+            reason: reason ?? 'display',
+            anchor,
+        })
+
+        await this.scrollToAnchor(
+            (layoutSync?.restoreAnchor ?? this.#resolveAnchorAgainstActiveLayout(anchor)) ?? 0,
+            select,
+            reason
+        )
         // Diagnostics: capture initial pagination metrics after display
         let pageNumber = null
         let pageCount = null
@@ -5355,12 +5491,12 @@ export class Paginator extends HTMLElement {
         return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     async atStart() {
-        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const livePageCount = this.#getLiveChunkPageCount()
         const edgePage = livePageCount != null ? 0 : 1
         return this.#adjacentIndex(-1) == null && (await this.page()) <= edgePage
     }
     async atEnd() {
-        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const livePageCount = this.#getLiveChunkPageCount()
         const edgeOffset = livePageCount != null ? 1 : 2
         return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - edgeOffset
     }
@@ -5466,6 +5602,8 @@ export class Paginator extends HTMLElement {
         this.#disconnectElementVisibilityObserver()
         this.#resizeObserver.unobserve(this)
         this.#resetTrackingSectionSizeState()
+        this.#bindEbookLayoutEvents(null)
+        this.#ebookSectionLayout.destroy()
         this.#view.destroy()
         this.#view = null
         this.sections[this.#index]?.unload?.()
@@ -5477,7 +5615,7 @@ export class Paginator extends HTMLElement {
             return this.start > 0;
         }
         // If at the start page and no previous section, cannot turn
-        const livePageCount = getLiveChunkPageCount(this.#view?.document);
+        const livePageCount = this.#getLiveChunkPageCount();
         const edgePage = livePageCount != null ? 0 : 1;
         if ((await this.page()) <= edgePage && this.#adjacentIndex(-1) == null) return false;
         return true;
@@ -5488,7 +5626,7 @@ export class Paginator extends HTMLElement {
             return this.viewSize - this.end > 2;
         }
         // If at the end page and no next section, cannot turn
-        const livePageCount = getLiveChunkPageCount(this.#view?.document);
+        const livePageCount = this.#getLiveChunkPageCount();
         const edgeOffset = livePageCount != null ? 1 : 2;
         if ((await this.page()) >= (await this.pages()) - edgeOffset && this.#adjacentIndex(1) == null) return false;
         return true;
@@ -5504,12 +5642,12 @@ export class Paginator extends HTMLElement {
 
     // Public: At first page of current section
     async isAtSectionStart() {
-        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const livePageCount = this.#getLiveChunkPageCount()
         return (await this.page()) <= (livePageCount != null ? 0 : 1);
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
-        const livePageCount = getLiveChunkPageCount(this.#view?.document)
+        const livePageCount = this.#getLiveChunkPageCount()
         const edgeOffset = livePageCount != null ? 1 : 2
         return (await this.page()) >= (await this.pages()) - edgeOffset;
     }
