@@ -16,6 +16,7 @@ const CHUNK_ATOMIC_TAG_NAMES = new Set([
 
 const WARMUP_DELAY_MS = 16
 const WARMUP_PAGE_BATCH = 2
+const STAGING_ROOT_ID_SUFFIX = '-ebook-layout-staging'
 
 const logReaderPerf = (event, detail = {}) => {
     try {
@@ -23,6 +24,8 @@ const logReaderPerf = (event, detail = {}) => {
         globalThis.window?.webkit?.messageHandlers?.print?.postMessage?.(line)
     } catch (_error) {}
 }
+
+const perfNow = () => globalThis.performance?.now?.() ?? Date.now()
 
 const copyAttributes = (from, to) => {
     if (!(from instanceof Element) || !(to instanceof Element)) return
@@ -36,6 +39,31 @@ const resolveSectionRoot = doc => {
     if (!(readerContent instanceof HTMLElement)) return null
     const pageNode = readerContent.querySelector(':scope > .page') || readerContent
     return pageNode.querySelector('article') || pageNode
+}
+
+const createStagingRootForLiveRoot = liveRoot => {
+    if (!(liveRoot instanceof HTMLElement)) return null
+    const doc = liveRoot.ownerDocument
+    const stagingRoot = doc.createElement(liveRoot.tagName.toLowerCase())
+    const liveRect = liveRoot.getBoundingClientRect?.() || { width: 0, height: 0 }
+    const viewportWidth = doc.defaultView?.innerWidth ?? 0
+    const viewportHeight = doc.defaultView?.innerHeight ?? 0
+    const width = Math.max(1, Math.round(liveRect.width || viewportWidth || 1))
+    const height = Math.max(1, Math.round(liveRect.height || viewportHeight || 1))
+    copyAttributes(liveRoot, stagingRoot)
+    stagingRoot.id = `${liveRoot.id || 'reader-content'}${STAGING_ROOT_ID_SUFFIX}`
+    stagingRoot.setAttribute('aria-hidden', 'true')
+    stagingRoot.dataset.manabiLayoutStaging = 'true'
+    stagingRoot.style.position = 'fixed'
+    stagingRoot.style.left = '-200vw'
+    stagingRoot.style.top = '0'
+    stagingRoot.style.inlineSize = `${width}px`
+    stagingRoot.style.blockSize = `${height}px`
+    stagingRoot.style.visibility = 'hidden'
+    stagingRoot.style.pointerEvents = 'none'
+    stagingRoot.style.overflow = 'hidden'
+    liveRoot.parentNode?.insertBefore?.(stagingRoot, liveRoot.nextSibling)
+    return stagingRoot
 }
 
 const isRangeLike = value => {
@@ -298,6 +326,7 @@ const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersi
 export class EbookSectionLayout {
     #doc = null
     #root = null
+    #stagingRoot = null
     #normalizedRootHTML = null
     #sourceDoc = null
     #sourceRoot = null
@@ -360,11 +389,13 @@ export class EbookSectionLayout {
 
     destroy() {
         this.#cancelWarmup()
+        this.#removeStagingRoot()
         if (this.#doc?.defaultView?.manabiEbookSectionLayoutController === this.#controller) {
             delete this.#doc.defaultView.manabiEbookSectionLayoutController
         }
         this.#doc = null
         this.#root = null
+        this.#stagingRoot = null
         this.#normalizedRootHTML = null
         this.#sourceDoc = null
         this.#sourceRoot = null
@@ -414,22 +445,34 @@ export class EbookSectionLayout {
     buildFromAnchor(anchor, { reason = 'unknown', anchorResolver = null, location = null } = {}) {
         const doc = this.#doc
         const runtime = doc?.defaultView
-        const root = this.#root
-        if (!(doc instanceof Document) || !(root instanceof HTMLElement)) return null
+        const liveRoot = this.#root
+        if (!(doc instanceof Document) || !(liveRoot instanceof HTMLElement)) return null
         if (doc.body?.dataset?.isEbook !== 'true') return null
 
+        const buildStart = perfNow()
         let result = null
         this.#runWithSuppressedMutations(() => {
             this.#cancelWarmup()
             doc.documentElement.dataset.manabiLayoutComplete = 'false'
 
-            const units = this.#prepareSourceSnapshot({ doc, runtime, root })
+            const snapshotStart = perfNow()
+            const units = this.#prepareSourceSnapshot({ doc, runtime, root: liveRoot })
+            const snapshotDurationMs = Math.round((perfNow() - snapshotStart) * 100) / 100
             if (!units?.length) {
-                root.innerHTML = ''
-                root.classList.add('manabi-page-root')
+                liveRoot.innerHTML = ''
+                liveRoot.classList.add('manabi-page-root')
                 this.#pageRecords = []
                 this.#buildState = null
-                this.#refreshLiveRoot({ runtime, root, complete: true })
+                this.#refreshLiveRoot({ runtime, root: liveRoot, complete: true })
+                logReaderPerf('ebook-layout-build-finished', {
+                    reason,
+                    snapshotDurationMs,
+                    buildDurationMs: 0,
+                    commitDurationMs: 0,
+                    totalDurationMs: Math.round((perfNow() - buildStart) * 100) / 100,
+                    pageCount: 0,
+                    layoutComplete: true,
+                })
                 result = {
                     pageCount: 0,
                     reason,
@@ -449,7 +492,13 @@ export class EbookSectionLayout {
                 ? (anchorResolver(this.#sourceDoc || doc) ?? anchorResolver(doc))
                 : anchor
             const targetUnitIndex = this.#resolveTargetUnitIndexFromLocationOrAnchor(location, resolvedAnchor)
-            const targetSourceLocation = this.#sourceLocationForUnitIndex(targetUnitIndex)
+            const targetSentenceIdentifier = this.#sentenceIdentifierForAnchor(resolvedAnchor)
+                || location?.anchorSentenceIdentifier
+                || this.#sentenceIdentifierForUnitIndex(targetUnitIndex)
+            const targetSourceLocation = this.#sourceLocationForAnchor(resolvedAnchor)
+                || this.#sourceLocationForSentenceIdentifier(targetSentenceIdentifier)
+                || location?.anchorSourceLocation
+                || this.#sourceLocationForUnitIndex(targetUnitIndex, 'start')
             logReaderPerf('ebook-layout-build-target', {
                 reason,
                 targetUnitIndex,
@@ -459,10 +508,11 @@ export class EbookSectionLayout {
                 locationAnchorSentenceIdentifier: location?.anchorSentenceIdentifier ?? null,
             })
 
+            const buildLayoutStart = perfNow()
             this.#buildState = this.#createBuildState({
                 doc,
                 runtime,
-                root,
+                liveRoot,
                 metrics,
                 columnCount,
                 units,
@@ -471,9 +521,11 @@ export class EbookSectionLayout {
                 targetSourceLocation,
             })
             this.#continueBuilding()
+            const buildDurationMs = Math.round((perfNow() - buildLayoutStart) * 100) / 100
 
             const fallbackPageIndex = Math.max(0, this.#unitRecords[targetUnitIndex]?.pageIndex ?? 0)
             this.#currentSourceAnchor = this.#sourceAnchorForLocation(targetSourceLocation)
+                || this.#sourceAnchorForSentenceIdentifier(targetSentenceIdentifier)
                 || this.#sourceAnchorForUnitIndex(targetUnitIndex)
                 || this.#normalizeSourceAnchor(resolvedAnchor, fallbackPageIndex)
             logReaderPerf('ebook-layout-current-anchor', {
@@ -481,14 +533,31 @@ export class EbookSectionLayout {
                 fallbackPageIndex,
                 currentSentenceIdentifier: this.#sentenceIdentifierForAnchor(this.#currentSourceAnchor),
             })
+            const commitStart = perfNow()
+            this.#commitStagingRootToLiveRoot({
+                liveRoot,
+                stagingRoot: this.#buildState?.root ?? this.#stagingRoot,
+            })
             this.#refreshLiveRoot({
                 runtime,
-                root,
+                root: liveRoot,
                 complete: this.isLayoutComplete(),
             })
+            const commitDurationMs = Math.round((perfNow() - commitStart) * 100) / 100
             if (!this.isLayoutComplete()) {
                 this.#scheduleWarmup()
+            } else {
+                this.#removeStagingRoot()
             }
+            logReaderPerf('ebook-layout-build-finished', {
+                reason,
+                snapshotDurationMs,
+                buildDurationMs,
+                commitDurationMs,
+                totalDurationMs: Math.round((perfNow() - buildStart) * 100) / 100,
+                pageCount: this.pageCount(),
+                layoutComplete: this.isLayoutComplete(),
+            })
 
             result = {
                 pageCount: this.pageCount(),
@@ -591,17 +660,56 @@ export class EbookSectionLayout {
             endUnitIndex: pageRecord.endUnitIndex,
             anchorUnitIndex,
             anchorSentenceIdentifier: this.#sentenceIdentifierForUnitIndex(anchorUnitIndex),
+            startSourceLocation: this.#sourceLocationForUnitIndex(pageRecord.startUnitIndex, 'start'),
+            endSourceLocation: this.#sourceLocationForUnitIndex(pageRecord.endUnitIndex, 'end'),
+            anchorSourceLocation: this.#sourceLocationForAnchor(this.#currentSourceAnchor)
+                || this.#sourceLocationForUnitIndex(anchorUnitIndex, 'start'),
             layoutVersion: this.#layoutVersion,
         }
     }
 
     pageIndexForLocation(location) {
-        const anchorUnitIndex = location?.anchorUnitIndex
-        if (!Number.isFinite(anchorUnitIndex)) return null
-        return this.#unitRecords[anchorUnitIndex]?.pageIndex ?? null
+        const anchorUnitIndex = this.#sourceUnitIndexForLocation(location?.anchorSourceLocation)
+            ?? this.#unitIndexForSentenceIdentifier(location?.anchorSentenceIdentifier)
+            ?? location?.anchorUnitIndex
+        if (Number.isFinite(anchorUnitIndex)) {
+            return this.#unitRecords[anchorUnitIndex]?.pageIndex ?? location?.pageIndex ?? null
+        }
+        return Number.isFinite(location?.pageIndex) ? location.pageIndex : null
     }
 
     sourceRangeForLocation(location) {
+        const resolvedPageIndex = this.pageIndexForLocation(location)
+        const resolvedPageRecord = Number.isFinite(resolvedPageIndex)
+            ? this.#pageRecords[resolvedPageIndex]
+            : null
+        if (resolvedPageRecord && resolvedPageRecord.startUnitIndex != null && resolvedPageRecord.endUnitIndex != null && this.#sourceDoc) {
+            const currentPageRange = this.#sourceDoc.createRange()
+            this.#setRangeBoundary(
+                currentPageRange,
+                'start',
+                this.#sourceLocationForUnitIndex(resolvedPageRecord.startUnitIndex, 'start')
+            )
+            this.#setRangeBoundary(
+                currentPageRange,
+                'end',
+                this.#sourceLocationForUnitIndex(resolvedPageRecord.endUnitIndex, 'end')
+            )
+            if (!currentPageRange.collapsed || currentPageRange.toString()?.length) {
+                return currentPageRange
+            }
+        }
+
+        const startSourceLocation = location?.startSourceLocation
+        const endSourceLocation = location?.endSourceLocation
+        if (startSourceLocation?.sourceNode && endSourceLocation?.sourceNode && this.#sourceDoc) {
+            const range = this.#sourceDoc.createRange()
+            this.#setRangeBoundary(range, 'start', startSourceLocation)
+            this.#setRangeBoundary(range, 'end', endSourceLocation)
+            if (!range.collapsed || range.toString()?.length) {
+                return range
+            }
+        }
         const startUnitIndex = location?.startUnitIndex
         const endUnitIndex = location?.endUnitIndex
         if (!Number.isFinite(startUnitIndex) || !Number.isFinite(endUnitIndex)) return null
@@ -609,17 +717,20 @@ export class EbookSectionLayout {
         const endUnit = this.#unitRecords[endUnitIndex]
         if (!startUnit || !endUnit || !this.#sourceDoc) return null
         const range = this.#sourceDoc.createRange()
-        if (startUnit.type === 'text') {
-            range.setStart(startUnit.sourceNode, startUnit.sourceStartOffset)
-        } else {
-            range.setStartBefore(startUnit.sourceNode)
+        this.#setRangeBoundary(range, 'start', this.#sourceLocationForUnitIndex(startUnitIndex, 'start'))
+        this.#setRangeBoundary(range, 'end', this.#sourceLocationForUnitIndex(endUnitIndex, 'end'))
+        if (!range.collapsed || range.toString()?.length) {
+            return range
         }
-        if (endUnit.type === 'text') {
-            range.setEnd(endUnit.sourceNode, endUnit.sourceEndOffset)
-        } else {
-            range.setEndAfter(endUnit.sourceNode)
+        const pageIndex = resolvedPageIndex
+        const pageRecord = resolvedPageRecord
+        if (!pageRecord || pageRecord.startUnitIndex == null || pageRecord.endUnitIndex == null) {
+            return range
         }
-        return range
+        const pageRange = this.#sourceDoc.createRange()
+        this.#setRangeBoundary(pageRange, 'start', this.#sourceLocationForUnitIndex(pageRecord.startUnitIndex, 'start'))
+        this.#setRangeBoundary(pageRange, 'end', this.#sourceLocationForUnitIndex(pageRecord.endUnitIndex, 'end'))
+        return pageRange
     }
 
     visibleSourceRange(pageIndex) {
@@ -671,6 +782,16 @@ export class EbookSectionLayout {
             this.#normalizedRootHTML = root.innerHTML
             this.#sourceDoc = null
             this.#sourceRoot = null
+        } else if (
+            this.#sourceDoc instanceof Document
+            && this.#sourceRoot instanceof HTMLElement
+            && this.#unitRecords.length > 0
+        ) {
+            logReaderPerf('ebook-layout-source-snapshot-reused', {
+                unitCount: this.#unitRecords.length,
+                layoutVersion: this.#layoutVersion,
+            })
+            return this.#unitRecords
         } else {
             root.innerHTML = this.#normalizedRootHTML
             runtime?.manabiBuildSentenceArchive?.(doc)
@@ -693,6 +814,10 @@ export class EbookSectionLayout {
 
         this.#unitRecords = collectEbookChunkUnits(this.#sourceRoot)
         this.#refreshUnitIndexMap()
+        logReaderPerf('ebook-layout-source-snapshot-built', {
+            unitCount: this.#unitRecords.length,
+            layoutVersion: this.#layoutVersion,
+        })
         return this.#unitRecords
     }
 
@@ -742,7 +867,9 @@ export class EbookSectionLayout {
                 return Math.max(0, Math.min(this.#unitRecords.length - 1, anchorUnitIndex))
             }
         }
-        const locationAnchorUnitIndex = location?.anchorUnitIndex
+        const locationAnchorUnitIndex = this.#sourceUnitIndexForLocation(location?.anchorSourceLocation)
+            ?? this.#unitIndexForSentenceIdentifier(location?.anchorSentenceIdentifier)
+            ?? location?.anchorUnitIndex
         const locationSentenceIdentifier = location?.anchorSentenceIdentifier
         const locationAnchorIsInRange = Number.isFinite(locationAnchorUnitIndex)
             && locationAnchorUnitIndex >= 0
@@ -760,7 +887,7 @@ export class EbookSectionLayout {
     #createBuildState({
         doc,
         runtime,
-        root,
+        liveRoot,
         metrics,
         columnCount,
         units,
@@ -768,6 +895,12 @@ export class EbookSectionLayout {
         targetUnitIndex,
         targetSourceLocation,
     }) {
+        this.#removeStagingRoot()
+        const root = createStagingRootForLiveRoot(liveRoot)
+        if (!(root instanceof HTMLElement)) {
+            throw new Error('Unable to create ebook layout staging root.')
+        }
+        this.#stagingRoot = root
         root.innerHTML = ''
         root.classList.add('manabi-page-root')
         root.dataset.manabiLayoutVersion = String(layoutVersion)
@@ -809,6 +942,7 @@ export class EbookSectionLayout {
             doc,
             runtime,
             root,
+            liveRoot,
             metrics,
             columnCount,
             units,
@@ -947,6 +1081,50 @@ export class EbookSectionLayout {
         this.#pageRecords.pop()
     }
 
+    #removeStagingRoot() {
+        this.#stagingRoot?.remove?.()
+        this.#stagingRoot = null
+    }
+
+    #commitStagingRootToLiveRoot({ liveRoot, stagingRoot }) {
+        if (!(liveRoot instanceof HTMLElement) || !(stagingRoot instanceof HTMLElement)) return
+        const commitStart = perfNow()
+        liveRoot.className = stagingRoot.className
+        liveRoot.dataset.manabiLayoutVersion = stagingRoot.dataset.manabiLayoutVersion || ''
+        liveRoot.innerHTML = stagingRoot.innerHTML
+        logReaderPerf('ebook-layout-commit-live-root', {
+            childCount: liveRoot.childElementCount,
+            htmlLength: liveRoot.innerHTML.length,
+            commitInnerHTMLDurationMs: Math.round((perfNow() - commitStart) * 100) / 100,
+        })
+    }
+
+    #syncChunkSourceMetadata() {
+        for (const pageRecord of this.#pageRecords) {
+            for (const chunkRecord of pageRecord.chunkRecords || []) {
+                const chunkNode = chunkRecord?.chunkNode
+                if (!(chunkNode instanceof HTMLElement)) continue
+                const startUnitIndex = chunkRecord.startUnitIndex
+                const endUnitIndex = chunkRecord.endUnitIndex
+                if (!Number.isFinite(startUnitIndex) || !Number.isFinite(endUnitIndex)) continue
+                chunkNode.dataset.manabiSourceStartUnitIndex = String(startUnitIndex)
+                chunkNode.dataset.manabiSourceEndUnitIndex = String(endUnitIndex)
+                const startSentenceIdentifier = this.#sentenceIdentifierForUnitIndex(startUnitIndex)
+                const endSentenceIdentifier = this.#sentenceIdentifierForUnitIndex(endUnitIndex)
+                if (startSentenceIdentifier) {
+                    chunkNode.dataset.manabiSourceStartSentenceIdentifier = startSentenceIdentifier
+                } else {
+                    delete chunkNode.dataset.manabiSourceStartSentenceIdentifier
+                }
+                if (endSentenceIdentifier) {
+                    chunkNode.dataset.manabiSourceEndSentenceIdentifier = endSentenceIdentifier
+                } else {
+                    delete chunkNode.dataset.manabiSourceEndSentenceIdentifier
+                }
+            }
+        }
+    }
+
     #scheduleWarmup() {
         this.#cancelWarmup()
         if (!this.#buildState || !(this.#doc?.defaultView instanceof Window)) return
@@ -978,20 +1156,35 @@ export class EbookSectionLayout {
 
         this.#runWithSuppressedMutations(() => {
             if (!this.#buildState) return
+            const warmupStart = perfNow()
+            const pageCountBefore = this.pageCount()
             const nextVisiblePageIndex = Math.max(0, this.pageCount() + WARMUP_PAGE_BATCH - 1)
             this.#buildState.stopAfterPageIndex = Math.max(
                 nextVisiblePageIndex,
                 this.#buildState.stopAfterPageIndex ?? -1
             )
             this.#continueBuilding()
+            this.#commitStagingRootToLiveRoot({
+                liveRoot: root,
+                stagingRoot: this.#buildState?.root ?? this.#stagingRoot,
+            })
             this.#refreshLiveRoot({
                 runtime,
                 root,
                 complete: this.isLayoutComplete(),
             })
+            logReaderPerf('ebook-layout-warmup-batch', {
+                layoutVersion: this.#layoutVersion,
+                pageCountBefore,
+                pageCountAfter: this.pageCount(),
+                builtPageCount: Math.max(0, this.pageCount() - pageCountBefore),
+                durationMs: Math.round((perfNow() - warmupStart) * 100) / 100,
+                layoutComplete: this.isLayoutComplete(),
+            })
             if (!this.isLayoutComplete()) {
                 this.#scheduleWarmup()
             } else {
+                this.#removeStagingRoot()
                 logReaderPerf('ebook-layout-warmup-complete', {
                     layoutVersion: this.#layoutVersion,
                     pageCount: this.pageCount(),
@@ -1001,6 +1194,7 @@ export class EbookSectionLayout {
     }
 
     #refreshLiveRoot({ runtime, root, complete }) {
+        this.#syncChunkSourceMetadata()
         runtime?.manabiEnsureTrackingFooter?.()
         runtime?.manabiEnsureTrackingMarkers?.(root)
 
@@ -1059,36 +1253,48 @@ export class EbookSectionLayout {
     }
 
     #sourceAnchorForUnitIndex(unitIndex) {
-        const unit = this.#unitRecords[unitIndex]
-        if (!unit) return null
-        if (unit.type === 'text' && this.#sourceDoc) {
-            const range = this.#sourceDoc.createRange()
-            range.setStart(unit.sourceNode, unit.sourceStartOffset)
-            range.collapse(true)
-            return range
-        }
-        return unit.sourceNode ?? null
+        return this.#sourceAnchorForLocation(this.#sourceLocationForUnitIndex(unitIndex, 'start'))
     }
 
-    #sourceLocationForUnitIndex(unitIndex) {
+    #sourceAnchorForSentenceIdentifier(sentenceIdentifier) {
+        return this.#sourceAnchorForLocation(this.#sourceLocationForSentenceIdentifier(sentenceIdentifier))
+    }
+
+    #sourceLocationForAnchor(anchor) {
+        if (!anchor) return null
+        if (isRangeLike(anchor)) {
+            return this.#sourceLocationForBoundaryNode(anchor.startContainer, anchor.startOffset)
+                || this.#sourceLocationForNode(anchor.startContainer)
+        }
+        return this.#sourceLocationForNode(anchor)
+    }
+
+    #sourceLocationForUnitIndex(unitIndex, edge = 'start') {
         const unit = this.#unitRecords[unitIndex]
         if (!unit) return null
         return {
             sourceNode: unit.sourceNode,
-            sourceOffset: unit.type === 'text' ? unit.sourceStartOffset : 0,
+            sourceOffset: unit.type === 'text'
+                ? (edge === 'end' ? unit.sourceEndOffset : unit.sourceStartOffset)
+                : 0,
+            edge,
         }
+    }
+
+    #sourceLocationForSentenceIdentifier(sentenceIdentifier) {
+        const unitIndex = this.#unitIndexForSentenceIdentifier(sentenceIdentifier)
+        return Number.isFinite(unitIndex)
+            ? this.#sourceLocationForUnitIndex(unitIndex, 'start')
+            : null
     }
 
     #sourceAnchorForLocation(location) {
         const sourceNode = location?.sourceNode
-        if (!sourceNode) return null
-        if (sourceNode.nodeType === Node.TEXT_NODE && this.#sourceDoc) {
-            const range = this.#sourceDoc.createRange()
-            range.setStart(sourceNode, location.sourceOffset ?? 0)
-            range.collapse(true)
-            return range
-        }
-        return sourceNode
+        if (!sourceNode || !this.#sourceDoc) return null
+        const range = this.#sourceDoc.createRange()
+        this.#setRangeBoundary(range, 'start', location)
+        range.collapse(true)
+        return range
     }
 
     #unitContainsSourceLocation(unit, location) {
@@ -1121,6 +1327,100 @@ export class EbookSectionLayout {
     #sentenceIdentifierForUnitIndex(unitIndex) {
         const unit = this.#unitRecords[unitIndex]
         return this.#sentenceIdentifierForNode(unit?.sourceNode)
+    }
+
+    #sourceUnitIndexForLocation(location) {
+        const anchor = this.#sourceAnchorForLocation(location)
+        return this.#sourceUnitIndexForAnchor(anchor)
+    }
+
+    #setRangeBoundary(range, edge, location) {
+        const sourceNode = location?.sourceNode
+        if (!range || !sourceNode) return
+        const isStart = edge === 'start'
+        if (sourceNode.nodeType === Node.TEXT_NODE) {
+            const offset = Math.max(0, Number.isFinite(location?.sourceOffset) ? location.sourceOffset : 0)
+            if (isStart) {
+                range.setStart(sourceNode, offset)
+            } else {
+                range.setEnd(sourceNode, offset)
+            }
+            return
+        }
+        if (sourceNode.nodeType === Node.ELEMENT_NODE) {
+            const boundaryOffset = isStart ? 0 : sourceNode.childNodes.length
+            if (isStart) {
+                range.setStart(sourceNode, boundaryOffset)
+            } else {
+                range.setEnd(sourceNode, boundaryOffset)
+            }
+            return
+        }
+        if (isStart) {
+            range.setStartBefore(sourceNode)
+        } else {
+            range.setEndAfter(sourceNode)
+        }
+    }
+
+    #sourceLocationForBoundaryNode(node, offset = 0) {
+        if (!node) return null
+        if (node.nodeType === Node.TEXT_NODE) {
+            return {
+                sourceNode: node,
+                sourceOffset: Math.max(0, Math.min(node.nodeValue?.length ?? 0, offset)),
+                edge: 'start',
+            }
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+            return this.#sourceLocationForNode(node)
+        }
+        const childNodes = Array.from(node.childNodes || [])
+        const preferredChild = childNodes[offset] || childNodes[childNodes.length - 1] || null
+        return this.#sourceLocationForNode(preferredChild)
+            || this.#sourceLocationForNode(node)
+    }
+
+    #sourceLocationForNode(node) {
+        if (!node) return null
+        if (node.nodeType === Node.TEXT_NODE) {
+            return {
+                sourceNode: node,
+                sourceOffset: 0,
+                edge: 'start',
+            }
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return null
+        const directUnitIndices = this.#unitIndicesBySourceNode.get(node)
+        if (directUnitIndices?.length) {
+            return this.#sourceLocationForUnitIndex(directUnitIndices[0], 'start')
+        }
+        const walker = node.ownerDocument?.createTreeWalker?.(
+            node,
+            NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+        )
+        let current = walker?.currentNode
+        while (current) {
+            if (current !== node) {
+                const currentUnitIndices = this.#unitIndicesBySourceNode.get(current)
+                if (currentUnitIndices?.length) {
+                    return this.#sourceLocationForUnitIndex(currentUnitIndices[0], 'start')
+                }
+                if (current.nodeType === Node.TEXT_NODE && shouldKeepChunkTextNode(current)) {
+                    return {
+                        sourceNode: current,
+                        sourceOffset: 0,
+                        edge: 'start',
+                    }
+                }
+            }
+            current = walker?.nextNode?.() || null
+        }
+        return {
+            sourceNode: node,
+            sourceOffset: 0,
+            edge: 'start',
+        }
     }
 
     #unitIndexForSentenceIdentifier(sentenceIdentifier) {
