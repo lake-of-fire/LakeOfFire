@@ -170,6 +170,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                             ),
                             customMenuOptions: customMenuOptions
                         )
+                        .readerContentCellStyle(.card)
                     } else {
                         content.readerContentCellView(
                             appearance: ReaderContentCellAppearance(
@@ -180,6 +181,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                                 thumbnailDimension: maxCellHeight
                             )
                         )
+                        .readerContentCellStyle(.card)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

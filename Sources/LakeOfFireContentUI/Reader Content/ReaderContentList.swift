@@ -506,10 +506,12 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     appearance: appearance,
                     customMenuOptions: customMenuOptions
                 )
+                .readerContentCellStyle(.plain)
             } else {
                 item.readerContentCellView(
                     appearance: appearance
                 )
+                .readerContentCellStyle(.plain)
             }
         }
         .padding(11)

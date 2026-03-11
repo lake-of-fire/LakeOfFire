@@ -38,6 +38,29 @@ private struct ReaderFontReadinessProbeResult: Decodable {
     let timedOut: Bool
 }
 
+internal struct ReaderModeFrameInjectionDecision: Equatable {
+    let readerStateIsLoader: Bool
+    let hostDocumentIsLoader: Bool
+    let forcedNavigatorLoad: Bool
+    let shouldInjectIntoExistingFrame: Bool
+}
+
+internal func frameInjectionDecision(
+    readerStateURL: URL,
+    hostDocumentURL: URL,
+    requestedFrameInjection: Bool
+) -> ReaderModeFrameInjectionDecision {
+    let readerStateIsLoader = readerStateURL.isReaderURLLoaderURL
+    let hostDocumentIsLoader = hostDocumentURL.isReaderURLLoaderURL
+    let forcedNavigatorLoad = requestedFrameInjection && (readerStateIsLoader || hostDocumentIsLoader)
+    return ReaderModeFrameInjectionDecision(
+        readerStateIsLoader: readerStateIsLoader,
+        hostDocumentIsLoader: hostDocumentIsLoader,
+        forcedNavigatorLoad: forcedNavigatorLoad,
+        shouldInjectIntoExistingFrame: requestedFrameInjection && !forcedNavigatorLoad
+    )
+}
+
 private let readabilityExcludedDomains: Set<String> = [
     "x.com",
     "twitter.com",
@@ -2632,10 +2655,11 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 let pageURL = readerContent.pageURL
                 let urlsMatch = url.matchesReaderURL(pageURL)
                 let hostDocumentCandidateURL = resolvedFrameInfo?.request.url ?? pageURL
-                let readerStateIsLoader = pageURL.isReaderURLLoaderURL
-                let hostDocumentIsLoader = hostDocumentCandidateURL.isReaderURLLoaderURL
-                let shouldForceNavigatorLoad = readerStateIsLoader || hostDocumentIsLoader
-                let effectiveShouldInjectIntoExistingFrame = shouldInjectIntoExistingFrame && !shouldForceNavigatorLoad
+                let frameInjectionDecision = frameInjectionDecision(
+                    readerStateURL: pageURL,
+                    hostDocumentURL: hostDocumentCandidateURL,
+                    requestedFrameInjection: shouldInjectIntoExistingFrame
+                )
                 debugPrint(
                     "# READERRELOAD showReadabilityContent.enter",
                     "contentURL=\(url.absoluteString)",
@@ -2662,14 +2686,14 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         "targetContentURL": url.absoluteString,
                         "readerStateURL": pageURL.absoluteString,
                         "hostDocumentURL": hostDocumentCandidateURL.absoluteString,
-                        "readerStateIsLoader": readerStateIsLoader,
-                        "hostDocumentIsLoader": hostDocumentIsLoader,
+                        "readerStateIsLoader": frameInjectionDecision.readerStateIsLoader,
+                        "hostDocumentIsLoader": frameInjectionDecision.hostDocumentIsLoader,
                         "requestedFrameInjection": shouldInjectIntoExistingFrame,
-                        "shouldInjectIntoExistingFrame": effectiveShouldInjectIntoExistingFrame,
-                        "forcedNavigatorLoad": shouldForceNavigatorLoad
+                        "shouldInjectIntoExistingFrame": frameInjectionDecision.shouldInjectIntoExistingFrame,
+                        "forcedNavigatorLoad": frameInjectionDecision.forcedNavigatorLoad
                     ] as [String: Any]
                 )
-                if shouldForceNavigatorLoad {
+                if frameInjectionDecision.forcedNavigatorLoad {
                     debugPrint(
                         "# LOOKUPSMAR10",
                         [
@@ -2677,8 +2701,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             "targetContentURL": url.absoluteString,
                             "readerStateURL": pageURL.absoluteString,
                             "hostDocumentURL": hostDocumentCandidateURL.absoluteString,
-                            "readerStateIsLoader": readerStateIsLoader,
-                            "hostDocumentIsLoader": hostDocumentIsLoader,
+                            "readerStateIsLoader": frameInjectionDecision.readerStateIsLoader,
+                            "hostDocumentIsLoader": frameInjectionDecision.hostDocumentIsLoader,
                             "requestedFrameInjection": shouldInjectIntoExistingFrame,
                             "forcedNavigatorLoad": true,
                         ] as [String: Any]
@@ -2690,7 +2714,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
-                if effectiveShouldInjectIntoExistingFrame, let frameInfo = resolvedFrameInfo {
+                if frameInjectionDecision.shouldInjectIntoExistingFrame, let frameInfo = resolvedFrameInfo {
                     debugPrint("# READER readability.frameInjection", frameInfo)
                     do {
                         let preflightRaw = try? await scriptCaller.evaluateJavaScript(
