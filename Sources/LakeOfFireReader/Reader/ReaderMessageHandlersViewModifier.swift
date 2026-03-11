@@ -212,12 +212,31 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "[JS] \(result.severity.capitalized) [\(urlSuffix)]: \(messageText)"
                 )
             }),
-            ("print", { message in
+            ("print", { @MainActor [weak self] message in
+                guard let self else { return }
                 guard let payload = message.body as? [String: Any] else {
                     debugPrint("# READER readabilityInit.swiftLog", "body=\(String(describing: message.body))")
                     return
                 }
                 let logMessage = payload["message"] as? String ?? "# READER SwiftReadability.print"
+                if logMessage == "# READER snippetLoader.documentReady",
+                   let windowURLString = payload["windowURL"] as? String,
+                   let windowURL = URL(string: windowURLString) {
+                    let hasReaderContent: Bool = {
+                        if let number = payload["hasReaderContent"] as? NSNumber {
+                            return number.intValue != 0
+                        }
+                        if let bool = payload["hasReaderContent"] as? Bool {
+                            return bool
+                        }
+                        return false
+                    }()
+                    let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: windowURL) ?? windowURL
+                    self.readerModeViewModel.handleRenderedReaderDocumentReady(
+                        pageURL: resolvedURL,
+                        hasReaderContent: hasReaderContent
+                    )
+                }
                 var components: [String] = []
                 if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
                     components.append("windowURL=\(windowURL)")
@@ -524,12 +543,24 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     )
                     return
                 }
-                if content.isReaderModeByDefault, content.hasHTML {
+                if content.isReaderModeByDefault, content.hasHTML, !isSnippetURL {
                     debugPrint(
                         "# READERRELOAD readabilityUnavailable.skip",
                         "reason=readerDefaultHasHTML",
                         "contentURL=\(resolvedURL.absoluteString)",
                         "hasHTML=\(content.hasHTML)"
+                    )
+                    return
+                }
+
+                if isSnippetURL {
+                    debugPrint(
+                        "# READERRELOAD readabilityUnavailable.skip",
+                        "reason=snippetHandledByReaderModePipeline",
+                        "contentURL=\(resolvedURL.absoluteString)",
+                        "isLoading=\(readerModeViewModel.isReaderModeLoading)",
+                        "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
                     )
                     return
                 }

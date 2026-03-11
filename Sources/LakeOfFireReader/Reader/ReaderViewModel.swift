@@ -61,7 +61,15 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {
         self.baseSystemScripts = systemScripts
+        self.webViewSystemScripts = systemScripts
+        self.webViewUserScripts = []
         super.init()
+
+        logScriptDiagnostics(
+            context: "initial",
+            systemScripts: systemScripts,
+            userScripts: []
+        )
         
         Task { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }

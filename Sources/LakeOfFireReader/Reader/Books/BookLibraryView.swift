@@ -195,8 +195,16 @@ public struct BookLibraryView: View {
                 includeSource: false,
                 alwaysShowThumbnails: true,
                 showSeparators: false,
-                useCardBackground: true
+                useCardBackground: false,
+                clearRowBackground: true
             )
+            .modifier {
+                if #available(iOS 16, *) {
+                    $0.listRowSpacing(15)
+                } else {
+                    $0
+                }
+            }
         }
     }
 

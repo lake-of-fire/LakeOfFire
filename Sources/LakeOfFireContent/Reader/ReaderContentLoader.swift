@@ -213,8 +213,7 @@ public struct ReaderContentLoader {
             }
         }
         
-        let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
-        return candidates
+        return [contentFile, bookmark, history, feed].compactMap { $0 }
     }
 
     /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
@@ -260,12 +259,38 @@ public struct ReaderContentLoader {
             if url.isSnippetURL, let key = url.snippetKey {
                 let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
                 if let record = historyRealm.object(ofType: HistoryRecord.self, forPrimaryKey: key), !record.isDeleted {
+                    let canonicalSnippetURL = snippetURL(key: record.compoundKey) ?? record.url
+                    let shouldNormalize =
+                        !record.url.matchesReaderURL(canonicalSnippetURL)
+                        || !record.isReaderModeByDefault
+                        || !record.rssContainsFullContent
+                    if shouldNormalize {
+                        try await historyRealm.asyncWrite {
+                            record.url = canonicalSnippetURL
+                            record.isReaderModeByDefault = true
+                            record.rssContainsFullContent = true
+                            record.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    }
                     debugPrint("# READER snippet.keyLookup", "key=\(key)", "hit=history")
                     debugPrint("# SNIPPETLOAD snippet.keyLookup", "key=\(key)", "hit=history")
                     return ReaderContentLoader.ContentReference(content: record)
                 }
                 let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
                 if let bookmark = bookmarkRealm.object(ofType: Bookmark.self, forPrimaryKey: key), !bookmark.isDeleted {
+                    let canonicalSnippetURL = snippetURL(key: bookmark.compoundKey) ?? bookmark.url
+                    let shouldNormalize =
+                        !bookmark.url.matchesReaderURL(canonicalSnippetURL)
+                        || !bookmark.isReaderModeByDefault
+                        || !bookmark.rssContainsFullContent
+                    if shouldNormalize {
+                        try await bookmarkRealm.asyncWrite {
+                            bookmark.url = canonicalSnippetURL
+                            bookmark.isReaderModeByDefault = true
+                            bookmark.rssContainsFullContent = true
+                            bookmark.refreshChangeMetadata(explicitlyModified: true)
+                        }
+                    }
                     debugPrint("# READER snippet.keyLookup", "key=\(key)", "hit=bookmark")
                     debugPrint("# SNIPPETLOAD snippet.keyLookup", "key=\(key)", "hit=bookmark")
                     return ReaderContentLoader.ContentReference(content: bookmark)
@@ -295,7 +320,6 @@ public struct ReaderContentLoader {
                 }
                 match = historyRecord
             }
-            
             try Task.checkCancellation()
             if persist, let match = match, url.isReaderFileURL, url.contains(.plainText), let realm = match.realm {
 //                await realm.asyncRefresh()
@@ -320,6 +344,22 @@ public struct ReaderContentLoader {
         }()
         try Task.checkCancellation()
         if let resolved = try await contentRef?.resolveOnMainActor() {
+            if resolved.url.isSnippetURL, let realm = resolved.realm {
+                let canonicalSnippetURL = snippetURL(key: resolved.compoundKey) ?? resolved.url
+                let shouldNormalize =
+                    !resolved.url.matchesReaderURL(canonicalSnippetURL)
+                    || !resolved.isReaderModeByDefault
+                    || !resolved.rssContainsFullContent
+                if shouldNormalize {
+                    try await realm.asyncWrite {
+                        resolved.url = canonicalSnippetURL
+                        resolved.isReaderModeByDefault = true
+                        resolved.rssContainsFullContent = true
+                        resolved.refreshChangeMetadata(explicitlyModified: true)
+                    }
+                }
+            }
+            try await repairPersistedSnippetHTMLIfNeeded(content: resolved)
             debugPrint(
                 "# FLASH ReaderContentLoader.load directResult",
                 resolved.url.absoluteString,
@@ -659,6 +699,80 @@ private func snippetDebugPreview(_ html: String, maxLength: Int = 360) -> String
     }
     let idx = html.index(html.startIndex, offsetBy: maxLength)
     return String(html[..<idx]) + "…"
+}
+
+@MainActor
+private func repairPersistedSnippetHTMLIfNeeded(content: any ReaderContentProtocol) async throws {
+    guard content.url.isSnippetURL else { return }
+    guard let storedHTML = content.html, !storedHTML.isEmpty else { return }
+    guard let repairedHTML = repairedSnippetSourceHTML(from: storedHTML) else { return }
+    guard repairedHTML != storedHTML else { return }
+
+    debugPrint(
+        "# READER snippetRepair.persistedSource",
+        "url=\(content.url.absoluteString)",
+        "oldBytes=\(storedHTML.utf8.count)",
+        "newBytes=\(repairedHTML.utf8.count)"
+    )
+
+    if content.realm != nil {
+        try await content.asyncWrite { _, record in
+            record.html = repairedHTML
+            record.rssContainsFullContent = true
+            record.isReaderModeByDefault = true
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+    } else {
+        content.html = repairedHTML
+    }
+}
+
+private func repairedSnippetSourceHTML(from html: String) -> String? {
+    guard snippetStoredHTMLIsCanonicalReaderHTML(html) else {
+        return nil
+    }
+    guard snippetReaderMarkupNeedsRepair(html) else {
+        return nil
+    }
+    guard html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil else {
+        return nil
+    }
+    guard let document = try? SwiftSoup.parse(html),
+          let readerContentHTML = try? document.getElementById("reader-content")?.html()
+    else {
+        return nil
+    }
+
+    let trimmedReaderContentHTML = readerContentHTML.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedReaderContentHTML.isEmpty else { return nil }
+
+    let unwrappedSegments = trimmedReaderContentHTML.replacingOccurrences(
+        of: #"(?is)</?manabi-segment\b[^>]*>"#,
+        with: "",
+        options: .regularExpression
+    )
+
+    let repairedHTML = unwrappedSegments.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !repairedHTML.isEmpty else { return nil }
+    return repairedHTML
+}
+
+private func snippetStoredHTMLIsCanonicalReaderHTML(_ html: String) -> Bool {
+    let hasReaderContent = html.range(of: #"id=['"]reader-content['"]"#, options: .regularExpression) != nil
+    let hasReadabilityBody = html.range(
+        of: #"(?is)<body\b[^>]*class=['"][^'"]*\breadability-mode\b[^'"]*['"]"#,
+        options: .regularExpression
+    ) != nil
+    return hasReaderContent && hasReadabilityBody
+}
+
+private func snippetReaderMarkupNeedsRepair(_ html: String) -> Bool {
+    let nsRange = NSRange(html.startIndex..<html.endIndex, in: html)
+    let readerContentRegex = try! NSRegularExpression(pattern: #"id=['"]reader-content['"]"#)
+    let readerTitleRegex = try! NSRegularExpression(pattern: #"id=['"]reader-title['"]"#)
+    let readerContentMatches = readerContentRegex.matches(in: html, options: [], range: nsRange)
+    let readerTitleMatches = readerTitleRegex.matches(in: html, options: [], range: nsRange)
+    return readerContentMatches.count > 1 || readerTitleMatches.count > 1
 }
 
 /// Forked from: https://github.com/objecthub/swift-markdownkit/issues/6

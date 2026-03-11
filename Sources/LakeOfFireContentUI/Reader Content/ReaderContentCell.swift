@@ -388,6 +388,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         thumbnailChoice != nil
     }
 
+    private var physicalMediaThumbnailTargetWidth: CGFloat {
+        max(1, thumbnailEdgeLength * 0.55)
+    }
+
+    private var physicalMediaThumbnailMaxHeight: CGFloat {
+        max(1, thumbnailEdgeLength - stackListGroupBoxContentInsets.top - stackListGroupBoxContentInsets.bottom)
+    }
+
     private var contentColumnHeight: CGFloat? {
         if let dimension = appearance.thumbnailDimension {
             return dimension
@@ -457,7 +465,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
-    @State private var menuTrailingPadding: CGFloat = 0
 
     private var buttonSize: CGFloat {
         return ReaderContentCell<C>.buttonSize
@@ -481,76 +488,211 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: " • ")
     }
+
+    @ViewBuilder
+    private var sourceOrAuthorRow: some View {
+        if appearance.isEbookStyle, let authorText = bookAuthorText {
+            Text(authorText)
+                .lineLimit(1)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if appearance.includeSource {
+            HStack(alignment: .center, spacing: 6) {
+                if let sourceIconURL = inlineSourceIconURL {
+                    ReaderContentSourceIconImage(
+                        sourceIconURL: sourceIconURL,
+                        iconSize: sourceIconSize
+                    )
+                    .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
+                }
+                if let sourceTitle = viewModel.sourceTitle {
+                    Text(sourceTitle)
+                        .lineLimit(1)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var progressRow: some View {
+        if shouldShowProgressRow {
+            HStack(spacing: 8) {
+                audioBadge
+
+                if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+                    ProgressView(value: min(1, readingProgressFloat))
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
+                        .frame(width: progressBarWidth)
+
+                    if let metadataText {
+                        Text(metadataText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .allowsTightening(true)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var metadataRow: some View {
+        HStack(alignment: .center, spacing: 6) {
+            if let publicationDate = publicationDateText {
+                Text(publicationDate)
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.9)
+                    .font(.footnote)
+                    .layoutPriority(2)
+            }
+
+            if let contentFile = item as? ContentFile {
+                CloudDriveSyncStatusView(item: contentFile)
+                    .labelStyle(.iconOnly)
+                    .font(.callout)
+            }
+
+            BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
+                .labelStyle(.iconOnly)
+                .frame(
+                    width: viewModel.forceShowBookmark ? ReaderContentCell<C>.buttonSize : 0,
+                    height: ReaderContentCell<C>.buttonSize,
+                    alignment: .center
+                )
+                .opacity(viewModel.forceShowBookmark ? 1 : 0)
+                .accessibilityHidden(!viewModel.forceShowBookmark)
+        }
+        .foregroundStyle(.secondary)
+        .buttonStyle(.clearBordered)
+        .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private func thumbnailView(for thumbnailChoice: ThumbnailChoice) -> some View {
+        switch thumbnailChoice {
+        case .image(let imageUrl):
+            if appearance.isEbookStyle {
+                ReaderImage(
+                    imageUrl,
+                    contentMode: .fit,
+                    maxWidth: physicalMediaThumbnailTargetWidth,
+                    maxHeight: physicalMediaThumbnailMaxHeight,
+                    cornerRadius: thumbnailCornerRadius
+                )
+                .frame(
+                    width: physicalMediaThumbnailTargetWidth,
+                    height: contentColumnHeight,
+                    alignment: .center
+                )
+            } else {
+                ReaderImage(
+                    imageUrl,
+                    maxWidth: thumbnailEdgeLength,
+                    minHeight: thumbnailEdgeLength,
+                    maxHeight: thumbnailEdgeLength
+                )
+                .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+            }
+        case .icon(let iconURL):
+            ReaderContentThumbnailTile(
+                content: .icon(iconURL, placeholder: fallbackInitial),
+                width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
+                height: appearance.isEbookStyle ? physicalMediaThumbnailMaxHeight : thumbnailEdgeLength,
+                cornerRadius: thumbnailCornerRadius
+            )
+            .frame(height: contentColumnHeight, alignment: .center)
+        case .initial:
+            ReaderContentThumbnailTile(
+                content: .initial(fallbackInitial),
+                width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
+                height: appearance.isEbookStyle ? physicalMediaThumbnailMaxHeight : thumbnailEdgeLength,
+                cornerRadius: thumbnailCornerRadius
+            )
+            .frame(height: contentColumnHeight, alignment: .center)
+        }
+    }
+
+    @ViewBuilder
+    private var trailingMenuColumn: some View {
+        let deletable = (self.item as? (any DeletableReaderContent))
+        let shouldShowMenu = deletable != nil || customMenuOptions != nil
+
+        if shouldShowMenu {
+            Menu {
+                if let item = self.item as? ContentFile {
+                    CloudDriveSyncStatusView(item: item)
+                        .labelStyle(.titleAndIcon)
+                    Divider()
+                }
+
+                AnyView(self.item.bookmarkButtonView())
+
+                if let customMenuOptions {
+                    customMenuOptions(self.item)
+                }
+
+                if let deletable {
+                    Divider()
+                    Button(role: .destructive) {
+                        readerContentListModalsModel.confirmDeletionOf = [deletable]
+                        readerContentListModalsModel.confirmDelete = true
+                        debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
+                    } label: {
+                        Label(deletable.deleteActionTitle, systemImage: "trash")
+                    }
+                    .task { kickOffContentFileLookupIfNeeded() }
+                }
+
+                if let contentFile = resolvedContentFile {
+                    Button(role: .destructive) {
+                        readerContentListModalsModel.confirmDeletionOf = [contentFile]
+                        readerContentListModalsModel.confirmDelete = true
+                    } label: {
+                        Label(contentFile.deleteActionTitle, systemImage: "trash")
+                    }
+                }
+            } label: {
+                Label("More Options", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
+            }
+            .modifier {
+                if #available(iOS 16, macOS 13, *) {
+                    $0.menuStyle(.button)
+                } else { $0 }
+            }
+            .menuIndicator(.hidden)
+            .buttonStyle(.clearBordered)
+            .foregroundStyle(.secondary)
+            .controlSize(.small)
+            .frame(width: ReaderContentCell<C>.buttonSize, height: contentColumnHeight, alignment: .center)
+        }
+    }
     
     var body: some View {
 //        GroupBox {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 if let thumbnailChoice {
-                    switch thumbnailChoice {
-                    case .image(let imageUrl):
-                        if appearance.isEbookStyle {
-                            BookCoverImageView(
-                                imageURL: imageUrl,
-                                dimension: thumbnailEdgeLength
-                            )
-                        } else {
-                            ReaderImage(
-                                imageUrl,
-                                maxWidth: thumbnailEdgeLength,
-                                minHeight: thumbnailEdgeLength,
-                                maxHeight: thumbnailEdgeLength
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
-                        }
-                    case .icon(let iconURL):
-                        ReaderContentThumbnailTile(
-                            content: .icon(iconURL, placeholder: fallbackInitial),
-                            dimension: thumbnailEdgeLength,
-                            cornerRadius: thumbnailCornerRadius
-                        )
-                    case .initial:
-                        ReaderContentThumbnailTile(
-                            content: .initial(fallbackInitial),
-                            dimension: thumbnailEdgeLength,
-                            cornerRadius: thumbnailCornerRadius
-                        )
-                    }
+                    thumbnailView(for: thumbnailChoice)
                 }
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading) {
-                        if appearance.isEbookStyle, let authorText = bookAuthorText {
-                            Text(authorText)
-                                .lineLimit(1)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.bottom, 2)
-                        } else if appearance.includeSource {
-                            HStack(alignment: .center) {
-                                if let sourceIconURL = inlineSourceIconURL {
-                                    ReaderContentSourceIconImage(
-                                        sourceIconURL: sourceIconURL,
-                                        iconSize: sourceIconSize
-                                    )
-                                    .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
-                                }
-                                if let sourceTitle = viewModel.sourceTitle {
-                                    Text(sourceTitle)
-                                        .lineLimit(1)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        
+
+                VStack(alignment: .leading, spacing: 6) {
+                    sourceOrAuthorRow
+
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(viewModel.title)
                             .font(.headline)
                             .lineLimit(titleLineLimit)
                             .multilineTextAlignment(.leading)
                             .environment(\._lineHeightMultiple, 0.875)
                             .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
-                        
+
                         if appearance.isEbookStyle && !isProgressVisible {
                             HStack(spacing: 8) {
                                 if item.hasAudio {
@@ -560,122 +702,17 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             }
                         }
                     }
-                    
-                    Spacer(minLength: 4)
-                    
-                    VStack(alignment: .leading, spacing: 0) {
-                        if shouldShowProgressRow {
-                            HStack(spacing: 8) {
-                                audioBadge
-                                
-                                if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-                                    ProgressView(value: min(1, readingProgressFloat))
-                                        .progressViewStyle(LinearProgressViewStyle())
-                                        .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
-                                        .frame(width: progressBarWidth)
-                                        
-                                    if let metadataText {
-                                        Text(metadataText)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .allowsTightening(true)
-                                    }
-                                }
-                            }
-                            .offset(y: max(0, menuTrailingPadding - 5))
-                        }
-                        
-                        HStack(alignment: .center, spacing: 6) {
-                            HStack(spacing: 6) {
-                                if let publicationDate = publicationDateText {
-                                    Text("\(publicationDate)")
-                                        .lineLimit(1)
-                                        .allowsTightening(true)
-                                        .minimumScaleFactor(0.9)
-                                        .font(.footnote)
-                                        .layoutPriority(2)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .foregroundStyle(.secondary)
-                            
-                            HStack(alignment: .center, spacing: 0) {
-                                if let item = item as? ContentFile {
-                                    CloudDriveSyncStatusView(item: item)
-                                        .labelStyle(.iconOnly)
-                                        .font(.callout)
-                                        .padding(.trailing, 6)
-                                }
-
-                                BookmarkButton(readerContent: item, hiddenIfUnbookmarked: true)
-                                    .labelStyle(.iconOnly)
-                                    .frame(
-                                        width: viewModel.forceShowBookmark ? ReaderContentCell<C>.buttonSize : 0,
-                                        height: ReaderContentCell<C>.buttonSize,
-                                        alignment: .center
-                                    )
-                                    .opacity(viewModel.forceShowBookmark ? 1 : 0)
-                                    .accessibilityHidden(!viewModel.forceShowBookmark)
-                                
-                                let deletable = (self.item as? (any DeletableReaderContent))
-                                let shouldShowMenu = deletable != nil || customMenuOptions != nil
-                                if shouldShowMenu {
-                                    Menu {
-                                        if let item = self.item as? ContentFile {
-                                            CloudDriveSyncStatusView(item: item)
-                                                .labelStyle(.titleAndIcon)
-                                            Divider()
-                                        }
-                                        
-                                        AnyView(self.item.bookmarkButtonView())
-                                        
-                                        if let customMenuOptions {
-                                            customMenuOptions(self.item)
-                                        }
-                                        
-                                        if let deletable {
-                                            Divider()
-                                            Button(role: .destructive) {
-                                                readerContentListModalsModel.confirmDeletionOf = [deletable]
-                                                readerContentListModalsModel.confirmDelete = true
-                                                debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
-                                            } label: {
-                                                Label(deletable.deleteActionTitle, systemImage: "trash")
-                                            }
-                                            .task { kickOffContentFileLookupIfNeeded() }
-                                        }
-                                        
-                                        if let contentFile = resolvedContentFile {
-                                            Button(role: .destructive) {
-                                                readerContentListModalsModel.confirmDeletionOf = [contentFile]
-                                                readerContentListModalsModel.confirmDelete = true
-                                            } label: {
-                                                Label(contentFile.deleteActionTitle, systemImage: "trash")
-                                            }
-                                        }
-                                    } label: {
-                                        Label("More Options", systemImage: "ellipsis")
-                                            .labelStyle(.iconOnly)
-                                    }
-                                    .modifier {
-                                        if #available(iOS 16, macOS 13, *) {
-                                            $0.menuStyle(.button)
-                                        } else { $0 }
-                                    }
-                                    .menuIndicator(.hidden)
-                                }
-                            }
-                            .buttonStyle(.clearBordered)
-                            .foregroundStyle(.secondary)
-                            .controlSize(.small)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .bottomLeading)
-                        .onPreferenceChange(ClearBorderedButtonTrailingPaddingKey.self) { menuTrailingPadding = $0 }
-                    }
-                    .offset(y: menuTrailingPadding)
+                    progressRow
+                    metadataRow
                 }
-                .frame(height: contentColumnHeight, alignment: .top)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: contentColumnHeight,
+                    maxHeight: contentColumnHeight,
+                    alignment: .center
+                )
+
+                trailingMenuColumn
             }
 //        }
         .frame(
@@ -830,7 +867,8 @@ private struct ReaderContentThumbnailTile: View {
     }
 
     let content: Content
-    let dimension: CGFloat
+    let width: CGFloat
+    let height: CGFloat
     let cornerRadius: CGFloat
 
     var body: some View {
@@ -840,13 +878,13 @@ private struct ReaderContentThumbnailTile: View {
                 ReaderImage(
                     iconURL,
                     contentMode: .fit,
-                    maxWidth: dimension * 0.7,
-                    maxHeight: dimension * 0.7
+                    maxWidth: width * 0.7,
+                    maxHeight: height * 0.7
                 )
-                .frame(width: dimension * 0.7, height: dimension * 0.7)
+                .frame(width: width * 0.7, height: height * 0.7)
             }
         }
-        .frame(width: dimension, height: dimension)
+        .frame(width: width, height: height)
     }
 
     @ViewBuilder
@@ -856,7 +894,7 @@ private struct ReaderContentThumbnailTile: View {
             .overlay {
                 if let letter = placeholderLetter {
                     Text(letter)
-                        .font(.system(size: dimension * 0.45, weight: .semibold, design: .rounded))
+                        .font(.system(size: min(width, height) * 0.45, weight: .semibold, design: .rounded))
                         .minimumScaleFactor(0.4)
                         .foregroundStyle(placeholderForeground)
                 }

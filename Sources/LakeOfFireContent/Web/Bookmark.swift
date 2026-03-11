@@ -6,6 +6,39 @@ import BigSyncKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 
+private let readerParaBookmarkEmptyParagraphPattern = try! NSRegularExpression(pattern: #"(?is)<p\b[^>]*>\s*</p>"#)
+private let readerParaBookmarkBreakOnlyParagraphPattern = try! NSRegularExpression(pattern: #"(?is)<p\b[^>]*>\s*(?:<span\b[^>]*>\s*)?<br\s*/?>\s*(?:</span>\s*)?</p>"#)
+private let readerParaBookmarkStandaloneBreakSpanPattern = try! NSRegularExpression(pattern: #"(?is)<span\b[^>]*>\s*<br\s*/?>\s*</span>"#)
+private let readerParaBookmarkBreakTagPattern = try! NSRegularExpression(pattern: #"(?is)<br\s*/?>"#)
+
+private func logReaderParaBookmarkPayload(
+    stage: String,
+    url: URL?,
+    html: String?,
+    content: Data?
+) {
+    guard let html else {
+        debugPrint(
+            "# READERPARA \(stage)",
+            "url=\(url?.absoluteString ?? "<nil>")",
+            "hasHTML=0",
+            "compressedBytes=\(content?.count ?? 0)"
+        )
+        return
+    }
+    let range = NSRange(location: 0, length: (html as NSString).length)
+    debugPrint(
+        "# READERPARA \(stage)",
+        "url=\(url?.absoluteString ?? "<nil>")",
+        "inputBytes=\(html.utf8.count)",
+        "compressedBytes=\(content?.count ?? 0)",
+        "emptyParagraphCount=\(readerParaBookmarkEmptyParagraphPattern.numberOfMatches(in: html, options: [], range: range))",
+        "breakOnlyParagraphCount=\(readerParaBookmarkBreakOnlyParagraphPattern.numberOfMatches(in: html, options: [], range: range))",
+        "standaloneBreakSpanCount=\(readerParaBookmarkStandaloneBreakSpanPattern.numberOfMatches(in: html, options: [], range: range))",
+        "breakTagCount=\(readerParaBookmarkBreakTagPattern.numberOfMatches(in: html, options: [], range: range))"
+    )
+}
+
 public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtocol, DeletableReaderContent {
     @Persisted(primaryKey: true) public var compoundKey = ""
     
@@ -171,8 +204,20 @@ public extension Bookmark {
                 bookmark.imageUrl = imageUrl
                 bookmark.sourceIconURL = sourceIconURL
                 if let html = html {
+                    logReaderParaBookmarkPayload(
+                        stage: "bookmark.persist.update.html",
+                        url: url,
+                        html: html,
+                        content: html.readerContentData
+                    )
                     bookmark.html = html
                 } else if let content = content {
+                    logReaderParaBookmarkPayload(
+                        stage: "bookmark.persist.update.content",
+                        url: url,
+                        html: Bookmark.contentToHTML(content: content),
+                        content: content
+                    )
                     bookmark.content = content
                 }
                 bookmark.publicationDate = publicationDate
@@ -187,8 +232,20 @@ public extension Bookmark {
         } else {
             let bookmark = Bookmark()
             if let html = html {
+                logReaderParaBookmarkPayload(
+                    stage: "bookmark.persist.create.html",
+                    url: url,
+                    html: html,
+                    content: html.readerContentData
+                )
                 bookmark.html = html
             } else if let content = content {
+                logReaderParaBookmarkPayload(
+                    stage: "bookmark.persist.create.content",
+                    url: url,
+                    html: Bookmark.contentToHTML(content: content),
+                    content: content
+                )
                 bookmark.content = content
             }
             if let url = url {

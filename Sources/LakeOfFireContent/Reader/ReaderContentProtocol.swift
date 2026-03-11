@@ -204,7 +204,7 @@ public extension ReaderContentProtocol {
             )
         }
     }
-    
+
     static func contentToHTML(legacyHTMLContent: String? = nil, content: Data?) -> String? {
         if let legacyHtml = legacyHTMLContent {
             return legacyHtml
@@ -226,10 +226,11 @@ public extension ReaderContentProtocol {
             let html = self.html
             try Task.checkCancellation()
             let bytes = html?.utf8.count ?? 0
+            let source = url.isSnippetURL ? "snippet-html" : (rssContainsFullContent ? "stored-html" : "clipboard")
             debugPrint(
                 "# READER htmlToDisplay.source",
                 "url=\(url.absoluteString)",
-                "source=\(url.isSnippetURL ? "snippet-html" : (rssContainsFullContent ? "stored-html" : "clipboard"))",
+                "source=\(source)",
                 "bytes=\(bytes)"
             )
             if url.isSnippetURL {
@@ -301,8 +302,23 @@ public extension ReaderContentProtocol {
             Self.contentToHTML(legacyHTMLContent: htmlContent, content: content)
         }
         set {
-            htmlContent = nil
-            content = newValue?.readerContentData
+            guard let newValue else {
+                htmlContent = nil
+                content = nil
+                return
+            }
+
+            if let data = newValue.readerContentData {
+                htmlContent = nil
+                content = data
+            } else {
+                debugPrint(
+                    "# READER html.setter.compressionFailed",
+                    "url=\(url.absoluteString)",
+                    "bytes=\(newValue.utf8.count)"
+                )
+                htmlContent = newValue
+            }
         }
     }
     
@@ -474,7 +490,6 @@ public extension ReaderContentProtocol {
         }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
         let sanitizedTitle = title.removingClipboardIndicatorIfNeeded(isFromClipboard || pageURL.isSnippetURL)
-
         if let record = realm.object(ofType: HistoryRecord.self, forPrimaryKey: HistoryRecord.makePrimaryKey(url: pageURL)) {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {

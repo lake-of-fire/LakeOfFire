@@ -167,6 +167,7 @@ struct ReaderContentListAppearance: Sendable {
     var alwaysShowThumbnails: Bool = true
     var showSeparators: Bool = false
     var useCardBackground: Bool = false
+    var clearRowBackground: Bool = false
 }
 
 // MARK: - Shared selection syncing
@@ -618,7 +619,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         )
 #endif
         .modifier {
-            if appearance.useCardBackground {
+            if appearance.useCardBackground || appearance.clearRowBackground {
                 $0.listRowBackground(Color.clear)
             } else {
                 $0
@@ -1058,7 +1059,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
         showSeparators: Bool = false,
-        useCardBackground: Bool = false
+        useCardBackground: Bool = false,
+        clearRowBackground: Bool = false
     ) {
         self.viewModel = viewModel
         _entrySelection = entrySelection
@@ -1067,7 +1069,8 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
         self.appearance = ReaderContentListAppearance(
             alwaysShowThumbnails: alwaysShowThumbnails,
             showSeparators: showSeparators,
-            useCardBackground: useCardBackground
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground
         )
         self.onRequestDelete = onRequestDelete
         self.customMenuOptions = customMenuOptions

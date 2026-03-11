@@ -170,8 +170,10 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     
     func body(content: Content) -> some View {
-        let isSnippet = readerContent.pageURL.isSnippetURL
-            || readerModeViewModel.pendingReaderModeURL?.isSnippetURL == true
+        let currentCanonicalURL = readerContent.pageURL.canonicalReaderContentURL()
+        let pendingCanonicalURL = readerModeViewModel.pendingReaderModeURL?.canonicalReaderContentURL()
+        let isSnippet = currentCanonicalURL.isSnippetURL
+            || pendingCanonicalURL?.isSnippetURL == true
         content
             // Snippets manage their own overlay; suppress the generic reader-mode spinner for them
             .modifier(

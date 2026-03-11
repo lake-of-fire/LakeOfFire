@@ -31,6 +31,32 @@ private class ReaderWebViewHandler {
     private var lastHandledIsLoading: Bool?
     private var readerLoadStartTimes: [String: Date] = [:]
     private var readerLoadStartSources: [String: String] = [:]
+    private var deferredCachedReadabilityRenderTask: Task<Void, Never>?
+    private var deferredReaderModeRecoveryTask: Task<Void, Never>?
+
+    private func snippetCachedReaderHTMLIsRenderable(_ html: String) -> Bool {
+        guard !html.isEmpty else { return false }
+        do {
+            let document = try SwiftSoup.parse(html)
+            if (try? document.getElementsByTag("manabi-segment").size()) ?? 0 > 0 {
+                return true
+            }
+            if (try? document.getElementById("reader-content")) != nil {
+                return true
+            }
+            if let body = try? document.body() {
+                if (try? body.hasClass("readability-mode")) == true {
+                    return true
+                }
+                if (try? body.attr("data-next-load-is-readability-mode")) == "true" {
+                    return true
+                }
+            }
+        } catch {
+            return false
+        }
+        return false
+    }
 
     init(
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
@@ -99,6 +125,125 @@ private class ReaderWebViewHandler {
         )
     }
 
+    private func renderCachedReadabilityHTML(
+        _ cachedHTML: String,
+        for content: ReaderContentProtocol,
+        pageURL: URL
+    ) {
+        readerModeViewModel.readabilityContent = cachedHTML
+        readerModeViewModel.readabilityContainerSelector = nil
+        readerModeViewModel.readabilityContainerFrameInfo = nil
+        readerModeViewModel.showReaderView(
+            readerContent: readerContent,
+            scriptCaller: scriptCaller
+        )
+        debugPrint(
+            "# READERRELOAD cachedReadability.rendered",
+            "pageURL=\(pageURL.absoluteString)",
+            "contentURL=\(content.url.absoluteString)",
+            "hasAsyncCaller=\(scriptCaller.hasAsyncCaller)"
+        )
+    }
+
+    private func deferCachedReadabilityRenderUntilAsyncCallerReady(
+        cachedHTML: String,
+        content: ReaderContentProtocol,
+        pageURL: URL
+    ) {
+        deferredCachedReadabilityRenderTask?.cancel()
+        deferredCachedReadabilityRenderTask = Task { @MainActor in
+            for _ in 0..<100 {
+                guard !Task.isCancelled else { return }
+                if self.scriptCaller.hasAsyncCaller {
+                    self.renderCachedReadabilityHTML(cachedHTML, for: content, pageURL: pageURL)
+                    return
+                }
+
+                do {
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                } catch {
+                    return
+                }
+            }
+
+            debugPrint(
+                "# READERRELOAD cachedReadability.deferTimedOut",
+                "pageURL=\(pageURL.absoluteString)",
+                "contentURL=\(content.url.absoluteString)"
+            )
+        }
+    }
+
+    private func deferReaderModeRecoveryUntilAsyncCallerReady(
+        content: ReaderContentProtocol,
+        pageURL: URL,
+        reason: String
+    ) {
+        let contentURL = content.url
+        deferredReaderModeRecoveryTask?.cancel()
+        deferredReaderModeRecoveryTask = Task { @MainActor in
+            for _ in 0..<100 {
+                guard !Task.isCancelled else { return }
+                if self.scriptCaller.hasAsyncCaller {
+                    guard self.readerContent.pageURL == pageURL,
+                          self.readerContent.content?.url == contentURL else {
+                        debugPrint(
+                            "# READERLOAD stage=readerWebView.recoverAfterAsyncCaller.cancelledForNavigationChange",
+                            "reason=\(reason)",
+                            "expectedPageURL=\(pageURL.absoluteString)",
+                            "currentPageURL=\(self.readerContent.pageURL.absoluteString)",
+                            "expectedContentURL=\(contentURL.absoluteString)",
+                            "currentContentURL=\(self.readerContent.content?.url.absoluteString ?? "nil")"
+                        )
+                        return
+                    }
+                    let hasPreparedReadability = self.readerModeViewModel.readabilityContent != nil
+                    let shouldRecoverReaderMode =
+                        content.isReaderModeByDefault
+                        && content.hasHTML
+                        && !self.readerModeViewModel.isReaderMode
+                        && !self.readerModeViewModel.isReaderModeLoading
+                        && !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
+                    guard shouldRecoverReaderMode else { return }
+
+                    debugPrint(
+                        "# READERLOAD stage=readerWebView.recoverAfterAsyncCaller",
+                        "reason=\(reason)",
+                        "pageURL=\(pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "hasPreparedReadability=\(hasPreparedReadability)"
+                    )
+
+                    if hasPreparedReadability {
+                        self.readerModeViewModel.showReaderView(
+                            readerContent: self.readerContent,
+                            scriptCaller: self.scriptCaller
+                        )
+                    } else {
+                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                            readerContent: self.readerContent,
+                            scriptCaller: self.scriptCaller
+                        )
+                    }
+                    return
+                }
+
+                do {
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                } catch {
+                    return
+                }
+            }
+
+            debugPrint(
+                "# READERLOAD stage=readerWebView.recoverAfterAsyncCaller.timedOut",
+                "reason=\(reason)",
+                "pageURL=\(pageURL.absoluteString)",
+                "contentURL=\(content.url.absoluteString)"
+            )
+        }
+    }
+
     func handleNewURL(state: WebViewState, source: String) async throws {
         debugPrint(
             "# FLASH ReaderWebViewHandler.handleNewURL start",
@@ -132,6 +277,10 @@ private class ReaderWebViewHandler {
         if state.pageURL.absoluteString == "about:blank" {
             debugPrint("# FLASH ReaderWebViewHandler.handleNewURL native reader view", "page=\(flashURLDescription(state.pageURL))")
             let cancelURL = readerContent.content?.url ?? readerContent.pageURL
+            let pendingCanonicalURL = readerModeViewModel.pendingReaderModeURL?.canonicalReaderContentURL()
+            let shouldPreserveSnippetReaderModeLoad =
+                cancelURL.canonicalReaderContentURL().isSnippetURL
+                || pendingCanonicalURL?.isSnippetURL == true
             debugPrint(
                 "# READERLOAD stage=readerWebView.aboutBlankCancel",
                 "source=\(source)",
@@ -140,9 +289,12 @@ private class ReaderWebViewHandler {
                 "contentURLBeforeLoad=\(readerContent.content?.url.absoluteString ?? "nil")",
                 "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
                 "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
+                "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
+                "preserveSnippetLoad=\(shouldPreserveSnippetReaderModeLoad)"
             )
-            readerModeViewModel.cancelReaderModeLoad(for: cancelURL)
+            if !shouldPreserveSnippetReaderModeLoad {
+                readerModeViewModel.cancelReaderModeLoad(for: cancelURL)
+            }
         }
 
         if let lastHandledURL, lastHandledURL.matchesReaderURL(state.pageURL), lastHandledIsProvisionallyNavigating == state.isProvisionallyNavigating, lastHandledIsLoading == state.isLoading {
@@ -284,12 +436,131 @@ private class ReaderWebViewHandler {
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", "page=\(flashURLDescription(state.pageURL))")
             if let content = self.readerContent.content,
                content.isReaderModeByDefault {
+                let pageMatchesContentURL = state.pageURL.matchesReaderURL(content.url)
+                let shouldRenderDeferredPreparedReaderMode =
+                    (state.pageURL.isReaderURLLoaderURL || pageMatchesContentURL)
+                    && self.scriptCaller.hasAsyncCaller
+                    && self.readerModeViewModel.readabilityContent != nil
+                    && self.readerModeViewModel.isReaderModeLoadPending(for: content.url)
+                    && !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
+
+                if shouldRenderDeferredPreparedReaderMode {
+                    debugPrint(
+                        "# READERLOAD stage=readerWebView.renderDeferredPreparedReaderMode",
+                        "pageURL=\(state.pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)",
+                        "pageMatchesContent=\(pageMatchesContentURL)"
+                    )
+                    self.readerModeViewModel.showReaderView(
+                        readerContent: self.readerContent,
+                        scriptCaller: self.scriptCaller
+                    )
+                }
+
+                let shouldRecoverDeferredReaderModeLoad =
+                    state.pageURL.isReaderURLLoaderURL
+                    && content.hasHTML
+                    && self.readerModeViewModel.readabilityContent == nil
+                    && self.readerModeViewModel.pendingReaderModeURL == nil
+                    && !self.readerModeViewModel.isReaderMode
+                    && !self.readerModeViewModel.isReaderModeLoading
+                    && !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
+
+                if shouldRecoverDeferredReaderModeLoad {
+                    debugPrint(
+                        "# READERLOAD stage=readerWebView.recoverDeferredReaderMode",
+                        "pageURL=\(state.pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "cachedHTMLBytes=\(cachedHTMLBytes)",
+                        "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
+                    )
+                    if self.scriptCaller.hasAsyncCaller {
+                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                            readerContent: self.readerContent,
+                            scriptCaller: self.scriptCaller
+                        )
+                    } else {
+                        self.deferReaderModeRecoveryUntilAsyncCallerReady(
+                            content: content,
+                            pageURL: state.pageURL,
+                            reason: "deferredReaderModeLoad"
+                        )
+                    }
+                }
+
+                let shouldRecoverPendingReaderModeLoad =
+                    pageMatchesContentURL
+                    && content.hasHTML
+                    && self.readerModeViewModel.readabilityContent == nil
+                    && self.readerModeViewModel.isReaderModeLoadPending(for: content.url)
+                    && !self.readerModeViewModel.isReaderMode
+                    && !self.readerModeViewModel.isReaderModeLoading
+                    && !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
+
+                if shouldRecoverPendingReaderModeLoad {
+                    debugPrint(
+                        "# READERLOAD stage=readerWebView.recoverPendingReaderMode",
+                        "pageURL=\(state.pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "cachedHTMLBytes=\(cachedHTMLBytes)",
+                        "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
+                    )
+                    if self.scriptCaller.hasAsyncCaller {
+                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                            readerContent: self.readerContent,
+                            scriptCaller: self.scriptCaller
+                        )
+                    } else {
+                        self.deferReaderModeRecoveryUntilAsyncCallerReady(
+                            content: content,
+                            pageURL: state.pageURL,
+                            reason: "pendingReaderModeLoad"
+                        )
+                    }
+                }
+
+                let shouldRecoverVisiblePageReaderModeLoad =
+                    pageMatchesContentURL
+                    && content.isReaderModeByDefault
+                    && content.hasHTML
+                    && self.readerModeViewModel.readabilityContent == nil
+                    && !self.readerModeViewModel.isReaderMode
+                    && !self.readerModeViewModel.isReaderModeLoading
+                    && !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
+
+                if shouldRecoverVisiblePageReaderModeLoad {
+                    debugPrint(
+                        "# READERLOAD stage=readerWebView.recoverVisiblePageReaderMode",
+                        "pageURL=\(state.pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "cachedHTMLBytes=\(cachedHTMLBytes)",
+                        "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
+                    )
+                    if self.scriptCaller.hasAsyncCaller {
+                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                            readerContent: self.readerContent,
+                            scriptCaller: self.scriptCaller
+                        )
+                    } else {
+                        self.deferReaderModeRecoveryUntilAsyncCallerReady(
+                            content: content,
+                            pageURL: state.pageURL,
+                            reason: "visiblePageReaderModeLoad"
+                        )
+                    }
+                }
+
                 let cachedHTML = content.html
+                let cachedSnippetReaderHTMLReady = cachedHTML.map(self.snippetCachedReaderHTMLIsRenderable) ?? false
                 let allowDuringLoading = self.readerModeViewModel.isReaderModeLoading
                     && self.readerModeViewModel.isReaderModeHandlingURL(content.url)
                 let renderInFlight = self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url)
                 let canShowCached = self.readerModeViewModel.readabilityContent == nil
                     && cachedHTMLBytes > 0
+                    && (!content.url.isSnippetURL || cachedSnippetReaderHTMLReady)
                     && (!self.readerModeViewModel.isReaderModeLoading || allowDuringLoading)
                     && !renderInFlight
                 debugPrint(
@@ -302,70 +573,40 @@ private class ReaderWebViewHandler {
                     "isReaderMode=\(self.readerModeViewModel.isReaderMode)",
                     "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
                     "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)",
-                    "cachedHTMLBytes=\(cachedHTMLBytes)"
+                    "cachedHTMLBytes=\(cachedHTMLBytes)",
+                    "snippetReady=\(cachedSnippetReaderHTMLReady)"
                 )
                 if canShowCached, let cachedHTML {
-                    if !self.scriptCaller.hasAsyncCaller {
+                    guard !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url) else {
                         debugPrint(
-                            "# READERRELOAD cachedReadability.defer",
-                            "reason=asyncCallerMissing",
-                            "pageURL=\(state.pageURL.absoluteString)",
-                            "contentURL=\(content.url.absoluteString)"
+                            "# READERPERF readerMode.render.singleFlight.skip",
+                            "url=\(content.url.absoluteString)",
+                            "reason=cachedReadability.show",
+                            "generation=nil",
+                            "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                            "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
+                            "isReaderMode=\(self.readerModeViewModel.isReaderMode)"
                         )
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 250_000_000)
-                            guard self.scriptCaller.hasAsyncCaller else { return }
-                            guard !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url) else {
-                                debugPrint(
-                                    "# READERPERF readerMode.render.singleFlight.skip",
-                                    "url=\(content.url.absoluteString)",
-                                    "reason=cachedReadability.defer",
-                                    "generation=nil",
-                                    "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
-                                    "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
-                                    "isReaderMode=\(self.readerModeViewModel.isReaderMode)"
-                                )
-                                return
-                            }
-                            debugPrint(
-                                "# READERRELOAD cachedReadability.show",
-                                "pageURL=\(state.pageURL.absoluteString)",
-                                "contentURL=\(content.url.absoluteString)",
-                                "bytes=\(cachedHTML.utf8.count)"
-                            )
-                            self.readerModeViewModel.readabilityContent = cachedHTML
-                            self.readerModeViewModel.readabilityContainerSelector = nil
-                            self.readerModeViewModel.readabilityContainerFrameInfo = nil
-                            self.readerModeViewModel.showReaderView(
-                                readerContent: self.readerContent,
-                                scriptCaller: self.scriptCaller
-                            )
-                        }
+                        return
+                    }
+                    debugPrint(
+                        "# READERRELOAD cachedReadability.show",
+                        "pageURL=\(state.pageURL.absoluteString)",
+                        "contentURL=\(content.url.absoluteString)",
+                        "bytes=\(cachedHTML.utf8.count)",
+                        "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
+                    )
+                    if self.scriptCaller.hasAsyncCaller {
+                        self.renderCachedReadabilityHTML(
+                            cachedHTML,
+                            for: content,
+                            pageURL: state.pageURL
+                        )
                     } else {
-                        guard !self.readerModeViewModel.isReadabilityRenderInFlight(for: content.url) else {
-                            debugPrint(
-                                "# READERPERF readerMode.render.singleFlight.skip",
-                                "url=\(content.url.absoluteString)",
-                                "reason=cachedReadability.show",
-                                "generation=nil",
-                                "pending=\(self.readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
-                                "isReaderModeLoading=\(self.readerModeViewModel.isReaderModeLoading)",
-                                "isReaderMode=\(self.readerModeViewModel.isReaderMode)"
-                            )
-                            return
-                        }
-                        debugPrint(
-                            "# READERRELOAD cachedReadability.show",
-                            "pageURL=\(state.pageURL.absoluteString)",
-                            "contentURL=\(content.url.absoluteString)",
-                            "bytes=\(cachedHTML.utf8.count)"
-                        )
-                        self.readerModeViewModel.readabilityContent = cachedHTML
-                        self.readerModeViewModel.readabilityContainerSelector = nil
-                        self.readerModeViewModel.readabilityContainerFrameInfo = nil
-                        self.readerModeViewModel.showReaderView(
-                            readerContent: self.readerContent,
-                            scriptCaller: self.scriptCaller
+                        self.deferCachedReadabilityRenderUntilAsyncCallerReady(
+                            cachedHTML: cachedHTML,
+                            content: content,
+                            pageURL: state.pageURL
                         )
                     }
                 }
