@@ -493,7 +493,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return ReaderContentCell<C>.buttonSize
     }
     
-    private var metadataText: String? {
+    private var remainingDurationText: String? {
         Self.formatMetadata(/*wordCount: viewModel.totalWordCount, */remainingTime: viewModel.remainingTime)
     }
     
@@ -514,12 +514,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var usesPlainLayout: Bool {
         readerContentCellStyle == .plain
-    }
-
-    private var shouldShowTopStatusRow: Bool {
-        if item is ContentFile { return true }
-        if appearance.isEbookStyle && !isProgressVisible { return true }
-        return false
     }
 
     @ViewBuilder
@@ -550,21 +544,19 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var topStatusRow: some View {
-        if shouldShowTopStatusRow {
-            HStack(spacing: 8) {
-                if appearance.isEbookStyle && !isProgressVisible {
-                    if item.hasAudio {
-                        audioBadge
-                    }
-                    newBadge
-                }
-
-                if let contentFile = item as? ContentFile {
-                    CloudDriveSyncStatusView(item: contentFile)
-                        .labelStyle(.iconOnly)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+        HStack(spacing: 8) {
+            audioBadge
+            
+            if appearance.isEbookStyle {
+                newBadge
+            }
+            
+            if let contentFile = item as? ContentFile {
+                CloudDriveSyncStatusView(item: contentFile)
+                    .labelStyle(.iconOnly)
+                    .font(.callout)
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -573,16 +565,14 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     private var progressRow: some View {
         if shouldShowProgressRow {
             HStack(spacing: 8) {
-                audioBadge
-
                 if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
                     ProgressView(value: min(1, readingProgressFloat))
                         .progressViewStyle(LinearProgressViewStyle())
                         .tint((viewModel.isFullArticleFinished ?? false) ? Color("PaletteGreen") : .secondary)
                         .frame(width: progressBarWidth)
 
-                    if let metadataText {
-                        Text(metadataText)
+                    if let remainingDurationText {
+                        Text(remainingDurationText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -655,6 +645,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .minimumScaleFactor(0.9)
                     .font(.footnote)
                     .layoutPriority(2)
+                    .border(.red)
             }
 
             Spacer(minLength: 0)
@@ -744,23 +735,30 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
                 Group {
                     if usesPlainLayout {
-                        VStack(alignment: .leading, spacing: 6) {
-                            sourceOrAuthorRow
-
+                        VStack(alignment: .leading, spacing: 0) {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(viewModel.title)
-                                    .font(.headline)
-                                    .lineLimit(titleLineLimit)
-                                    .multilineTextAlignment(.leading)
-                                    .environment(\._lineHeightMultiple, 0.875)
-                                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .layoutPriority(1)
-
-                                topStatusRow
+                                sourceOrAuthorRow
+                                
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(viewModel.title)
+                                        .font(.headline)
+                                        .lineLimit(titleLineLimit)
+                                        .multilineTextAlignment(.leading)
+                                        .environment(\._lineHeightMultiple, 0.875)
+                                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .layoutPriority(1)
+                                    
+                                    topStatusRow
+                                        .border(.green)
+                                }
+                                .border(.teal)
                             }
+                            
                             progressRow
+                                .border(.orange)
                             metadataRow
+                                .border(.blue)
                         }
                         .frame(
                             maxWidth: .infinity,

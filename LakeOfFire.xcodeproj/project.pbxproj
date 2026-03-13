@@ -118,6 +118,7 @@
 		87AC8179EDD92C03E10BA186 /* Pow.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0ACFBB587A7997D2F15BBE19 /* Pow.framework */; };
 		88163DF75BD02B4A16991373 /* UTType+EPub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18482AF17295B2CF26728AF5 /* UTType+EPub.swift */; };
 		888ABEFBE854CFC4BCB9E116 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
+		89133F99D9FE053692F8034B /* libJapaneseLanguageTools.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */; };
 		8A3F0E04EA80C3C503F5A753 /* FaviconFinder.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 44214EC7D4875D6794B8842B /* FaviconFinder.framework */; };
 		8A8F7A9547174A85D5E0FE10 /* TuistBundle+LakeOfFireReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590BB72CD030D9F284EC87EE /* TuistBundle+LakeOfFireReader.swift */; };
 		8B85B40F5E7D21FDB5ED4F44 /* AsyncView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
@@ -148,7 +149,6 @@
 		AD2253430928B7CBBD12F2DC /* URL+ContentTypeTitle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2087E0C0462C479BEC4635D5 /* URL+ContentTypeTitle.swift */; };
 		AD4D97351AB3A66D03CE5BE9 /* WebViewNavigator+ReaderContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEF8B2522DB031E91ACC8409 /* WebViewNavigator+ReaderContent.swift */; };
 		AD544CE378C00564F13058EB /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
-		AFA92416B096FFE8C80AE573 /* JapaneseLanguageTools.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */; };
 		B0BBFF74349009B9CC800F36 /* ReaderConsoleLogsUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCC96841DC7C835DF335520B /* ReaderConsoleLogsUserScript.swift */; };
 		B1D278604B45FC9EC1E13ED9 /* BaseReadingProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F56AFD6057D9BF2D3E9ACB1 /* BaseReadingProgress.swift */; };
 		B314E13B3112276D24ABACB1 /* URL+GoogleQuery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44B5DBD524B1DA313BA8C068 /* URL+GoogleQuery.swift */; };
@@ -374,6 +374,7 @@
 			files = (
 				19AE9D394A65661F7F599AEE /* BigSyncKit.framework in Dependencies */,
 				ED786D9E19DD9A9A419F258E /* ExpandableText.framework in Dependencies */,
+				89133F99D9FE053692F8034B /* libJapaneseLanguageTools.a in Dependencies */,
 				847D1840A086D6418AFFBF4B /* LakeImage.framework in Dependencies */,
 				6C7D1FD4EA7F65D2C12847F6 /* LakeKit.framework in Dependencies */,
 				DA6811FE24397BC1EBFD3561 /* LakeOfFireAdblock.framework in Dependencies */,
@@ -565,7 +566,6 @@
 
 /* Begin PBXFileReference section */
 		0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeOfFireShareSupport.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = JapaneseLanguageTools.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0A07E441969025DDD60958D1 /* LakeImage.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LakeImage.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0ACFBB587A7997D2F15BBE19 /* Pow.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pow.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSelectionEnvironment.swift; sourceTree = "<group>"; };
@@ -573,6 +573,7 @@
 		0DBF1743F0462956A696C598 /* OpenGraph.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OpenGraph.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		0E267DA04D9DFBAE6197B193 /* CodeEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeEditor.swift; sourceTree = "<group>"; };
 		0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RealmSwift.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libJapaneseLanguageTools.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		102FAB3669EAF9C880015307 /* EPub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPub.swift; sourceTree = "<group>"; };
 		13849EE84EAEA7363556428B /* LibraryCategoriesViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryCategoriesViewModel.swift; sourceTree = "<group>"; };
 		1727F4123F8595B844950D30 /* User Scripts */ = {isa = PBXFileReference; path = "User Scripts"; sourceTree = "<group>"; };
@@ -807,7 +808,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AFA92416B096FFE8C80AE573 /* JapaneseLanguageTools.framework in Frameworks */,
 				F09E60698C7B2D9C1D2C8A0A /* LRUCache.framework in Frameworks */,
 				FAD5E638AB87797E77B55FAF /* OrderedCollections.framework in Frameworks */,
 				45DA7A147DACC42EF780B40A /* Realm.framework in Frameworks */,
@@ -1027,7 +1027,6 @@
 				44214EC7D4875D6794B8842B /* FaviconFinder.framework */,
 				5126A6F6B4DB514C3874C507 /* FeedKit.framework */,
 				9C70D45904D4F0928CCAC4EE /* FilePicker.framework */,
-				01809B56CBCB1239730808CF /* JapaneseLanguageTools.framework */,
 				0A07E441969025DDD60958D1 /* LakeImage.framework */,
 				5DC479A0C6C95A826B5E7C9C /* LakeKit.framework */,
 				6B98E24774B649058EEDA71C /* LakeOfFireAdblock.framework */,
@@ -1038,6 +1037,7 @@
 				172FF3A7BCA8ABCEB46E3520 /* LakeOfFireLibrary.framework */,
 				685ED81014B30776F3A5C8CC /* LakeOfFireReader.framework */,
 				0017879037EB5DDEC30A158C /* LakeOfFireShareSupport.framework */,
+				0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */,
 				BAFD50164A82B1A58BD8ACEF /* Logging.framework */,
 				31ED82BC038DAB511FEE78AE /* LRUCache.framework */,
 				19804300D047EDE18FB8708A /* MarkdownKit.framework */,
