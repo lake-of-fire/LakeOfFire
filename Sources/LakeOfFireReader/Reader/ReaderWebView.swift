@@ -151,12 +151,13 @@ private class ReaderWebViewHandler {
                     """
                 )
                 guard let payload = self.parseJSONStringObject(result) else {
+                    guard result != nil else { return }
                     logLookupSmar10([
                         "stage": "native.readerSurfaceSnapshot",
                         "source": source,
                         "pageURL": state.pageURL.absoluteString,
-                        "error": result == nil ? "nilResult" : "unexpectedResultType",
-                        "type": result.map { String(describing: Swift.type(of: $0)) } ?? "nil"
+                        "error": "unexpectedResultType",
+                        "type": String(describing: Swift.type(of: result!))
                     ])
                     return
                 }
@@ -168,6 +169,137 @@ private class ReaderWebViewHandler {
             } catch {
                 logLookupSmar10([
                     "stage": "native.readerSurfaceSnapshot",
+                    "source": source,
+                    "pageURL": state.pageURL.absoluteString,
+                    "error": String(describing: error)
+                ])
+            }
+        }
+    }
+
+    private func logNativeViewportDOMProbe(source: String, state: WebViewState) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            logLookupSmar10([
+                "stage": "native.webView.viewport.domProbe.requested",
+                "source": source,
+                "pageURL": state.pageURL.absoluteString
+            ])
+            guard !state.pageURL.isReaderURLLoaderURL else {
+                logLookupSmar10([
+                    "stage": "native.webView.viewport.domProbe.skipped",
+                    "source": source,
+                    "pageURL": state.pageURL.absoluteString,
+                    "reason": "loaderURL"
+                ])
+                return
+            }
+            guard state.pageURL.absoluteString != "about:blank" else {
+                logLookupSmar10([
+                    "stage": "native.webView.viewport.domProbe.skipped",
+                    "source": source,
+                    "pageURL": state.pageURL.absoluteString,
+                    "reason": "aboutBlank"
+                ])
+                return
+            }
+            do {
+                let result = try await self.scriptCaller.evaluateJavaScript(
+                    """
+                    (() => {
+                      const viewportX = window.innerWidth / 2;
+                      const viewportY = window.innerHeight / 2;
+                      const elementAtCenter = document.elementFromPoint(viewportX, viewportY);
+                      const firstVisibleButton = Array.from(document.querySelectorAll('.manabi-mark-section-as-read-button')).find((button) => {
+                        const style = getComputedStyle(button);
+                        return style.display !== 'none' && style.visibility !== 'hidden' && Number.parseFloat(style.opacity || '1') > 0.01;
+                      }) ?? null;
+                      const firstSegment = document.querySelector('manabi-segment');
+                      const firstSurface = document.querySelector('manabi-surface');
+                      const describe = (node) => {
+                        if (!node) return null;
+                        const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+                        const style = getComputedStyle(node);
+                        return {
+                          tag: node.tagName ?? null,
+                          id: node.id ?? null,
+                          className: typeof node.className === 'string' ? node.className : null,
+                          textSample: (node.textContent || '').trim().slice(0, 80),
+                          pointerEvents: style.pointerEvents ?? null,
+                          userSelect: style.userSelect ?? null,
+                          touchAction: style.touchAction ?? null,
+                          opacity: style.opacity ?? null,
+                          display: style.display ?? null,
+                          visibility: style.visibility ?? null,
+                          backgroundColor: style.backgroundColor ?? null,
+                          color: style.color ?? null,
+                          rect: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null
+                        };
+                      };
+                      return JSON.stringify({
+                        source,
+                        viewportX,
+                        viewportY,
+                        bodyClassName: document.body?.className ?? null,
+                        readerContentClassName: document.getElementById('reader-content')?.className ?? null,
+                        visibleTrackingButtonCount: Array.from(document.querySelectorAll('.manabi-mark-section-as-read-button')).filter((button) => {
+                          const style = getComputedStyle(button);
+                          return style.display !== 'none' && style.visibility !== 'hidden' && Number.parseFloat(style.opacity || '1') > 0.01;
+                        }).length,
+                        sectionCount: document.querySelectorAll('.manabi-tracking-section').length,
+                        segmentCount: document.querySelectorAll('manabi-segment').length,
+                        elementAtCenter: describe(elementAtCenter),
+                        centerClosestSegment: describe(elementAtCenter?.closest?.('manabi-segment') ?? null),
+                        centerClosestSurface: describe(elementAtCenter?.closest?.('manabi-surface') ?? null),
+                        firstVisibleButton: describe(firstVisibleButton),
+                        firstSegment: describe(firstSegment),
+                        firstSurface: describe(firstSurface)
+                      });
+                    })()
+                    """,
+                    arguments: ["source": source]
+                )
+                guard let payload = self.parseJSONStringObject(result) else {
+                    guard result != nil else {
+                        logLookupSmar10([
+                            "stage": "native.webView.viewport.domProbe",
+                            "source": source,
+                            "pageURL": state.pageURL.absoluteString,
+                            "error": "nilResult"
+                        ])
+                        return
+                    }
+                    logLookupSmar10([
+                        "stage": "native.webView.viewport.domProbe",
+                        "source": source,
+                        "pageURL": state.pageURL.absoluteString,
+                        "error": "unexpectedResultType",
+                        "type": String(describing: Swift.type(of: result!))
+                    ])
+                    return
+                }
+                var flattened: [String: Any] = [
+                    "stage": "native.webView.viewport.domProbe",
+                    "source": source,
+                    "pageURL": state.pageURL.absoluteString
+                ]
+                for (key, value) in payload {
+                    if let dictionary = value as? [String: Any],
+                       let data = try? JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys]),
+                       let string = String(data: data, encoding: .utf8) {
+                        flattened[key] = string
+                    } else if let array = value as? [Any],
+                              let data = try? JSONSerialization.data(withJSONObject: array, options: [.sortedKeys]),
+                              let string = String(data: data, encoding: .utf8) {
+                        flattened[key] = string
+                    } else {
+                        flattened[key] = value ?? "nil"
+                    }
+                }
+                logLookupSmar10(flattened)
+            } catch {
+                logLookupSmar10([
+                    "stage": "native.webView.viewport.domProbe",
                     "source": source,
                     "pageURL": state.pageURL.absoluteString,
                     "error": String(describing: error)
@@ -530,10 +662,12 @@ private class ReaderWebViewHandler {
                 scriptCaller: scriptCaller
             )
             self.logNativeReaderSurfaceSnapshot(source: "readerWebView.onNavigationFinished", state: state)
+            self.logNativeViewportDOMProbe(source: "readerWebView.onNavigationFinished", state: state)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 self.logNativeReaderSurfaceSnapshot(source: "readerWebView.onNavigationFinished.delayed", state: state)
+                self.logNativeViewportDOMProbe(source: "readerWebView.onNavigationFinished.delayed", state: state)
             }
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", "page=\(flashURLDescription(state.pageURL))")
             if let content = self.readerContent.content,
