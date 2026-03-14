@@ -303,6 +303,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                 ScrollView(.horizontal) {
                     contentStack
                 }
+                .scrollIndicators(.hidden, axes: .horizontal)
                 .scrollTargetBehavior(.viewAligned)
                 .scrollPosition(id: $scrollPositionID, anchor: .leading)
                 .onAppear { applyScrollPosition() }
@@ -313,6 +314,11 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
                         contentStack
+                    }
+                    .modifier {
+                        if #available(iOS 16, macOS 13, *) {
+                            $0.scrollIndicators(.hidden, axes: .horizontal)
+                        } else { $0 }
                     }
                     .onAppear {
                         scheduleScrollToStart(proxy: proxy)
@@ -514,6 +520,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 estimatedRowHeight
             )
         }
+        .frame(height: estimatedRowHeight, alignment: .top)
         //.enableInjection()
     }
     
