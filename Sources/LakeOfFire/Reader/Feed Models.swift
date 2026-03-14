@@ -164,7 +164,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
 
 @globalActor
 fileprivate actor FeedEntryActor {
-    static var shared = FeedEntryActor()
+    static let shared = FeedEntryActor()
 }
 
 public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, ChangeMetadataRecordable {

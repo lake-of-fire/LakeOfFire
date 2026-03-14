@@ -4,7 +4,7 @@ import RealmSwiftGaps
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
-    static var shared = ReaderContentCellActor()
+    static let shared = ReaderContentCellActor()
 }
 
 @MainActor

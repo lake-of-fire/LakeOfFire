@@ -7,7 +7,7 @@ import LakeKit
 
 @globalActor
 public actor ReaderContentListActor: CachedRealmsActor {
-    public static var shared = ReaderContentListActor()
+    public static let shared = ReaderContentListActor()
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     

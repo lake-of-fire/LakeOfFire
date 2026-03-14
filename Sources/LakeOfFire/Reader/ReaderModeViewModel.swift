@@ -9,7 +9,7 @@ import WebKit
 
 @globalActor
 fileprivate actor ReaderViewModelActor {
-    static var shared = ReaderViewModelActor()
+    static let shared = ReaderViewModelActor()
 }
 
 @MainActor
@@ -262,13 +262,8 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                     readerModeLoading(false)
-                } else if let htmlData = transformedContent.data(using: .utf8) {
-                    navigator?.load(
-                        htmlData,
-                        mimeType: "text/html",
-                        characterEncodingName: "UTF-8",
-                        baseURL: url
-                    )
+                } else if transformedContent.data(using: .utf8) != nil {
+                    navigator?.loadHTML(transformedContent, baseURL: url)
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
@@ -337,14 +332,9 @@ public class ReaderModeViewModel: ObservableObject {
                     // TODO: Fix content rules... images still load...
 //                    contentRules = contentRulesForReadabilityLoading
 
-                    if let htmlData = html.data(using: .utf8) {
+                    if html.data(using: .utf8) != nil {
                         Task { @MainActor in
-                            navigator?.load(
-                                htmlData,
-                                mimeType: "text/html",
-                                characterEncodingName: "UTF-8",
-                                baseURL: committedURL
-                            )
+                            navigator?.loadHTML(html, baseURL: committedURL)
                         }
                     }
 //                    readerModeLoading(false)

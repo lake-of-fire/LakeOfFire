@@ -133,7 +133,7 @@ fileprivate actor ZIPToEbookActor {
 
 @globalActor
 public actor EbookURLSchemeActor {
-    public static var shared = EbookURLSchemeActor()
+    public static let shared = EbookURLSchemeActor()
     
     public init() { }
 }

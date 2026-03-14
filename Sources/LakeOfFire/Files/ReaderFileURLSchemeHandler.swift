@@ -14,7 +14,7 @@ fileprivate let zipArchiveExtensions = ["zip", "epub"]
 
 @globalActor
 public actor ReaderFileURLSchemeActor {
-    public static var shared = ReaderFileURLSchemeActor()
+    public static let shared = ReaderFileURLSchemeActor()
     
     public init() { }
 }
