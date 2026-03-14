@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftUIWebView
 import SwiftSoup
+import SwiftReadability
 import RealmSwift
 import Combine
 import RealmSwiftGaps
@@ -10,6 +11,210 @@ import WebKit
 @globalActor
 fileprivate actor ReaderViewModelActor {
     static let shared = ReaderViewModelActor()
+}
+
+private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
+private let readabilityBylinePrefixRegex = try! NSRegularExpression(pattern: "^(by|par)\\s+", options: [.caseInsensitive])
+private let readabilityClassesToPreserve: [String] = [
+    "caption",
+    "emoji",
+    "hidden",
+    "invisible",
+    "sr-only",
+    "visually-hidden",
+    "visuallyhidden",
+    "wp-caption",
+    "wp-caption-text",
+    "wp-smiley",
+]
+
+private enum SwiftReadabilityProcessingOutcome {
+    case success(SwiftReadabilityProcessingResult)
+    case unavailable
+    case failed
+}
+
+private struct SwiftReadabilityProcessingResult {
+    let outputHTML: String
+}
+
+private func escapeReadabilityText(_ raw: String) -> String {
+    raw
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+private func escapeReadabilityHTMLAttribute(_ raw: String) -> String {
+    escapeReadabilityText(raw)
+}
+
+private func normalizeReadabilityBylineText(_ rawByline: String) -> String {
+    let trimmed = rawByline.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    let nsByline = trimmed as NSString
+    let range = NSRange(location: 0, length: nsByline.length)
+    let stripped = readabilityBylinePrefixRegex.stringByReplacingMatches(
+        in: trimmed,
+        options: [],
+        range: range,
+        withTemplate: ""
+    )
+    let cleaned = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.isEmpty ? trimmed : cleaned
+}
+
+private func isInternalReaderURL(_ url: URL) -> Bool {
+    url.scheme == "internal" && url.host == "local"
+}
+
+internal func buildCanonicalReadabilityHTML(
+    title: String,
+    byline: String,
+    publishedTime: String?,
+    content: String,
+    contentURL: URL
+) -> String {
+    let resolvedTitle = escapeReadabilityText(title)
+    let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
+    let viewOriginal = isInternalReaderURL(contentURL) ? "" : "<a class=\"reader-view-original\">View Original</a>"
+    let bylineLine = resolvedByline.isEmpty
+        ? ""
+        : "<div id=\"reader-byline-line\" class=\"byline-line\"><span class=\"byline-label\">By</span> <span id=\"reader-byline\" class=\"byline\">\(resolvedByline)</span></div>"
+    let publicationDateText = publishedTime.map(escapeReadabilityText) ?? ""
+    let metaLine = """
+    <div id="reader-meta-line" class="byline-meta-line"><span id="reader-publication-date">\(publicationDateText)</span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>
+    """
+    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\""
+    return """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="\(readabilityViewportMetaContent)">
+            <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)</style>
+            <title>\(resolvedTitle)</title>
+        </head>
+        <body class="readability-mode" \(availabilityAttributes)>
+            <div id="reader-header" class="header">
+                <h1 id="reader-title">\(resolvedTitle)</h1>
+                <div id="reader-byline-container">
+                    \(bylineLine)
+                    \(metaLine)
+                </div>
+            </div>
+            <div id="reader-content">
+                \(content)
+            </div>
+            <script>
+                \(Readability.shared.scripts)
+            </script>
+        </body>
+    </html>
+    """
+}
+
+internal func bodyInnerHTML(from html: String) -> String? {
+    guard let doc = try? SwiftSoup.parse(html) else {
+        return nil
+    }
+    return try? doc.body()?.html()
+}
+
+internal func hasReadabilityModeBodyClassMarkup(in html: String) -> Bool {
+    html.range(of: #"<body[^>]*class=['"][^'"]*\breadability-mode\b[^'"]*['"]"#, options: .regularExpression) != nil
+}
+
+internal func hasReaderContentNodeMarkup(in html: String) -> Bool {
+    html.range(of: #"<[^>]+id=['"]reader-content['"]"#, options: .regularExpression) != nil
+}
+
+internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
+    hasReadabilityModeBodyClassMarkup(in: html) && hasReaderContentNodeMarkup(in: html)
+}
+
+internal func titleFromReadabilityHTML(_ html: String) -> String? {
+    guard let doc = try? SwiftSoup.parse(html) else {
+        let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stripped.isEmpty else { return nil }
+        return stripped.components(separatedBy: "\n").first?.truncate(36)
+    }
+    let rawCandidate = (try? doc.getElementById("reader-title")?.text())
+        ?? (try? doc.title())
+    let candidate = rawCandidate?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let candidate, !candidate.isEmpty else { return nil }
+    return candidate.truncate(36)
+}
+
+private func canHaveReadabilityContent(for url: URL) -> Bool {
+    if url.absoluteString == "about:blank" || url.isEBookURL {
+        return false
+    }
+    return url.scheme?.lowercased() != "about"
+}
+
+private func ensureReadabilityBodyExists(_ html: String) -> String {
+    if html.range(of: "<body", options: .caseInsensitive) != nil {
+        return html
+    }
+    return """
+    <html>
+    <head></head>
+    <body>
+    \(html)
+    </body>
+    </html>
+    """
+}
+
+private func stripTemplateTagsForReadability(_ html: String) -> String {
+    guard html.range(of: "<template", options: .caseInsensitive) != nil else {
+        return html
+    }
+    return html.replacingOccurrences(
+        of: #"(?is)<template\b[^>]*>.*?</template>"#,
+        with: "",
+        options: .regularExpression
+    )
+}
+
+func buildSnippetCanonicalReadabilityHTML(
+    html: String,
+    contentURL: URL,
+    fallbackTitle: String?
+) -> String? {
+    let normalizedHTML = ensureReadabilityBodyExists(html)
+    if hasCanonicalReadabilityMarkup(in: normalizedHTML) {
+        return normalizedHTML
+    }
+    guard let rawContent = bodyInnerHTML(from: normalizedHTML)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !rawContent.isEmpty else {
+        return nil
+    }
+    return buildCanonicalReadabilityHTML(
+        title: fallbackTitle ?? "",
+        byline: "",
+        publishedTime: nil,
+        content: rawContent,
+        contentURL: contentURL
+    )
+}
+
+@MainActor
+private func locallyRetrievableReaderHTML(
+    for content: any ReaderContentProtocol,
+    readerFileManager: ReaderFileManager
+) async throws -> String? {
+    var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    if html == nil, content.url.isSnippetURL {
+        html = content.html
+    }
+    guard let html else {
+        return nil
+    }
+    let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
 }
 
 @MainActor
@@ -66,6 +271,12 @@ public class ReaderModeViewModel: ObservableObject {
     }
     
     public init() { }
+
+    private enum ReaderModeRoute: String {
+        case localHTML = "swiftFinalLoad"
+        case capturedReadability = "webviewReadability"
+        case unavailable = "unavailable"
+    }
     
     func isReaderModeLoadPending(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
@@ -81,14 +292,31 @@ public class ReaderModeViewModel: ObservableObject {
             objectWillChange.send()
         }
     }
+
+    @MainActor
+    private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
+        let activeReaderFileManager = readerFileManager ?? .shared
+        if let content = try? await readerContent.getContent(),
+           let html = try? await locallyRetrievableReaderHTML(
+                for: content,
+                readerFileManager: activeReaderFileManager
+           ),
+           !html.isEmpty {
+            return .localHTML
+        }
+        if readabilityContent != nil {
+            return .capturedReadability
+        }
+        return .unavailable
+    }
+
+    @MainActor
+    func readerModeRouteForTesting(readerContent: ReaderContent) async -> String {
+        await resolveReaderModeRoute(readerContent: readerContent).rawValue
+    }
     
     @MainActor
     internal func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
-        guard let readabilityContent else {
-            // FIME: WHY THIS CALLED WHEN LOAD??
-            readerModeLoading(false)
-            return
-        }
         let contentURL = readerContent.pageURL
         readerModeLoading(true)
         Task { @MainActor in
@@ -96,24 +324,105 @@ public class ReaderModeViewModel: ObservableObject {
                 readerModeLoading(false)
                 return
             }
-            do {
-                try await showReadabilityContent(
+            let route = await resolveReaderModeRoute(readerContent: readerContent)
+            switch route {
+            case .localHTML:
+                await showReaderViewUsingSwiftProcessing(
                     readerContent: readerContent,
-                    readabilityContent: readabilityContent,
-                    renderToSelector: readabilityContainerSelector,
-                    in: readabilityContainerFrameInfo,
                     scriptCaller: scriptCaller
                 )
-            } catch {
-                print(error)
+            case .capturedReadability:
+                guard let readabilityContent else {
+                    readerModeLoading(false)
+                    return
+                }
+                do {
+                    try await showReadabilityContent(
+                        readerContent: readerContent,
+                        readabilityContent: readabilityContent,
+                        renderToSelector: readabilityContainerSelector,
+                        in: readabilityContainerFrameInfo,
+                        scriptCaller: scriptCaller
+                    )
+                } catch {
+                    print(error)
+                    readerModeLoading(false)
+                }
+            case .unavailable:
                 readerModeLoading(false)
             }
+        }
+    }
+
+    @MainActor
+    private func showReaderViewUsingSwiftProcessing(
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller
+    ) async {
+        do {
+            guard let content = try await readerContent.getContent() else {
+                readerModeLoading(false)
+                return
+            }
+            let activeReaderFileManager = readerFileManager ?? .shared
+            guard let html = try await locallyRetrievableReaderHTML(
+                for: content,
+                readerFileManager: activeReaderFileManager
+            ) else {
+                readerModeLoading(false)
+                return
+            }
+
+            let resolvedReadabilityHTML: String?
+            if hasCanonicalReadabilityMarkup(in: html) {
+                resolvedReadabilityHTML = html
+            } else {
+                let swiftReadability = await processReadabilityHTMLInSwift(
+                    html: html,
+                    url: content.url,
+                    meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
+                )
+                switch swiftReadability {
+                case .success(let result):
+                    resolvedReadabilityHTML = result.outputHTML
+                case .unavailable, .failed:
+                    resolvedReadabilityHTML = nil
+                }
+            }
+
+            if let resolvedReadabilityHTML {
+                readabilityContent = resolvedReadabilityHTML
+                try await showReadabilityContent(
+                    readerContent: readerContent,
+                    readabilityContent: resolvedReadabilityHTML,
+                    renderToSelector: nil,
+                    in: nil,
+                    scriptCaller: scriptCaller
+                )
+                return
+            }
+
+            readabilityContent = nil
+            let directHTML = prepareHTMLForDirectLoad(html)
+            if let htmlData = directHTML.data(using: .utf8) {
+                navigator?.load(
+                    htmlData,
+                    mimeType: "text/html",
+                    characterEncodingName: "UTF-8",
+                    baseURL: content.url
+                )
+            } else {
+                navigator?.loadHTML(directHTML, baseURL: content.url)
+            }
+        } catch {
+            print(error)
+            readerModeLoading(false)
         }
     }
     
     /// `readerContent` is used to verify current reader state before loading processed `content`
     @MainActor
-    private func showReadabilityContent(
+    internal func showReadabilityContent(
         readerContent: ReaderContent,
         readabilityContent: String,
         renderToSelector: String?,
@@ -126,13 +435,13 @@ public class ReaderModeViewModel: ObservableObject {
             return
         }
         let url = content.url
-        
-        Task {
-            try await scriptCaller.evaluateJavaScript("""
-            if (document.body) {
-                document.body.dataset.isNextLoadInReaderMode = 'true';
-            }
-            """)
+        let renderBaseURL: URL
+        if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
+            renderBaseURL = url
+        } else if url.absoluteString == "about:blank" {
+            renderBaseURL = readerContent.pageURL
+        } else {
+            renderBaseURL = url
         }
         
         try await content.asyncWrite { _, content in
@@ -262,14 +571,69 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                     readerModeLoading(false)
-                } else if transformedContent.data(using: .utf8) != nil {
-                    navigator?.loadHTML(transformedContent, baseURL: url)
+                } else if let htmlData = transformedContent.data(using: .utf8) {
+                    navigator?.load(
+                        htmlData,
+                        mimeType: "text/html",
+                        characterEncodingName: "UTF-8",
+                        baseURL: renderBaseURL
+                    )
+                } else {
+                    navigator?.loadHTML(transformedContent, baseURL: renderBaseURL)
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
 //                }()
             }()
         }()
+    }
+
+    @ReaderViewModelActor
+    private func processReadabilityHTMLInSwift(
+        html: String,
+        url: URL,
+        meaningfulContentMinChars: Int
+    ) async -> SwiftReadabilityProcessingOutcome {
+        guard canHaveReadabilityContent(for: url) else {
+            return .unavailable
+        }
+
+        let normalizedHTML = ensureReadabilityBodyExists(html)
+        let options = SwiftReadability.ReadabilityOptions(
+            charThreshold: max(meaningfulContentMinChars, 1),
+            classesToPreserve: readabilityClassesToPreserve
+        )
+        let parser = SwiftReadability.Readability(
+            html: normalizedHTML,
+            url: url,
+            options: options
+        )
+
+        guard let result = try? parser.parse() else {
+            if url.isSnippetURL,
+               let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+                    html: normalizedHTML,
+                    contentURL: url,
+                    fallbackTitle: titleFromReadabilityHTML(normalizedHTML)
+               ) {
+                return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
+            }
+            return .failed
+        }
+
+        let rawContent = stripTemplateTagsForReadability(result.content)
+        guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failed
+        }
+
+        let outputHTML = buildCanonicalReadabilityHTML(
+            title: stripTemplateTagsForReadability(result.title ?? ""),
+            byline: stripTemplateTagsForReadability(result.byline ?? ""),
+            publishedTime: result.publishedTime,
+            content: rawContent,
+            contentURL: url
+        )
+        return .success(SwiftReadabilityProcessingResult(outputHTML: outputHTML))
     }
     
     @MainActor
@@ -312,7 +676,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
         
         if newState.pageURL.isReaderURLLoaderURL {
-            if let readerFileManager, var html = try await content.htmlToDisplay(readerFileManager: readerFileManager) {
+            if let readerFileManager, let html = try await content.htmlToDisplay(readerFileManager: readerFileManager) {
                 try Task.checkCancellation()
                 
                 let currentURL = readerContent.pageURL
@@ -321,30 +685,15 @@ public class ReaderModeViewModel: ObservableObject {
                     readerModeLoading(false)
                     return
                 }
-                if html.range(of: "<body.*?class=['\"].*?readability-mode.*?['\"]>", options: .regularExpression) == nil, html.range(of: "<body.*?data-is-next-load-in-reader-mode=['\"]true['\"]>", options: .regularExpression) == nil {
-                    // TODO: is this code path still used at all?
-                    if let _ = html.range(of: "<body", options: .caseInsensitive) {
-                        html = html.replacingOccurrences(of: "<body", with: "<body data-is-next-load-in-reader-mode='true' ", options: .caseInsensitive)
-                    } else {
-                        html = "<body data-is-next-load-in-reader-mode='true'>\n" + html + "</html>"
-                    }
-                    try Task.checkCancellation()
-                    // TODO: Fix content rules... images still load...
-//                    contentRules = contentRulesForReadabilityLoading
-
-                    if html.data(using: .utf8) != nil {
-                        Task { @MainActor in
-                            navigator?.loadHTML(html, baseURL: committedURL)
-                        }
-                    }
-//                    readerModeLoading(false)
-                } else {
+                if hasCanonicalReadabilityMarkup(in: html) {
                     readabilityContent = html
-                    showReaderView(
-                        readerContent: readerContent,
-                        scriptCaller: scriptCaller
-                    )
+                } else {
+                    readabilityContent = nil
                 }
+                showReaderView(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller
+                )
             } else {
                 guard let navigator else {
                     print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
@@ -382,6 +731,34 @@ public class ReaderModeViewModel: ObservableObject {
     public func onNavigationFailed(newState: WebViewState) {
         readerModeLoading(false)
     }
+}
+
+func prepareHTMLForDirectLoad(_ html: String) -> String {
+    var updatedHTML = html
+    let markerPatterns = [
+        #"data-is-next-load-in-reader-mode=['\"][^'"]*['\"]"#,
+        #"data-manabi-reader-mode-available=['\"][^'"]*['\"]"#,
+        #"data-manabi-reader-mode-available-for=['\"][^'"]*['\"]"#
+    ]
+    for pattern in markerPatterns {
+        updatedHTML = updatedHTML.replacingOccurrences(
+            of: pattern,
+            with: "",
+            options: .regularExpression
+        )
+    }
+
+    if updatedHTML.range(of: "<body", options: .caseInsensitive) == nil {
+        return """
+        <html>
+        <head></head>
+        <body>
+        \(updatedHTML)
+        </body>
+        </html>
+        """
+    }
+    return updatedHTML
 }
 
 fileprivate let readerFontSizeStylePattern = #"(?i)(<body[^>]*\bstyle="[^"]*)font-size:\s*[\d.]+px"#

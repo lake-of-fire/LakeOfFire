@@ -56,6 +56,15 @@ public struct ReaderContentLoader {
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+
+    @MainActor
+    public static func hasLocallyRetrievableHTML(
+        for content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager
+    ) async throws -> Bool {
+        let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+        return html?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
  
     public static var unsavedHome: (any ReaderContentProtocol) {
 //        return try await Self.load(url: URL(string: "about:blank")!, persist: false)!
@@ -73,6 +82,13 @@ public struct ReaderContentLoader {
     }
     
     public static func getContentURL(fromLoaderURL pageURL: URL) -> URL? {
+        if pageURL.isReaderURLLoaderURL,
+           let components = URLComponents(url: pageURL, resolvingAgainstBaseURL: false),
+           let readerURLItem = components.queryItems?.first(where: { $0.name == "reader-url" }),
+           let readerURLValue = readerURLItem.value,
+           let contentURL = URL(string: readerURLValue) {
+            return contentURL
+        }
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
             return contentURL
         }
@@ -239,23 +255,50 @@ public struct ReaderContentLoader {
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
         let contentURL = content.url
-        if ["http", "https"].contains(contentURL.scheme?.lowercased()) || contentURL.isSnippetURL {
-            let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
+        let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
+            for: content,
+            readerFileManager: readerFileManager
+        )
+
+        if contentURL.isSnippetURL {
+            if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
+                return loaderURL
+            }
+            return content.url
+        }
+
+        if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
+            if content.isReaderModeByDefault,
+               contentHasLocallyRetrievableHTML,
+               let loaderURL = readerLoaderURL(for: contentURL) {
+                return loaderURL
+            }
+
+            let matchingContentURL = try await Task { @RealmBackgroundActor () -> URL? in
                 let allContents = try await loadAll(url: contentURL)
-                for candidateContent in allContents {
-                    guard candidateContent.isReaderModeByDefault else {
-                        break
-                    }
-                    if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
-                        guard let encodedURL = candidateContent.url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics), let historyURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)") else { return nil }
-                        //                                debugPrint("!! load(content isREaderModebydefault", historyURL)
-                        return historyURL
-                    }
-                }
-                return nil
+                return allContents.first(where: { $0.isReaderModeByDefault })?.url
             }.value
-            
-            return matchingURL ?? content.url
+
+            if let matchingContentURL,
+               let matchingContent = try await load(
+                    url: matchingContentURL,
+                    persist: false,
+                    countsAsHistoryVisit: false
+               ),
+               (try? await hasLocallyRetrievableHTML(
+                    for: matchingContent,
+                    readerFileManager: readerFileManager
+               )) == true,
+               let matchingURL = readerLoaderURL(for: matchingContent.url) {
+                return matchingURL
+            }
+            return content.url
+        }
+
+        if contentURL.isReaderFileURL,
+           contentHasLocallyRetrievableHTML,
+           let loaderURL = readerLoaderURL(for: contentURL) {
+            return loaderURL
         }
         
         return content.url
@@ -288,6 +331,13 @@ public struct ReaderContentLoader {
     
     public static func snippetURL(key: String) -> URL? {
         return URL(string: "internal://local/snippet?key=\(key)")
+    }
+
+    public static func readerLoaderURL(for contentURL: URL) -> URL? {
+        guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            return nil
+        }
+        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
     }
     
     @MainActor
