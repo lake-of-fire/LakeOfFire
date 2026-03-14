@@ -353,6 +353,32 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return item.url.absoluteString
     }
 
+    private var displayTitle: String {
+        fallbackTitle
+    }
+
+    private var fallbackSourceTitle: String? {
+        guard appearance.includeSource else { return nil }
+        if item.url.isSnippetURL {
+            return "Snippet"
+        }
+        if let host = item.url.host, !host.isEmpty {
+            let trimmedHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            if !trimmedHost.isEmpty {
+                return trimmedHost
+            }
+        }
+        return nil
+    }
+
+    private var displaySourceTitle: String? {
+        let primary = viewModel.sourceTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let primary, !primary.isEmpty {
+            return primary
+        }
+        return fallbackSourceTitle
+    }
+
     private func normalizedAuthor(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -532,7 +558,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     )
                     .opacity((viewModel.isFullArticleFinished ?? false) ? 0.75 : 1)
                 }
-                if let sourceTitle = viewModel.sourceTitle {
+                if let sourceTitle = displaySourceTitle {
                     Text(sourceTitle)
                         .lineLimit(1)
                         .font(.caption)
@@ -645,7 +671,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .minimumScaleFactor(0.9)
                     .font(.footnote)
                     .layoutPriority(2)
-                    .border(.red)
             }
 
             Spacer(minLength: 0)
@@ -740,7 +765,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 sourceOrAuthorRow
                                 
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text(viewModel.title)
+                                    Text(displayTitle)
                                         .font(.headline)
                                         .lineLimit(titleLineLimit)
                                         .multilineTextAlignment(.leading)
@@ -750,15 +775,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                         .layoutPriority(1)
                                     
                                     topStatusRow
-                                        .border(.green)
                                 }
-                                .border(.teal)
                             }
                             
                             progressRow
-                                .border(.orange)
                             metadataRow
-                                .border(.blue)
                         }
                         .frame(
                             maxWidth: .infinity,
@@ -771,7 +792,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             VStack(alignment: .leading, spacing: 6) {
                                 sourceOrAuthorRow
 
-                                Text(viewModel.title)
+                                Text(displayTitle)
                                     .font(.headline)
                                     .lineLimit(titleLineLimit)
                                     .multilineTextAlignment(.leading)
@@ -797,7 +818,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 //        }
         .frame(
             minWidth: appearance.maxCellHeight,
-            idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil
+            minHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil,
+            idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil,
+            maxHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil
         )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered

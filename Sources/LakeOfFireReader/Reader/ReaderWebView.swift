@@ -11,6 +11,11 @@ import LakeOfFireAdblock
 import LakeOfFireContent
 import LakeOfFireFiles
 
+@MainActor
+private func logLookupSmar10(_ payload: [String: Any]) {
+    debugPrint("# LOOKUPSMAR10", payload)
+}
+
 // To avoid redraws...
 @MainActor
 private class ReaderWebViewHandler {
@@ -78,6 +83,97 @@ private class ReaderWebViewHandler {
         self.readerModeViewModel = readerModeViewModel
         self.readerMediaPlayerViewModel = readerMediaPlayerViewModel
         self.scriptCaller = scriptCaller
+    }
+
+    private func parseJSONStringObject(_ value: Any?) -> [String: Any]? {
+        if let dictionary = value as? [String: Any] {
+            return dictionary
+        }
+        if let dictionary = value as? NSDictionary {
+            return dictionary as? [String: Any]
+        }
+        if let string = value as? String,
+           let data = string.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return json
+        }
+        if let data = value as? Data,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return json
+        }
+        return nil
+    }
+
+    private func logNativeReaderSurfaceSnapshot(source: String, state: WebViewState) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await self.scriptCaller.evaluateJavaScript(
+                    """
+                    (() => {
+                      const firstTrackingButton = document.querySelector('.manabi-mark-section-as-read-button');
+                      const finishedReadingButton = document.getElementById('manabi-finished-reading-button');
+                      const firstSegment = document.querySelector('manabi-segment');
+                      const firstSurface = document.querySelector('manabi-surface');
+                      const readerSections = document.getElementsByClassName('manabi-tracking-section');
+                      const styleFor = (element) => element ? getComputedStyle(element) : null;
+                      const trackingStyle = styleFor(firstTrackingButton);
+                      const finishedStyle = styleFor(finishedReadingButton);
+                      const segmentStyle = styleFor(firstSegment);
+                      const surfaceStyle = styleFor(firstSurface);
+                      return {
+                        livePageURL: window.location.href,
+                        trackingButtonCount: document.getElementsByClassName('manabi-mark-section-as-read-button').length,
+                        visibleTrackingButtonCount: Array.from(document.getElementsByClassName('manabi-mark-section-as-read-button')).filter((button) => {
+                          const style = getComputedStyle(button);
+                          return style.display !== 'none' && style.visibility !== 'hidden' && Number.parseFloat(style.opacity || '1') > 0.01;
+                        }).length,
+                        finishedReadingButtonPresent: Boolean(finishedReadingButton),
+                        finishedReadingButtonDisplay: finishedStyle?.display ?? null,
+                        finishedReadingButtonVisibility: finishedStyle?.visibility ?? null,
+                        finishedReadingButtonOpacity: finishedStyle?.opacity ?? null,
+                        finishedReadingButtonWidth: finishedReadingButton?.getBoundingClientRect?.().width ?? null,
+                        finishedReadingButtonHeight: finishedReadingButton?.getBoundingClientRect?.().height ?? null,
+                        sectionCount: readerSections.length,
+                        segmentCount: document.getElementsByTagName('manabi-segment').length,
+                        firstTrackingButtonDisplay: trackingStyle?.display ?? null,
+                        firstTrackingButtonVisibility: trackingStyle?.visibility ?? null,
+                        firstTrackingButtonOpacity: trackingStyle?.opacity ?? null,
+                        firstTrackingButtonWidth: firstTrackingButton?.getBoundingClientRect?.().width ?? null,
+                        firstTrackingButtonHeight: firstTrackingButton?.getBoundingClientRect?.().height ?? null,
+                        firstSegmentUserSelect: segmentStyle?.userSelect ?? null,
+                        firstSegmentTouchAction: segmentStyle?.touchAction ?? null,
+                        firstSegmentPointerEvents: segmentStyle?.pointerEvents ?? null,
+                        firstSurfaceUserSelect: surfaceStyle?.userSelect ?? null,
+                        firstSurfacePointerEvents: surfaceStyle?.pointerEvents ?? null
+                      };
+                    })()
+                    """
+                )
+                guard let payload = self.parseJSONStringObject(result) else {
+                    logLookupSmar10([
+                        "stage": "native.readerSurfaceSnapshot",
+                        "source": source,
+                        "pageURL": state.pageURL.absoluteString,
+                        "error": result == nil ? "nilResult" : "unexpectedResultType",
+                        "type": result.map { String(describing: Swift.type(of: $0)) } ?? "nil"
+                    ])
+                    return
+                }
+                var enriched = payload
+                enriched["stage"] = "native.readerSurfaceSnapshot"
+                enriched["source"] = source
+                enriched["pageURL"] = state.pageURL.absoluteString
+                logLookupSmar10(enriched)
+            } catch {
+                logLookupSmar10([
+                    "stage": "native.readerSurfaceSnapshot",
+                    "source": source,
+                    "pageURL": state.pageURL.absoluteString,
+                    "error": String(describing: error)
+                ])
+            }
+        }
     }
 
     private func readerLoadKey(for url: URL) -> String {
@@ -433,6 +529,12 @@ private class ReaderWebViewHandler {
                 newState: state,
                 scriptCaller: scriptCaller
             )
+            self.logNativeReaderSurfaceSnapshot(source: "readerWebView.onNavigationFinished", state: state)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.logNativeReaderSurfaceSnapshot(source: "readerWebView.onNavigationFinished.delayed", state: state)
+            }
             debugPrint("# FLASH ReaderWebViewHandler.onNavigationFinished readerModeViewModel", "page=\(flashURLDescription(state.pageURL))")
             if let content = self.readerContent.content,
                content.isReaderModeByDefault {

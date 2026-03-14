@@ -74,6 +74,12 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         return min(baseCardWidth, collapsedWidth)
     }
 
+    private var cardHeight: CGFloat {
+        maxCellHeight
+        + ReaderContentHorizontalListLayout.groupBoxContentInsets.top
+        + ReaderContentHorizontalListLayout.groupBoxContentInsets.bottom
+    }
+
     private func logBookHorizontal(_ event: String, preferenceWidth: CGFloat? = nil) {
         guard content.isPhysicalMedia else { return }
         debugPrint(
@@ -201,7 +207,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
             //            )
             //                .background(Color.white.opacity(0.00000001)) // Clickability
             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
-            .frame(width: cardWidth)
+            .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
             //            .frame(width: 275, height: maxCellHeight - (padding * 2))
             //            .background(Color.primary.colorInvert())
             //                .background(.regularMaterial)
