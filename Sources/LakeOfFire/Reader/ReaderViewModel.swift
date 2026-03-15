@@ -168,11 +168,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             try await self.scriptCaller.evaluateJavaScript("""
-                if (document.body.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
-                    document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
+                if (document.body?.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
+                    document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
                 }
-                if (document.body.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
-                    document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+                if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
+                    document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
                 }
                 """, duplicateInMultiTargetFrames: true)
             try await self.refreshTitleInWebView(content: content, newState: newState)
