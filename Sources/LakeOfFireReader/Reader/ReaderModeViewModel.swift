@@ -38,29 +38,6 @@ private struct ReaderFontReadinessProbeResult: Decodable {
     let timedOut: Bool
 }
 
-internal struct ReaderModeFrameInjectionDecision: Equatable {
-    let readerStateIsLoader: Bool
-    let hostDocumentIsLoader: Bool
-    let forcedNavigatorLoad: Bool
-    let shouldInjectIntoExistingFrame: Bool
-}
-
-internal func frameInjectionDecision(
-    readerStateURL: URL,
-    hostDocumentURL: URL,
-    requestedFrameInjection: Bool
-) -> ReaderModeFrameInjectionDecision {
-    let readerStateIsLoader = readerStateURL.isReaderURLLoaderURL
-    let hostDocumentIsLoader = hostDocumentURL.isReaderURLLoaderURL
-    let forcedNavigatorLoad = requestedFrameInjection && (readerStateIsLoader || hostDocumentIsLoader)
-    return ReaderModeFrameInjectionDecision(
-        readerStateIsLoader: readerStateIsLoader,
-        hostDocumentIsLoader: hostDocumentIsLoader,
-        forcedNavigatorLoad: forcedNavigatorLoad,
-        shouldInjectIntoExistingFrame: requestedFrameInjection && !forcedNavigatorLoad
-    )
-}
-
 private let readabilityExcludedDomains: Set<String> = [
     "x.com",
     "twitter.com",
@@ -387,6 +364,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     public var sharedFontCSSBase64: String?
     public var sharedFontCSSBase64Provider: (() async -> String?)?
     private var lastFallbackLoaderURL: URL?
+    public private(set) var lastReaderModeRouteForTesting: String?
     @Published public private(set) var lastRenderedURL: URL?
     @Published public private(set) var expectedSyntheticReaderLoaderURL: URL?
     @Published public private(set) var pendingReaderModeURL: URL?
@@ -1710,6 +1688,61 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         return false
     }
 
+    private enum ReaderModeRoute: String {
+        case localHTML = "swiftFinalLoad"
+        case capturedReadability = "webviewReadability"
+        case unavailable = "unavailable"
+    }
+
+    @MainActor
+    private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
+        if let content = try? await readerContent.getContent() {
+            let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
+            if let html = try? await locallyRetrievableReaderHTML(
+                for: content,
+                readerFileManager: activeReaderFileManager
+            ), html.isEmpty == false {
+                return .localHTML
+            }
+        }
+        if readabilityContent != nil {
+            return .capturedReadability
+        }
+        return .unavailable
+    }
+
+    @MainActor
+    private func logReaderModeRoute(
+        _ route: ReaderModeRoute,
+        readerContent: ReaderContent,
+        reason: String
+    ) {
+        lastReaderModeRouteForTesting = route.rawValue
+        let contentURL = readerContent.content?.url.absoluteString ?? "nil"
+        debugPrint(
+            "# READERROUTE showReaderView.route",
+            "pageURL=\(readerContent.pageURL.absoluteString)",
+            "contentURL=\(contentURL)",
+            "path=\(route.rawValue)",
+            "reason=\(reason)"
+        )
+        debugPrint(
+            "# LOOKUPSMAR10",
+            [
+                "stage": "readerMode.route",
+                "pageURL": readerContent.pageURL.absoluteString,
+                "contentURL": contentURL,
+                "path": route.rawValue,
+                "reason": reason
+            ] as [String: Any]
+        )
+    }
+
+    @MainActor
+    func readerModeRouteForTesting(readerContent: ReaderContent) async -> String {
+        await resolveReaderModeRoute(readerContent: readerContent).rawValue
+    }
+    
     @MainActor
     public func showReaderView(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# READER readerMode.showReaderView", readerContent.pageURL)
@@ -1742,22 +1775,49 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         )
         let readabilityBytes = readabilityContent?.utf8.count ?? 0
         logTrace(.readabilityTaskScheduled, url: readerContent.pageURL, details: "readabilityBytes=\(readabilityBytes)")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let route = await resolveReaderModeRoute(readerContent: readerContent)
+            logReaderModeRoute(route, readerContent: readerContent, reason: "showReaderView")
+            switch route {
+            case .localHTML:
+                showReaderViewUsingSwiftProcessing(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller
+                )
+            case .capturedReadability:
+                renderPreparedReadabilityView(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller
+                )
+            case .unavailable:
+                let contentURL = readerContent.pageURL
+                debugPrint("# READER readerMode.showReaderView.missingContent", readerContent.pageURL)
+                debugPrint("# READER readability.missingContent", "url=\(readerContent.pageURL.absoluteString)")
+                debugPrint(
+                    "# READERMODE showReaderView.missingReadiness",
+                    "pageURL=\(contentURL.absoluteString)",
+                    "isReaderMode=\(isReaderMode)",
+                    "isReaderModeLoading=\(isReaderModeLoading)",
+                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                    "lastRendered=\(lastRenderedURL?.absoluteString ?? "nil")"
+                )
+            }
+        }
+    }
+
+    @MainActor
+    private func renderPreparedReadabilityView(
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller
+    ) {
         let contentURL = readerContent.pageURL
         guard let readabilityContent else {
-            // FIME: WHY THIS CALLED WHEN LOAD??
-            debugPrint("# READER readerMode.showReaderView.missingContent", readerContent.pageURL)
-            debugPrint("# READER readability.missingContent", "url=\(readerContent.pageURL.absoluteString)")
-            debugPrint(
-                "# READERMODE showReaderView.missingReadability",
-                "pageURL=\(contentURL.absoluteString)",
-                "isReaderMode=\(isReaderMode)",
-                "isReaderModeLoading=\(isReaderModeLoading)",
-                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                "expectedLoader=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                "lastRendered=\(lastRenderedURL?.absoluteString ?? "nil")"
-            )
+            debugPrint("# READER renderPreparedReadabilityView.missingReadability", readerContent.pageURL)
             return
         }
+        let readabilityBytes = readabilityContent.utf8.count
         let readabilityPreview = snippetPreview(readabilityContent, maxLength: 360)
         debugPrint(
             "# READER readability.renderHTML",
@@ -1841,7 +1901,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     }
 
     @MainActor
-    public func showReaderViewUsingSwiftProcessing(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
+    private func showReaderViewUsingSwiftProcessing(readerContent: ReaderContent, scriptCaller: WebViewScriptCaller) {
         debugPrint("# READER readerMode.showReaderView.swiftProcessing", readerContent.pageURL)
         debugPrint(
             "# READERINJECT showReaderView.swiftProcessing.enter",
@@ -1895,10 +1955,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
                 let resolvedURL = content.url
                 let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
-                var htmlResult = try await content.htmlToDisplay(readerFileManager: activeReaderFileManager)
-                if htmlResult == nil, resolvedURL.isSnippetURL {
-                    htmlResult = content.html
-                }
+                let htmlResult = try await locallyRetrievableReaderHTML(
+                    for: content,
+                    readerFileManager: activeReaderFileManager
+                )
                 debugPrint(
                     "# READERINJECT showReaderView.swiftProcessing.htmlFetched",
                     "contentURL=\(resolvedURL.absoluteString)",
@@ -1910,7 +1970,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "isSnippet=\(resolvedURL.isSnippetURL)"
                 )
 
-                if shouldProcessReadabilityInSwift(content: content, url: resolvedURL), let html = htmlResult {
+                if let html = htmlResult, shouldProcessReadabilityInSwift(url: resolvedURL) {
                     let minChars = max(content.meaningfulContentMinLength, 1)
                     debugPrint(
                         "# READERINJECT showReaderView.swiftProcessing.swiftEligible",
@@ -1983,6 +2043,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             "contentURL=\(resolvedURL.absoluteString)",
                             "reason=\(reason)"
                         )
+                        cancelReaderModeLoad(for: trackedContentURL, reason: "showReaderView.swiftProcessing.swiftUnavailable")
+                        return
                     case .failed(let reason):
                         debugPrint(
                             "# READER readerMode.showReaderView.swiftProcessing.failed",
@@ -1994,61 +2056,20 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             "contentURL=\(resolvedURL.absoluteString)",
                             "reason=\(reason)"
                         )
+                        cancelReaderModeLoad(for: trackedContentURL, reason: "showReaderView.swiftProcessing.swiftFailed")
+                        return
                     }
                 } else {
                     debugPrint(
                         "# READERINJECT showReaderView.swiftProcessing.swiftBypass",
                         "contentURL=\(resolvedURL.absoluteString)",
-                        "eligible=\(shouldProcessReadabilityInSwift(content: content, url: resolvedURL))",
+                        "eligible=\(shouldProcessReadabilityInSwift(url: resolvedURL))",
                         "hasHTML=\(htmlResult != nil)"
                     )
+                    cancelReaderModeLoad(for: trackedContentURL, reason: "showReaderView.swiftProcessing.swiftBypass")
+                    return
                 }
 
-                if let fallbackReadability = readabilityContent {
-                    debugPrint(
-                        "# READERINJECT showReaderView.swiftProcessing.fallbackRender",
-                        "contentURL=\(resolvedURL.absoluteString)",
-                        "bytes=\(fallbackReadability.utf8.count)"
-                    )
-                    do {
-                        try await showReadabilityContent(
-                            readerContent: readerContent,
-                            readabilityContent: fallbackReadability,
-                            renderToSelector: readabilityContainerSelector,
-                            in: readabilityContainerFrameInfo,
-                            scriptCaller: scriptCaller,
-                            renderGeneration: generation
-                        )
-                    } catch is CancellationError {
-                        logReaderLoadAbort(reason: "showReaderView.swiftProcessing.fallbackCancelled", url: trackedContentURL)
-                        debugPrint(
-                            "# READERPERF readerMode.render.singleFlight.cancel",
-                            "url=\(trackedContentURL.absoluteString)",
-                            "reason=showReaderView.swiftProcessing.fallbackCancelled",
-                            "generation=\(generation.uuidString)",
-                            "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                            "isReaderModeLoading=\(isReaderModeLoading)",
-                            "isReaderMode=\(isReaderMode)"
-                        )
-                    } catch {
-                        debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackFailed", error.localizedDescription)
-                        debugPrint(
-                            "# READERINJECT showReaderView.swiftProcessing.abort",
-                            "reason=fallbackFailed",
-                            "contentURL=\(resolvedURL.absoluteString)",
-                            "error=\(error.localizedDescription)"
-                        )
-                        cancelReaderModeLoad(for: trackedContentURL, reason: "showReaderView.swiftProcessing.fallbackFailed")
-                    }
-                } else {
-                    debugPrint("# READER readerMode.showReaderView.swiftProcessing.fallbackMissing", trackedContentURL)
-                    debugPrint(
-                        "# READERINJECT showReaderView.swiftProcessing.abort",
-                        "reason=fallbackMissing",
-                        "contentURL=\(trackedContentURL.absoluteString)"
-                    )
-                    cancelReaderModeLoad(for: trackedContentURL, reason: "showReaderView.swiftProcessing.fallbackMissing")
-                }
             } catch is CancellationError {
                 logReaderLoadAbort(reason: "showReaderView.swiftProcessing.taskCancelled", url: trackedContentURL)
                 debugPrint(
@@ -2119,10 +2140,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             }
             return nil
         }()
-        // Replacing snippet markup in-place via innerHTML/outerHTML does not execute the
-        // embedded reader scripts, which leaves the visible page rendered but without the
-        // lookup bridge or segmented DOM. Snippets must go through a real document load.
-        let shouldInjectIntoExistingFrame = !url.isSnippetURL && resolvedFrameInfo != nil
         if url.isSnippetURL {
             debugPrint(
                 "# FLASH snippet.renderStart",
@@ -2654,12 +2671,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             try await { @MainActor in
                 let pageURL = readerContent.pageURL
                 let urlsMatch = url.matchesReaderURL(pageURL)
-                let hostDocumentCandidateURL = resolvedFrameInfo?.request.url ?? pageURL
-                let frameInjectionDecision = frameInjectionDecision(
-                    readerStateURL: pageURL,
-                    hostDocumentURL: hostDocumentCandidateURL,
-                    requestedFrameInjection: shouldInjectIntoExistingFrame
-                )
                 debugPrint(
                     "# READERRELOAD showReadabilityContent.enter",
                     "contentURL=\(url.absoluteString)",
@@ -2673,8 +2684,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         "stage": "readerMode.showReadabilityContent.enter",
                         "targetContentURL": url.absoluteString,
                         "readerStateURL": pageURL.absoluteString,
-                        "hostDocumentURL": hostDocumentCandidateURL.absoluteString,
-                        "requestedFrameInjection": shouldInjectIntoExistingFrame,
+                        "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
+                        "renderMode": "navigatorLoad",
                         "frameIsMain": frameInfo?.isMainFrame ?? true,
                         "matches": urlsMatch
                     ] as [String: Any]
@@ -2685,132 +2696,19 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         "stage": "readerMode.showReadabilityContent.decision",
                         "targetContentURL": url.absoluteString,
                         "readerStateURL": pageURL.absoluteString,
-                        "hostDocumentURL": hostDocumentCandidateURL.absoluteString,
-                        "readerStateIsLoader": frameInjectionDecision.readerStateIsLoader,
-                        "hostDocumentIsLoader": frameInjectionDecision.hostDocumentIsLoader,
-                        "requestedFrameInjection": shouldInjectIntoExistingFrame,
-                        "shouldInjectIntoExistingFrame": frameInjectionDecision.shouldInjectIntoExistingFrame,
-                        "forcedNavigatorLoad": frameInjectionDecision.forcedNavigatorLoad
+                        "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
+                        "readerStateIsLoader": pageURL.isReaderURLLoaderURL,
+                        "hostDocumentIsLoader": (resolvedFrameInfo?.request.url ?? pageURL).isReaderURLLoaderURL,
+                        "renderMode": "navigatorLoad"
                     ] as [String: Any]
                 )
-                if frameInjectionDecision.forcedNavigatorLoad {
-                    debugPrint(
-                        "# LOOKUPSMAR10",
-                        [
-                            "stage": "readerMode.loaderHostGuard",
-                            "targetContentURL": url.absoluteString,
-                            "readerStateURL": pageURL.absoluteString,
-                            "hostDocumentURL": hostDocumentCandidateURL.absoluteString,
-                            "readerStateIsLoader": frameInjectionDecision.readerStateIsLoader,
-                            "hostDocumentIsLoader": frameInjectionDecision.hostDocumentIsLoader,
-                            "requestedFrameInjection": shouldInjectIntoExistingFrame,
-                            "forcedNavigatorLoad": true,
-                        ] as [String: Any]
-                    )
-                }
                 guard urlsMatch else {
                     debugPrint("# READER readability.readerURLMismatch", url, pageURL)
                     print("Readability content URL mismatch", url, pageURL)
                     cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
-                if frameInjectionDecision.shouldInjectIntoExistingFrame, let frameInfo = resolvedFrameInfo {
-                    debugPrint("# READER readability.frameInjection", frameInfo)
-                    do {
-                        let preflightRaw = try? await scriptCaller.evaluateJavaScript(
-                            """
-                            (function() {
-                                return {
-                                    hasReaderHeader: document.getElementById('reader-header') !== null,
-                                    hasReaderContent: document.getElementById('reader-content') !== null,
-                                    segmentCount: document.querySelectorAll('manabi-segment').length,
-                                    sectionCount: document.querySelectorAll('manabi-section').length,
-                                    isReaderMode: document.body?.classList.contains('readability-mode') ?? false,
-                                };
-                            })()
-                            """,
-                            in: frameInfo
-                        )
-                        let preflight = preflightRaw as? [String: Any]
-                        let preflightHasReaderHeader = preflight?["hasReaderHeader"] as? Bool ?? false
-                        let preflightHasReaderContent = preflight?["hasReaderContent"] as? Bool ?? false
-                        let preflightSegmentCount = (preflight?["segmentCount"] as? NSNumber)?.intValue ?? 0
-                        let preflightSectionCount = (preflight?["sectionCount"] as? NSNumber)?.intValue ?? 0
-                        let preflightIsReaderMode = preflight?["isReaderMode"] as? Bool ?? false
-                        let alreadyRenderedInFrame =
-                            preflightHasReaderHeader
-                            && preflightHasReaderContent
-                            && preflightSegmentCount > 0
-                            && preflightSectionCount > 0
-                            && preflightIsReaderMode
-                        if alreadyRenderedInFrame {
-                            await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: url)
-                            markReaderModeLoadComplete(for: url, renderGeneration: renderGeneration)
-                            return
-                        }
-                        try await scriptCaller.evaluateJavaScript(
-                            """
-                            const result = window.manabiApplyReadabilityFrameInjection?.({
-                                html,
-                                css,
-                                renderToSelector,
-                                reason: "showReadabilityContent.frameInjected"
-                            }) || null
-                            try {
-                                const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print
-                                if (handler && typeof handler.postMessage === "function") {
-                                    handler.postMessage({
-                                        message: "# READER snippetLoader.injected",
-                                        context: "frame",
-                                        targetSelector: renderToSelector || "<root>",
-                                        htmlBytes: insertBytes,
-                                        didInject: !!result?.didInject,
-                                        hasCanonicalReaderDOM: !!result?.hasCanonicalReaderDOM,
-                                        hasReaderHeader: !!result?.hasReaderHeader,
-                                        hasReaderContent: !!result?.hasReaderContent,
-                                        windowURL: window.location.href,
-                                        pageURL: document.location.href
-                                    })
-                                    handler.postMessage({
-                                        message: "# WRONGREADERMODE readabilityModeClassSync",
-                                        context: "showReadabilityContent.frameInjected",
-                                        hasReaderHeader: !!result?.hasReaderHeader,
-                                        hasReaderContent: !!result?.hasReaderContent,
-                                        hasCanonicalReaderDOM: !!result?.hasCanonicalReaderDOM,
-                                        windowURL: window.location.href,
-                                        pageURL: document.location.href
-                                    })
-                                }
-                            } catch (error) {
-                                try { console.log("frameInjected helper log error", error) } catch (_) {}
-                            }
-                            """
-                            ,
-                            arguments: [
-                                "renderToSelector": renderToSelector ?? "",
-                                "html": transformedContent,
-                                "insertBytes": transformedContent.utf8.count,
-                                "css": Readability.shared.css
-                            ], in: frameInfo)
-                        debugPrint(
-                            "# READERRELOAD showReadabilityContent.frameInjected",
-                            "contentURL=\(url.absoluteString)",
-                            "frameURL=\(frameInfo.request.url?.absoluteString ?? "<nil>")",
-                            "bytes=\(transformedContent.utf8.count)"
-                        )
-                    } catch {
-                        debugPrint(
-                            "# READERRELOAD showReadabilityContent.frameInjectFailed",
-                            "contentURL=\(url.absoluteString)",
-                            "error=\(error.localizedDescription)"
-                        )
-                        cancelReaderModeLoad(for: url, reason: "showReadabilityContent.frameInjectFailed")
-                        return
-                    }
-                    logTrace(.navigatorLoad, url: url, details: "mode=frame-injection")
-                    await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: url)
-                    markReaderModeLoadComplete(for: url, renderGeneration: renderGeneration)
-                } else if let htmlData = transformedContent.data(using: .utf8) {
+                if let htmlData = transformedContent.data(using: .utf8) {
                     guard let navigator else {
                         print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
                         cancelReaderModeLoad(for: url, reason: "showReadabilityContent.navigatorMissing")
@@ -2838,6 +2736,13 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
+                    )
+                    let canonicalRenderURL = url.canonicalReaderContentURL()
+                    lastRenderedURL = canonicalRenderURL
+                    debugPrint(
+                        "# FLASH readerMode.rendered.set",
+                        "url=\(canonicalRenderURL.absoluteString)",
+                        "reason=showReadabilityContent.navigatorLoadDispatched"
                     )
                     debugPrint(
                         "# FLASH readability.navigator.load",
@@ -2906,36 +2811,19 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         try await { @MainActor in
                 let canonicalURL = url.canonicalReaderContentURL()
                 let totalRenderElapsed = Date().timeIntervalSince(renderStart)
-                if shouldInjectIntoExistingFrame && resolvedFrameInfo != nil {
-                    lastRenderedURL = canonicalURL
-                    debugPrint(
-                        "# FLASH readerMode.rendered",
-                        "url=\(canonicalURL.absoluteString)",
-                        "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
-                    )
-                    debugPrint(
-                        "# READERPERF readerMode.render.total",
-                        "ts=\(Date().timeIntervalSince1970)",
-                        "url=\(canonicalURL.absoluteString)",
-                        "elapsed=\(String(format: "%.3f", totalRenderElapsed))s",
-                        "completion=inline"
-                    )
-                    markReaderModeLoadComplete(for: canonicalURL, renderGeneration: renderGeneration)
-                } else {
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.completeDeferred",
-                        "url=\(canonicalURL.absoluteString)",
-                        "reason=awaitFinalNavigationAndFontReady",
-                        "renderGeneration=\(renderGeneration?.uuidString ?? "nil")"
-                    )
-                    debugPrint(
-                        "# READERPERF readerMode.render.total",
-                        "ts=\(Date().timeIntervalSince1970)",
-                        "url=\(canonicalURL.absoluteString)",
-                        "elapsed=\(String(format: "%.3f", totalRenderElapsed))s",
-                        "completion=syntheticCommit"
-                    )
-                }
+                debugPrint(
+                    "# READERLOAD stage=readerMode.completeDeferred",
+                    "url=\(canonicalURL.absoluteString)",
+                    "reason=awaitFinalNavigationAndFontReady",
+                    "renderGeneration=\(renderGeneration?.uuidString ?? "nil")"
+                )
+                debugPrint(
+                    "# READERPERF readerMode.render.total",
+                    "ts=\(Date().timeIntervalSince1970)",
+                    "url=\(canonicalURL.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", totalRenderElapsed))s",
+                    "completion=syntheticCommit"
+                )
                 if shouldRefreshImageMetadataPostRender {
                     schedulePostRenderMetadataRefreshIfNeeded(
                         content: content,
@@ -3527,7 +3415,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             "bytes=\(html.utf8.count)"
                         )
                     }
-                    let shouldSwiftReadability = isSnippetURL || shouldProcessReadabilityInSwift(content: content, url: committedURL)
+                    let shouldSwiftReadability = isSnippetURL || shouldProcessReadabilityInSwift(url: committedURL)
                     let shouldUseReadability = hasCanonicalReadability
                     logHTMLBodyMetrics(
                         event: "beforePrepare",
@@ -4575,10 +4463,7 @@ private struct SwiftReadabilityProcessingResult {
     let sanitizedContentBytes: Int
 }
 
-private func shouldProcessReadabilityInSwift(
-    content: any ReaderContentProtocol,
-    url: URL
-) -> Bool {
+private func shouldProcessReadabilityInSwift(url: URL) -> Bool {
     if url.isEBookURL || url.isNativeReaderView {
         return false
     }
@@ -4586,7 +4471,22 @@ private func shouldProcessReadabilityInSwift(
     if scheme == "blob" || scheme == "ebook" || scheme == "ebook-url" {
         return false
     }
-    return content.rssContainsFullContent || content.isFromClipboard || url.isReaderFileURL
+    return true
+}
+
+@MainActor
+private func locallyRetrievableReaderHTML(
+    for content: any ReaderContentProtocol,
+    readerFileManager: ReaderFileManager
+) async throws -> String? {
+    var html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+    if html == nil, content.url.isSnippetURL {
+        html = content.html
+    }
+    guard let html else {
+        return nil
+    }
+    return html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : html
 }
 
 @ReaderViewModelActor
@@ -4631,21 +4531,6 @@ private func processReadabilityHTMLInSwift(
             "url=\(normalizedURL.absoluteString)",
             "length=\(result.length)"
         )
-        if url.isSnippetURL,
-           let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                html: normalizedHTML,
-                contentURL: normalizedURL,
-                fallbackTitle: result.title ?? titleFromReadabilityHTML(normalizedHTML)
-           ) {
-            return .success(
-                SwiftReadabilityProcessingResult(
-                    outputHTML: snippetHTML,
-                    publishedTime: nil,
-                    sanitizedContentBytes: snippetHTML.utf8.count
-                )
-            )
-        }
-        return .unavailable(reason: "readerableFalse")
     }
     let rawContent = result.content
     guard !rawContent.isEmpty else {

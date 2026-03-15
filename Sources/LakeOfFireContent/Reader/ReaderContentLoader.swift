@@ -59,6 +59,15 @@ public struct ReaderContentLoader {
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+
+    @MainActor
+    public static func hasLocallyRetrievableHTML(
+        for content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager
+    ) async throws -> Bool {
+        let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+        return html?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
  
     public static var unsavedHome: (any ReaderContentProtocol) {
 //        return try await Self.load(url: URL(string: "about:blank")!, persist: false)!
@@ -465,6 +474,10 @@ public struct ReaderContentLoader {
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
         let contentURL = content.url
+        let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
+            for: content,
+            readerFileManager: readerFileManager
+        )
         debugPrint(
             "# FLASH ReaderContentLoader.load invoked",
             contentURL.absoluteString,
@@ -487,7 +500,7 @@ public struct ReaderContentLoader {
                 "clipboard=\(content.isFromClipboard)",
                 "readerDefault=\(content.isReaderModeByDefault)"
             )
-            if let loaderURL = readerLoaderURL(for: contentURL) {
+            if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
                 debugPrint(
                     "# READER snippetLoader.redirect",
                     "snippetURL=\(contentURL.absoluteString)",
@@ -499,33 +512,38 @@ public struct ReaderContentLoader {
                 debugPrint(
                     "# READER snippetLoader.fallback",
                     "snippetURL=\(contentURL.absoluteString)",
-                    "hasHTML=\(content.hasHTML)"
+                    "hasHTML=\(content.hasHTML)",
+                    "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
                 )
                 return content.url
             }
         }
 
         if ["http", "https"].contains(contentURL.scheme?.lowercased()) {
-            let matchingURL = try await Task { @RealmBackgroundActor () -> URL? in
-                let allContents = try await loadAll(url: contentURL)
-                for candidateContent in allContents {
-                    guard candidateContent.isReaderModeByDefault else {
-                        continue
-                    }
-                    if !candidateContent.url.isReaderFileURL, candidateContent.hasHTML {
-                        guard let historyURL = readerLoaderURL(for: candidateContent.url) else {
-                            return nil
-                        }
-                        //                                debugPrint("!! load(content isREaderModebydefault", historyURL)
-                        return historyURL
-                    }
-                }
-                return nil
-            }.value
+            if content.isReaderModeByDefault,
+               contentHasLocallyRetrievableHTML,
+               let loaderURL = readerLoaderURL(for: contentURL) {
+                return loaderURL
+            }
 
-            if let matchingURL {
+            let matchingContentURL = try await Task { @RealmBackgroundActor () -> URL? in
+                let allContents = try await loadAll(url: contentURL)
+                return allContents.first(where: { $0.isReaderModeByDefault })?.url
+            }.value
+            if let matchingContentURL,
+               let matchingContent = try await load(
+                    url: matchingContentURL,
+                    persist: false,
+                    countsAsHistoryVisit: false
+               ),
+               (try? await hasLocallyRetrievableHTML(
+                    for: matchingContent,
+                    readerFileManager: readerFileManager
+               )) == true,
+               let matchingURL = readerLoaderURL(for: matchingContent.url) {
                 return matchingURL
             }
+
             if content.isReaderModeByDefault {
                 debugPrint(
                     "# READER readerLoader.matchingURL.missing",
@@ -539,7 +557,7 @@ public struct ReaderContentLoader {
         }
 
         if contentURL.isReaderFileURL {
-            if let loaderURL = readerLoaderURL(for: contentURL) {
+            if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
                 debugPrint(
                     "# READER readerLoader.redirect",
                     "contentURL=\(contentURL.absoluteString)",
@@ -551,7 +569,8 @@ public struct ReaderContentLoader {
             } else {
                 debugPrint(
                     "# READER readerLoader.redirect.missing",
-                    "contentURL=\(contentURL.absoluteString)"
+                    "contentURL=\(contentURL.absoluteString)",
+                    "hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML)"
                 )
             }
         }

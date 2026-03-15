@@ -178,6 +178,9 @@ private class ReaderWebViewHandler {
     }
 
     private func logNativeViewportDOMProbe(source: String, state: WebViewState) {
+        guard ProcessInfo.processInfo.environment["MANABI_LOOKUP_NATIVE_DOM_PROBE"] == "1" else {
+            return
+        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             logLookupSmar10([
@@ -448,7 +451,7 @@ private class ReaderWebViewHandler {
                             scriptCaller: self.scriptCaller
                         )
                     } else {
-                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                        self.readerModeViewModel.showReaderView(
                             readerContent: self.readerContent,
                             scriptCaller: self.scriptCaller
                         )
@@ -674,7 +677,13 @@ private class ReaderWebViewHandler {
                content.isReaderModeByDefault {
                 let pageMatchesContentURL = state.pageURL.matchesReaderURL(content.url)
                 let shouldRenderDeferredPreparedReaderMode =
-                    (state.pageURL.isReaderURLLoaderURL || pageMatchesContentURL)
+                    (
+                        state.pageURL.isReaderURLLoaderURL
+                        || (
+                            pageMatchesContentURL
+                            && !self.readerModeViewModel.hasRenderedReadabilityContent
+                        )
+                    )
                     && self.scriptCaller.hasAsyncCaller
                     && self.readerModeViewModel.readabilityContent != nil
                     && self.readerModeViewModel.isReaderModeLoadPending(for: content.url)
@@ -712,7 +721,7 @@ private class ReaderWebViewHandler {
                         "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
                     )
                     if self.scriptCaller.hasAsyncCaller {
-                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                        self.readerModeViewModel.showReaderView(
                             readerContent: self.readerContent,
                             scriptCaller: self.scriptCaller
                         )
@@ -744,7 +753,7 @@ private class ReaderWebViewHandler {
                         "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
                     )
                     if self.scriptCaller.hasAsyncCaller {
-                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                        self.readerModeViewModel.showReaderView(
                             readerContent: self.readerContent,
                             scriptCaller: self.scriptCaller
                         )
@@ -776,7 +785,7 @@ private class ReaderWebViewHandler {
                         "hasAsyncCaller=\(self.scriptCaller.hasAsyncCaller)"
                     )
                     if self.scriptCaller.hasAsyncCaller {
-                        self.readerModeViewModel.showReaderViewUsingSwiftProcessing(
+                        self.readerModeViewModel.showReaderView(
                             readerContent: self.readerContent,
                             scriptCaller: self.scriptCaller
                         )
