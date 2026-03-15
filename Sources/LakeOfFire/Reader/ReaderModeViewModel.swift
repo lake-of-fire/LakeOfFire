@@ -690,6 +690,7 @@ public class ReaderModeViewModel: ObservableObject {
                 } else {
                     readabilityContent = nil
                 }
+                readerContent.isRenderingReaderHTML = true
                 showReaderView(
                     readerContent: readerContent,
                     scriptCaller: scriptCaller
