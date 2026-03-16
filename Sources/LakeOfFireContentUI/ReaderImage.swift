@@ -1,7 +1,6 @@
 import SwiftUI
-import ZIPFoundation
 import Nuke
-import LakeImage
+import NukeUI
 import LakeOfFireContent
 
 fileprivate extension URL {
@@ -12,28 +11,108 @@ fileprivate extension URL {
     }
 }
 
-fileprivate let zipArchiveExtensions = ["zip", "epub"]
-
-func readerImageData(url: URL) throws -> Data? {
+func readerImageData(url: URL) async throws -> Data? {
     guard url.scheme == "reader-file" && url.host == "file" else { return nil }
 
     guard let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
           let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value else { return nil }
 
     guard let readerFileURL = url.deletingQuery else { return nil }
-    let fileURL = try ReaderFileManager.shared.localFileURL(forReaderFileURL: readerFileURL)
+    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+        forPackageURL: readerFileURL,
+        readerFileManager: ReaderFileManager.shared
+    )
+    return try cachedSource.source.readEntry(subpath: subpathValue)
+}
 
-    if try isPackageFile(at: fileURL) || isDirectory(fileURL) {
-        let filePath = fileURL.appendingPathComponent(subpathValue)
-        return try? Data(contentsOf: filePath)
+fileprivate final class ReaderImageLoadTask: Nuke.Cancellable {
+    var task: Task<Void, Never>?
+    var fallbackTask: (any Nuke.Cancellable)?
+
+    func cancel() {
+        task?.cancel()
+        fallbackTask?.cancel()
+    }
+}
+
+fileprivate final class ReaderImageDataLoader: DataLoading {
+    private let defaultDataLoader: DataLoading = DataLoader()
+    private let interceptor: (URL) async throws -> Data?
+
+    init(interceptor: @escaping (URL) async throws -> Data?) {
+        self.interceptor = interceptor
     }
 
-    guard zipArchiveExtensions.contains(url.pathExtension.lowercased()) else { return nil }
-    guard let archive = try Archive(url: fileURL, accessMode: .read) else { return nil }
-    guard let entry = archive[subpathValue], entry.type == .file else { return nil }
-    var imageData = Data()
-    try archive.extract(entry, consumer: { imageData.append($0) })
-    return imageData
+    func loadData(
+        with request: URLRequest,
+        didReceiveData: @escaping (Data, URLResponse) -> Void,
+        completion: @escaping (Error?) -> Void
+    ) -> any Nuke.Cancellable {
+        let task = ReaderImageLoadTask()
+
+        guard let url = request.url else {
+            completion(NSError(domain: "ReaderImageDataLoader", code: 0, userInfo: nil))
+            return task
+        }
+
+        task.task = Task {
+            do {
+                if let data = try await interceptor(url) {
+                    guard !Task.isCancelled else { return }
+                    if let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) {
+                        didReceiveData(data, response)
+                        completion(nil)
+                    } else {
+                        completion(NSError(domain: "ReaderImageDataLoader", code: 0, userInfo: nil))
+                    }
+                    return
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                debugPrint("Error loading image URL:", url, error)
+            }
+
+            guard !Task.isCancelled else { return }
+            task.fallbackTask = defaultDataLoader.loadData(
+                with: request,
+                didReceiveData: didReceiveData,
+                completion: completion
+            )
+        }
+
+        return task
+    }
+}
+
+fileprivate struct ReaderAsyncImage: View {
+    let url: URL
+    let contentMode: ContentMode
+    let maxWidth: CGFloat?
+    let minHeight: CGFloat?
+    let maxHeight: CGFloat?
+    let cornerRadius: CGFloat?
+    let imagePipeline: ImagePipeline
+
+    var body: some View {
+        LazyImage(url: url) { state in
+            if let image = state.image {
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .frame(maxWidth: maxWidth, minHeight: minHeight, maxHeight: maxHeight, alignment: .bottom)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius ?? 0))
+            } else if state.error != nil {
+                Color.clear
+            } else {
+                Color.gray
+                    .opacity(0.7)
+                    .frame(minHeight: minHeight)
+            }
+        }
+        .priority(.high)
+        .pipeline(imagePipeline)
+        .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+    }
 }
 
 public struct ReaderImage: View {
@@ -61,26 +140,22 @@ public struct ReaderImage: View {
     }
     
     public var body: some View {
-        LakeImage(
-            url,
+        ReaderAsyncImage(
+            url: url,
             contentMode: contentMode,
             maxWidth: maxWidth,
             minHeight: minHeight,
             maxHeight: maxHeight,
             cornerRadius: cornerRadius,
-            imageProvider: { url in
-                try readerImageData(url: url)
-            }
+            imagePipeline: Self.imagePipeline
         )
     }
-}
 
-fileprivate func isPackageFile(at url: URL) throws -> Bool {
-    let resourceValues = try url.resourceValues(forKeys: [.isPackageKey])
-    return resourceValues.isPackage ?? false
-}
-
-fileprivate func isDirectory(_ url: URL) -> Bool {
-    var isDir: ObjCBool = false
-    return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    private static let imagePipeline: ImagePipeline = {
+        var configuration = ImagePipeline.Configuration.withDataCache
+        configuration.dataLoader = ReaderImageDataLoader(interceptor: { url in
+            try await readerImageData(url: url)
+        })
+        return ImagePipeline(configuration: configuration)
+    }()
 }

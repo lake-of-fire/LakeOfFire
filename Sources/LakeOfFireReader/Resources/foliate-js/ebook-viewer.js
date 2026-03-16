@@ -552,6 +552,58 @@ const isZip = async file => {
     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
 }
 
+const makeNativeSource = url => ({ kind: 'native', url })
+const makeFileSource = file => ({ kind: 'file', file })
+
+const fetchNativeEntries = async sourceURL => {
+    const response = await fetch('ebook://ebook/entries', {
+        headers: {
+            'X-Ebook-Source-URL': sourceURL,
+        },
+    })
+    if (!response.ok) {
+        throw new Error(`Failed to load native EPUB entries: ${response.status}`)
+    }
+    return response.json()
+}
+
+const fetchNativeEntryResponse = async (sourceURL, subpath) => {
+    const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}`, {
+        headers: {
+            'X-Ebook-Source-URL': sourceURL,
+        },
+    })
+    if (!response.ok) {
+        return null
+    }
+    return response
+}
+
+const makeNativeEpubLoader = async (url, isCacheWarmer) => {
+    const { entries: rawEntries = [] } = await fetchNativeEntries(url)
+    const entries = rawEntries.map(entry => ({
+        filename: entry.path,
+        uncompressedSize: entry.size ?? 0,
+    }))
+    const sizeMap = new Map(entries.map(entry => [entry.filename, entry.uncompressedSize]))
+    const replaceText = makeReplaceText(isCacheWarmer)
+
+    return {
+        entries,
+        loadText: async name => {
+            const response = await fetchNativeEntryResponse(url, name)
+            return response ? response.text() : null
+        },
+        loadBlob: async name => {
+            const response = await fetchNativeEntryResponse(url, name)
+            return response ? response.blob() : null
+        },
+        getSize: name => sizeMap.get(name) ?? 0,
+        replaceText,
+        sourceURL: url,
+    }
+}
+
 const makeZipLoader = async (file, isCacheWarmer) => {
     const {
         configure,
@@ -610,10 +662,17 @@ const isFBZ = ({
 type === 'application/x-zip-compressed-fb2' ||
 name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
-const getView = async (file, isCacheWarmer) => {
+const getView = async (source, isCacheWarmer) => {
     let book
-    if (!file.size) throw new Error('File not found')
-    else if (await isZip(file)) {
+    if (source?.kind === 'native') {
+        const {
+            EPUB
+            } = await import('./epub.js')
+        const loader = await makeNativeEpubLoader(source.url, isCacheWarmer)
+        book = await new EPUB(loader).init()
+    } else if (source?.kind === 'file' && source.file?.size) {
+        const file = source.file
+        if (await isZip(file)) {
         const loader = await makeZipLoader(file, isCacheWarmer)
         if (isCBZ(file)) {
             throw new Error('File format not yet supported')
@@ -632,7 +691,7 @@ const getView = async (file, isCacheWarmer) => {
                 } = await import('./epub.js')
             book = await new EPUB(loader).init()
         }
-    } else {
+        } else {
         throw new Error('File format not yet supported')
         //        const { isMOBI, MOBI } = await import('./mobi.js')
         //        if (await isMOBI(file)) {
@@ -642,6 +701,9 @@ const getView = async (file, isCacheWarmer) => {
         //            const { makeFB2 } = await import('./fb2.js')
         //            book = await makeFB2(file)
         //        }
+        }
+    } else {
+        throw new Error('File not found')
     }
     if (!book) throw new Error('File type not supported')
     const view = document.createElement('foliate-view')
@@ -1058,10 +1120,11 @@ class Reader {
     })
     $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
     }
-    async open(file) {
+    async open(source) {
     this.setLoadingIndicator(true);
     this.hasLoadedLastPosition = false
-    this.view = await getView(file, false)
+    this.source = source
+    this.view = await getView(source, false)
     // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
     if (typeof window.initialLayoutMode !== 'undefined') {
     this.view.renderer.setAttribute('flow', window.initialLayoutMode)
@@ -2224,8 +2287,9 @@ class CacheWarmer {
         globalThis.cacheWarmerPageCounts = this.pageCounts
         globalThis.cacheWarmerTotalPages = 0
     }
-    async open(file) {
-    this.view = await getView(file, true)
+    async open(source) {
+    this.source = source
+    this.view = await getView(source, true)
     this.view.addEventListener('load', this.#onLoad.bind(this))
     this.view.addEventListener('relocate', this.#onRelocate.bind(this))
 
@@ -2566,18 +2630,14 @@ window.loadEBook = ({
 
     window.cacheWarmer = new CacheWarmer()
 
-    if (url) fetch(url, {
-    headers: {
-    "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
-    },
-    })
-    .then(res => res.blob())
-    .then(async (blob) => {
-    window.blob = blob
+    if (url) {
+    const source = makeNativeSource(url)
+    window.bookSource = source
     if (layoutMode) {
     window.initialLayoutMode = layoutMode
     }
-    await reader.open(new File([blob], new URL(url).pathname))
+    Promise.resolve(reader.open(source))
+    .then(async () => {
     try {
     const currentDoc = globalThis.reader?.view?.document
     if (currentDoc) {
@@ -2590,6 +2650,7 @@ window.loadEBook = ({
     .then(async () => {
     window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
     })
+    }
     //.catch(e => console.error(e))
 }
 
@@ -2621,7 +2682,9 @@ window.loadLastPosition = async ({
     }
 
     // Don't overlap cache warming with initial page load
-    await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+    if (window.bookSource) {
+    await window.cacheWarmer.open(window.bookSource)
+    }
 }
 
 globalThis.manabiResolveTrackingSizeCache = function (requestId, entries) {

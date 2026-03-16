@@ -166,7 +166,6 @@ fileprivate actor EBookProcessingActor {
 
 fileprivate actor EBookLoadingActor {
     enum EbookLoadingError: Error {
-        case failedToZip
         case fileNotFound
     }
     /// Returns an `HTTPURLResponse` and data for a bundled viewer HTML file at the given path.
@@ -223,57 +222,10 @@ fileprivate actor EBookLoadingActor {
         )
         return (response, data)
     }
-
-    /// Returns an `HTTPURLResponse` and the corresponding data for the given ebook
-    /// `fileURL`, handling both directories (which are zipped to .epub) and regular
-    /// files.
-    func loadEbookFile(
-        for fileURL: URL,
-        originalURL: URL,
-        readerFileManager: ReaderFileManager
-    ) async throws -> (HTTPURLResponse, Data) {
-        // Directory  →  zip →  .epub
-        if try await readerFileManager.directoryExists(directoryURL: fileURL) {
-            let localDirectoryURL = try await readerFileManager.localDirectoryURL(forReaderFileURL: fileURL)
-            guard let epubData = await ZIPToEbookActor.shared.zipToEPub(directoryURL: localDirectoryURL) else {
-                throw EbookLoadingError.failedToZip
-            }
-
-            let response = HTTPURLResponse(
-                url: fileURL,
-                mimeType: "application/epub+zip",
-                expectedContentLength: epubData.count,
-                textEncodingName: nil
-            )
-            return (response, epubData)
-        }
-
-        // Regular file → stream as‑is
-        if try await readerFileManager.fileExists(fileURL: fileURL) {
-            let localFileURL = try await readerFileManager.localFileURL(forReaderFileURL: fileURL)
-            let data = try Data(contentsOf: localFileURL)
-            let mimeType = UTType(filenameExtension: localFileURL.pathExtension)?.preferredMIMEType
-                ?? "application/octet-stream"
-
-            let response = HTTPURLResponse(
-                url: originalURL,
-                mimeType: mimeType,
-                expectedContentLength: data.count,
-                textEncodingName: nil
-            )
-            return (response, data)
-        }
-
-        throw EbookLoadingError.fileNotFound
-    }
 }
 
-fileprivate actor ZIPToEbookActor {
-    static let shared = ZIPToEbookActor()
-
-    func zipToEPub(directoryURL: URL) -> Data? {
-        return EPub.zipToEPub(directoryURL: directoryURL)
-    }
+fileprivate struct EBookEntriesResponse: Codable, Sendable {
+    let entries: [ReaderPackageEntryMetadata]
 }
 
 @globalActor
@@ -296,6 +248,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
+    private var hasLoggedValidatedMainDocumentURL = false
 
     enum CustomSchemeHandlerError: Error {
         case fileNotFound
@@ -468,9 +421,82 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }()
                     }
                 }
+            } else if url.path == "/entries" {
+                guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
+                    await { @MainActor in
+                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                    }()
+                    return
+                }
+
+                do {
+                    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                        forPackageURL: mainDocumentURL,
+                        readerFileManager: readerFileManager
+                    )
+                    let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
+                    let data = try JSONEncoder().encode(responseBody)
+                    let response = HTTPURLResponse(
+                        url: url,
+                        mimeType: "application/json",
+                        expectedContentLength: data.count,
+                        textEncodingName: "utf-8"
+                    )
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didReceive(response)
+                            urlSchemeTask.didReceive(data)
+                            urlSchemeTask.didFinish()
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
+                } catch {
+                    await { @MainActor in
+                        urlSchemeTask.didFailWithError(error)
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                    }()
+                }
+            } else if url.path == "/entry" {
+                guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entry"),
+                      let subpath = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                        .queryItems?
+                        .first(where: { $0.name == "subpath" })?
+                        .value else {
+                    await { @MainActor in
+                        urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                    }()
+                    return
+                }
+
+                do {
+                    let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                        forPackageURL: mainDocumentURL,
+                        readerFileManager: readerFileManager
+                    )
+                    let data = try cachedSource.source.readEntry(subpath: subpath)
+                    let metadata = try cachedSource.source.mimeType(subpath: subpath)
+                    let response = HTTPURLResponse(
+                        url: url,
+                        mimeType: metadata.mimeType,
+                        expectedContentLength: data.count,
+                        textEncodingName: metadata.textEncodingName
+                    )
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didReceive(response)
+                            urlSchemeTask.didReceive(data)
+                            urlSchemeTask.didFinish()
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
+                } catch {
+                    await { @MainActor in
+                        urlSchemeTask.didFailWithError(error)
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                    }()
+                }
             } else if url.pathComponents.starts(with: ["/", "load"]) {
                 // Bundle file.
-                let loadPath = "/" + url.pathComponents.dropFirst(2).joined(separator: "/") + (url.hasDirectoryPath ? "/" : "")
                 if let fileUrl = bundleURLFromWebURL(url),
                    let mimeType = mimeType(ofFileAtUrl: fileUrl),
                    let data = try? Data(contentsOf: fileUrl) {
@@ -486,8 +512,7 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }
                     }()
-                } else if urlSchemeTask.request.value(forHTTPHeaderField: "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST")?.lowercased() != "true",
-                          let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js"), let mimeType = mimeType(ofFileAtUrl: url) {
+                } else if let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js") {
                     // File viewer bundle file.
                     do {
                         let (response, data) = try await EBookLoadingActor().loadViewerFile(
@@ -511,34 +536,6 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                         }()
                     }
-                } else if
-                    let path = loadPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-                    let fileURL = URL(string: "ebook://ebook/load\(path)"),
-                    // Security check.
-                    urlSchemeTask.request.mainDocumentURL == fileURL {
-                    do {
-                        let loadingActor = EBookLoadingActor()
-                        let (response, data) = try await loadingActor.loadEbookFile(
-                            for: fileURL,
-                            originalURL: url,
-                            readerFileManager: readerFileManager
-                        )
-
-                        await { @MainActor in
-                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
-                                urlSchemeTask.didReceive(response)
-                                urlSchemeTask.didReceive(data)
-                                urlSchemeTask.didFinish()
-                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                            }
-                        }()
-                    } catch {
-                        print("Error: \(error)")
-                        await { @MainActor in
-                            urlSchemeTask.didFailWithError(error)
-                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
-                        }()
-                    }
                 } else {
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
@@ -554,6 +551,33 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetExtension = url.pathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
         return Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
+    }
+
+    @EbookURLSchemeActor
+    private func validatedMainDocumentURL(for request: URLRequest, route: String) -> URL? {
+        let requestedSourceURL = request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
+        guard let mainDocumentURL = request.mainDocumentURL else {
+            debugPrint("# EBOOKPERF entry-source.invalid route:", route, "reason:", "missingMainDocumentURL", "requestURL:", request.url?.absoluteString ?? "nil", "requestedSourceURL:", requestedSourceURL ?? "nil")
+            assertionFailure("Missing mainDocumentURL for ebook entry request")
+            return nil
+        }
+        guard mainDocumentURL.scheme == "ebook",
+              mainDocumentURL.host == "ebook",
+              mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
+            debugPrint("# EBOOKPERF entry-source.invalid route:", route, "reason:", "unexpectedMainDocumentURL", "mainDocumentURL:", mainDocumentURL.absoluteString, "requestedSourceURL:", requestedSourceURL ?? "nil")
+            assertionFailure("Unexpected mainDocumentURL for ebook entry request: \(mainDocumentURL.absoluteString)")
+            return nil
+        }
+        if let requestedSourceURL,
+           requestedSourceURL != mainDocumentURL.absoluteString {
+            debugPrint("# EBOOKPERF entry-source.mismatch route:", route, "mainDocumentURL:", mainDocumentURL.absoluteString, "requestedSourceURL:", requestedSourceURL)
+            assertionFailure("Mismatched ebook source URL and mainDocumentURL")
+        }
+        if !hasLoggedValidatedMainDocumentURL {
+            hasLoggedValidatedMainDocumentURL = true
+            debugPrint("# EBOOKPERF entry-source.mainDocumentURL route:", route, "mainDocumentURL:", mainDocumentURL.absoluteString, "requestedSourceURL:", requestedSourceURL ?? "nil")
+        }
+        return mainDocumentURL
     }
 
     private func mimeType(ofFileAtUrl url: URL) -> String? {

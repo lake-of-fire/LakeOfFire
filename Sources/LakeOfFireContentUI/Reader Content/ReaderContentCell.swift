@@ -934,7 +934,7 @@ public struct BookCoverImageView: View {
 
     private func imagePixelSize(for url: URL) async -> CGSize? {
         await Task.detached(priority: .utility) {
-            if let readerFileImageData = try? readerImageData(url: url),
+            if let readerFileImageData = try? await readerImageData(url: url),
                let pixelSize = imagePixelSize(from: readerFileImageData) {
                 return pixelSize
             }

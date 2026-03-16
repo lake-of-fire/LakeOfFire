@@ -1726,16 +1726,18 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "path=\(route.rawValue)",
             "reason=\(reason)"
         )
-        debugPrint(
-            "# LOOKUPSMAR10",
-            [
-                "stage": "readerMode.route",
-                "pageURL": readerContent.pageURL.absoluteString,
-                "contentURL": contentURL,
-                "path": route.rawValue,
-                "reason": reason
-            ] as [String: Any]
-        )
+        if ProcessInfo.processInfo.environment["MANABI_LOOKUP_READER_ROUTE_DEBUG"] == "1" {
+            debugPrint(
+                "# LOOKUPSMAR10",
+                [
+                    "stage": "readerMode.route",
+                    "pageURL": readerContent.pageURL.absoluteString,
+                    "contentURL": contentURL,
+                    "path": route.rawValue,
+                    "reason": reason
+                ] as [String: Any]
+            )
+        }
     }
 
     @MainActor
@@ -2678,30 +2680,32 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "matches=\(urlsMatch)",
                     "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
                 )
-                debugPrint(
-                    "# LOOKUPSMAR10",
-                    [
-                        "stage": "readerMode.showReadabilityContent.enter",
-                        "targetContentURL": url.absoluteString,
-                        "readerStateURL": pageURL.absoluteString,
-                        "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
-                        "renderMode": "navigatorLoad",
-                        "frameIsMain": frameInfo?.isMainFrame ?? true,
-                        "matches": urlsMatch
-                    ] as [String: Any]
-                )
-                debugPrint(
-                    "# LOOKUPSMAR10",
-                    [
-                        "stage": "readerMode.showReadabilityContent.decision",
-                        "targetContentURL": url.absoluteString,
-                        "readerStateURL": pageURL.absoluteString,
-                        "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
-                        "readerStateIsLoader": pageURL.isReaderURLLoaderURL,
-                        "hostDocumentIsLoader": (resolvedFrameInfo?.request.url ?? pageURL).isReaderURLLoaderURL,
-                        "renderMode": "navigatorLoad"
-                    ] as [String: Any]
-                )
+                if ProcessInfo.processInfo.environment["MANABI_LOOKUP_READER_ROUTE_DEBUG"] == "1" {
+                    debugPrint(
+                        "# LOOKUPSMAR10",
+                        [
+                            "stage": "readerMode.showReadabilityContent.enter",
+                            "targetContentURL": url.absoluteString,
+                            "readerStateURL": pageURL.absoluteString,
+                            "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
+                            "renderMode": "navigatorLoad",
+                            "frameIsMain": frameInfo?.isMainFrame ?? true,
+                            "matches": urlsMatch
+                        ] as [String: Any]
+                    )
+                    debugPrint(
+                        "# LOOKUPSMAR10",
+                        [
+                            "stage": "readerMode.showReadabilityContent.decision",
+                            "targetContentURL": url.absoluteString,
+                            "readerStateURL": pageURL.absoluteString,
+                            "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
+                            "readerStateIsLoader": pageURL.isReaderURLLoaderURL,
+                            "hostDocumentIsLoader": (resolvedFrameInfo?.request.url ?? pageURL).isReaderURLLoaderURL,
+                            "renderMode": "navigatorLoad"
+                        ] as [String: Any]
+                    )
+                }
                 guard urlsMatch else {
                     debugPrint("# READER readability.readerURLMismatch", url, pageURL)
                     print("Readability content URL mismatch", url, pageURL)
@@ -4596,30 +4600,11 @@ private func buildSnippetCanonicalReadabilityHTML(
     fallbackTitle: String?
 ) -> String? {
     let normalizedHTML = ensureReadabilityBodyExists(html)
-    if hasReadabilityModeBodyClassMarkup(in: normalizedHTML),
-       hasReaderContentNodeMarkup(in: normalizedHTML) {
-        guard let document = try? SwiftSoup.parse(normalizedHTML),
-              let rawReaderContent = try? document.getElementById("reader-content")?.html(),
-              !rawReaderContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return normalizedHTML
-        }
-        let existingTitle = (try? document.getElementById("reader-title")?.text())?.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        let resolvedTitle = (existingTitle?.isEmpty == false ? existingTitle : nil) ?? fallbackTitle ?? ""
-        let sanitizedTitle = SwiftDOMPurify.DOMPurify.sanitize(
-            stripTemplateTagsForSanitize(resolvedTitle)
-        )
-        let sanitizedContent = SwiftDOMPurify.DOMPurify.sanitize(stripTemplateTagsForSanitize(rawReaderContent))
-        guard !sanitizedContent.isEmpty else {
-            return nil
-        }
-        return buildCanonicalReadabilityHTML(
-            title: sanitizedTitle,
-            byline: "",
-            publishedTime: nil,
-            content: sanitizedContent,
-            contentURL: contentURL.canonicalReaderContentURL()
+    if hasCanonicalReadabilityMarkup(in: normalizedHTML) {
+        return rebuildCanonicalSnippetReadabilityHTML(
+            html: normalizedHTML,
+            contentURL: contentURL,
+            fallbackTitle: fallbackTitle
         )
     }
     let rawContent = bodyInnerHTML(from: normalizedHTML)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4634,6 +4619,46 @@ private func buildSnippetCanonicalReadabilityHTML(
     return buildCanonicalReadabilityHTML(
         title: sanitizedTitle,
         byline: "",
+        publishedTime: nil,
+        content: sanitizedContent,
+        contentURL: contentURL.canonicalReaderContentURL()
+    )
+}
+
+private func rebuildCanonicalSnippetReadabilityHTML(
+    html: String,
+    contentURL: URL,
+    fallbackTitle: String?
+) -> String? {
+    guard let document = try? SwiftSoup.parse(html) else {
+        return nil
+    }
+    let extractedTitle = (try? document.getElementById("reader-title")?.text(trimAndNormaliseWhitespace: false))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let extractedByline = (try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let extractedContent = (try? document.getElementById("reader-content")?.html())
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard let extractedContent, !extractedContent.isEmpty else {
+        return nil
+    }
+
+    let sanitizedTitle = SwiftDOMPurify.DOMPurify.sanitize(
+        stripTemplateTagsForSanitize(extractedTitle ?? fallbackTitle ?? "")
+    )
+    let sanitizedByline = SwiftDOMPurify.DOMPurify.sanitize(
+        stripTemplateTagsForSanitize(extractedByline ?? "")
+    )
+    let sanitizedContent = SwiftDOMPurify.DOMPurify.sanitize(
+        stripTemplateTagsForSanitize(extractedContent)
+    )
+    guard !sanitizedContent.isEmpty else {
+        return nil
+    }
+
+    return buildCanonicalReadabilityHTML(
+        title: sanitizedTitle,
+        byline: sanitizedByline,
         publishedTime: nil,
         content: sanitizedContent,
         contentURL: contentURL.canonicalReaderContentURL()

@@ -1,6 +1,5 @@
 import Foundation
 import WebKit
-import ZIPFoundation
 import RealmSwift
 import LakeOfFireContent
 import LakeOfFireCore
@@ -13,8 +12,6 @@ fileprivate extension URL {
         return components?.url
     }
 }
-
-fileprivate let zipArchiveExtensions = ["zip", "epub"]
 
 @globalActor
 public actor ReaderFileURLSchemeActor {
@@ -56,27 +53,33 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 // Package (eg ZIP) subpath file
                 if let urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false),
                    let subpathValue = urlComponents.queryItems?.first(where: { $0.name == "subpath" })?.value {
-                    if zipArchiveExtensions.contains(url.pathExtension.lowercased()), let readerFileURL = url.deletingQuery, let archive = Archive(url: readerFileURL, accessMode: .read), let entry = archive[subpathValue], entry.type == .file {
-                        var imageData = Data()
-                        try archive.extract(entry, consumer: { imageData.append($0) })
-                        
-                        let subpathExtension = (subpathValue as NSString).pathExtension.lowercased()
+                    if let readerFileURL = url.deletingQuery {
+                        let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
+                            forPackageURL: readerFileURL,
+                            readerFileManager: readerFileManager
+                        )
+                        let data = try cachedSource.source.readEntry(subpath: subpathValue)
+                        let metadata = try cachedSource.source.mimeType(subpath: subpathValue)
                         let response = HTTPURLResponse(
                             url: url,
-                            mimeType: "image/\(subpathExtension)",
-                            expectedContentLength: imageData.count,
-                            textEncodingName: nil
+                            mimeType: metadata.mimeType,
+                            expectedContentLength: data.count,
+                            textEncodingName: metadata.textEncodingName
                         )
                         await { @MainActor in
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
                                 urlSchemeTask.didReceive(response)
-                                urlSchemeTask.didReceive(imageData)
+                                urlSchemeTask.didReceive(data)
                                 urlSchemeTask.didFinish()
                                 self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
                                 return
                             } else {
                                 urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                             }
+                        }()
+                    } else {
+                        await { @MainActor in
+                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                         }()
                     }
                 } else if

@@ -25,14 +25,6 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
     }
 }
 
-fileprivate struct ReaderContentHorizontalListSizePreferenceKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
-    }
-}
-
 fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol>: View {
     var content: C
     let includeSource: Bool
@@ -421,8 +413,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
-    @State private var lastLoggedSize: CGSize = .zero
-    
     let contentSortAscending = false
     var contentFilter: (@ReaderContentListActor (Int, C) async throws -> Bool) = { @ReaderContentListActor _, _ in return true }
     //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
@@ -485,40 +475,6 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
                 )
                 //                    try? await viewModel.load(contents: ReaderContentLoader.fromMainActor(contents: contents) as? [C] ?? [], contentFilter: contentFilter, sortOrder: sortOrder)
             }
-        }
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: ReaderContentHorizontalListSizePreferenceKey.self, value: proxy.size)
-            }
-        )
-        .onPreferenceChange(ReaderContentHorizontalListSizePreferenceKey.self) { size in
-            guard abs(size.height - lastLoggedSize.height) > 0.5 else { return }
-            lastLoggedSize = size
-            debugPrint("# HORIZLISTSIZE measured height:", size.height, "width:", size.width)
-        }
-        .onAppear {
-            debugPrint("# HORIZLISTSIZE estimate:", estimatedRowHeight, "maxCellHeight:", maxCellHeight)
-        }
-        .onChange(of: viewModel.showLoadingIndicator) { isLoading in
-            debugPrint(
-                "# HORIZLISTSIZE state loading:",
-                isLoading,
-                "count:",
-                viewModel.filteredContents.count,
-                "estimate:",
-                estimatedRowHeight
-            )
-        }
-        .onChange(of: viewModel.filteredContents.count) { count in
-            debugPrint(
-                "# HORIZLISTSIZE state loading:",
-                viewModel.showLoadingIndicator,
-                "count:",
-                count,
-                "estimate:",
-                estimatedRowHeight
-            )
         }
         .frame(height: estimatedRowHeight, alignment: .top)
         //.enableInjection()
