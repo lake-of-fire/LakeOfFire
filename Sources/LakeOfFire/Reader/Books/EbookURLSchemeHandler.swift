@@ -62,10 +62,43 @@ fileprivate actor EBookLoadingActor {
     /// Returns an `HTTPURLResponse` and data for a bundled viewer HTML file at the given path.
     func loadViewerFile(
         at viewerHtmlPath: String,
-        originalURL: URL
+        originalURL: URL,
+        sharedFontCSSBase64: String?,
+        sharedFontCSSBase64Provider: (() async -> String?)?
     ) async throws -> (HTTPURLResponse, Data) {
-        // Load HTML content from bundle path
-        let html = try String(contentsOfFile: viewerHtmlPath)
+        var html = try String(contentsOfFile: viewerHtmlPath)
+
+        var base64 = sharedFontCSSBase64
+        if (base64 == nil || base64?.isEmpty == true), let sharedFontCSSBase64Provider {
+            base64 = await sharedFontCSSBase64Provider()
+        }
+
+        if let base64, !base64.isEmpty {
+            let payload = """
+            <script id="manabi-font-css-base64" type="application/json">\(base64)</script>
+            <script>
+            (function() {
+                try {
+                    globalThis.manabiFontCSSBase64 = "\(base64)";
+                    const el = document.getElementById('manabi-font-css-base64');
+                    if (!el || globalThis.manabiFontCSSBlobURL) return;
+                    const css = atob(el.textContent || '');
+                    const blob = new Blob([css], { type: 'text/css' });
+                    const url = URL.createObjectURL(blob);
+                    globalThis.manabiFontCSSBlobURL = url;
+                } catch (err) {
+                    console.error('Failed to prepare font blob', err);
+                }
+            })();
+            </script>
+            """
+            if let range = html.range(of: "</body>", options: .caseInsensitive) {
+                html.replaceSubrange(range, with: payload + "</body>")
+            } else {
+                html.append(payload)
+            }
+        }
+
         guard let data = html.data(using: .utf8) else {
             throw EbookLoadingError.fileNotFound
         }
@@ -150,6 +183,8 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     var readerFileManager: ReaderFileManager? = nil
     var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
     var processHTML: ((String, Bool) async -> String)?
+    var sharedFontCSSBase64: String?
+    var sharedFontCSSBase64Provider: (() async -> String?)?
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     
@@ -258,7 +293,9 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         do {
                             let (response, data) = try await EBookLoadingActor().loadViewerFile(
                                 at: viewerHtmlPath,
-                                originalURL: url
+                                originalURL: url,
+                                sharedFontCSSBase64: self.sharedFontCSSBase64,
+                                sharedFontCSSBase64Provider: self.sharedFontCSSBase64Provider
                             )
                             await { @MainActor in
                                 if self.schemeHandlers[urlSchemeTask.hash] != nil {

@@ -304,6 +304,7 @@ class View {
                     const doc = this.document
 
                     await afterLoad?.(doc)
+                    await globalThis.manabiEnsureCustomFonts?.(doc)
 
                     //                    this.#iframe.style.display = 'none'
 

@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftUIWebView
 import SwiftSoup
 import SwiftReadability
+import CryptoKit
 import RealmSwift
 import Combine
 import RealmSwiftGaps
@@ -11,6 +12,47 @@ import WebKit
 @globalActor
 fileprivate actor ReaderViewModelActor {
     static let shared = ReaderViewModelActor()
+}
+
+private func readerFontPayloadHash(_ payload: String) -> String {
+    let digest = SHA256.hash(data: Data(payload.utf8))
+    return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+}
+
+internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
+    let gateCSS = """
+    html[data-manabi-font-pending="1"] body.readability-mode {
+        visibility: hidden !important;
+    }
+    """
+
+    let htmlElement = try doc.getElementsByTag("html").first()
+    try htmlElement?.attr("data-manabi-font-pending", "1")
+    try htmlElement?.attr("data-manabi-font-ready", "0")
+
+    if let existingStyle = try doc.getElementById("manabi-custom-font-gate") {
+        try existingStyle.text(gateCSS)
+        return
+    }
+
+    let styleElement = try doc.createElement("style")
+    try styleElement.attr("id", "manabi-custom-font-gate")
+    try styleElement.text(gateCSS)
+
+    if let head = doc.head() {
+        try head.appendChild(styleElement)
+        return
+    }
+
+    if let html = try doc.getElementsByTag("html").first() {
+        try html.prepend("<head></head>")
+        if let head = doc.head() {
+            try head.appendChild(styleElement)
+            return
+        }
+    }
+
+    try doc.appendChild(styleElement)
 }
 
 private let readabilityViewportMetaContent = "width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0"
@@ -107,11 +149,70 @@ internal func buildCanonicalReadabilityHTML(
             <div id="reader-content">
                 \(content)
             </div>
+            \(lookupSmAR15InlineProbeHTML(context: "canonical-readability", url: contentURL))
             <script>
                 \(Readability.shared.scripts)
             </script>
         </body>
     </html>
+    """
+}
+
+fileprivate func lookupSmAR15InlineProbeHTML(context: String, url: URL?) -> String {
+    let urlString = escapeReadabilityText(url?.absoluteString ?? "nil")
+    let escapedContext = escapeReadabilityText(context)
+    return """
+    <script>
+    (function () {
+        function post(prefix) {
+            try {
+                window.webkit?.messageHandlers?.print?.postMessage({
+                    message: '# LOOKUPSMAR15 ' + prefix
+                });
+            } catch {}
+        }
+        function collect(label) {
+            try {
+                post(
+                    label
+                    + ' context=\(escapedContext)'
+                    + ' url=\(urlString)'
+                    + ' ready=' + document.readyState
+                    + ' body=' + !!document.body
+                    + ' inlineHTML=' + (document.documentElement?.getAttribute('data-lookupsmar15-inline-probe') ?? 'nil')
+                    + ' inlineBody=' + (document.body?.getAttribute('data-lookupsmar15-inline-probe') ?? 'nil')
+                    + ' scriptLoaded=' + (document.documentElement?.getAttribute('data-lookupsmar15-script-loaded') ?? 'nil')
+                    + ' hasLookupNext=' + typeof window.manabi_lookupNextSegmentMatch
+                    + ' hasLookupPrev=' + typeof window.manabi_lookupPreviousSegmentMatch
+                    + ' hasReprocess=' + typeof window.manabi_reprocessJapanese
+                    + ' hasInit=' + typeof window.manabiReaderInitialized
+                    + ' hasButtonsStore=' + typeof document.manabi_markAsReadButtonsWired
+                    + ' segmentCount=' + document.getElementsByTagName('manabi-segment').length
+                    + ' buttonCount=' + document.querySelectorAll('button.manabi-tracking-button').length
+                );
+            } catch (error) {
+                post('inline-collect-error context=\(escapedContext) error=' + String(error));
+            }
+        }
+        try {
+            document.documentElement?.setAttribute('data-lookupsmar15-inline-probe', '\(escapedContext)');
+            document.body?.setAttribute('data-lookupsmar15-inline-probe', '\(escapedContext)');
+            collect('inline-probe');
+            setTimeout(function () { collect('inline-probe-timeout-0'); }, 0);
+            setTimeout(function () { collect('inline-probe-timeout-100'); }, 100);
+            document.addEventListener('DOMContentLoaded', function handleDOMContentLoaded() {
+                document.removeEventListener('DOMContentLoaded', handleDOMContentLoaded);
+                collect('inline-probe-domcontentloaded');
+            });
+            window.addEventListener('load', function handleLoad() {
+                window.removeEventListener('load', handleLoad);
+                collect('inline-probe-load');
+            });
+        } catch (error) {
+            post('inline-probe-error context=\(escapedContext) error=' + String(error));
+        }
+    })();
+    </script>
     """
 }
 
@@ -225,6 +326,8 @@ public class ReaderModeViewModel: ObservableObject {
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
+    public var sharedFontCSSBase64: String?
+    public var sharedFontCSSBase64Provider: (() async -> String?)?
     
     @Published public var isReaderMode = false
     @Published public var isReaderModeLoading = false
@@ -261,6 +364,154 @@ public class ReaderModeViewModel: ObservableObject {
         } else if !isLoading && isReaderModeLoading {
             isReaderModeLoading = false
         }
+    }
+
+    func resolveSharedReaderFontCSSBase64() async -> String? {
+        if let sharedFontCSSBase64, !sharedFontCSSBase64.isEmpty {
+            return sharedFontCSSBase64
+        }
+        if let sharedFontCSSBase64Provider {
+            let base64 = await sharedFontCSSBase64Provider()
+            guard let base64, !base64.isEmpty else { return nil }
+            return base64
+        }
+        return nil
+    }
+
+    func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
+        guard scriptCaller.hasAsyncCaller else { return }
+        guard #available(iOS 16.4, macOS 14, *) else { return }
+        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
+
+        let fontHash = readerFontPayloadHash(base64)
+        let js = """
+        (function() {
+            const postFontLoad = (event, payload) => {
+                try {
+                    const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print;
+                    handler && handler.postMessage && handler.postMessage(Object.assign({
+                        message: "# FONTLOAD js.readerInjection." + event,
+                        pageURL: window.location.href
+                    }, payload || {}));
+                } catch (_) {}
+            };
+            const setFontPendingState = (pending) => {
+                const root = document.documentElement;
+                if (!root) return;
+                if (pending) {
+                    root.dataset.manabiFontPending = '1';
+                    root.dataset.manabiFontReady = '0';
+                } else {
+                    delete root.dataset.manabiFontPending;
+                    root.dataset.manabiFontReady = '1';
+                }
+            };
+            const replaceFontBlob = (css, fontHash, desiredFamily) => {
+                if (!css) return null;
+                const resolvedCSS = desiredFamily
+                    ? css.replace(/font-family:\\s*['"][^'"]+['"]\\s*;/g, "font-family: '" + desiredFamily + "';")
+                    : css;
+                const blob = new Blob([resolvedCSS], { type: 'text/css' });
+                const nextBlobURL = URL.createObjectURL(blob);
+                const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
+                globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
+                globalThis.manabiReaderFontCSSHash = fontHash;
+                if (previousBlobURL && previousBlobURL !== nextBlobURL) {
+                    try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
+                }
+                return nextBlobURL;
+            };
+            const ensureReaderFontStyle = (desiredFamily) => {
+                const root = document.documentElement;
+                if (!root) return null;
+                let style = document.getElementById('manabi-custom-fonts-inline');
+                if (style) return style;
+                const css = globalThis.manabiReaderFontCSSText || '';
+                if (!css) return null;
+                const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
+                if (!blobURL) return null;
+                style = document.createElement('link');
+                style.id = 'manabi-custom-fonts-inline';
+                style.rel = 'stylesheet';
+                style.href = blobURL;
+                style.dataset.manabiFontHash = fontHash;
+                if (desiredFamily) {
+                    style.dataset.manabiInjectedFontFamily = desiredFamily;
+                }
+                (document.head || document.documentElement).appendChild(style);
+                postFontLoad('reinsertedFromCache', { cssBytes: css.length, mode: 'blob-link' });
+                return style;
+            };
+            globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+            const waitForFontReady = async (desiredFamily) => {
+                const fontSet = document.fonts;
+                if (!fontSet) return;
+                if (desiredFamily && typeof fontSet.load === 'function') {
+                    try {
+                        await fontSet.load("1em '" + desiredFamily + "'");
+                    } catch (_) {}
+                }
+                if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
+                    try {
+                        await fontSet.ready;
+                    } catch (_) {}
+                }
+            };
+            return (async () => {
+                const root = document.documentElement;
+                const desiredFamily =
+                    root?.dataset?.manabiHorizontalFontFamily
+                    || globalThis.manabiHorizontalFontFamilyName
+                    || null;
+                setFontPendingState(true);
+                let style = ensureReaderFontStyle(desiredFamily);
+                if (!style) {
+                    const css = atob(fontCSSBase64);
+                    globalThis.manabiReaderFontCSSText = css;
+                    const blobURL = replaceFontBlob(css, fontHash, desiredFamily);
+                    style = document.createElement('link');
+                    style.id = 'manabi-custom-fonts-inline';
+                    style.rel = 'stylesheet';
+                    style.href = blobURL;
+                    style.dataset.manabiFontHash = fontHash;
+                    if (desiredFamily) {
+                        style.dataset.manabiInjectedFontFamily = desiredFamily;
+                    }
+                    (document.head || document.documentElement).appendChild(style);
+                    root.dataset.manabiFontInjected = '1';
+                    postFontLoad('inserted', { cssBytes: css.length, mode: 'blob-link' });
+                } else {
+                    postFontLoad('reusedExisting', { cssBytes: (globalThis.manabiReaderFontCSSText || '').length, mode: style.tagName });
+                }
+                if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
+                    window.manabiApplyDirectionalInjectedFont();
+                }
+                const resolvedFamily =
+                    document.documentElement?.dataset?.manabiInjectedFontFamily
+                    || desiredFamily
+                    || null;
+                await waitForFontReady(resolvedFamily);
+                setFontPendingState(false);
+                postFontLoad('fontReady', {
+                    family: resolvedFamily,
+                    status: document.fonts?.status || 'unknown'
+                });
+            })().catch((e) => {
+                setFontPendingState(false);
+                postFontLoad('error', { error: String(e) });
+                try { console.log('manabi font inject error', e); } catch (_) {}
+            });
+        })();
+        """
+        try? await scriptCaller.evaluateJavaScript(
+            js,
+            arguments: [
+                "fontCSSBase64": base64,
+                "fontHash": fontHash,
+            ],
+            duplicateInMultiTargetFrames: true
+        )
     }
     
     public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
@@ -519,6 +770,10 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultFontSize: defaultFontSize ?? 21
             )
 
+            if let sharedFontCSSBase64, !sharedFontCSSBase64.isEmpty {
+                try? upsertDeferredSharedReaderFontGate(in: doc)
+            }
+
             var html = try doc.outerHtml()
             
             if let processHTML {
@@ -663,6 +918,8 @@ public class ReaderModeViewModel: ObservableObject {
         }
         try Task.checkCancellation()
 
+        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+
         // FIXME: Mokuro? check plugins thing for reader mode url instead of hardcoding methods here
         let isReaderModeVerified = content.isReaderModeByDefault
         try Task.checkCancellation()
@@ -716,6 +973,7 @@ public class ReaderModeViewModel: ObservableObject {
         newState: WebViewState,
         scriptCaller: WebViewScriptCaller
     ) async {
+        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
         if !newState.pageURL.isReaderURLLoaderURL {
             do {
                 let isNextReaderMode = try await scriptCaller.evaluateJavaScript("return document.body?.dataset.isNextLoadInReaderMode === 'true'") as? Bool ?? false

@@ -108,6 +108,111 @@ const debounce = (fn, delay) => {
     }
 };
 
+const getSharedFontCSSText = () => {
+    if (globalThis.manabiFontCSSText) return globalThis.manabiFontCSSText;
+    const base64 =
+        globalThis.manabiFontCSSBase64 ||
+        globalThis.parent?.manabiFontCSSBase64 ||
+        globalThis.top?.manabiFontCSSBase64 ||
+        document.getElementById('manabi-font-css-base64')?.textContent ||
+        '';
+    if (!base64) return null;
+    try {
+        const css = atob(base64);
+        globalThis.manabiFontCSSText = css;
+        return css;
+    } catch (_err) {
+        return null;
+    }
+};
+
+const waitForFontCSSReady = async (timeoutMs = 2000) => {
+    const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    let css = getSharedFontCSSText();
+    while (!css) {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        if (now - start >= timeoutMs) break;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        css = getSharedFontCSSText();
+    }
+    return css;
+};
+
+const ensureCustomFontsForDoc = async (doc) => {
+    try {
+        const css = await waitForFontCSSReady(4000);
+        if (!css || !doc?.head) return false;
+        const horizontalFamily = globalThis.manabiHorizontalFontFamilyName || 'YuKyokasho Yoko';
+        const verticalFamily = globalThis.manabiVerticalFontFamilyName || 'YuKyokasho';
+        const writingDirection = globalThis.manabiEbookWritingDirection || 'original';
+        const shouldUseVertical = writingDirection === 'vertical'
+            || (writingDirection === 'original' && globalThis.manabiTrackingVertical === true);
+        const targetFamily = shouldUseVertical ? verticalFamily : horizontalFamily;
+        const root = doc.documentElement;
+        if (root) {
+            root.dataset.manabiFontPending = '1';
+            root.dataset.manabiFontReady = '0';
+            root.style.visibility = 'hidden';
+        }
+        let style = doc.getElementById('manabi-custom-fonts-inline');
+        if (!style) {
+            style = doc.createElement('link');
+            style.id = 'manabi-custom-fonts-inline';
+            style.rel = 'stylesheet';
+            doc.head.appendChild(style);
+        }
+        if (style.dataset.manabiInjectedFontFamily !== targetFamily || !style.href) {
+            const sourceCSS = globalThis.manabiFontCSSText || css;
+            const nextCSS = sourceCSS.replace(
+                /font-family:\s*['"][^'"]+['"]\s*;/g,
+                "font-family: '" + targetFamily + "';"
+            );
+            const blob = new Blob([nextCSS], { type: 'text/css' });
+            const nextBlobURL = URL.createObjectURL(blob);
+            const previousBlobURL = style.dataset.manabiBlobURL || '';
+            style.href = nextBlobURL;
+            style.dataset.manabiBlobURL = nextBlobURL;
+            style.dataset.manabiInjectedFontFamily = targetFamily;
+            if (previousBlobURL && previousBlobURL !== nextBlobURL) {
+                try { URL.revokeObjectURL(previousBlobURL); } catch (_error) {}
+            }
+        }
+
+        const fontSet = doc.fonts;
+        if (fontSet) {
+            try {
+                if (typeof fontSet.load === 'function') {
+                    await fontSet.load("1em '" + targetFamily + "'");
+                }
+            } catch (_error) {}
+            try {
+                if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
+                    await fontSet.ready;
+                }
+            } catch (_error) {}
+        }
+        if (root) {
+            delete root.dataset.manabiFontPending;
+            root.dataset.manabiFontReady = '1';
+            root.style.visibility = '';
+        }
+        return true;
+    } catch (_err) {
+        try {
+            const root = doc?.documentElement;
+            if (root) {
+                delete root.dataset.manabiFontPending;
+                root.dataset.manabiFontReady = '0';
+                root.style.visibility = '';
+            }
+        } catch (__error) {}
+        return false;
+    }
+};
+
+globalThis.manabiWaitForFontCSS = waitForFontCSSReady;
+globalThis.manabiEnsureCustomFonts = ensureCustomFontsForDoc;
+
 const isZip = async file => {
     const arr = new Uint8Array(await file.slice(0, 4).arrayBuffer())
     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
