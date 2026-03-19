@@ -171,6 +171,18 @@
                     -webkit-backdrop-filter: blur(30px);
                     contain: strict;
                 }
+                body.nav-hidden {
+                    --manabi-highlight-opacity: 0.5;
+                }
+                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
+                #nav-bar.nav-hidden-due-to-scroll #left-stack,
+                #nav-bar.nav-hidden-due-to-scroll #right-stack,
+                body.nav-hidden #progress-wrapper,
+                body.nav-hidden #left-stack,
+                body.nav-hidden #right-stack {
+                    opacity: 0;
+                    pointer-events: none;
+                }
                 #progress-button {
                     all: unset; /* Remove default styling */
                     margin: 0 5px;

@@ -130,7 +130,19 @@ public class ReaderViewModel: NSObject, ObservableObject {
         let state = newState ?? self.state
         if !content.url.isEBookURL && !content.isFromClipboard && content.rssContainsFullContent && !content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if content.url.absoluteString == state.pageURL.absoluteString, !state.isLoading && !state.isProvisionallyNavigating {
-                try await scriptCaller.evaluateJavaScript("(function() { if (document.body?.classList.contains('readability-mode')) { let title = DOMPurify.sanitize(`\(content.title)`); if (document.title != title) { document.title = title } } })()")
+                try await scriptCaller.evaluateJavaScript(
+                    """
+                    (function() {
+                        if (document.body?.classList.contains('readability-mode')) {
+                            const title = arguments.title
+                            if (typeof title === 'string' && document.title !== title) {
+                                document.title = title
+                            }
+                        }
+                    })()
+                    """,
+                    arguments: ["title": content.title]
+                )
             }
         }
     }

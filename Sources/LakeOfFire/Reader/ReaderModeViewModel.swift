@@ -14,6 +14,27 @@ fileprivate actor ReaderViewModelActor {
     static let shared = ReaderViewModelActor()
 }
 
+private func stripTemplateTagsForSanitize(_ html: String) -> String {
+    guard html.range(of: "<template", options: .caseInsensitive) != nil else {
+        return html
+    }
+    return html.replacingOccurrences(
+        of: #"(?is)<template\b[^>]*>.*?</template>"#,
+        with: "",
+        options: .regularExpression
+    )
+}
+
+private func sanitizeReadabilityFragment(_ html: String) -> String {
+    stripTemplateTagsForSanitize(html)
+}
+
+private extension URL {
+    func canonicalReaderContentURLForHotfix() -> URL {
+        ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
+    }
+}
+
 private func readerFontPayloadHash(_ payload: String) -> String {
     let digest = SHA256.hash(data: Data(payload.utf8))
     return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
@@ -287,18 +308,61 @@ func buildSnippetCanonicalReadabilityHTML(
 ) -> String? {
     let normalizedHTML = ensureReadabilityBodyExists(html)
     if hasCanonicalReadabilityMarkup(in: normalizedHTML) {
-        return normalizedHTML
+        return rebuildCanonicalSnippetReadabilityHTML(
+            html: normalizedHTML,
+            contentURL: contentURL,
+            fallbackTitle: fallbackTitle
+        )
     }
     guard let rawContent = bodyInnerHTML(from: normalizedHTML)?.trimmingCharacters(in: .whitespacesAndNewlines),
           !rawContent.isEmpty else {
         return nil
     }
+    let sanitizedTitle = sanitizeReadabilityFragment(fallbackTitle ?? "")
+    let sanitizedContent = sanitizeReadabilityFragment(rawContent)
+    guard !sanitizedContent.isEmpty else {
+        return nil
+    }
     return buildCanonicalReadabilityHTML(
-        title: fallbackTitle ?? "",
+        title: sanitizedTitle,
         byline: "",
         publishedTime: nil,
-        content: rawContent,
-        contentURL: contentURL
+        content: sanitizedContent,
+        contentURL: contentURL.canonicalReaderContentURLForHotfix()
+    )
+}
+
+private func rebuildCanonicalSnippetReadabilityHTML(
+    html: String,
+    contentURL: URL,
+    fallbackTitle: String?
+) -> String? {
+    guard let document = try? SwiftSoup.parse(html) else {
+        return nil
+    }
+    let extractedTitle = (try? document.getElementById("reader-title")?.text(trimAndNormaliseWhitespace: false))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let extractedByline = (try? document.getElementById("reader-byline")?.text(trimAndNormaliseWhitespace: false))
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let extractedContent = (try? document.getElementById("reader-content")?.html())
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard let extractedContent, !extractedContent.isEmpty else {
+        return nil
+    }
+
+    let sanitizedTitle = sanitizeReadabilityFragment(extractedTitle ?? fallbackTitle ?? "")
+    let sanitizedByline = sanitizeReadabilityFragment(extractedByline ?? "")
+    let sanitizedContent = sanitizeReadabilityFragment(extractedContent)
+    guard !sanitizedContent.isEmpty else {
+        return nil
+    }
+
+    return buildCanonicalReadabilityHTML(
+        title: sanitizedTitle,
+        byline: sanitizedByline,
+        publishedTime: nil,
+        content: sanitizedContent,
+        contentURL: contentURL.canonicalReaderContentURLForHotfix()
     )
 }
 
@@ -380,7 +444,6 @@ public class ReaderModeViewModel: ObservableObject {
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
-        guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
 
@@ -770,7 +833,7 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultFontSize: defaultFontSize ?? 21
             )
 
-            if let sharedFontCSSBase64, !sharedFontCSSBase64.isEmpty {
+            if let sharedFontCSSBase64 = await resolveSharedReaderFontCSSBase64(), !sharedFontCSSBase64.isEmpty {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
 

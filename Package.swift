@@ -21,7 +21,7 @@ let package = Package(
         .package(path: "../SwiftUIDownloads"),
         .package(path: "../JapaneseLanguageTools"),
         .package(path: "../SwiftUtilities"),
-        .package(path: "../LakeImage"),
+        .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
         .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.4"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
@@ -37,7 +37,7 @@ let package = Package(
         .package(url: "https://github.com/satoshi-takano/OpenGraph.git", from: "1.6.0"),
         .package(url: "https://github.com/lake-of-fire/Puppy.git", branch: "main"),
         .package(path: "../FaviconFinder"),
-        .package(path: "../SwiftSoup"),
+        .package(url: "https://github.com/scinfu/SwiftSoup.git", branch: "master"),
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
@@ -47,7 +47,7 @@ let package = Package(
         .package(url: "https://github.com/EmergeTools/Pow.git", revision: "1b4b1dda28c50b95f0872927ee2226fe8b58950e"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
         .package(path: "../LakeKit"),
-        .package(url: "https://github.com/lake-of-fire/LRUCache.git", branch: "main"),
+        .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.

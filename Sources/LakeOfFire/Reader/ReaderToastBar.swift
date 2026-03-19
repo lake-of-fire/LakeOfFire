@@ -32,7 +32,7 @@ public struct ReaderToastBar<Content: View>: View {
                     
                     if onDismiss != nil {
                         Spacer(minLength: 0)
-                        DismissButton(.xMark) {
+                        DismissButton(.xMark, fill: true, glassEffect: useGlassBackground) {
                             withAnimation {
                                 isPresented = false
                                 onDismiss?()
@@ -41,17 +41,45 @@ public struct ReaderToastBar<Content: View>: View {
                     }
                 }
                 .padding(2)
-                .background(.regularMaterial)
-                .clipShape(Capsule())
-                .shadow(radius: 2)
+                .modifier(ToastBackgroundModifier(useGlassBackground: useGlassBackground))
                 Spacer(minLength: 0)
             }
 #if os(iOS)
-            .padding(.horizontal, 4)
+            .padding(.horizontal, horizontalPadding)
 #else
             .padding(.horizontal, 4)
 #endif
             .padding(.vertical, 4)
+        }
+    }
+
+    private var horizontalPadding: CGFloat {
+        if #available(iOS 26, *) {
+            return 28
+        }
+        return 4
+    }
+
+    private var useGlassBackground: Bool {
+        if #available(iOS 26, *) {
+            return true
+        }
+        return false
+    }
+}
+
+private struct ToastBackgroundModifier: ViewModifier {
+    let useGlassBackground: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *), useGlassBackground {
+            content
+                .glassEffect(.regular, in: Capsule())
+        } else {
+            content
+                .background(.regularMaterial)
+                .clipShape(Capsule())
+                .shadow(radius: 2)
         }
     }
 }

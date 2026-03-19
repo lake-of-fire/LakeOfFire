@@ -14,6 +14,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var readerModeViewModel: ReaderModeViewModel
     var readerContent: ReaderContent
     var navigator: WebViewNavigator
+    var hideNavigationDueToScroll: Binding<Bool>
+
+    private struct NavigationVisibilityEvent {
+        let timestamp: Date
+        let shouldHide: Bool
+        let source: String?
+        let direction: String?
+    }
+
+    private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
     
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -44,6 +54,27 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard result.source.isEBookURL || result.source.scheme == "blob" || result.source.isFileURL || result.source.isReaderFileURL || result.source.isSnippetURL else { return }
                 
                 Logger.shared.logger.error("[JS] Error: \(result.message ?? "unknown message") @ \(result.source.absoluteString):\(result.lineno ?? -1):\(result.colno ?? -1) — error: \(result.error ?? "n/a")")
+            }),
+            ("ebookNavigationVisibility", { @MainActor [weak self] message in
+                guard let self else { return }
+                guard let payload = message.body as? [String: Any],
+                      let shouldHide = payload["hideNavigationDueToScroll"] as? Bool else {
+                    return
+                }
+                let source = payload["source"] as? String
+                let direction = payload["direction"] as? String
+                setHideNavigationDueToScroll(
+                    shouldHide,
+                    reason: nil,
+                    source: source,
+                    direction: direction
+                )
+                lastNavigationVisibilityEvent = .init(
+                    timestamp: Date(),
+                    shouldHide: shouldHide,
+                    source: source,
+                    direction: direction
+                )
             }),
             ("readabilityFramePing", { @MainActor [weak self] message in
                 guard let self else { return }
@@ -240,6 +271,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                 }
             }),
+            ("updateReadingProgress", { @MainActor [weak self] message in
+                guard let self else { return }
+                guard let result = FractionalCompletionMessage(fromMessage: message) else { return }
+                handleNavigationVisibility(for: result)
+            }),
             ("videoStatus", { @RealmBackgroundActor [weak self] message in
                 guard let self else { return }
                 do {
@@ -261,7 +297,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         readerViewModel: ReaderViewModel,
         readerModeViewModel: ReaderModeViewModel,
         readerContent: ReaderContent,
-        navigator: WebViewNavigator
+        navigator: WebViewNavigator,
+        hideNavigationDueToScroll: Binding<Bool>
     ) {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
         self.scriptCaller = scriptCaller
@@ -269,6 +306,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.readerModeViewModel = readerModeViewModel
         self.readerContent = readerContent
         self.navigator = navigator
+        self.hideNavigationDueToScroll = hideNavigationDueToScroll
     }
     
     // MARK: Readability
@@ -283,10 +321,43 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         }
         navigator.reload()
     }
+
+    private func setHideNavigationDueToScroll(
+        _ shouldHide: Bool,
+        reason: String? = nil,
+        source: String? = nil,
+        direction: String? = nil
+    ) {
+        let previousValue = hideNavigationDueToScroll.wrappedValue
+        guard previousValue != shouldHide else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            hideNavigationDueToScroll.wrappedValue = shouldHide
+        }
+    }
+
+    private func handleNavigationVisibility(for result: FractionalCompletionMessage) {
+        let normalizedReason = result.reason.lowercased()
+        if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
+            if normalizedReason == "navigation",
+               let event = lastNavigationVisibilityEvent,
+               event.shouldHide,
+               event.direction == "forward",
+               Date().timeIntervalSince(event.timestamp) < 0.8 {
+                return
+            }
+            setHideNavigationDueToScroll(
+                false,
+                reason: normalizedReason,
+                source: "updateReadingProgress",
+                direction: nil
+            )
+        }
+    }
 }
 
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
+    var hideNavigationDueToScroll: Binding<Bool> = .constant(false)
     
     @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "paginated"
     
@@ -310,7 +381,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         readerViewModel: readerViewModel,
                         readerModeViewModel: readerModeViewModel,
                         readerContent: readerContent,
-                        navigator: navigator
+                        navigator: navigator,
+                        hideNavigationDueToScroll: hideNavigationDueToScroll
                     )
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
@@ -319,6 +391,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.readerModeViewModel = readerModeViewModel
                     readerMessageHandlers.readerContent = readerContent
                     readerMessageHandlers.navigator = navigator
+                    readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
@@ -326,5 +399,24 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
                 }
             }
+            .task(id: hideNavigationDueToScroll.wrappedValue) {
+                await pushHideNavigationStateToWebView()
+            }
+            .task(id: readerContent.pageURL) {
+                await pushHideNavigationStateToWebView()
+            }
+    }
+}
+
+extension ReaderMessageHandlersViewModifier {
+    @MainActor
+    private func pushHideNavigationStateToWebView() async {
+        guard readerContent.pageURL.isEBookURL else { return }
+        let boolLiteral = hideNavigationDueToScroll.wrappedValue ? "true" : "false"
+        do {
+            try await scriptCaller.evaluateJavaScript("window.manabiSetHideNavigationDueToScroll?.(\(boolLiteral));")
+        } catch {
+            // Ignore boot timing races.
+        }
     }
 }

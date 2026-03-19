@@ -27,6 +27,21 @@ window.onunhandledrejection = function(event) {
     });
 };
 
+window.manabiSetHideNavigationDueToScroll = function(shouldHide) {
+    const hide = !!shouldHide;
+    try {
+        document?.body?.classList.toggle('nav-hidden', hide);
+        const navBar = document.getElementById('nav-bar');
+        if (navBar) {
+            navBar.classList.toggle('nav-hidden-due-to-scroll', hide);
+        }
+        const progressWrapper = document.getElementById('progress-wrapper');
+        if (progressWrapper) {
+            progressWrapper.setAttribute('aria-hidden', hide ? 'true' : 'false');
+        }
+    } catch (_error) {}
+};
+
 function forwardShadowErrors(root) {
     if (!root) return;
     root.addEventListener('error', e => {

@@ -246,7 +246,10 @@ public struct Reader: View {
         //#endif
 //                .ignoresSafeArea(.all, edges: [.top, .bottom])
         .modifier(ReaderLoadingOverlayModifier())
-        .modifier(ReaderMessageHandlersViewModifier(forceReaderModeWhenAvailable: forceReaderModeWhenAvailable))
+        .modifier(ReaderMessageHandlersViewModifier(
+            forceReaderModeWhenAvailable: forceReaderModeWhenAvailable,
+            hideNavigationDueToScroll: $hideNavigationDueToScroll
+        ))
         .modifier(ReaderStateChangeModifier())
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
