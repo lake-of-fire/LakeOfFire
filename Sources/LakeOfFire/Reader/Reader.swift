@@ -171,6 +171,8 @@ public struct Reader: View {
     var forceReaderModeWhenAvailable = false
 //    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
+    var additionalBottomSafeAreaInset: CGFloat? = nil
+    var onAdditionalSafeAreaBarTap: (() -> Void)?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
     let onNavigationFinished: ((WebViewState) -> Void)?
@@ -187,6 +189,8 @@ public struct Reader: View {
         forceReaderModeWhenAvailable: Bool = false,
 //        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
+        additionalBottomSafeAreaInset: CGFloat? = nil,
+        onAdditionalSafeAreaBarTap: (() -> Void)? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
         onNavigationFinished: ((WebViewState) -> Void)? = nil,
@@ -200,6 +204,8 @@ public struct Reader: View {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
 //        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
+        self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
+        self.onAdditionalSafeAreaBarTap = onAdditionalSafeAreaBarTap
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
         self.onNavigationFinished = onNavigationFinished
@@ -216,6 +222,7 @@ public struct Reader: View {
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
             bounces: bounces,
+            additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
             onNavigationFinished: onNavigationFinished,
@@ -227,15 +234,38 @@ public struct Reader: View {
         )
 #if os(iOS)
         .ignoresSafeArea(.all, edges: .all)
+        .modifier {
+            if #available(iOS 26, *) {
+                $0.safeAreaBar(edge: .bottom, spacing: 0) {
+                    if let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
+                        Color.white.opacity(0.0000000001)
+                            .frame(height: additionalBottomSafeAreaInset)
+                            .onTapGesture {
+                                onAdditionalSafeAreaBarTap?()
+                            }
+                    }
+                }
+            } else { $0 }
+        }
 #endif
         .background {
             GeometryReader { geometry in
                 Color.clear
                     .task {
-                        obscuredInsets = geometry.safeAreaInsets
+                        obscuredInsets = EdgeInsets(
+                            top: max(0, geometry.safeAreaInsets.top),
+                            leading: max(0, geometry.safeAreaInsets.leading),
+                            bottom: max(0, geometry.safeAreaInsets.bottom),
+                            trailing: max(0, geometry.safeAreaInsets.trailing)
+                        )
                     }
                     .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
-                        obscuredInsets = safeAreaInsets
+                        obscuredInsets = EdgeInsets(
+                            top: max(0, safeAreaInsets.top),
+                            leading: max(0, safeAreaInsets.leading),
+                            bottom: max(0, safeAreaInsets.bottom),
+                            trailing: max(0, safeAreaInsets.trailing)
+                        )
                     }
             }
         }

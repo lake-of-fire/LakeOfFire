@@ -4,13 +4,13 @@ import UniformTypeIdentifiers
 import SwiftSoup
 
 fileprivate actor EBookProcessingActor {
-    let ebookTextProcessorCacheHits: ((URL) async throws -> Bool)?
+    let ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?
     let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
     let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?
     let processHTML: ((String, Bool) async -> String)?
     
     init(
-        ebookTextProcessorCacheHits: ((URL) async throws -> Bool)?,
+        ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)?,
         ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
         processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?,
         processHTML: ((String, Bool) async -> String)?
@@ -29,7 +29,7 @@ fileprivate actor EBookProcessingActor {
     ) async -> String {
         // TODO: Consolidate sectionLocationURL creation with ebookTextProcessor's
         let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: location)])
-        if isCacheWarmer, let ebookTextProcessorCacheHits, (try? await ebookTextProcessorCacheHits(sectionLocationURL)) ?? false {
+        if isCacheWarmer, let ebookTextProcessorCacheHits, (try? await ebookTextProcessorCacheHits(sectionLocationURL, text)) ?? false {
             // Bail early if we are already cached
             return ""
         }
@@ -178,7 +178,7 @@ public extension URL {
 }
 
 final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessorCacheHits: ((URL) async throws -> Bool)? = nil
+    var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
     var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)? = nil
     var readerFileManager: ReaderFileManager? = nil
     var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)?

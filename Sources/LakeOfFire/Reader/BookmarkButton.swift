@@ -120,7 +120,7 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
                 viewModel.forceShowBookmark = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
             }
         } label: {
-            Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark")
+            Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark.badge.plus")
             //                .padding(.horizontal, 4)
             //                .padding(.vertical, 2)
                 .background(.secondary.opacity(0.000000001)) // clickability

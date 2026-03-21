@@ -385,7 +385,7 @@ private func locallyRetrievableReaderHTML(
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    public var ebookTextProcessorCacheHits: ((URL) async throws -> Bool)? = nil
+    public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
     public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)? = nil
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
@@ -577,9 +577,6 @@ public class ReaderModeViewModel: ObservableObject {
         )
     }
     
-    public func isReaderModeButtonBarVisible(content: any ReaderContentProtocol) -> Bool {
-        return !isReaderMode && !content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
-    }
     public func isReaderModeVisibleInMenu(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && content.isReaderModeOfferHidden && content.isReaderModeAvailable && !content.isReaderModeByDefault
     }
@@ -596,17 +593,6 @@ public class ReaderModeViewModel: ObservableObject {
         return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
     }
     
-    @MainActor
-    func hideReaderModeButtonBar(content: (any ReaderContentProtocol)) async throws {
-        if !content.isReaderModeOfferHidden {
-            try await content.asyncWrite { _, content in
-                content.isReaderModeOfferHidden = true
-                content.refreshChangeMetadata(explicitlyModified: true)
-            }
-            objectWillChange.send()
-        }
-    }
-
     @MainActor
     private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
         let activeReaderFileManager = readerFileManager ?? .shared
@@ -757,6 +743,19 @@ public class ReaderModeViewModel: ObservableObject {
         } else {
             renderBaseURL = url
         }
+
+        debugPrint(
+            "# READERTRACE",
+            "readerMode.showReadabilityContent.start",
+            [
+                "contentURL": url.absoluteString,
+                "renderBaseURL": renderBaseURL.absoluteString,
+                "readerContentPageURL": readerContent.pageURL.absoluteString,
+                "frameMain": frameInfo?.isMainFrame as Any,
+                "hasProcessReadabilityContent": processReadabilityContent != nil,
+                "hasProcessHTML": processHTML != nil
+            ] as [String: Any]
+        )
         
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
@@ -833,6 +832,20 @@ public class ReaderModeViewModel: ObservableObject {
                 defaultFontSize: defaultFontSize ?? 21
             )
 
+            let processedSegmentCount = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
+            let processedBodyExists = doc.body() != nil
+            debugPrint(
+                "# READERTRACE",
+                "readerMode.showReadabilityContent.processed",
+                [
+                    "contentURL": url.absoluteString,
+                    "renderBaseURL": renderBaseURL.absoluteString,
+                    "segmentCount": processedSegmentCount,
+                    "hasBody": processedBodyExists,
+                    "baseUri": doc.getBaseUri()
+                ] as [String: Any]
+            )
+
             if let sharedFontCSSBase64 = await resolveSharedReaderFontCSSBase64(), !sharedFontCSSBase64.isEmpty {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
@@ -849,7 +862,15 @@ public class ReaderModeViewModel: ObservableObject {
             let transformedContent = html
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
-                    print("Readability content URL mismatch", url, readerContent.pageURL)
+                    debugPrint(
+                        "# READERTRACE",
+                        "readerMode.showReadabilityContent.skip.urlMismatch",
+                        [
+                            "contentURL": url.absoluteString,
+                            "readerContentPageURL": readerContent.pageURL.absoluteString,
+                            "renderBaseURL": renderBaseURL.absoluteString
+                        ] as [String: Any]
+                    )
                     readerModeLoading(false)
                     return
                 }

@@ -4,11 +4,13 @@ import SwiftUI
 /// based on size class (iOS) or platform (macOS = always horizontal).
 public struct ReaderToastsView: View {
     private let bars: [AnyView]
+    private let style: ReaderToastBarStyle
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
-    public init(bars: [AnyView]) {
+    public init(bars: [AnyView], style: ReaderToastBarStyle = .bordered) {
         self.bars = bars
+        self.style = style
     }
     
     public var body: some View {
@@ -36,6 +38,7 @@ public struct ReaderToastsView: View {
         // TODO: this kind of id: is bad... should be done like ToolbarItemGroup stuff
         ForEach(Array(bars.enumerated()), id: \.offset) { _, view in
             view
+                .environment(\.readerToastBarStyle, style)
         }
     }
 }
