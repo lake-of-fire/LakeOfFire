@@ -18,6 +18,18 @@ import LakeOfFireContent
 
 let bookmarksQueue = DispatchQueue(label: "BookmarksQueue")
 
+fileprivate struct BookmarkMenuLabel: View {
+    let isBookmarked: Bool
+
+    var body: some View {
+        if isBookmarked {
+            Label("Saved for Later", systemImage: "bookmark.fill")
+        } else {
+            Label("Save for Later", systemImage: "bookmark.badge.plus")
+        }
+    }
+}
+
 @MainActor
 fileprivate class BookmarkButtonViewModel: ObservableObject {
     @Published var reloadTrigger = ""
@@ -127,7 +139,7 @@ private struct BookmarkToggleStyle: ToggleStyle {
         Button {
             configuration.isOn.toggle()
         } label: {
-            Label(configuration.isOn ? "Saved for Later" : "Save for Later", systemImage: configuration.isOn ? "bookmark.fill" : "bookmark")
+            BookmarkMenuLabel(isBookmarked: configuration.isOn)
         }
         .controlSize(.small)
         .buttonStyle(.clearBordered)

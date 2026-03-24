@@ -1343,21 +1343,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             // Clear stale loader expectation so it can't leak into the next navigation,
             // but keep the last rendered URL so snippet flows can suppress redundant reloads.
             expectedSyntheticReaderLoaderURL = nil
-            if let handler = readerModeLoadCompletionHandler {
-                let completedURL: URL = {
-                    if let url, !url.isAboutBlank {
-                        return url.canonicalReaderContentURL()
-                    }
-                    if let lastRenderedURL {
-                        return lastRenderedURL
-                    }
-                    if let lastFallbackLoaderURL {
-                        return lastFallbackLoaderURL
-                    }
-                    return URL(string: "about:blank")!
-                }()
-                handler(completedURL)
-            }
             return
         }
         if let url, !pendingKeysMatch(pendingReaderModeURL, url) {
@@ -1396,9 +1381,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "url=\((traceURL ?? url)?.absoluteString ?? "nil")",
             "reason=cancelReaderModeLoad"
         )
-        if let handler = readerModeLoadCompletionHandler {
-            handler(traceURL ?? url ?? URL(string: "about:blank")!)
-        }
     }
 
     @MainActor

@@ -144,7 +144,7 @@ public extension URL {
         }
         let lhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
         let rhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
-        return urlsMatchWithoutHash(lhsContentURL, rhsContentURL)
+        return lhsContentURL == rhsContentURL
     }
 }
 
