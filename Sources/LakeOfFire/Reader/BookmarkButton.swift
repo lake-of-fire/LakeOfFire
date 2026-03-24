@@ -12,6 +12,22 @@ import SwiftUIWebView
 import RealmSwiftGaps
 import Combine
 
+fileprivate struct BookmarkMenuLabel: View {
+    let isBookmarked: Bool
+
+    var body: some View {
+        if isBookmarked {
+            Label("Saved for Later", systemImage: "bookmark.fill")
+        } else {
+            Label {
+                Text("Save for Later")
+            } icon: {
+                Image("custom.bookmark.badge.plus")
+            }
+        }
+    }
+}
+
 let bookmarksQueue = DispatchQueue(label: "BookmarksQueue")
 
 @MainActor
@@ -120,7 +136,7 @@ public struct BookmarkButton<C: ReaderContentProtocol>: View {
                 viewModel.forceShowBookmark = try await readerContent.toggleBookmark(realmConfiguration: ReaderContentLoader.bookmarkRealmConfiguration)
             }
         } label: {
-            Label(showBookmarkExists ? "Saved for Later" : "Save for Later", systemImage: showBookmarkExists ? "bookmark.fill" : "bookmark.badge.plus")
+            BookmarkMenuLabel(isBookmarked: showBookmarkExists)
             //                .padding(.horizontal, 4)
             //                .padding(.vertical, 2)
                 .background(.secondary.opacity(0.000000001)) // clickability

@@ -99,10 +99,12 @@ public protocol DeletableReaderContent: ReaderContentProtocol {
 public extension URL {
     func matchesReaderURL(_ url: URL?) -> Bool {
         guard let url = url else { return false }
-        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) {
-            return contentURL == self
+        if let lhsKey = snippetKey, let rhsKey = url.snippetKey, lhsKey == rhsKey {
+            return true
         }
-        return url == self
+        let lhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
+        let rhsContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
+        return lhsContentURL == rhsContentURL
     }
 }
 
