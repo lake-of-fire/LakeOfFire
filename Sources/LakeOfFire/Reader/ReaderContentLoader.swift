@@ -304,7 +304,7 @@ public struct ReaderContentLoader {
         return content.url
     }
 
-    private static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
+    static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
         return (
             ((doc.body()?.children().isEmpty()) ?? true)
             || ((doc.body()?.children().first()?.tagNameNormal() ?? "") == "pre" && doc.body()?.children().count == 1) )
@@ -314,11 +314,34 @@ public struct ReaderContentLoader {
         let html = textToHTML(text)
         return try SwiftSoup.parse(html)
     }
+
+    private static func rawPlainTextToHTML(_ text: String) -> String {
+        let normalizedText = text.replacingOccurrences(of: "\r\n", with: "\n")
+        var paragraphs = [String]()
+        var currentParagraphLines = [String]()
+
+        let flushParagraph = {
+            guard !currentParagraphLines.isEmpty else { return }
+            paragraphs.append("<p>\(currentParagraphLines.joined(separator: "<br>"))</p>")
+            currentParagraphLines.removeAll()
+        }
+
+        for line in normalizedText.components(separatedBy: "\n") {
+            if line.isEmpty {
+                flushParagraph()
+            } else {
+                currentParagraphLines.append(line.escapeHtml())
+            }
+        }
+        flushParagraph()
+
+        return "<html><body>\(paragraphs.joined())</body></html>"
+    }
     
     public static func textToHTML(_ text: String, forceRaw: Bool = false) -> String {
         var convertedText = text
         if forceRaw {
-            convertedText = convertedText.escapeHtml()
+            convertedText = rawPlainTextToHTML(text)
         } else if let doc = try? SwiftSoup.parse(text) {
             if docIsPlainText(doc: doc) {
                 convertedText = "<html><body>\(text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: "<br>"))</body></html>"
@@ -354,25 +377,24 @@ public struct ReaderContentLoader {
         let html = NSPasteboard.general.string(forType: .html)
         let text = NSPasteboard.general.string(forType: .string)
 #else
-        let html = UIPasteboard.general.string
-        let text: String? = html
+        let pasteboard = UIPasteboard.general
+        let htmlData = pasteboard.data(forPasteboardType: UTType.html.identifier)
+        let htmlFromData = htmlData.flatMap {
+            String(data: $0, encoding: .utf8)
+                ?? String(data: $0, encoding: .unicode)
+                ?? String(data: $0, encoding: .utf16LittleEndian)
+                ?? String(data: $0, encoding: .utf16BigEndian)
+        }
+        let htmlFromValue = pasteboard.value(forPasteboardType: UTType.html.identifier) as? String
+        let html = htmlFromData ?? htmlFromValue
+        let text = pasteboard.string
 #endif
         
         if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {
             match = try await load(url: url, countsAsHistoryVisit: true)
-        } else if let html {
-            if let doc = try? SwiftSoup.parse(html) {
-                if docIsPlainText(doc: doc), let text = text {
-                    match = try await load(html: textToHTML(text))
-                } else {
-                    match = try await load(html: html)
-                }
-                //                match = load(html: html)
-            } else {
-                match = try await load(html: textToHTML(html))
-            }
-        } else if let text {
-            match = try await load(html: textToHTML(text))
+        } else if let payload = preferredPasteboardPayload(html: html, text: text) {
+            let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
+            match = try await load(html: normalized.html)
         }
         
         if let match, let realmConfiguration = match.realm?.configuration {
@@ -398,6 +420,16 @@ public struct ReaderContentLoader {
             } else {
                 return match
             }
+        }
+        return nil
+    }
+
+    static func preferredPasteboardPayload(html: String?, text: String?) -> (text: String, explicitHTML: Bool)? {
+        if let html {
+            return (html, true)
+        }
+        if let text {
+            return (text, false)
         }
         return nil
     }
