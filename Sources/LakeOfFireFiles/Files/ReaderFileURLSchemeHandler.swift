@@ -89,7 +89,14 @@ public final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     // File
                     var mimeType = (try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey)) ?? "application/octet-stream"
                     var textEncodingName: String?
-                    if mimeType == "text/plain", let text = String(data: data, encoding: .utf8), let convertedData = ReaderContentLoader.textToHTML(text, forceRaw: true).data(using: .utf8) {
+                    if let text = String(data: data, encoding: .utf8),
+                       ReaderContentLoader.supportsReaderContent(mimeType: mimeType, pathExtension: url.pathExtension),
+                       let convertedData = ReaderContentLoader.normalizeIngestedText(
+                        text,
+                        mimeType: mimeType,
+                        pathExtension: url.pathExtension,
+                        source: .file
+                       ).html.data(using: .utf8) {
                         mimeType = "text/html"
                         textEncodingName = "UTF-8"
                         data = convertedData

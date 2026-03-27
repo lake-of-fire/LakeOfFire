@@ -578,7 +578,7 @@ public struct ReaderContentLoader {
         return content.url
     }
 
-    private static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
+    static func docIsPlainText(doc: SwiftSoup.Document) -> Bool {
         PlainTextHTMLConverter.isPlainText(document: doc)
     }
     
@@ -638,19 +638,12 @@ public struct ReaderContentLoader {
         
         if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {
             match = try await load(url: url, countsAsHistoryVisit: true)
-        } else if let html {
-            if let doc = try? SwiftSoup.parse(html) {
-                if docIsPlainText(doc: doc), let text = text {
-                    match = try await load(html: PlainTextHTMLConverter.makeHTMLBody(fromPlainText: text))
-                } else {
-                    match = try await load(html: html)
-                }
-                //                match = load(html: html)
-            } else {
-                match = try await load(html: textToHTML(html))
-            }
         } else if let text {
-            match = try await load(html: textToHTML(text))
+            let normalized = normalizeIngestedText(text, explicitHTML: html != nil, source: .paste)
+            match = try await load(html: normalized.html)
+        } else if let html {
+            let normalized = normalizeIngestedText(html, explicitHTML: true, source: .paste)
+            match = try await load(html: normalized.html)
         }
         
         if let match, let realmConfiguration = match.realm?.configuration {

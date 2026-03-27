@@ -44,12 +44,11 @@ public class ReaderFileManager: ObservableObject {
     public static var shared = ReaderFileManager()
     
     // TODO: Pull these from callbacks per above
-    public var readerContentMimeTypes: [UTType] = [.plainText, .html, .zip]
+    public var readerContentMimeTypes: [UTType] = [.plainText, .html, UTType(filenameExtension: "md") ?? UTType(importedAs: "net.daringfireball.markdown"), .zip]
     
     @MainActor @Published public var files: [ContentFile]?
     
     @MainActor public var readerContentFiles: [ContentFile]? {
-        let allowedMimeTypes = Set(readerContentMimeTypes.compactMap { $0.preferredMIMEType?.lowercased() })
         let ebookMimeTypes = Set([UTType.epub, .epubZip].compactMap { $0.preferredMIMEType?.lowercased() })
 
         return files?.filter { content in
@@ -60,7 +59,7 @@ public class ReaderFileManager: ObservableObject {
                 return false
             }
 
-            return allowedMimeTypes.contains(mimeType)
+            return ReaderContentLoader.supportsReaderContent(mimeType: content.mimeType, pathExtension: content.url.pathExtension)
         }
     }
     
@@ -457,7 +456,8 @@ public class ReaderFileManager: ObservableObject {
                                 try Task.checkCancellation()
                                 if setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
                                     contentFile.updateCompoundKey()
-                                    contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain" || ["htm", "html", "txt"].contains(readerFileURL.pathExtension.lowercased())
+                                    let format = ReaderContentLoader.detectFileFormat(mimeType: contentFile.mimeType, pathExtension: readerFileURL.pathExtension)
+                                    contentFile.isReaderModeByDefault = format == .html || format == .markdown || format == .plainText
                                     realm.add(contentFile, update: .modified)
                                     updatedFiles.append(contentFile)
                                 }
@@ -500,7 +500,12 @@ public class ReaderFileManager: ObservableObject {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 contentFile.title = fileURL.deletingPathExtension().lastPathComponent
             }
-            contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            let typeIdentifier = UTType(filenameExtension: fileURL.pathExtension)?.identifier
+            contentFile.mimeType = ReaderContentLoader.canonicalMimeType(
+                mimeType: UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType,
+                typeIdentifier: typeIdentifier,
+                pathExtension: fileURL.pathExtension
+            )
             
             // contentFile.url replace with on-disk url (make a new computed var for that?)
             if fileURL.pathExtension.lowercased() == "zip", let systemFileURL = try? localFileURL(forReaderFileURL: fileURL), let archive = try? Archive(url: systemFileURL, accessMode: .read) {

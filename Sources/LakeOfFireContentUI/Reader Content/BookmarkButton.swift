@@ -25,7 +25,11 @@ fileprivate struct BookmarkMenuLabel: View {
         if isBookmarked {
             Label("Saved for Later", systemImage: "bookmark.fill")
         } else {
-            Label("Save for Later", systemImage: "bookmark.badge.plus")
+            Label {
+                Text("Save for Later")
+            } icon: {
+                Image("custom.bookmark.badge.plus")
+            }
         }
     }
 }

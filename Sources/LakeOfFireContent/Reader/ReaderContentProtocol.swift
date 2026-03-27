@@ -263,7 +263,20 @@ public extension ReaderContentProtocol {
                 return nil
             }
             try Task.checkCancellation()
-            let html = String(decoding: data, as: UTF8.self)
+            let text = String(decoding: data, as: UTF8.self)
+            let contentFilePrimaryKey = try? await ReaderFileManager.contentFilePrimaryKey(for: url)
+            let mimeType: String?
+            if let contentFilePrimaryKey {
+                mimeType = try? await ReaderFileManager.mimeType(forContentFilePrimaryKey: contentFilePrimaryKey)
+            } else {
+                mimeType = nil
+            }
+            let html = ReaderContentLoader.normalizeIngestedText(
+                text,
+                mimeType: mimeType,
+                pathExtension: url.pathExtension,
+                source: .file
+            ).html
             debugPrint(
                 "# READER htmlToDisplay.source",
                 "url=\(url.absoluteString)",
