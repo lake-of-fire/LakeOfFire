@@ -19,7 +19,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: libraryDataQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: libraryDataQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: libraryDataQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()

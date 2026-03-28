@@ -63,6 +63,13 @@ private func readerFontPayloadHash(_ payload: String) -> String {
     return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
 }
 
+private func currentReaderFontNeedsDeferredSharedCSS() -> Bool {
+    guard let rawValue = UserDefaults.standard.string(forKey: "readerFont") else {
+        return true
+    }
+    return rawValue == "YuKyokasho"
+}
+
 internal func upsertDeferredSharedReaderFontGate(in doc: SwiftSoup.Document) throws {
     let gateCSS = """
     html[data-manabi-font-pending="1"] body.readability-mode {
@@ -1328,6 +1335,10 @@ public class ReaderModeViewModel: ObservableObject {
         
         if !isReaderMode {
             isReaderMode = true
+        }
+
+        if currentReaderFontNeedsDeferredSharedCSS() {
+            _ = await resolveSharedReaderFontCSSBase64()
         }
         
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader

@@ -84,12 +84,14 @@ public class ReaderFileManager: ObservableObject {
     public static var shared = ReaderFileManager()
     
     // TODO: Pull these from callbacks per above
-    public var readerContentMimeTypes: [UTType] = [.plainText, .html, .zip]
+    public var readerContentMimeTypes: [UTType] = [.plainText, .html, UTType(filenameExtension: "md") ?? UTType(importedAs: "net.daringfireball.markdown"), .zip]
     
     @MainActor @Published public var files: [ContentFile]?
     
     @MainActor public var readerContentFiles: [ContentFile]? {
-        return files?.filter { readerContentMimeTypes.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
+        return files?.filter {
+            ReaderContentLoader.supportsReaderContent(mimeType: $0.mimeType, pathExtension: $0.url.pathExtension) && !$0.isDeleted
+        }
     }
     
     private var hasInitializedUbiquityContainerIdentifier = false
@@ -148,7 +150,13 @@ public class ReaderFileManager: ObservableObject {
     }
     
     @MainActor public func files(ofTypes types: [UTType]) -> [ContentFile]? {
-        return files?.filter { types.compactMap { $0.preferredMIMEType } .contains($0.mimeType) && !$0.isDeleted }
+        let allowedMimeTypes = Set(types.compactMap { $0.preferredMIMEType?.lowercased() })
+        return files?.filter {
+            !$0.isDeleted && (
+                allowedMimeTypes.contains($0.mimeType.lowercased())
+                || (allowedMimeTypes.contains("text/markdown") && ReaderContentLoader.detectFileFormat(mimeType: $0.mimeType, pathExtension: $0.url.pathExtension) == .markdown)
+            )
+        }
     }
     
     @MainActor
@@ -478,7 +486,8 @@ public class ReaderFileManager: ObservableObject {
                                 try Task.checkCancellation()
                                 if setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
                                     contentFile.updateCompoundKey()
-                                    contentFile.isReaderModeByDefault = contentFile.mimeType == "text/plain" || ["htm", "html", "txt"].contains(readerFileURL.pathExtension.lowercased())
+                                    let format = ReaderContentLoader.detectFileFormat(mimeType: contentFile.mimeType, pathExtension: readerFileURL.pathExtension)
+                                    contentFile.isReaderModeByDefault = format == .html || format == .markdown || format == .plainText
                                     realm.add(contentFile, update: .modified)
                                     updatedFiles.append(contentFile)
                                 }
@@ -521,7 +530,12 @@ public class ReaderFileManager: ObservableObject {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 contentFile.title = fileURL.deletingPathExtension().lastPathComponent
             }
-            contentFile.mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+            let typeIdentifier = UTType(filenameExtension: fileURL.pathExtension)?.identifier
+            contentFile.mimeType = ReaderContentLoader.canonicalMimeType(
+                mimeType: UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType,
+                typeIdentifier: typeIdentifier,
+                pathExtension: fileURL.pathExtension
+            )
             
             // contentFile.url replace with on-disk url (make a new computed var for that?)
             if fileURL.pathExtension.lowercased() == "zip", let systemFileURL = try? localFileURL(forReaderFileURL: fileURL), let archive = try? Archive(url: systemFileURL, accessMode: .read) {

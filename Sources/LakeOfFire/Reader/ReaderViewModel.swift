@@ -38,7 +38,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { _ in }
-                .debounce(for: .seconds(0.3), scheduler: readerViewModelQueue)
+                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: readerViewModelQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @RealmBackgroundActor [weak self] in
                         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
@@ -61,7 +61,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .collectionPublisher
                 .subscribe(on: readerViewModelQueue)
                 .map { _ in }
-                .debounce(for: .seconds(1), scheduler: readerViewModelQueue)
+                .debounceLeadingTrailing(for: .seconds(1), scheduler: readerViewModelQueue)
                 .receive(on: readerViewModelQueue)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in

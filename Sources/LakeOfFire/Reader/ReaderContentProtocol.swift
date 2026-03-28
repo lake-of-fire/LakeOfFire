@@ -190,7 +190,17 @@ public extension ReaderContentProtocol {
         } else if url.isReaderFileURL {
             guard let data = try? await readerFileManager.read(fileURL: url) else { return nil }
             try Task.checkCancellation()
-            return String(decoding: data, as: UTF8.self)
+            let text = String(decoding: data, as: UTF8.self)
+            if let resolvedContentFile = try? await ReaderFileManager.get(fileURL: url) {
+                return ReaderContentLoader.normalizeIngestedText(
+                    text,
+                    mimeType: resolvedContentFile.mimeType,
+                    pathExtension: url.pathExtension,
+                    source: .file
+                ).html
+            } else {
+                return ReaderContentLoader.normalizeIngestedText(text, pathExtension: url.pathExtension, source: .file).html
+            }
         }
         return nil
     }
