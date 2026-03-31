@@ -235,16 +235,16 @@ public actor EbookURLSchemeActor {
     public init() { }
 }
 
-final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
-    var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
-    var readerFileManager: ReaderFileManager?
-    var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
-    var processHTML: ((String, Bool) async -> String)?
+public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
+    public var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
+    public var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
+    public var readerFileManager: ReaderFileManager?
+    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
+    public var processHTML: ((String, Bool) async -> String)?
     /// Optional base64-encoded shared font CSS supplied by the host app to avoid adding a dependency here.
-    var sharedFontCSSBase64: String?
+    public var sharedFontCSSBase64: String?
     /// Optional provider to lazily supply the base64 CSS when not yet set.
-    var sharedFontCSSBase64Provider: (() async -> String?)?
+    public var sharedFontCSSBase64Provider: (() async -> String?)?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
@@ -254,11 +254,15 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         case fileNotFound
     }
 
-    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+    public override init() {
+        super.init()
+    }
+
+    public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
         schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
     }
 
-    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+    public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
 
         guard let url = urlSchemeTask.request.url else { return }
@@ -434,6 +438,13 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    debugPrint(
+                        "# EBOOKPERF entries.success",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "count:",
+                        cachedSource.entries.count
+                    )
                     let responseBody = EBookEntriesResponse(entries: cachedSource.entries)
                     let data = try JSONEncoder().encode(responseBody)
                     let response = HTTPURLResponse(
@@ -451,6 +462,13 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }
                     }()
                 } catch {
+                    debugPrint(
+                        "# EBOOKPERF entries.error",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "error:",
+                        error.localizedDescription
+                    )
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(error)
                         self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
@@ -475,6 +493,17 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     )
                     let data = try cachedSource.source.readEntry(subpath: subpath)
                     let metadata = try cachedSource.source.mimeType(subpath: subpath)
+                    debugPrint(
+                        "# EBOOKPERF entry.success",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "subpath:",
+                        subpath,
+                        "bytes:",
+                        data.count,
+                        "mimeType:",
+                        metadata.mimeType
+                    )
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: metadata.mimeType,
@@ -490,6 +519,39 @@ final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }
                     }()
                 } catch {
+                    if let sourceError = error as? ReaderPackageEntrySourceError,
+                       case .entryNotFound = sourceError {
+                        let response = HTTPURLResponse(
+                            url: url,
+                            statusCode: 404,
+                            httpVersion: nil,
+                            headerFields: nil
+                        )!
+                        debugPrint(
+                            "# EBOOKPERF entry.missing",
+                            "sourceURL:",
+                            mainDocumentURL.absoluteString,
+                            "subpath:",
+                            subpath
+                        )
+                        await { @MainActor in
+                            if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                                urlSchemeTask.didReceive(response)
+                                urlSchemeTask.didFinish()
+                                self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                            }
+                        }()
+                        return
+                    }
+                    debugPrint(
+                        "# EBOOKPERF entry.error",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "subpath:",
+                        subpath,
+                        "error:",
+                        error.localizedDescription
+                    )
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(error)
                         self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)

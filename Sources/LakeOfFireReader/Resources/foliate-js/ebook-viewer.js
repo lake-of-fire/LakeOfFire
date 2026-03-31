@@ -561,10 +561,22 @@ const fetchNativeEntries = async sourceURL => {
             'X-Ebook-Source-URL': sourceURL,
         },
     })
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            `# EBOOKFETCH entries status=${response.status} ok=${response.ok} source=${sourceURL}`
+        )
+    } catch (_err) {}
     if (!response.ok) {
         throw new Error(`Failed to load native EPUB entries: ${response.status}`)
     }
-    return response.json()
+    const payload = await response.json()
+    try {
+        const count = Array.isArray(payload?.entries) ? payload.entries.length : -1
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            `# EBOOKFETCH entries.json count=${count} source=${sourceURL}`
+        )
+    } catch (_err) {}
+    return payload
 }
 
 const fetchNativeEntryResponse = async (sourceURL, subpath) => {
@@ -573,6 +585,11 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
             'X-Ebook-Source-URL': sourceURL,
         },
     })
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(
+            `# EBOOKFETCH entry status=${response.status} ok=${response.ok} subpath=${subpath} source=${sourceURL}`
+        )
+    } catch (_err) {}
     if (!response.ok) {
         return null
     }
@@ -1860,21 +1877,62 @@ class Reader {
         // Failsafe: clear loading even if didDisplay never fires.
         this.setLoadingIndicator(false);
     }
-    #onLoad({
+    async #postFallbackReadingProgressMessage({
+        reason = 'load',
+        sectionIndex = null,
+    } = {}) {
+        if (!this.hasLoadedLastPosition) return false
+        try {
+            const resolvedSectionIndex = typeof sectionIndex === 'number'
+                ? sectionIndex
+                : (typeof this.view?.renderer?.currentIndex === 'number'
+                    ? this.view.renderer.currentIndex
+                    : null)
+            const sections = this.view?.book?.sections ?? []
+            const boundedSectionIndex = typeof resolvedSectionIndex === 'number'
+                ? Math.max(0, Math.min(sections.length - 1, resolvedSectionIndex))
+                : null
+            const denominator = sections.length > 1 ? sections.length - 1 : 1
+            const fallbackFraction = boundedSectionIndex == null
+                ? 0
+                : Math.max(0, Math.min(1, boundedSectionIndex / denominator))
+            const fallbackCFI = boundedSectionIndex == null
+                ? ''
+                : (sections[boundedSectionIndex]?.cfi ?? '')
+            this.#postUpdateReadingProgressMessage({
+                fraction: fallbackFraction,
+                cfi: fallbackCFI,
+                reason,
+                sectionIndex: boundedSectionIndex,
+            })
+            return true
+        } catch (_error) {
+            return false
+        }
+    }
+
+    async #onLoad({
         detail: {
-            doc
+            doc,
+            location,
+            index
         }
     }) {
         doc.addEventListener('keydown', this.#handleKeydown.bind(this))
         this.#ensureRubyFontOverride(doc)
+        const currentPageURL = location ?? doc.location.href
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
         topWindowURL: window.top.location.href,
-        currentPageURL: doc.location.href,
+        currentPageURL,
         })
         logEBookPageNum('onLoad:updateCurrentContentPage', {
             topWindowURL: window.top?.location?.href ?? null,
-            currentPageURL: doc?.location?.href ?? null,
+            currentPageURL: currentPageURL ?? null,
         });
+        await this.#postFallbackReadingProgressMessage({
+            reason: 'load',
+            sectionIndex: typeof index === 'number' ? index : null,
+        })
     }
 
     #ensureRubyFontOverride(doc) {
@@ -1927,6 +1985,7 @@ class Reader {
     sectionIndex
     }) => {
     let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
+    try {
     window.webkit.messageHandlers.updateReadingProgress.postMessage({
     fractionalCompletion: fraction,
     cfi: cfi,
@@ -1934,6 +1993,9 @@ class Reader {
     sectionIndex: typeof sectionIndex === 'number' ? sectionIndex : null,
     mainDocumentURL: mainDocumentURL,
     })
+    } catch (error) {
+    console.error('Failed to post updateReadingProgress', error)
+    }
     }, 400)
 
     async #onRelocate({ detail }) {
@@ -2650,6 +2712,20 @@ window.loadEBook = ({
     .then(async () => {
     window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
     })
+    .catch(error => {
+    try {
+    postReaderOnError({
+    message: sanitizeErrorValue(error?.message) ?? 'loadEBook failed',
+    source: sanitizeErrorValue(url),
+    lineno: null,
+    colno: null,
+    error: sanitizeErrorValue(error?.stack ?? error),
+    })
+    } catch (_reportError) {
+    // best effort
+    }
+    throw error
+    })
     }
     //.catch(e => console.error(e))
 }
@@ -2658,6 +2734,10 @@ window.loadLastPosition = async ({
     cfi,
     fractionalCompletion,
 }) => {
+    // On the same-document renderer path, section-load promises can remain in flight
+    // longer than the shell contract expects. Mark restore as active up front so
+    // subsequent loads can emit progress/state updates instead of staying muted.
+    globalThis.reader.hasLoadedLastPosition = true
     if (cfi.length > 0) {
         await globalThis.reader.view.goTo(cfi).catch(e => {
             console.error(e)
@@ -2668,7 +2748,6 @@ window.loadLastPosition = async ({
     } else {
         await globalThis.reader.view.renderer.next()
     }
-    globalThis.reader.hasLoadedLastPosition = true
 
     // Seed page counts from persisted bake cache if available
     try {

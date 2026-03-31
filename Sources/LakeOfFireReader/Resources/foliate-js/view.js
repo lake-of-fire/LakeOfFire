@@ -275,7 +275,8 @@ export class View extends HTMLElement {
     #handleLinks(doc, index) {
         const { book } = this
         const section = book.sections[index]
-        for (const a of doc.querySelectorAll('a[href]'))
+        const linkRoot = doc.getElementById?.('reader-content') || doc
+        for (const a of linkRoot.querySelectorAll('a[href]'))
             a.addEventListener('click', e => {
                 e.preventDefault()
                 const href_ = a.getAttribute('href')
@@ -391,9 +392,25 @@ export class View extends HTMLElement {
                 }
     }
     async prev(distance) {
+        if (
+            distance == null &&
+            this.renderer?.getHasPrevSection?.() &&
+            await this.renderer?.isAtSectionStart?.()
+        ) {
+            await this.renderer.prevSection()
+            return
+        }
         await this.renderer.prev(distance)
     }
     async next(distance) {
+        if (
+            distance == null &&
+            this.renderer?.getHasNextSection?.() &&
+            await this.renderer?.isAtSectionEnd?.()
+        ) {
+            await this.renderer.nextSection()
+            return
+        }
         await this.renderer.next(distance)
     }
     async goLeft() {

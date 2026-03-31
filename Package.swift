@@ -40,8 +40,16 @@ let package = Package(
             targets: ["LakeOfFireLibrary"]
         ),
         .library(
+            name: "LakeOfFireOPDS",
+            targets: ["LakeOfFireOPDS"]
+        ),
+        .library(
             name: "LakeOfFireReader",
             targets: ["LakeOfFireReader"]
+        ),
+        .executable(
+            name: "EbookRendererHarness",
+            targets: ["EbookRendererHarness"]
         ),
         .library(
             name: "LakeOfFire",
@@ -49,11 +57,12 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
+        .package(path: "../../../../lake-of-fire/swiftui-page-flip"),
+        .package(path: "../swiftui-webview"),
         .package(url: "https://github.com/lake-of-fire/swift-brave.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/RealmSwiftGaps.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/BigSyncKit.git", branch: "main"),
+        .package(path: "../BigSyncKit"),
         .package(url: "https://github.com/lake-of-fire/SwiftUIDownloads.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/JapaneseLanguageTools.git", branch: "main"),
         .package(path: "../SwiftUtilities"),
@@ -75,7 +84,7 @@ let package = Package(
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/LakeKit.git", branch: "main"),
+        .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
     ],
@@ -126,6 +135,7 @@ let package = Package(
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
                 .product(name: "SwiftUIDownloads", package: "SwiftUIDownloads"),
+                .product(name: "SwiftUIPageTurn", package: "swiftui-page-flip"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "SwiftUtilities", package: "SwiftUtilities"),
                 .product(name: "ZIPFoundation", package: "ZipFoundation"),
@@ -168,6 +178,7 @@ let package = Package(
             dependencies: [
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
+                .product(name: "BravePlaylist", package: "swift-brave"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ]
         ),
@@ -231,6 +242,17 @@ let package = Package(
                 .copy("Resources/User Scripts/"),
             ]
         ),
+        .executableTarget(
+            name: "EbookRendererHarness",
+            dependencies: [
+                "LakeOfFireContent",
+                "LakeOfFireCore",
+                "LakeOfFireFiles",
+                "LakeOfFireReader",
+                .product(name: "SwiftUIWebView", package: "swiftui-webview"),
+            ],
+            path: "Examples/EbookRendererHarness/Sources/EbookRendererHarness"
+        ),
         .target(
             name: "LakeOfFire",
             dependencies: [
@@ -251,6 +273,15 @@ let package = Package(
             resources: [
                 .copy("Samples"),
             ]
+        ),
+        .testTarget(
+            name: "LakeOfFireTests",
+            dependencies: [
+                .product(name: "BravePlaylist", package: "swift-brave"),
+                "LakeOfFireContent",
+                "LakeOfFireWeb",
+            ],
+            path: "Tests/LakeOfFireTests"
         ),
     ]
 )

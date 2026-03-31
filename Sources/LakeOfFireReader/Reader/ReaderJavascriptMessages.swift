@@ -150,7 +150,10 @@ public struct PageMetadataUpdatedMessage {
     public let url: URL?
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any], let title = body["title"] as? String, let author = body["title"] as? String else { return nil }
+        guard let body = message.body as? [String: Any],
+              let title = body["title"] as? String,
+              let author = body["author"] as? String
+        else { return nil }
         self.title = title
         self.author = author
         url = URL(string: body["url"] as! String)

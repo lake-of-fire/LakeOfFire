@@ -199,11 +199,15 @@ public struct BookLibraryView: View {
                 clearRowBackground: true
             )
             .modifier {
+#if os(iOS)
                 if #available(iOS 16, *) {
                     $0.listRowSpacing(15)
                 } else {
                     $0
                 }
+#else
+                $0
+#endif
             }
         }
     }

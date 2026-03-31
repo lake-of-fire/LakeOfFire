@@ -143,6 +143,28 @@ private let readerModeDatasetProbeScript = """
 """
 
 @MainActor
+internal struct ReaderNavigationVisibilityEvent {
+    let timestamp: Date
+    let shouldHide: Bool
+    let source: String?
+    let direction: String?
+}
+
+@MainActor
+internal final class ReaderNavigationVisibilityCoordinator: ObservableObject {
+    @Published private(set) var lastHostPageTurnEvent: ReaderNavigationVisibilityEvent?
+
+    func recordHostPageTurnEvent(shouldHide: Bool, source: String, direction: String?) {
+        lastHostPageTurnEvent = ReaderNavigationVisibilityEvent(
+            timestamp: Date(),
+            shouldHide: shouldHide,
+            source: source,
+            direction: direction
+        )
+    }
+}
+
+@MainActor
 fileprivate class ReaderMessageHandlers: Identifiable {
     var forceReaderModeWhenAvailable: Bool
     
@@ -152,10 +174,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     var readerContent: ReaderContent
     var navigator: WebViewNavigator
     var hideNavigationDueToScroll: Binding<Bool>
+    var navigationVisibilityCoordinator: ReaderNavigationVisibilityCoordinator
     var updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?
     var contentBlockingEnabled: Bool
     var contentBlockingStatsModel: AdblockStatsModel?
-    private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
+    private var lastNavigationVisibilityEvent: ReaderNavigationVisibilityEvent?
 
     // Cache baked tracking-section sizes keyed by section href + book, with per-key snapshots.
     private let trackingSizeCache = LRUFileCache<String, ReaderSizeTrackingCacheBucket>(
@@ -1178,7 +1201,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         debugPrint("# HIDENAV handler updateReadingProgress reason=\(result.reason) normalized=\(normalizedReason)")
         if ["navigation", "selection", "live-scroll"].contains(normalizedReason) {
             if normalizedReason == "navigation",
-               let event = lastNavigationVisibilityEvent,
+               let event = latestNavigationVisibilityEvent,
                event.shouldHide,
                event.direction == "forward",
                Date().timeIntervalSince(event.timestamp) < 0.8 {
@@ -1196,11 +1219,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         }
     }
 
-    private struct NavigationVisibilityEvent {
-        let timestamp: Date
-        let shouldHide: Bool
-        let source: String?
-        let direction: String?
+    private var latestNavigationVisibilityEvent: ReaderNavigationVisibilityEvent? {
+        [lastNavigationVisibilityEvent, navigationVisibilityCoordinator.lastHostPageTurnEvent]
+            .compactMap { $0 }
+            .max { lhs, rhs in
+                lhs.timestamp < rhs.timestamp
+            }
     }
     
     private func readerDatasetSummary(stage: String, frameInfo: WKFrameInfo?) async -> String? {
@@ -1256,6 +1280,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         readerContent: ReaderContent,
         navigator: WebViewNavigator,
         hideNavigationDueToScroll: Binding<Bool>,
+        navigationVisibilityCoordinator: ReaderNavigationVisibilityCoordinator,
         updateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)?,
         contentBlockingEnabled: Bool,
         contentBlockingStatsModel: AdblockStatsModel?
@@ -1267,6 +1292,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         self.readerContent = readerContent
         self.navigator = navigator
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.navigationVisibilityCoordinator = navigationVisibilityCoordinator
         self.updateReadingProgressHandler = updateReadingProgressHandler
         self.contentBlockingEnabled = contentBlockingEnabled
         self.contentBlockingStatsModel = contentBlockingStatsModel
@@ -1334,6 +1360,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
 internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     var forceReaderModeWhenAvailable = false
     var hideNavigationDueToScroll: Binding<Bool> = .constant(false)
+    var navigationVisibilityCoordinator = ReaderNavigationVisibilityCoordinator()
     
     @AppStorage("ebookViewerLayout") internal var ebookViewerLayout = "paginated"
     
@@ -1363,6 +1390,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         readerContent: readerContent,
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll,
+                        navigationVisibilityCoordinator: navigationVisibilityCoordinator,
                         updateReadingProgressHandler: updateReadingProgressHandler,
                         contentBlockingEnabled: contentBlockingEnabled,
                         contentBlockingStatsModel: contentBlockingStatsModel
@@ -1375,6 +1403,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.readerContent = readerContent
                     readerMessageHandlers.navigator = navigator
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
+                    readerMessageHandlers.navigationVisibilityCoordinator = navigationVisibilityCoordinator
                     readerMessageHandlers.updateReadingProgressHandler = updateReadingProgressHandler
                     readerMessageHandlers.contentBlockingEnabled = contentBlockingEnabled
                     readerMessageHandlers.contentBlockingStatsModel = contentBlockingStatsModel

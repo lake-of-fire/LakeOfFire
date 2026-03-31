@@ -1046,9 +1046,13 @@ private struct ReaderWebViewInternal: View {
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
 
+    @AppStorage("ebookViewerLayout") private var ebookViewerLayout = "paginated"
+    @AppStorage("bookWritingDirectionSetting") private var bookWritingDirection = "original"
+
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.contentBlockingRules) private var contentBlockingRules
     @Environment(\.contentBlockingEnabled) private var contentBlockingEnabled
+    @EnvironmentObject private var readerContent: ReaderContent
 
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
         #if os(iOS)
@@ -1063,6 +1067,38 @@ private struct ReaderWebViewInternal: View {
         EdgeInsets()
         #endif
     }
+
+    private var isEbookContent: Bool {
+        state.pageURL.isEBookURL
+        || readerContent.pageURL.isEBookURL
+        || readerContent.content?.url.isEBookURL == true
+    }
+
+    private var paginationConfiguration: WebViewPaginationConfiguration {
+        guard isEbookContent, ebookViewerLayout == "paginated" else {
+            return .disabled
+        }
+
+        // Phase 5 starts with a compact, runtime-only config derived from the existing
+        // ebook settings. Until the renderer promotes richer pagination state up to Swift,
+        // keep page length in explicit view-length mode and use a stable gutter.
+        let mode: WebViewPaginationMode
+        switch bookWritingDirection {
+        case "vertical":
+            mode = .rightToLeft
+        case "horizontal", "original":
+            mode = .leftToRight
+        default:
+            mode = .leftToRight
+        }
+
+        return WebViewPaginationConfiguration(
+            mode: mode,
+            storedPageLength: 0,
+            gapBetweenPages: 24,
+            behavesLikeColumns: true
+        )
+    }
     
     public var body: some View {
         let resolvedContentRules = contentBlockingEnabled ? contentBlockingRules : nil
@@ -1073,13 +1109,15 @@ private struct ReaderWebViewInternal: View {
                     dataDetectorsEnabled: false,
                     isOpaque: false,
                     backgroundColor: .clear,
-                    userScripts: userScripts
+                    userScripts: userScripts,
+                    paginationConfiguration: paginationConfiguration
                 )
             }
             return WebViewConfig(
                 contentRules: resolvedContentRules,
                 dataDetectorsEnabled: false,
-                userScripts: userScripts
+                userScripts: userScripts,
+                paginationConfiguration: paginationConfiguration
             )
         }()
         
