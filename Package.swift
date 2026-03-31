@@ -58,7 +58,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../../../lake-of-fire/swiftui-page-flip"),
-        .package(path: "../swiftui-webview"),
+        .package(url: "https://github.com/lake-of-fire/swiftui-webview.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/swift-brave.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/RealmSwiftGaps.git", branch: "main"),
@@ -66,7 +66,7 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/SwiftUIDownloads.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/JapaneseLanguageTools.git", branch: "main"),
         .package(path: "../SwiftUtilities"),
-        .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
+        .package(path: "../../../../lake-of-fire/LakeImage"),
         .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.4"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),

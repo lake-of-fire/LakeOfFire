@@ -1,5 +1,5 @@
 {
-  "originHash" : "ff10c8ae87beb190ad80688023e82f416cd335e8697f195f60d136f30e561103",
+  "originHash" : "05cdfecd57c71ce587ae0857de1562e719e62915aec8e986a5ca548e6ebef0d6",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -116,15 +116,6 @@
       "state" : {
         "branch" : "master",
         "revision" : "15460dbb60bde406dec045d018a1895425c89cd1"
-      }
-    },
-    {
-      "identity" : "lakeimage",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/LakeImage.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "f37f9f64014f6e6edf2a4596c4e2187209db682a"
       }
     },
     {
@@ -277,7 +268,7 @@
       "location" : "https://github.com/lake-of-fire/swift-brave.git",
       "state" : {
         "branch" : "main",
-        "revision" : "2e35a0eee8ac732457652a03436939ca2a1db253"
+        "revision" : "e74acb0f59391a35172c13b26951be150a7efdf0"
       }
     },
     {
@@ -476,6 +467,15 @@
       "state" : {
         "revision" : "26986a57e31c813f98262ddb62d4b07d40008535",
         "version" : "26.0.1"
+      }
+    },
+    {
+      "identity" : "swiftui-webview",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lake-of-fire/swiftui-webview.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "3598e1bf494d9c33b560811ed62a0b85a1a7b8f8"
       }
     },
     {
