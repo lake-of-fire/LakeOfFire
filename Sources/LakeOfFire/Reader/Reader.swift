@@ -7,38 +7,245 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
+typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
+
+@MainActor
+func readerPaginationTrackingSettingsKey(
+    readerFontSize: Double?,
+    lightModeTheme: LightModeTheme,
+    darkModeTheme: DarkModeTheme
+) -> String {
+    "pagination-size:v1|font:\(readerFontSize ?? 0)|light:\(lightModeTheme.rawValue)|dark:\(darkModeTheme.rawValue)"
+}
+
+@MainActor
+func syncReaderPaginationTrackingSettingsKey(
+    readerFontSize: Double?,
+    lightModeTheme: LightModeTheme,
+    darkModeTheme: DarkModeTheme,
+    reason: String,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    guard hasAsyncCaller else {
+        debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+        return
+    }
+    let key = readerPaginationTrackingSettingsKey(
+        readerFontSize: readerFontSize,
+        lightModeTheme: lightModeTheme,
+        darkModeTheme: darkModeTheme
+    )
+    do {
+        try await evaluateJavaScript(
+            "window.paginationTrackingSettingsKey = '" + key + "';",
+            true
+        )
+        debugPrint("# READER paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
+    } catch {
+        debugPrint("# READER paginationSettingsKey.set.error", error.localizedDescription)
+    }
+}
+
+@MainActor
+func requestReaderTrackingSectionGeometryBake(
+    reason: String,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    do {
+        try await evaluateJavaScript(
+            "window.reader?.view?.renderer?.requestTrackingSectionGeometryBake?.({ reason: '\(reason)', restoreLocation: true, immediate: true });",
+            true
+        )
+    } catch {
+        print("Geometry bake request failed: \(error)")
+    }
+}
+
+@MainActor
+func applyReaderFontSize(
+    _ size: Double,
+    readerFontSize: Double?,
+    lightModeTheme: LightModeTheme,
+    darkModeTheme: DarkModeTheme,
+    reason: String,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    guard hasAsyncCaller else {
+        debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+        return
+    }
+    do {
+        try await evaluateJavaScript("document.body.style.fontSize = '\(size)px';", true)
+        await syncReaderPaginationTrackingSettingsKey(
+            readerFontSize: readerFontSize,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme,
+            reason: "font-size-change",
+            hasAsyncCaller: hasAsyncCaller,
+            evaluateJavaScript: evaluateJavaScript
+        )
+        await requestReaderTrackingSectionGeometryBake(reason: reason, evaluateJavaScript: evaluateJavaScript)
+    } catch {
+        print("Font size update failed: \(error)")
+    }
+}
+
+@MainActor
+func applyInitialReaderPresentationSettings(
+    readerFontSize: Double?,
+    lightModeTheme: LightModeTheme,
+    darkModeTheme: DarkModeTheme,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    await syncReaderPaginationTrackingSettingsKey(
+        readerFontSize: readerFontSize,
+        lightModeTheme: lightModeTheme,
+        darkModeTheme: darkModeTheme,
+        reason: "initial",
+        hasAsyncCaller: hasAsyncCaller,
+        evaluateJavaScript: evaluateJavaScript
+    )
+    if let readerFontSize {
+        await applyReaderFontSize(
+            readerFontSize,
+            readerFontSize: readerFontSize,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme,
+            reason: "font-size-initial",
+            hasAsyncCaller: hasAsyncCaller,
+            evaluateJavaScript: evaluateJavaScript
+        )
+    }
+}
+
+@MainActor
+func applyReaderLightTheme(
+    _ lightModeTheme: LightModeTheme,
+    readerFontSize: Double?,
+    darkModeTheme: DarkModeTheme,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async throws {
+    try await evaluateJavaScript(
+        """
+        if (document.body?.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
+            document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
+        }
+        """,
+        true
+    )
+    await syncReaderPaginationTrackingSettingsKey(
+        readerFontSize: readerFontSize,
+        lightModeTheme: lightModeTheme,
+        darkModeTheme: darkModeTheme,
+        reason: "light-theme-change",
+        hasAsyncCaller: hasAsyncCaller,
+        evaluateJavaScript: evaluateJavaScript
+    )
+    await requestReaderTrackingSectionGeometryBake(reason: "light-theme-change", evaluateJavaScript: evaluateJavaScript)
+}
+
+@MainActor
+func applyReaderDarkTheme(
+    _ darkModeTheme: DarkModeTheme,
+    readerFontSize: Double?,
+    lightModeTheme: LightModeTheme,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async throws {
+    try await evaluateJavaScript(
+        """
+        if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
+            document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
+        }
+        """,
+        true
+    )
+    await syncReaderPaginationTrackingSettingsKey(
+        readerFontSize: readerFontSize,
+        lightModeTheme: lightModeTheme,
+        darkModeTheme: darkModeTheme,
+        reason: "dark-theme-change",
+        hasAsyncCaller: hasAsyncCaller,
+        evaluateJavaScript: evaluateJavaScript
+    )
+    await requestReaderTrackingSectionGeometryBake(reason: "dark-theme-change", evaluateJavaScript: evaluateJavaScript)
+}
+
 fileprivate struct ThemeModifier: ViewModifier {
     @AppStorage("readerFontSize") internal var readerFontSize: Double?
     @AppStorage("lightModeTheme") var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") var darkModeTheme: DarkModeTheme = .black
     @EnvironmentObject var scriptCaller: WebViewScriptCaller
+
+    private func applyFontSize(_ size: Double, reason: String) async {
+        await applyReaderFontSize(
+            size,
+            readerFontSize: readerFontSize,
+            lightModeTheme: lightModeTheme,
+            darkModeTheme: darkModeTheme,
+            reason: reason,
+            hasAsyncCaller: scriptCaller.hasAsyncCaller
+        ) { js, duplicateInMultiTargetFrames in
+            _ = try await scriptCaller.evaluateJavaScript(
+                js,
+                duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+            )
+        }
+    }
     
     func body(content: Content) -> some View {
         content
             .onChange(of: lightModeTheme) { newValue in
                 Task { @MainActor in
-                    try await scriptCaller.evaluateJavaScript("""
-                        if (document.body?.getAttribute('data-manabi-light-theme') !== '\(newValue)') {
-                            document.body?.setAttribute('data-manabi-light-theme', '\(newValue)');
-                        }
-                        """, duplicateInMultiTargetFrames: true)
+                    try await applyReaderLightTheme(
+                        newValue,
+                        readerFontSize: readerFontSize,
+                        darkModeTheme: darkModeTheme,
+                        hasAsyncCaller: scriptCaller.hasAsyncCaller
+                    ) { js, duplicateInMultiTargetFrames in
+                        _ = try await scriptCaller.evaluateJavaScript(
+                            js,
+                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                        )
+                    }
                 }
             }
             .onChange(of: darkModeTheme) { newValue in
                 Task { @MainActor in
-                    try await scriptCaller.evaluateJavaScript("""
-                        if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(newValue)') {
-                            document.body?.setAttribute('data-manabi-dark-theme', '\(newValue)');
-                        }
-                        """, duplicateInMultiTargetFrames: true)
+                    try await applyReaderDarkTheme(
+                        newValue,
+                        readerFontSize: readerFontSize,
+                        lightModeTheme: lightModeTheme,
+                        hasAsyncCaller: scriptCaller.hasAsyncCaller
+                    ) { js, duplicateInMultiTargetFrames in
+                        _ = try await scriptCaller.evaluateJavaScript(
+                            js,
+                            duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                        )
+                    }
                 }
             }
-            .task(id: readerFontSize) { @MainActor in
-                guard let readerFontSize else { return }
-                do {
-                    try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(readerFontSize)px';", duplicateInMultiTargetFrames: true)
-                } catch {
-                    print("\(error)")
+            .task { @MainActor in
+                await applyInitialReaderPresentationSettings(
+                    readerFontSize: readerFontSize,
+                    lightModeTheme: lightModeTheme,
+                    darkModeTheme: darkModeTheme,
+                    hasAsyncCaller: scriptCaller.hasAsyncCaller
+                ) { js, duplicateInMultiTargetFrames in
+                    _ = try await scriptCaller.evaluateJavaScript(
+                        js,
+                        duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                    )
+                }
+            }
+            .onChange(of: readerFontSize) { newValue in
+                guard let newValue else { return }
+                Task { @MainActor in
+                    await applyFontSize(newValue, reason: "font-size-change")
                 }
             }
     }
@@ -182,6 +389,9 @@ public struct Reader: View {
     @Binding var textSelection: String?
     var buildMenu: BuildMenuType?
     
+    @EnvironmentObject private var readerContent: ReaderContent
+    @EnvironmentObject private var scriptCaller: WebViewScriptCaller
+    
     @State private var obscuredInsets: EdgeInsets? = nil
     
     public init(
@@ -284,5 +494,28 @@ public struct Reader: View {
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
+        .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
+            Task { @MainActor in
+                guard scriptCaller.hasAsyncCaller else { return }
+                let displayTitle = readerContent.content?.titleForDisplay ?? readerContent.contentTitle
+                guard !displayTitle.isEmpty else { return }
+                do {
+                    try await scriptCaller.evaluateJavaScript(
+                        """
+                        (function() {
+                          const el = document.getElementById('reader-title');
+                          if (el && el.textContent !== title) {
+                            el.textContent = title;
+                          }
+                        })();
+                        """,
+                        arguments: ["title": displayTitle],
+                        duplicateInMultiTargetFrames: true
+                    )
+                } catch {
+                    debugPrint("# READER title.sync.failed", error.localizedDescription)
+                }
+            }
+        }
     }
 }
