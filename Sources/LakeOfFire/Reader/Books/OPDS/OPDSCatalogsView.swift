@@ -1,5 +1,5 @@
 import SwiftUI
-import ReadiumOPDS
+import LakeOfFireOPDS
 import RealmSwift
 import RealmSwiftGaps
 import Combine
@@ -180,7 +180,14 @@ struct AddCatalogView: View {
             .navigationTitle("Add New Catalog")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    if #available(iOS 26, macOS 26, *) {
+                        Button(role: .cancel) { dismiss() } label: {
+                            Text("Cancel")
+                        }
+                        .tint(.primary)
+                    } else {
+                        Button("Cancel") { dismiss() }
+                    }
                 }
             }
         }

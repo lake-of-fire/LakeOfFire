@@ -287,16 +287,73 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
-    guard let doc = try? SwiftSoup.parse(html) else {
-        let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !stripped.isEmpty else { return nil }
-        return stripped.components(separatedBy: "\n").first?.truncate(36)
+    if let doc = try? SwiftSoup.parse(html),
+       let title = titleFromReadabilityDocument(doc) {
+        return title
     }
-    let rawCandidate = (try? doc.getElementById("reader-title")?.text())
-        ?? (try? doc.title())
-    let candidate = rawCandidate?.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let candidate, !candidate.isEmpty else { return nil }
-    return candidate.truncate(36)
+
+    func normalisedTitle(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.truncate(36)
+    }
+
+    let stripped = html.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !stripped.isEmpty else { return nil }
+    let candidate = stripped.components(separatedBy: "\n").first ?? stripped
+    return normalisedTitle(candidate)
+}
+
+internal func titleFromReadabilityDocument(_ doc: SwiftSoup.Document) -> String? {
+    func normalisedTitle(_ raw: String?) -> String? {
+        let trimmed = (raw ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.truncate(36)
+    }
+
+    if let readerTitleText = try? doc.getElementById("reader-title")?.text(),
+       let title = normalisedTitle(readerTitleText) {
+        return title
+    }
+
+    if let headingText = try? doc.getElementsByTag("h1").first()?.text(),
+       let title = normalisedTitle(headingText) {
+        return title
+    }
+
+    if let headTitle = try? doc.title(),
+       let title = normalisedTitle(headTitle) {
+        return title
+    }
+
+    if let body = doc.body(),
+       let bodyText = bodyTextExcludingReaderContent(from: body),
+       let title = normalisedTitle(bodyText) {
+        return title
+    }
+    return nil
+}
+
+private func bodyTextExcludingReaderContent(from body: SwiftSoup.Element) -> String? {
+    let children = body.children().array()
+    guard !children.isEmpty else {
+        return try? body.text()
+    }
+
+    var candidates: [String] = []
+    candidates.reserveCapacity(children.count)
+    for child in children {
+        if (try? child.attr("id")) == "reader-content" { continue }
+        if (try? child.getElementById("reader-content")) != nil { continue }
+        let text = (try? child.text())?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let text, !text.isEmpty {
+            candidates.append(text)
+        }
+    }
+    if candidates.isEmpty {
+        return try? body.text()
+    }
+    return candidates.joined(separator: " ")
 }
 
 private func canHaveReadabilityContent(for url: URL) -> Bool {
@@ -410,6 +467,47 @@ private func locallyRetrievableReaderHTML(
     }
     let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
+}
+
+@MainActor
+private func propagateReaderModeDefaults(
+    for url: URL,
+    primaryRecord: any ReaderContentProtocol,
+    readabilityHTML: String,
+    fallbackTitle: String?,
+    derivedTitle: String? = nil
+) async {
+    let primaryKey = primaryRecord.compoundKey
+    let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
+    _ = await Task { @RealmBackgroundActor in
+        do {
+            let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
+            for record in relatedRecords {
+                guard record.compoundKey != primaryKey, let realm = record.realm else { continue }
+                try await realm.asyncWrite {
+                    record.isReaderModeByDefault = true
+                    record.isReaderModeAvailable = false
+                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                        if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
+                            record.html = readabilityHTML
+                        }
+                        if let resolvedTitle,
+                           record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            record.title = resolvedTitle
+                        }
+                        record.rssContainsFullContent = true
+                    }
+                    record.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        } catch {
+            debugPrint(
+                "# READER readerMode.propagateDefaults.error",
+                url.absoluteString,
+                error.localizedDescription
+            )
+        }
+    }.value
 }
 
 @MainActor
@@ -1360,7 +1458,8 @@ public class ReaderModeViewModel: ObservableObject {
                         do {
                             return try await preprocessWebContentForReaderMode(
                                 doc: doc,
-                                url: url
+                                url: url,
+                                fallbackTitle: titleForDisplay
                             )
                         } catch {
                             print(error)
@@ -1378,11 +1477,19 @@ public class ReaderModeViewModel: ObservableObject {
                     doc?.outputSettings().escapeMode(.xhtml)
                 }
             }
-            
+
             guard let doc else {
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
+            let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
+            await propagateReaderModeDefaults(
+                for: url,
+                primaryRecord: content,
+                readabilityHTML: readabilityContent,
+                fallbackTitle: titleForDisplay,
+                derivedTitle: derivedTitle
+            )
 
             try await processForReaderMode(
                 doc: doc,
@@ -1683,7 +1790,14 @@ public class ReaderModeViewModel: ObservableObject {
                     cancelReaderModeLoad(for: committedURL, reason: "navCommit.currentURLMismatch")
                     return
                 }
-                if hasCanonicalReadabilityMarkup(in: html) {
+                if committedURL.isSnippetURL,
+                   let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+                        html: html,
+                        contentURL: committedURL,
+                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.titleForDisplay
+                   ) {
+                    readabilityContent = snippetHTML
+                } else if hasCanonicalReadabilityMarkup(in: html) {
                     readabilityContent = html
                 } else {
                     readabilityContent = nil
@@ -1904,12 +2018,28 @@ fileprivate func rewriteManabiReaderFontSizeStyle(in htmlBytes: [UInt8], newFont
 
 public func preprocessWebContentForReaderMode(
     doc: SwiftSoup.Document,
-    url: URL
+    url: URL,
+    fallbackTitle: String? = nil
 ) throws -> SwiftSoup.Document {
     transformContentSpecificToFeed(doc: doc, url: url)
     do {
         try wireViewOriginalLinks(doc: doc, url: url)
     } catch { }
+
+    if let fallbackTitle, !fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let titleElement = try doc.getElementById("reader-title") {
+            let currentTitleText = try titleElement.text(trimAndNormaliseWhitespace: false)
+            if currentTitleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try titleElement.text(fallbackTitle)
+                if let headTitle = try doc.head()?.getElementsByTag("title").first() {
+                    let currentHeadTitle = try headTitle.text()
+                    if currentHeadTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        try headTitle.text(fallbackTitle)
+                    }
+                }
+            }
+        }
+    }
     return doc
 }
 

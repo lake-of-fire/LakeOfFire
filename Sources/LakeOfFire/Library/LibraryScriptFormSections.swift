@@ -368,7 +368,7 @@ struct LibraryScriptFormSections: View {
                         .environmentObject(readerModeViewModel)
                     } else {
                         WebView(
-                            config: WebViewConfig(userScripts: Array(ofNotNil: script.getWebViewUserScript())),
+                            config: WebViewConfig(userScripts: [script.getWebViewUserScript()].compactMap { $0 }),
                             navigator: webNavigator,
                             state: $webState,
                             bounces: false)

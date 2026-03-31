@@ -48,6 +48,24 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
         return isPhysicalMedia
     }
 
+    public var locationBarTitle: String? {
+        let url = url
+        if url.isSnippetURL {
+            return "Snippet: \(createdAt.formatted())"
+        }
+        if url.isEBookURL {
+            return title
+        }
+        if url.isReaderFileURL {
+            return url.lastPathComponent
+        }
+        if url.isReaderURLLoaderURL,
+           let loadURLHost = ReaderContentLoader.getContentURL(fromLoaderURL: url)?.normalizedHost() {
+            return loadURLHost
+        }
+        return defaultLocationBarTitle
+    }
+
     public func imageURLToDisplay() -> URL? {
         return imageUrl
     }

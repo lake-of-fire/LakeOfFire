@@ -21,7 +21,7 @@ let package = Package(
         .package(path: "../SwiftUIDownloads"),
         .package(path: "../JapaneseLanguageTools"),
         .package(path: "../SwiftUtilities"),
-        .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
+        .package(path: "../LakeImage"),
         .package(url: "https://github.com/realm/realm-swift.git", from: "20.0.4"),
         .package(url: "https://github.com/lake-of-fire/AsyncView.git", branch: "main"),
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", branch: "development"),
@@ -42,7 +42,6 @@ let package = Package(
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
         .package(url: "https://github.com/dagronf/DSFStepperView.git", branch: "main"),
-        .package(path: "../readium-swift-toolkit"),
         .package(url: "https://github.com/lake-of-fire/swift-readability.git", branch: "main"),
         .package(url: "https://github.com/EmergeTools/Pow.git", revision: "1b4b1dda28c50b95f0872927ee2226fe8b58950e"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
@@ -50,11 +49,16 @@ let package = Package(
         .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
     ],
     targets: [
+        .target(
+            name: "LakeOfFireOPDS",
+            dependencies: []
+        ),
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
         // Targets can depend on other targets in this package, and on products in packages this package depends on.
         .target(
             name: "LakeOfFire",
             dependencies: [
+                "LakeOfFireOPDS",
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
@@ -80,7 +84,6 @@ let package = Package(
                 .product(name: "LakeImage", package: "LakeImage"),
                 .product(name: "SwiftCloudDrive", package: "SwiftCloudDrive"),
                 .product(name: "DSFStepperView", package: "DSFStepperView"),
-                .product(name: "ReadiumOPDS", package: "readium-swift-toolkit"),
                 .product(name: "SwiftReadability", package: "swift-readability"),
                 .product(name: "Pow", package: "Pow"),
                 .product(name: "LakeKit", package: "LakeKit"),
@@ -90,8 +93,13 @@ let package = Package(
             resources: [
                 .copy("Resources/foliate-js/"), // CodeSign errors with "process"...
             ]),
-//        .testTarget(
-//            name: "LakeOfFireTests",
-//            dependencies: ["LakeOfFire"]),
+        .testTarget(
+            name: "LakeOfFireOPDSTests",
+            dependencies: ["LakeOfFireOPDS"],
+            path: "Tests/LakeOfFireOPDSTests",
+            resources: [
+                .copy("Samples"),
+            ]
+        ),
     ]
 )

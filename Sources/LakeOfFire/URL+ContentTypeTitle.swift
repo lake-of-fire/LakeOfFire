@@ -33,6 +33,19 @@ public extension URL {
         return .webpage
     }
 
+    var contentKindTitle: String {
+        switch contentKind {
+        case .webpage:
+            return "Webpage"
+        case .book:
+            return "Book"
+        case .file:
+            return "File"
+        case .snippet:
+            return "Snippet"
+        }
+    }
+
     var hostDisplayName: String? {
         guard let host else { return nil }
         if host.hasPrefix("www.") {

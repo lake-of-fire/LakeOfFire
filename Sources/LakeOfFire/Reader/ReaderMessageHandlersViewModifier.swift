@@ -226,7 +226,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = PageMetadataUpdatedMessage(fromMessage: message) else { return }
-                    guard result.url == readerViewModel.state.pageURL else { return }
+                    guard urlsMatchWithoutHash(result.url, readerViewModel.state.pageURL) else { return }
                     try await readerViewModel.pageMetadataUpdated(title: result.title, author: result.author)
                 } catch {
                     print(error)

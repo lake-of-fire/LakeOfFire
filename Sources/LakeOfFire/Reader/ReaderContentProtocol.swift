@@ -5,6 +5,19 @@ import SwiftUtilities
 import RealmSwiftGaps
 import BigSyncKit
 
+public let clipboardIndicatorPrefixPattern = #"^(?:📎\s*)+"#
+
+public extension String {
+    func removingClipboardIndicatorPrefix() -> String {
+        replacingOccurrences(of: clipboardIndicatorPrefixPattern, with: "", options: [.regularExpression])
+    }
+
+    func removingClipboardIndicatorIfNeeded(_ shouldRemove: Bool) -> String {
+        guard shouldRemove else { return self }
+        return removingClipboardIndicatorPrefix()
+    }
+}
+
 @globalActor
 public actor ReaderContentReadingProgressLoader {
     public static var shared = ReaderContentReadingProgressLoader()
@@ -62,6 +75,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var isDeleted: Bool { get set }
     
     var displayAbsolutePublicationDate: Bool { get }
+    var locationBarTitle: String? { get }
     
     func imageURLToDisplay() async throws -> URL?
     @RealmBackgroundActor
@@ -71,6 +85,28 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 public extension ReaderContentProtocol {
     var keyPrefix: String? {
         return nil
+    }
+
+    var defaultLocationBarTitle: String? {
+        let url = url
+        if url.absoluteString == "about:blank" {
+            return nil
+        }
+        if url.isReaderFileURL {
+            return url.lastPathComponent
+        }
+        if let googleQuery = url.googleSearchQuery {
+            return googleQuery
+        }
+        if let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return url.normalizedHost() ?? url.absoluteString
+        }
+        return url.normalizedHost() ?? url.absoluteString
+    }
+
+    var locationBarTitle: String? {
+        defaultLocationBarTitle
     }
     
     @MainActor
@@ -224,7 +260,7 @@ public extension ReaderContentProtocol {
     }
     
     var hasHTML: Bool {
-        if rssContainsFullContent || isFromClipboard {
+        if rssContainsFullContent || isFromClipboard || url.isSnippetURL {
             if htmlContent != nil {
                 return true
             }
@@ -234,17 +270,22 @@ public extension ReaderContentProtocol {
         }
         return false
     }
+
+    var needsClipboardIndicator: Bool {
+        isFromClipboard || url.isSnippetURL
+    }
     
     var titleForDisplay: String {
         get {
-            var title = title.removingHTMLTags() ?? title
-            if title.isEmpty {
-                title = "Untitled"
+            var displayTitle = title.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
+            displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+            if displayTitle.isEmpty {
+                displayTitle = "Untitled"
             }
-            if isFromClipboard {
-                return "📎 " + title
+            if needsClipboardIndicator {
+                return "📎 " + displayTitle
             }
-            return title
+            return displayTitle
         }
     }
     

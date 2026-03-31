@@ -256,6 +256,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
+    public var locationBarTitle: String? {
+        url.normalizedHost() ?? url.absoluteString
+    }
+
     public var displayAbsolutePublicationDate: Bool {
         return false
     }

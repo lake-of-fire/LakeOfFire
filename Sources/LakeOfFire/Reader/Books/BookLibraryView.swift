@@ -1,6 +1,6 @@
 import SwiftUI
 import SwiftUIWebView
-import ReadiumOPDS
+import LakeOfFireOPDS
 import RealmSwift
 import RealmSwiftGaps
 import SwiftUIDownloads

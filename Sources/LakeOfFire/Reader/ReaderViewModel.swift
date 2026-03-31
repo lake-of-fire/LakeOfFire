@@ -162,9 +162,14 @@ public class ReaderViewModel: NSObject, ObservableObject {
         }()
         for contentRef in contentRefs {
             guard let content = try await contentRef.resolveOnMainActor() else { continue }
-            if !newTitle.isEmpty, content.title.replacingOccurrences(of: String("\u{fffc}"), with: "").trimmingCharacters(in: .whitespacesAndNewlines) != title || content.author != author ?? "" {
+            let shouldStripClipboardIndicator = content.isFromClipboard || content.url.isSnippetURL
+            let finalTitle = newTitle.removingClipboardIndicatorIfNeeded(shouldStripClipboardIndicator)
+            let existingTitle = content.title
+                .replacingOccurrences(of: String("\u{fffc}"), with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !finalTitle.isEmpty, existingTitle != finalTitle || content.author != author ?? "" {
                 try await content.asyncWrite { _, content in
-                    content.title = newTitle
+                    content.title = finalTitle
                     content.author = author ?? ""
                     content.refreshChangeMetadata(explicitlyModified: true)
                 }

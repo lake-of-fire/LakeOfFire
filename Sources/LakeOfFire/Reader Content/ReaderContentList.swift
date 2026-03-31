@@ -38,6 +38,9 @@ struct ReaderContentListSheetsModifier: ViewModifier {
                 Button("Cancel", role: .cancel) {
                     readerContentListModalsModel.confirmDeletionOf = nil
                 }
+                .modifier {
+                    if #available(iOS 26, macOS 26, *) { $0.tint(.primary) } else { $0 }
+                }
                 Button("Delete", role: .destructive) {
                     Task { @MainActor in
                         try await readerContentListModalsModel.confirmDeletionOf?.delete()

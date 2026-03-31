@@ -88,6 +88,9 @@ public struct DataSettingsForm: View {
                         }
                     }
                     Button("Cancel", role: .cancel) { }
+                        .modifier {
+                            if #available(iOS 26, macOS 26, *) { $0.tint(.primary) } else { $0 }
+                        }
                 } message: {
                     Text("This will delete your reading and web history, excluding pages you saved as bookmarks. This data is persisted on your device and in your personal iCloud account and is not otherwise shared online without any explicit share action.")
                 }
@@ -110,6 +113,9 @@ public struct DataSettingsForm: View {
                         }
                     }
                     Button("Cancel", role: .cancel) { }
+                        .modifier {
+                            if #available(iOS 26, macOS 26, *) { $0.tint(.primary) } else { $0 }
+                        }
                 } message: {
                     Text("This will delete RSS feed entries that have not been saved. This data is persisted on your device and in your personal iCloud account and is not shared online without any explicit share action.")
                 }
