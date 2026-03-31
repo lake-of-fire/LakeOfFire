@@ -1,5 +1,5 @@
 {
-  "originHash" : "05cdfecd57c71ce587ae0857de1562e719e62915aec8e986a5ca548e6ebef0d6",
+  "originHash" : "cd1021340fc0950b1902d5e6117ca4aa015090a8cfde65c8228ed72cac8fd3b1",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -116,6 +116,15 @@
       "state" : {
         "branch" : "master",
         "revision" : "15460dbb60bde406dec045d018a1895425c89cd1"
+      }
+    },
+    {
+      "identity" : "lakeimage",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lake-of-fire/LakeImage.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "eff9b7186a02931325d70842717e2a4f262a7b5b"
       }
     },
     {
