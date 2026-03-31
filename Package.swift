@@ -74,13 +74,16 @@ let package = Package(
         .package(url: "https://github.com/lake-of-fire/FilePicker.git", branch: "main"),
         .package(url: "https://github.com/shaps80/SwiftUIBackports.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/SwiftCloudDrive.git", branch: "main"),
-        .package(url: "https://github.com/lake-of-fire/readium-swift-toolkit.git", branch: "develop"),
         .package(url: "https://github.com/EmergeTools/Pow.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/LakeKit.git", branch: "main"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
         .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
     ],
     targets: [
+        .target(
+            name: "LakeOfFireOPDS",
+            dependencies: []
+        ),
         .target(
             name: "LakeOfFireShareSupport",
             dependencies: [
@@ -195,6 +198,7 @@ let package = Package(
         .target(
             name: "LakeOfFireReader",
             dependencies: [
+                "LakeOfFireOPDS",
                 "LakeOfFireContent",
                 "LakeOfFireContentUI",
                 "LakeOfFireFiles",
@@ -209,8 +213,6 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "OrderedCollections", package: "swift-collections"),
                 .product(name: "Pow", package: "Pow"),
-                .product(name: "R2Shared", package: "readium-swift-toolkit"),
-                .product(name: "ReadiumOPDS", package: "readium-swift-toolkit"),
                 .product(name: "Realm", package: "realm-swift"),
                 .product(name: "RealmSwift", package: "realm-swift"),
                 .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
@@ -240,6 +242,14 @@ let package = Package(
                 "LakeOfFireWeb",
                 "LakeOfFireLibrary",
                 "LakeOfFireReader",
+            ]
+        ),
+        .testTarget(
+            name: "LakeOfFireOPDSTests",
+            dependencies: ["LakeOfFireOPDS"],
+            path: "Tests/LakeOfFireOPDSTests",
+            resources: [
+                .copy("Samples"),
             ]
         ),
     ]

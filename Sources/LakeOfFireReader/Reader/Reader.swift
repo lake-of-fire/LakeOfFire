@@ -187,7 +187,6 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
 
 
 public struct Reader: View {
-    var persistentWebViewID: String? = nil
     var forceReaderModeWhenAvailable = false
 //    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
@@ -208,7 +207,6 @@ public struct Reader: View {
     @State private var obscuredInsets: EdgeInsets? = nil
     
     public init(
-        persistentWebViewID: String? = nil,
         forceReaderModeWhenAvailable: Bool = false,
 //        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
@@ -223,7 +221,6 @@ public struct Reader: View {
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
     ) {
-        self.persistentWebViewID = persistentWebViewID
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
 //        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
@@ -242,7 +239,6 @@ public struct Reader: View {
     public var body: some View {
         //            VStack(spacing: 0) {
             ReaderWebView(
-                persistentWebViewID: persistentWebViewID,
                 obscuredInsets: obscuredInsets,
                 bounces: bounces,
                 additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,

@@ -1,5 +1,5 @@
 import SwiftUI
-import ReadiumOPDS
+import LakeOfFireOPDS
 import RealmSwift
 import RealmSwiftGaps
 import Combine

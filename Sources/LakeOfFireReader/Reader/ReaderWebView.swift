@@ -916,7 +916,6 @@ private class ReaderWebViewHandler {
 }
 
 public struct ReaderWebView: View {
-    var persistentWebViewID: String?
     let obscuredInsets: EdgeInsets?
     var bounces = true
     var additionalBottomSafeAreaInset: CGFloat?
@@ -941,7 +940,6 @@ public struct ReaderWebView: View {
     @State private var handler: ReaderWebViewHandler?
 
     public init(
-        persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         bounces: Bool = true,
         additionalBottomSafeAreaInset: CGFloat? = nil,
@@ -954,7 +952,6 @@ public struct ReaderWebView: View {
         textSelection: Binding<String?>? = nil,
         buildMenu: BuildMenuType? = nil
     ) {
-        self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.bounces = bounces
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
@@ -973,7 +970,6 @@ public struct ReaderWebView: View {
         return Group {
             if let handler = handler {
                 ReaderWebViewInternal(
-                    persistentWebViewID: persistentWebViewID,
                     useTransparentWebViewBackground: readerModeViewModel.isReaderModeLoadedOrPending(url: readerViewModel.state.pageURL, content: readerContent.content),
                     obscuredInsets: obscuredInsets,
                     bounces: bounces,
@@ -1033,7 +1029,6 @@ public struct ReaderWebView: View {
 }
 
 private struct ReaderWebViewInternal: View {
-    var persistentWebViewID: String?
     let useTransparentWebViewBackground: Bool
     let obscuredInsets: EdgeInsets?
     var bounces = true
@@ -1102,7 +1097,6 @@ private struct ReaderWebViewInternal: View {
                 )
             ),
             bounces: bounces,
-            persistentWebViewID: persistentWebViewID,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
                 (readerFileURLSchemeHandler, "reader-file"),
