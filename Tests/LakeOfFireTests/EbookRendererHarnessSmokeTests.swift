@@ -1,0 +1,498 @@
+import Foundation
+import XCTest
+
+final class EbookRendererHarnessSmokeTests: XCTestCase {
+    func testHarnessSmokePassesGeneratedJapaneseEPUB() throws {
+        let fixtureDirectoryURL = try makeFixtureDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: fixtureDirectoryURL)
+        }
+
+        let epubURL = try makeMinimalEPUB(at: fixtureDirectoryURL)
+        let smokeResult = try runHarnessSmoke(arguments: ["--smoke-test", "--smoke-timeout=24", epubURL.path])
+        let summary = try extractSmokeSummary(from: smokeResult.combinedOutput)
+        assertPassingSmokeResult(smokeResult, summary: summary)
+        XCTAssertEqual(smokeSummaryString(at: ["smokeTest", "writingDirection"], in: summary), "original")
+        XCTAssertEqual(smokeSummaryBool(at: ["smokeTest", "usesViewLength"], in: summary), true)
+        XCTAssertEqual(smokeSummaryNumber(at: ["smokeTest", "explicitPageLength"], in: summary), 0)
+        XCTAssertEqual(smokeSummaryString(at: ["nativePagination", "state", "storedPageLength"], in: summary), "0.0")
+        assertNavigationProbe(summary)
+        assertJumpProbe(summary)
+        assertProgressJumpProbe(summary)
+        assertNativePaginationState(summary)
+        assertRuntimePaginationProbe(summary)
+        assertPaginationToggleProbe(summary)
+        assertResizeProbe(summary)
+        assertUserFacingPageUI(summary)
+        assertLayoutLooksSane(summary)
+    }
+
+    func testHarnessSmokePassesVerticalWritingEPUBWithExplicitPageLength() throws {
+        let fixtureDirectoryURL = try makeFixtureDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: fixtureDirectoryURL)
+        }
+
+        let epubURL = try makeMinimalEPUB(at: fixtureDirectoryURL, verticalWriting: true)
+        let smokeResult = try runHarnessSmoke(
+            arguments: [
+                "--smoke-test",
+                "--smoke-timeout=24",
+                "--smoke-page-length=700",
+                "--smoke-writing-direction=vertical",
+                epubURL.path,
+            ]
+        )
+        let summary = try extractSmokeSummary(from: smokeResult.combinedOutput)
+        assertPassingSmokeResult(smokeResult, summary: summary)
+        XCTAssertEqual(smokeSummaryBool(at: ["smokeTest", "usesViewLength"], in: summary), false)
+        XCTAssertEqual(smokeSummaryNumber(at: ["smokeTest", "explicitPageLength"], in: summary), 700)
+        XCTAssertEqual(smokeSummaryString(at: ["smokeTest", "writingDirection"], in: summary), "vertical")
+        XCTAssertEqual(smokeSummaryString(at: ["nativePagination", "state", "storedPageLength"], in: summary), "700.0")
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingDirectionOverride"], in: summary), "vertical")
+        XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "vertical"], in: summary), true)
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingMode"], in: summary), "vertical-rl")
+        assertJumpProbe(summary)
+        assertProgressJumpProbe(summary)
+        assertNativePaginationState(summary)
+        assertRuntimePaginationProbe(summary)
+        assertPaginationToggleProbe(summary)
+        assertResizeProbe(summary)
+        assertUserFacingPageUI(summary)
+        assertLayoutLooksSane(summary)
+    }
+
+    func testHarnessSmokePassesHorizontalRTLEPUB() throws {
+        let fixtureDirectoryURL = try makeFixtureDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: fixtureDirectoryURL)
+        }
+
+        let epubURL = try makeMinimalEPUB(
+            at: fixtureDirectoryURL,
+            languageCode: "ar",
+            creator: "نجيب محفوظ",
+            title: "اختبار القارئ",
+            bodyDirection: "rtl",
+            chapterTitles: ("الفصل الأول", "الفصل الثاني"),
+            chapterParagraphs: (
+                [
+                    "في مساء هادئ جلس القارئ يتابع السطور الأولى في صفحة تمتد من اليمين إلى اليسار.",
+                    "كان الهدف من هذا الملف التجريبي أن يثبت أن مسار العرض نفسه يحافظ على الاتجاه الدلالي الصحيح."
+                ],
+                [
+                    "ثم انتقل إلى الفصل التالي ليتأكد من أن التنقل والتقدّم يعكسان ترتيب الصفحات المتوقع.",
+                    "كما يجب أن تبقى إعادة تطبيق الترقيم على المضيف نفسه من دون إعادة تركيب شجرة العرض."
+                ]
+            )
+        )
+        let smokeResult = try runHarnessSmoke(
+            arguments: [
+                "--smoke-test",
+                "--smoke-timeout=24",
+                epubURL.path,
+            ]
+        )
+        let summary = try extractSmokeSummary(from: smokeResult.combinedOutput)
+        assertPassingSmokeResult(smokeResult, summary: summary)
+        XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "rtl"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "vertical"], in: summary), false)
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingMode"], in: summary), "horizontal-rtl")
+        assertJumpProbe(summary)
+        assertProgressJumpProbe(summary)
+        assertNativePaginationState(summary)
+        assertRuntimePaginationProbe(summary)
+        assertPaginationToggleProbe(summary)
+        assertResizeProbe(summary)
+        assertUserFacingPageUI(summary)
+        assertLayoutLooksSane(summary)
+    }
+
+    private func makeFixtureDirectory() throws -> URL {
+        let fixtureDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EbookRendererHarnessSmoke-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: fixtureDirectoryURL, withIntermediateDirectories: true)
+        return fixtureDirectoryURL
+    }
+
+    private func runHarnessSmoke(arguments: [String]) throws -> ProcessResult {
+        let packageRootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let harnessURL = packageRootURL
+            .appendingPathComponent(".build", isDirectory: true)
+            .appendingPathComponent("arm64-apple-macosx", isDirectory: true)
+            .appendingPathComponent("debug", isDirectory: true)
+            .appendingPathComponent("EbookRendererHarness")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: harnessURL.path), harnessURL.path)
+
+        return try runProcess(
+            executableURL: harnessURL,
+            arguments: arguments,
+            currentDirectoryURL: packageRootURL,
+            timeout: 90
+        )
+    }
+
+    private func assertPassingSmokeResult(_ smokeResult: ProcessResult, summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeResult.exitCode, 0, smokeResult.combinedOutput)
+        XCTAssertTrue(smokeResult.combinedOutput.contains("smoke.pass: all smoke gates passed"), smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["overallSuccess"], in: summary), true, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["gates", "gate1SameDocumentMount"], in: summary), true, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["gates", "gate2NativePaginationReadback"], in: summary), true, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["gates", "gate3NavigationFacade"], in: summary), true, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["gates", "gate4AppFacingContract"], in: summary), true, smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "ebookViewerInitialized"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "ebookViewerLoaded"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "updateCurrentContentPage"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "updateReadingProgress"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "ebookNavigationVisibility"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "iframeCount"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "hasSectionLayoutController"], in: summary), true, smokeResult.combinedOutput)
+        XCTAssertNotEqual(smokeSummaryString(at: ["jsProbe", "contentURL"], in: summary), "", smokeResult.combinedOutput)
+    }
+
+    private func assertRuntimePaginationProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["runtimePaginationProbe", "gapChanged"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["runtimePaginationProbe", "sameMountedHost"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["runtimePaginationProbe", "sameAppliedHost"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["runtimePaginationProbe", "appliedToMountedHost"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["runtimePaginationProbe", "pageCountStable"], in: summary), true)
+        XCTAssertGreaterThan(smokeSummaryNumber(at: ["runtimePaginationProbe", "requestedGap"], in: summary) ?? 0, 24)
+        XCTAssertNotEqual(smokeSummaryString(at: ["runtimePaginationProbe", "before", "mountedHostIdentifier"], in: summary), "nil")
+        XCTAssertEqual(
+            smokeSummaryString(at: ["runtimePaginationProbe", "before", "mountedHostIdentifier"], in: summary),
+            smokeSummaryString(at: ["runtimePaginationProbe", "after", "mountedHostIdentifier"], in: summary)
+        )
+    }
+
+    private func assertNavigationProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["navigationProbe", "nextAdvanced"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["navigationProbe", "prevReturned"], in: summary), true)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["navigationProbe", "updateCurrentContentPageDelta"], in: summary), 1)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["navigationProbe", "updateReadingProgressDelta"], in: summary), 1)
+    }
+
+    private func assertJumpProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["jumpProbe", "chapter2Reached"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["jumpProbe", "chapter1Returned"], in: summary), true)
+        XCTAssertEqual(smokeSummaryString(at: ["jumpProbe", "chapter2Target"], in: summary), "OEBPS/chapter2.xhtml")
+        XCTAssertEqual(smokeSummaryString(at: ["jumpProbe", "chapter1Target"], in: summary), "OEBPS/chapter1.xhtml")
+    }
+
+    private func assertProgressJumpProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["progressJumpProbe", "endReached"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["progressJumpProbe", "startReturned"], in: summary), true)
+        XCTAssertEqual(smokeSummaryNumber(at: ["progressJumpProbe", "jumpToEndFraction"], in: summary), 1)
+        XCTAssertEqual(smokeSummaryNumber(at: ["progressJumpProbe", "jumpToStartFraction"], in: summary), 0)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["progressJumpProbe", "updateCurrentContentPageDelta"], in: summary), 1)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["progressJumpProbe", "updateReadingProgressDelta"], in: summary), 1)
+    }
+
+    private func assertPaginationToggleProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["paginationToggleProbe", "disabledApplied"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["paginationToggleProbe", "restoredApplied"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["paginationToggleProbe", "sameMountedHostAcrossToggle"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["paginationToggleProbe", "sameAppliedHostAcrossToggle"], in: summary), true)
+        XCTAssertEqual(
+            smokeSummaryString(at: ["paginationToggleProbe", "before", "mountedHostIdentifier"], in: summary),
+            smokeSummaryString(at: ["paginationToggleProbe", "restored", "mountedHostIdentifier"], in: summary)
+        )
+    }
+
+    private func assertResizeProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryString(at: ["resizeProbe", "afterPreset"], in: summary), "macBook")
+        XCTAssertEqual(smokeSummaryInt(at: ["resizeProbe", "after", "shellMetrics", "innerWidth"], in: summary), 1280)
+        XCTAssertEqual(smokeSummaryInt(at: ["resizeProbe", "after", "shellMetrics", "innerHeight"], in: summary), 900)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "sameMountedHost"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "sameAppliedHost"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "pageCountPositive"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "layoutSizeApplied"], in: summary), true)
+        XCTAssertEqual(
+            smokeSummaryString(at: ["resizeProbe", "beforeState", "mountedHostIdentifier"], in: summary),
+            smokeSummaryString(at: ["resizeProbe", "afterState", "mountedHostIdentifier"], in: summary)
+        )
+    }
+
+    private func assertLayoutLooksSane(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "innerWidth"], in: summary), 1180)
+        XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "innerHeight"], in: summary), 820)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetWidth"], in: summary), 900)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetHeight"], in: summary), 600)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "offsetWidth"], in: summary), 900)
+        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "offsetHeight"], in: summary), 600)
+        XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "navBarMetrics", "offsetHeight"], in: summary), 63)
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "shellMetrics", "navBarMetrics", "computedHeight"], in: summary), "63px")
+        XCTAssertGreaterThanOrEqual(
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetWidth"], in: summary),
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "offsetWidth"], in: summary)
+        )
+        XCTAssertGreaterThanOrEqual(
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetHeight"], in: summary),
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "offsetHeight"], in: summary)
+        )
+        XCTAssertGreaterThanOrEqual(
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerContentMetrics", "offsetHeight"], in: summary),
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetHeight"], in: summary)
+        )
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "computedDisplay"], in: summary), "block")
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "computedPosition"], in: summary), "absolute")
+    }
+
+    private func assertUserFacingPageUI(_ summary: [String: Any], line: UInt = #line) {
+        let primaryLabel = smokeSummaryString(at: ["jsProbe", "userFacingPageUI", "primaryLabelFull"], in: summary) ?? ""
+        let compactLabel = smokeSummaryString(at: ["jsProbe", "userFacingPageUI", "primaryLabelCompact"], in: summary) ?? ""
+        let progressSliderTitle = smokeSummaryString(at: ["jsProbe", "userFacingPageUI", "progressSliderTitle"], in: summary) ?? ""
+
+        XCTAssertFalse(primaryLabel.localizedCaseInsensitiveContains("loc"), primaryLabel)
+        XCTAssertFalse(compactLabel.localizedCaseInsensitiveContains("loc"), compactLabel)
+        XCTAssertFalse(progressSliderTitle.localizedCaseInsensitiveContains("loc"), progressSliderTitle)
+        XCTAssertTrue(primaryLabel.isEmpty || primaryLabel.localizedCaseInsensitiveContains("page"), primaryLabel)
+        XCTAssertTrue(compactLabel.isEmpty || compactLabel.localizedCaseInsensitiveContains("page"), compactLabel)
+        XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "userFacingPageUI", "jumpUnitSelectPresent"], in: summary), false)
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "userFacingPageUI", "jumpInputMin"], in: summary), "0")
+        XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "userFacingPageUI", "jumpInputMax"], in: summary), "100")
+    }
+
+    private func assertNativePaginationState(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertNotEqual(smokeSummaryString(at: ["nativePagination", "state", "mountedHostIdentifier"], in: summary), "nil")
+        XCTAssertNotEqual(smokeSummaryString(at: ["nativePagination", "state", "appliedHostIdentifier"], in: summary), "nil")
+        XCTAssertEqual(smokeSummaryString(at: ["nativePagination", "state", "mountedHostIdentifier"], in: summary), smokeSummaryString(at: ["nativePagination", "state", "appliedHostIdentifier"], in: summary))
+        XCTAssertEqual(smokeSummaryString(at: ["nativePagination", "state", "isAppliedToMountedHost"], in: summary), "true")
+        XCTAssertNotEqual(smokeSummaryString(at: ["nativePagination", "state", "pageCount"], in: summary), "nil")
+        XCTAssertNotEqual(smokeSummaryString(at: ["nativePagination", "state", "lastApplyReason"], in: summary), "nil")
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["nativePagination", "initialPageCount"], in: summary), 0)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["nativePagination", "stablePageCount"], in: summary), 0)
+    }
+
+    private func makeMinimalEPUB(
+        at rootURL: URL,
+        verticalWriting: Bool = false,
+        languageCode: String = "ja",
+        creator: String = "芥川龍之介",
+        title: String = "羅生門 テスト",
+        bodyDirection: String? = nil,
+        chapterTitles: (String, String) = ("第一章", "第二章"),
+        chapterParagraphs: ([String], [String]) = (
+            [
+                "ある日の暮方の事である。ひとりの下人が、羅生門の下で雨やみを待っていた。",
+                "広い門の下には、この男のほかに誰もいない。ただ、所々丹塗の剥げた、大きな円柱に、蟋蟀が一匹とまっている。"
+            ],
+            [
+                "下人は、七段ある石段のいちばん上の段に洗いざらした紺の襖の尻を据えて、右の頬に出来た、大きな面皰を気にしながら、ぼんやり、雨の降るのを眺めていた。",
+                "作者はさっき、「下人が雨やみを待っていた」と書いた。しかし下人は、雨がやんでも、格別どうしようという当てはない。"
+            ]
+        )
+    ) throws -> URL {
+        let metaInfURL = rootURL.appendingPathComponent("META-INF", isDirectory: true)
+        let oebpsURL = rootURL.appendingPathComponent("OEBPS", isDirectory: true)
+        try FileManager.default.createDirectory(at: metaInfURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: oebpsURL, withIntermediateDirectories: true)
+
+        try "application/epub+zip".write(to: rootURL.appendingPathComponent("mimetype"), atomically: true, encoding: .utf8)
+
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles>
+            <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.write(
+            to: metaInfURL.appendingPathComponent("container.xml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="book-id">
+          <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier id="book-id">urn:uuid:4b8bf82b-3c4f-4db4-96c8-7d3568fa0f77</dc:identifier>
+            <dc:title>\(title)</dc:title>
+            <dc:language>\(languageCode)</dc:language>
+            <dc:creator>\(creator)</dc:creator>
+          </metadata>
+          <manifest>
+            <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+            <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+            <item id="chapter2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+          </manifest>
+          <spine>
+            <itemref idref="chapter1"/>
+            <itemref idref="chapter2"/>
+          </spine>
+        </package>
+        """.write(
+            to: oebpsURL.appendingPathComponent("content.opf"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE html>
+        <html xmlns="http://www.w3.org/1999/xhtml" lang="\(languageCode)">
+          <head><title>目次</title></head>
+          <body\(bodyDirection.map { #" dir="\#($0)""# } ?? "")>
+            <nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops">
+              <ol>
+                <li><a href="chapter1.xhtml">\(chapterTitles.0)</a></li>
+                <li><a href="chapter2.xhtml">\(chapterTitles.1)</a></li>
+              </ol>
+            </nav>
+          </body>
+        </html>
+        """.write(
+            to: oebpsURL.appendingPathComponent("nav.xhtml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try chapterHTML(
+            title: chapterTitles.0,
+            paragraphs: chapterParagraphs.0,
+            verticalWriting: verticalWriting,
+            languageCode: languageCode,
+            bodyDirection: bodyDirection
+        ).write(
+            to: oebpsURL.appendingPathComponent("chapter1.xhtml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try chapterHTML(
+            title: chapterTitles.1,
+            paragraphs: chapterParagraphs.1,
+            verticalWriting: verticalWriting,
+            languageCode: languageCode,
+            bodyDirection: bodyDirection
+        ).write(
+            to: oebpsURL.appendingPathComponent("chapter2.xhtml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let epubURL = rootURL.appendingPathComponent("generated-smoke.epub")
+        let storedMimetypeResult = try runProcess(
+            executableURL: URL(fileURLWithPath: "/usr/bin/zip"),
+            arguments: ["-X0", epubURL.path, "mimetype"],
+            currentDirectoryURL: rootURL,
+            timeout: 30
+        )
+        XCTAssertEqual(storedMimetypeResult.exitCode, 0, storedMimetypeResult.combinedOutput)
+
+        let archiveResult = try runProcess(
+            executableURL: URL(fileURLWithPath: "/usr/bin/zip"),
+            arguments: ["-Xr9D", epubURL.path, "META-INF", "OEBPS"],
+            currentDirectoryURL: rootURL,
+            timeout: 30
+        )
+        XCTAssertEqual(archiveResult.exitCode, 0, archiveResult.combinedOutput)
+
+        return epubURL
+    }
+
+    private func chapterHTML(
+        title: String,
+        paragraphs: [String],
+        verticalWriting: Bool,
+        languageCode: String,
+        bodyDirection: String?
+    ) -> String {
+        let body = paragraphs.map { "<p>\($0)</p>" }.joined(separator: "\n")
+        let styleBlock = verticalWriting
+            ? """
+              <style>
+                html, body, section {
+                  writing-mode: vertical-rl;
+                  -epub-writing-mode: vertical-rl;
+                }
+                body {
+                  line-height: 1.8;
+                }
+              </style>
+              """
+            : ""
+        let dirAttribute = bodyDirection.map { #" dir="\#($0)""# } ?? ""
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE html>
+        <html xmlns="http://www.w3.org/1999/xhtml" lang="\(languageCode)">
+          <head>
+            <title>\(title)</title>
+            <meta charset="utf-8" />
+            \(styleBlock)
+          </head>
+          <body\(dirAttribute)>
+            <section>
+              <h1>\(title)</h1>
+              \(body)
+            </section>
+          </body>
+        </html>
+        """
+    }
+
+    private func assertOutputContains(_ pattern: String, in output: String, line: UInt = #line) {
+        let regex = try? NSRegularExpression(pattern: pattern)
+        let range = NSRange(output.startIndex..<output.endIndex, in: output)
+        let matchFound = regex?.firstMatch(in: output, range: range) != nil
+        XCTAssertTrue(matchFound, "Missing pattern: \(pattern)\n\(output)", line: line)
+    }
+
+    private func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL,
+        timeout: TimeInterval
+    ) throws -> ProcessResult {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectoryURL
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        let lock = NSLock()
+        var capturedData = Data()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            lock.lock()
+            capturedData.append(chunk)
+            lock.unlock()
+        }
+
+        let completion = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            completion.signal()
+        }
+
+        try process.run()
+        if completion.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            XCTFail("Timed out running \(executableURL.lastPathComponent) \(arguments.joined(separator: " "))")
+            throw NSError(domain: "EbookRendererHarnessSmokeTests", code: 1)
+        }
+
+        pipe.fileHandleForReading.readabilityHandler = nil
+        let trailingData = pipe.fileHandleForReading.readDataToEndOfFile()
+        if !trailingData.isEmpty {
+            lock.lock()
+            capturedData.append(trailingData)
+            lock.unlock()
+        }
+        lock.lock()
+        let output = String(decoding: capturedData, as: UTF8.self)
+        lock.unlock()
+        return ProcessResult(exitCode: Int(process.terminationStatus), combinedOutput: output)
+    }
+}
+
+private struct ProcessResult {
+    let exitCode: Int
+    let combinedOutput: String
+}

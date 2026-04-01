@@ -209,8 +209,82 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         }
     }
 
-    lazy var webViewMessageHandlers = {
-        WebViewMessageHandlers([
+    private func handleAdblockStatsMessage(_ message: WebViewMessage) async {
+        guard let statsModel = contentBlockingStatsModel else { return }
+        guard AdblockStatsUserScript.isValidMessageBody(message.body) else { return }
+        guard let candidates = AdblockStatsModel.candidates(from: message.body) else {
+            return
+        }
+        let mainDocumentURL = message.mainDocumentURL
+        let pageURL = mainDocumentURL ?? message.requestURL
+        await statsModel.handleCandidates(
+            candidates,
+            pageURL: pageURL,
+            isContentBlockingEnabled: contentBlockingEnabled
+        )
+    }
+
+    private func handleTrackingSizeCacheMessage(_ message: WebViewMessage) async {
+        guard let body = message.body as? [String: Any],
+              let command = body["command"] as? String,
+              let key = body["key"] as? String else { return }
+
+        let bucketKey = makeBucketKey(from: key)
+
+        switch command {
+        case "set":
+            guard let entries = body["entries"] as? [[String: Any]] else { return }
+            let decoded: [ReaderSizeTrackingCacheEntry] = entries.compactMap { dict in
+                guard let id = dict["id"] as? String,
+                      let inlineSize = dict["inlineSize"] as? Double,
+                      let blockSize = dict["blockSize"] as? Double else { return nil }
+                let blockStart = dict["blockStart"] as? Double
+                return ReaderSizeTrackingCacheEntry(id: id, inlineSize: inlineSize, blockSize: blockSize, blockStart: blockStart)
+            }
+            var bucket = trackingSizeCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
+            let snapshot = ReaderSizeTrackingCacheSnapshot(
+                cacheKey: key,
+                savedAt: Date(),
+                reason: body["reason"] as? String,
+                entries: decoded
+            )
+            bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
+            trackingSizeCache.setValue(bucket, forKey: bucketKey)
+            debugPrint("# READER trackingSizeCache set",
+                       "bucket=\(bucketKey.prefix(72))…",
+                       "cacheKey=\(key.prefix(72))…",
+                       "entries=\(decoded.count)",
+                       "snapshots=\(bucket.snapshots.count)",
+                       "reason=\(snapshot.reason ?? "<nil>")")
+        case "get":
+            guard let requestId = body["requestId"] as? String else { return }
+            guard let bucket = trackingSizeCache.value(forKey: bucketKey),
+                  let cached = bucket.snapshot(for: key)?.entries else {
+                _ = try? await scriptCaller.evaluateJavaScript("window.manabiResolveTrackingSizeCache(\"\(requestId)\", null)", in: message.frameInfo)
+                debugPrint("# READER trackingSizeCache miss", "key=\(key.prefix(72))…")
+                return
+            }
+
+            do {
+                let data = try JSONEncoder().encode(cached)
+                guard let json = String(data: data, encoding: .utf8) else { return }
+                let js = "window.manabiResolveTrackingSizeCache(\"\(requestId)\", \(json))"
+                _ = try? await scriptCaller.evaluateJavaScript(js, in: message.frameInfo)
+                debugPrint("# READER trackingSizeCache hit",
+                           "bucket=\(bucketKey.prefix(72))…",
+                           "cacheKey=\(key.prefix(72))…",
+                           "entries=\(cached.count)",
+                           "snapshots=\(bucket.snapshots.count)")
+            } catch {
+                // ignore encoding errors
+            }
+        default:
+            break
+        }
+    }
+
+    lazy var webViewMessageHandlers: WebViewMessageHandlers = {
+        let handlers: [(String, @Sendable (WebViewMessage) async -> Void)] = [
             ("readerConsoleLog", { [weak self] message in
                 guard let self else { return }
                 guard let result = ConsoleLogMessage(fromMessage: message) else {
@@ -218,7 +292,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 // Filter error logging based on URL
-                let mainDocumentURL = message.frameInfo.request.mainDocumentURL
+                let mainDocumentURL = message.mainDocumentURL
                 if let mainDocumentURL {
                     guard mainDocumentURL.isEBookURL || mainDocumentURL.scheme == "blob" || mainDocumentURL.isFileURL || mainDocumentURL.isReaderFileURL || mainDocumentURL.isSnippetURL else { return }
                 }
@@ -282,94 +356,19 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(logMessage, components.joined(separator: " "))
                 }
             }),
-            (AdblockStatsUserScript.handlerName, { [weak self] message in
-                guard let self else { return }
-                Task { @MainActor in
-                    guard let statsModel = self.contentBlockingStatsModel else { return }
-                    guard AdblockStatsUserScript.isValidMessageBody(message.body) else { return }
-                    guard let candidates = AdblockStatsModel.candidates(from: message.body) else {
-                        return
-                    }
-                    let mainDocumentURL = message.frameInfo.request.mainDocumentURL
-                    let pageURL = mainDocumentURL ?? message.frameInfo.request.url
-                    await statsModel.handleCandidates(
-                        candidates,
-                        pageURL: pageURL,
-                        isContentBlockingEnabled: self.contentBlockingEnabled
-                    )
-                }
+            (AdblockStatsUserScript.handlerName, { @Sendable [weak self] message in
+                await self?.handleAdblockStatsMessage(message)
             }),
             ("trackingBookKey", { [weak self] message in
                 guard let body = message.body as? [String: Any],
                       let bookKey = body["bookKey"] as? String else { return }
                 Task { @MainActor in
-                    try? await self?.scriptCaller.evaluateJavaScript("window.paginationTrackingBookKey = '" + bookKey + "';", in: message.frameInfo)
+                    _ = try? await self?.scriptCaller.evaluateJavaScript("window.paginationTrackingBookKey = '" + bookKey + "';", in: message.frameInfo)
                     debugPrint("# READER paginationBookKey.set", "key=\(bookKey.prefix(72))…")
                 }
             }),
             ("trackingSizeCache", { [weak self] message in
-                guard let self else { return }
-                guard let body = message.body as? [String: Any],
-                      let command = body["command"] as? String,
-                      let key = body["key"] as? String else { return }
-
-                let bucketKey = makeBucketKey(from: key)
-
-                switch command {
-                case "set":
-                    if let entries = body["entries"] as? [[String: Any]] {
-                        let decoded: [ReaderSizeTrackingCacheEntry] = entries.compactMap { dict in
-                            guard let id = dict["id"] as? String,
-                                  let inlineSize = dict["inlineSize"] as? Double,
-                                  let blockSize = dict["blockSize"] as? Double else { return nil }
-                            let blockStart = dict["blockStart"] as? Double
-                            return ReaderSizeTrackingCacheEntry(id: id, inlineSize: inlineSize, blockSize: blockSize, blockStart: blockStart)
-                        }
-                        var bucket = trackingSizeCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
-                        let snapshot = ReaderSizeTrackingCacheSnapshot(
-                            cacheKey: key,
-                            savedAt: Date(),
-                            reason: body["reason"] as? String,
-                            entries: decoded
-                        )
-                        bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
-                        trackingSizeCache.setValue(bucket, forKey: bucketKey)
-                        debugPrint("# READER trackingSizeCache set",
-                                   "bucket=\(bucketKey.prefix(72))…",
-                                   "cacheKey=\(key.prefix(72))…",
-                                   "entries=\(decoded.count)",
-                                   "snapshots=\(bucket.snapshots.count)",
-                                   "reason=\(snapshot.reason ?? "<nil>")")
-                    }
-                case "get":
-                    guard let requestId = body["requestId"] as? String else { return }
-                    if let bucket = trackingSizeCache.value(forKey: bucketKey),
-                       let cached = bucket.snapshot(for: key)?.entries {
-                        do {
-                            let data = try JSONEncoder().encode(cached)
-                            if let json = String(data: data, encoding: .utf8) {
-                                let js = "window.manabiResolveTrackingSizeCache(\"\(requestId)\", \(json))"
-                                Task { @MainActor in
-                                    try? await self.scriptCaller.evaluateJavaScript(js, in: message.frameInfo)
-                                }
-                            }
-                            debugPrint("# READER trackingSizeCache hit",
-                                       "bucket=\(bucketKey.prefix(72))…",
-                                       "cacheKey=\(key.prefix(72))…",
-                                       "entries=\(cached.count)",
-                                       "snapshots=\(bucket.snapshots.count)")
-                        } catch {
-                            // ignore encoding errors
-                        }
-                    } else {
-                        Task { @MainActor in
-                            try? await self.scriptCaller.evaluateJavaScript("window.manabiResolveTrackingSizeCache(\"\(requestId)\", null)", in: message.frameInfo)
-                        }
-                        debugPrint("# READER trackingSizeCache miss", "key=\(key.prefix(72))…")
-                    }
-                default:
-                    break
-                }
+                await self?.handleTrackingSizeCacheMessage(message)
             }),
             ("readerOnError", { [weak self] message in
                 guard let self else { return }
@@ -418,8 +417,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("readabilityFramePing", { @MainActor [weak self] message in
                 guard let self else { return }
                 let frameInfo = message.frameInfo
-                let frameRequestURL = frameInfo.request.url?.absoluteString ?? "<nil>"
-                let frameMainDocURL = frameInfo.request.mainDocumentURL?.absoluteString ?? "<nil>"
+                let frameRequestURL = message.requestURL?.absoluteString ?? "<nil>"
+                let frameMainDocURL = message.mainDocumentURL?.absoluteString ?? "<nil>"
                 let frameSecurityOrigin = String(describing: frameInfo.securityOrigin)
                 debugPrint(
                     "# READER readability.framePing.frameInfo",
@@ -427,10 +426,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "requestURL=\(frameRequestURL)",
                     "mainDocumentURL=\(frameMainDocURL)",
                     "securityOrigin=\(frameSecurityOrigin)",
-                    "isMain=\(frameInfo.isMainFrame)"
+                    "isMain=\(message.isMainFrame)"
                 )
                 guard let uuid = (message.body as? [String: String])?["uuid"], let windowURLRaw = (message.body as? [String: String])?["windowURL"] as? String, let windowURL = URL(string: windowURLRaw) else {
-                    debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
+                    debugPrint("Unexpectedly received readableFramePing message without valid parameters", (message.body as? [String: String]) as Any)
                     return
                 }
                 let canonicalWindowURL = ReaderContentLoader.getContentURL(fromLoaderURL: windowURL) ?? windowURL
@@ -439,11 +438,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "uuid=\(uuid)",
                     "windowURL=\(windowURL.absoluteString)",
                     "canonicalURL=\(canonicalWindowURL.absoluteString)",
-                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")",
-                    "isMain=\(message.frameInfo.isMainFrame)"
+                    "frameURL=\(message.requestURL?.absoluteString ?? "<nil>")",
+                    "isMain=\(message.isMainFrame)"
                 )
                 guard !canonicalWindowURL.isNativeReaderView, let content = try? await ReaderViewModel.getContent(forURL: canonicalWindowURL) else { return }
-                if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid, canonicalURL: canonicalWindowURL) {
+                if readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid, canonicalURL: canonicalWindowURL) {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
                 if readerModeViewModel.readabilityContainerFrameInfo == nil {
@@ -453,7 +452,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("readerBootstrapPing", { @MainActor [weak self] message in
                 guard let self else { return }
                 let frameInfo = message.frameInfo
-                let frameURL = frameInfo.request.url
+                let frameURL = message.requestURL
                 let body = message.body as? [String: Any]
                 let href = body?["href"] as? String ?? "<nil>"
                 let readyState = body?["readyState"] as? String ?? "<nil>"
@@ -462,15 +461,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "href=\(href)",
                     "readyState=\(readyState)",
                     "frameURL=\(frameURL?.absoluteString ?? "<nil>")",
-                    "isMain=\(frameInfo.isMainFrame)"
+                    "isMain=\(message.isMainFrame)"
                 )
                 // Try to seed the frame registry early.
                 if let url = frameURL {
                     let canonicalHref = URL(string: href).flatMap { ReaderContentLoader.getContentURL(fromLoaderURL: $0) ?? $0 }
                     let bootstrapKey = canonicalHref?.absoluteString ?? url.absoluteString
-                    _ = await readerViewModel.scriptCaller.addMultiTargetFrame(frameInfo, uuid: "bootstrap-\(bootstrapKey)", canonicalURL: canonicalHref)
+                    _ = readerViewModel.scriptCaller.addMultiTargetFrame(frameInfo, uuid: "bootstrap-\(bootstrapKey)", canonicalURL: canonicalHref)
                     let pageMatches = canonicalHref.map { urlsMatchWithoutHash($0, self.readerViewModel.state.pageURL) || (self.readerModeViewModel.isReaderModeLoadPending(for: $0)) } ?? false
-                    if frameInfo.isMainFrame && pageMatches {
+                    if message.isMainFrame && pageMatches {
                         // Always refresh to the latest main-frame WKFrameInfo for this page; older instances become invalid after nav.
                         readerModeViewModel.readabilityContainerFrameInfo = frameInfo
                     } else if readerModeViewModel.readabilityContainerFrameInfo == nil {
@@ -523,7 +522,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "# READERMODE readabilityUnavailable",
                     "windowURL=\(rawURL.absoluteString)",
                     "contentURL=\(resolvedURL.absoluteString)",
-                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "frameIsMain=\(message.isMainFrame)",
                     "isSnippet=\(isSnippetURL)",
                     "readerAvailable=\(content.isReaderModeAvailable)",
                     "readerDefault=\(content.isReaderModeByDefault)",
@@ -533,7 +532,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "# READERRELOAD readabilityUnavailable",
                     "windowURL=\(rawURL.absoluteString)",
                     "resolved=\(resolvedURL.absoluteString)",
-                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "frameIsMain=\(message.isMainFrame)",
                     "readerDefault=\(content.isReaderModeByDefault)",
                     "isReaderMode=\(readerModeViewModel.isReaderMode)",
                     "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
@@ -544,17 +543,17 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(
                         "# READER snippet.readabilityParsed",
                         "pageURL=\(resolvedURL.absoluteString)",
-                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                        "frameIsMain=\(message.isMainFrame)"
                     )
                 }
-                if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
+                if !message.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
                     return
                 }
                 guard !resolvedURL.isReaderURLLoaderURL else { return }
                 let pendingMatches = readerModeViewModel.pendingReaderModeURL?.matchesReaderURL(resolvedURL) == true
                 let expectedMatches = readerModeViewModel.expectedSyntheticReaderLoaderURL?.matchesReaderURL(resolvedURL) == true
-                if message.frameInfo.isMainFrame,
+                if message.isMainFrame,
                    (readerModeViewModel.isReaderModeLoading || pendingMatches || expectedMatches) {
                     debugPrint(
                         "# READERRELOAD readabilityUnavailable.skip",
@@ -639,8 +638,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             ("readabilityParsed", { @MainActor [weak self] message in
                 guard let self else { return }
                 let frameInfo = message.frameInfo
-                let frameRequestURL = frameInfo.request.url?.absoluteString ?? "<nil>"
-                let frameMainDocURL = frameInfo.request.mainDocumentURL?.absoluteString ?? "<nil>"
+                let frameRequestURL = message.requestURL?.absoluteString ?? "<nil>"
+                let frameMainDocURL = message.mainDocumentURL?.absoluteString ?? "<nil>"
                 let frameSecurityOrigin = String(describing: frameInfo.securityOrigin)
                 debugPrint(
                     "# READER readability.parsed.frameInfo",
@@ -648,7 +647,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "requestURL=\(frameRequestURL)",
                     "mainDocumentURL=\(frameMainDocURL)",
                     "securityOrigin=\(frameSecurityOrigin)",
-                    "isMain=\(frameInfo.isMainFrame)"
+                    "isMain=\(message.isMainFrame)"
                 )
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
@@ -696,7 +695,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "# READERMODE readabilityParsed",
                     "windowURL=\(rawWindowURL.absoluteString)",
                     "contentURL=\(resolvedURL.absoluteString)",
-                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "frameIsMain=\(message.isMainFrame)",
                     "isSnippet=\(isSnippetURL)",
                     "outputBytes=\(outputHTML.utf8.count)",
                     "readerAvailable=\(content.isReaderModeAvailable)",
@@ -709,7 +708,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     "# READERRELOAD readabilityParsed",
                     "contentURL=\(resolvedURL.absoluteString)",
                     "outputBytes=\(outputHTML.utf8.count)",
-                    "frameIsMain=\(message.frameInfo.isMainFrame)",
+                    "frameIsMain=\(message.isMainFrame)",
                     "readerDefault=\(content.isReaderModeByDefault)",
                     "isReaderMode=\(readerModeViewModel.isReaderMode)",
                     "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
@@ -721,7 +720,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "# READER snippet.readabilityParsed",
                         "windowURL=\(rawWindowURL.absoluteString)",
                         "contentURL=\(resolvedURL.absoluteString)",
-                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                        "frameIsMain=\(message.isMainFrame)"
                     )
                     debugPrint(
                         "# READER snippet.readabilityHTML",
@@ -745,7 +744,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         "body=\(bodySummary)"
                     )
                 }
-                if !message.frameInfo.isMainFrame,
+                if !message.isMainFrame,
                    readerModeViewModel.readabilityContent != nil,
                    readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
                     // Don't override a parent window readability result.
@@ -885,7 +884,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "snippet=false"
                         )
                         await logReaderDatasetState(stage: "readabilityParsed.shortCircuit.preUpdate", url: resolvedURL, frameInfo: message.frameInfo)
-                        try? await scriptCaller.evaluateJavaScript("""
+                        _ = try? await scriptCaller.evaluateJavaScript("""
                             if (document.body) {
                                 document.body.dataset.manabiReaderModeAvailable = 'false';
                                 document.body.dataset.manabiReaderModeAvailableFor = '';
@@ -941,16 +940,16 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint(
                         "# FLASH readability.parsed",
                         "contentURL=\(flashURLDescription(resolvedURL))",
-                        "frameURL=\(flashURLDescription(message.frameInfo.request.url))",
+                        "frameURL=\(flashURLDescription(message.requestURL))",
                         "outputBytes=\(outputHTML.utf8.count)",
-                        "frameIsMain=\(message.frameInfo.isMainFrame)"
+                        "frameIsMain=\(message.isMainFrame)"
                     )
                 debugPrint(
                     "# READER readabilityParsed.dispatch",
                     "contentURL=\(resolvedURL.absoluteString)",
-                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")",
+                    "frameURL=\(message.requestURL?.absoluteString ?? "<nil>")",
                     "outputBytes=\(outputHTML.utf8.count)",
-                    "frameIsMain=\(message.frameInfo.isMainFrame)"
+                    "frameIsMain=\(message.isMainFrame)"
                 )
                 if isSnippetURL {
                     debugPrint(
@@ -977,13 +976,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                             "# FLASH readability.showReaderView.dispatch",
                             "contentURL=\(flashURLDescription(resolvedURL))",
                             "outputBytes=\(outputHTML.utf8.count)",
-                            "frameIsMain=\(message.frameInfo.isMainFrame)"
+                            "frameIsMain=\(message.isMainFrame)"
                         )
                         debugPrint(
                             "# READERRELOAD showReaderView.dispatch",
                             "contentURL=\(resolvedURL.absoluteString)",
                             "outputBytes=\(outputHTML.utf8.count)",
-                            "frameIsMain=\(message.frameInfo.isMainFrame)"
+                            "frameIsMain=\(message.isMainFrame)"
                         )
                         readerModeViewModel.showReaderView(
                             readerContent: readerContent,
@@ -991,7 +990,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         )
                     }
                 } else if outputHTML.lazy.filter({ String($0).hasKanji || String($0).hasKana }).prefix(51).count > 50 {
-                    try? await scriptCaller.evaluateJavaScript("""
+                    _ = try? await scriptCaller.evaluateJavaScript("""
                         if (document.body) {
                             document.body.dataset.manabiReaderModeAvailableConfidently = 'true';
                         }
@@ -1111,7 +1110,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     print(error)
                 }
             })
-        ])
+        ]
+        return WebViewMessageHandlers(handlers)
     }()
     
     private func trimmedDatasetSummary(_ summary: String) -> String {
@@ -1426,8 +1426,8 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             .task(id: readerContent.pageURL) {
                 await pushHideNavigationStateToWebView()
             }
-            .onChange(of: contentBlockingEnabled) { isEnabled in
-                readerMessageHandlers?.contentBlockingEnabled = isEnabled
+            .task(id: contentBlockingEnabled) {
+                readerMessageHandlers?.contentBlockingEnabled = contentBlockingEnabled
             }
     }
 }

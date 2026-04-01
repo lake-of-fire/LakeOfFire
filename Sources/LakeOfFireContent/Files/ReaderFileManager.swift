@@ -445,7 +445,7 @@ public class ReaderFileManager: ObservableObject {
                             // TODO: Return pks instead of threadsafereferences (faster)
                             if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
                                 try Task.checkCancellation()
-                                if setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive) {
+                                if self.setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive) {
                                     updatedFiles.append(existing)
                                 }
                                 allFileRefs.append(ThreadSafeReference(to: existing))
@@ -454,7 +454,7 @@ public class ReaderFileManager: ObservableObject {
                                 let contentFile = ContentFile()
                                 contentFile.url = readerFileURL
                                 try Task.checkCancellation()
-                                if setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
+                                if self.setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
                                     contentFile.updateCompoundKey()
                                     let format = ReaderContentLoader.detectFileFormat(mimeType: contentFile.mimeType, pathExtension: readerFileURL.pathExtension)
                                     contentFile.isReaderModeByDefault = format == .html || format == .markdown || format == .plainText

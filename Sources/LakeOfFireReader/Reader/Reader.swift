@@ -63,27 +63,31 @@ fileprivate struct ThemeModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .onChange(of: lightModeTheme) { newValue in
-                Task { @MainActor in
+            .task(id: lightModeTheme) { @MainActor in
+                do {
                     try await scriptCaller.evaluateJavaScript("""
-                        if (document.body?.getAttribute('data-manabi-light-theme') !== '\(newValue)') {
-                            document.body?.setAttribute('data-manabi-light-theme', '\(newValue)');
+                        if (document.body?.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
+                            document.body?.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
                         }
                         """, duplicateInMultiTargetFrames: true)
-                    await updateTrackingSettingsKey(reason: "light-theme-change")
-                    await requestGeometryBake(reason: "light-theme-change")
+                } catch {
+                    print("Light theme update failed: \(error)")
                 }
+                await updateTrackingSettingsKey(reason: "light-theme-change")
+                await requestGeometryBake(reason: "light-theme-change")
             }
-            .onChange(of: darkModeTheme) { newValue in
-                Task { @MainActor in
+            .task(id: darkModeTheme) { @MainActor in
+                do {
                     try await scriptCaller.evaluateJavaScript("""
-                        if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(newValue)') {
-                            document.body?.setAttribute('data-manabi-dark-theme', '\(newValue)');
+                        if (document.body?.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
+                            document.body?.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
                         }
                         """, duplicateInMultiTargetFrames: true)
-                    await updateTrackingSettingsKey(reason: "dark-theme-change")
-                    await requestGeometryBake(reason: "dark-theme-change")
+                } catch {
+                    print("Dark theme update failed: \(error)")
                 }
+                await updateTrackingSettingsKey(reason: "dark-theme-change")
+                await requestGeometryBake(reason: "dark-theme-change")
             }
             .task { @MainActor in
                 await updateTrackingSettingsKey(reason: "initial")
@@ -91,11 +95,9 @@ fileprivate struct ThemeModifier: ViewModifier {
                     await applyFontSize(readerFontSize, reason: "font-size-initial")
                 }
             }
-            .onChange(of: readerFontSize) { newValue in
-                guard let newValue else { return }
-                Task { @MainActor in
-                    await applyFontSize(newValue, reason: "font-size-change")
-                }
+            .task(id: readerFontSize) { @MainActor in
+                guard let readerFontSize else { return }
+                await applyFontSize(readerFontSize, reason: "font-size-change")
             }
     }
 }
@@ -106,7 +108,8 @@ fileprivate struct PageMetadataModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .onChange(of: readerViewModel.state.pageImageURL) { pageImageURL in
+            .task(id: readerViewModel.state.pageImageURL) {
+                let pageImageURL = readerViewModel.state.pageImageURL
                 guard !readerContent.isReaderProvisionallyNavigating else { return }
                 guard let imageURL = pageImageURL,
                       let contentItem = readerContent.content,
@@ -123,9 +126,11 @@ fileprivate struct PageMetadataModifier: ViewModifier {
                     }
                 }
             }
-            .onChange(of: readerViewModel.state.pageTitle) { pageTitle in
-                Task { @MainActor in
-                    try await readerViewModel.pageMetadataUpdated(title: pageTitle)
+            .task(id: readerViewModel.state.pageTitle) { @MainActor in
+                do {
+                    try await readerViewModel.pageMetadataUpdated(title: readerViewModel.state.pageTitle)
+                } catch {
+                    print("Page metadata update failed: \(error)")
                 }
             }
     }
@@ -137,7 +142,8 @@ fileprivate struct ReaderStateChangeModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .onChange(of: readerViewModel.state) { state in
+            .task(id: readerViewModel.state) {
+                let state = readerViewModel.state
                 let shouldSyncProvisionalFlag: Bool
                 if state.isProvisionallyNavigating {
                     shouldSyncProvisionalFlag = true
@@ -162,11 +168,9 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
     
     func body(content: Content) -> some View {
         content
-            .onChange(of: readerMediaPlayerViewModel.audioURLs) { audioURLs in
-                Task { @MainActor in
-                    guard readerMediaPlayerViewModel.playbackSource == .recordedAudio else { return }
-                    readerMediaPlayerViewModel.isMediaPlayerPresented = !audioURLs.isEmpty
-                }
+            .task(id: readerMediaPlayerViewModel.audioURLs) { @MainActor in
+                guard readerMediaPlayerViewModel.playbackSource == .recordedAudio else { return }
+                readerMediaPlayerViewModel.isMediaPlayerPresented = !readerMediaPlayerViewModel.audioURLs.isEmpty
             }
     }
 }
@@ -385,6 +389,17 @@ public extension EnvironmentValues {
     }
 }
 
+private struct ReaderResolvedPaginationModeKey: EnvironmentKey {
+    static let defaultValue: WebViewPaginationMode? = nil
+}
+
+public extension EnvironmentValues {
+    var readerResolvedPaginationMode: WebViewPaginationMode? {
+        get { self[ReaderResolvedPaginationModeKey.self] }
+        set { self[ReaderResolvedPaginationModeKey.self] = newValue }
+    }
+}
+
 fileprivate struct ReaderPageTurnNavigationProbe {
     var hasView: Bool
     var hasRenderer: Bool
@@ -394,9 +409,19 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     var canBackward: Bool
     var hasSectionLayoutController: Bool
     var bookDirection: String?
+    var isRightToLeft: Bool
+    var isVertical: Bool
+    var isVerticalRightToLeft: Bool
+
+    var resolvedPaginationMode: WebViewPaginationMode {
+        if isVertical {
+            return isVerticalRightToLeft ? .rightToLeft : .leftToRight
+        }
+        return isRightToLeft ? .rightToLeft : .leftToRight
+    }
 
     var pageProgressionDirection: PageTurnPageProgressionDirection {
-        bookDirection?.lowercased() == "rtl" ? .rightToLeft : .leftToRight
+        resolvedPaginationMode == .rightToLeft ? .rightToLeft : .leftToRight
     }
 }
 
@@ -464,6 +489,7 @@ fileprivate struct ReaderPageTurnTurnEvent: Equatable {
 fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshotProvider, PageTurnTurnDriver, @unchecked Sendable {
     @Published private(set) var supportsActivePageTurn = false
     @Published private(set) var pageProgressionDirection: PageTurnPageProgressionDirection = .leftToRight
+    @Published private(set) var resolvedPaginationMode: WebViewPaginationMode = .leftToRight
     @Published private(set) var lastTurnEvent: ReaderPageTurnTurnEvent?
 
     private var navigator: WebViewNavigator?
@@ -493,6 +519,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             lastCapabilityKey = nil
             supportsActivePageTurn = false
             pageProgressionDirection = .leftToRight
+            resolvedPaginationMode = .leftToRight
             return
         }
 
@@ -516,6 +543,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             guard !Task.isCancelled else { return }
             supportsActivePageTurn = probe?.supportsActivePageTurn ?? false
             pageProgressionDirection = probe?.pageProgressionDirection ?? .leftToRight
+            resolvedPaginationMode = probe?.resolvedPaginationMode ?? .leftToRight
         }
     }
 
@@ -625,6 +653,12 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                   ?? globalThis.manabiEbookSectionLayoutController
                 ),
                 bookDirection: globalThis.reader?.book?.dir ?? view?.book?.dir ?? null,
+                isRightToLeft: !!(
+                  globalThis.manabiGetWritingDirectionSnapshot?.()?.rtl
+                  ?? ((globalThis.reader?.book?.dir ?? view?.book?.dir ?? '').toLowerCase() === 'rtl')
+                ),
+                isVertical: globalThis.manabiGetWritingDirectionSnapshot?.()?.vertical === true,
+                isVerticalRightToLeft: globalThis.manabiGetWritingDirectionSnapshot?.()?.verticalRTL === true,
               };
             })()
             """
@@ -639,7 +673,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             canForward: readerPageTurnBool(dictionary["canForward"]),
             canBackward: readerPageTurnBool(dictionary["canBackward"]),
             hasSectionLayoutController: readerPageTurnBool(dictionary["hasSectionLayoutController"]),
-            bookDirection: dictionary["bookDirection"] as? String
+            bookDirection: dictionary["bookDirection"] as? String,
+            isRightToLeft: readerPageTurnBool(dictionary["isRightToLeft"]),
+            isVertical: readerPageTurnBool(dictionary["isVertical"]),
+            isVerticalRightToLeft: readerPageTurnBool(dictionary["isVerticalRightToLeft"])
         )
     }
 
@@ -850,6 +887,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             layoutModel: layoutModel,
             style: readerPageTurnStyle()
         )
+        .environment(\.readerResolvedPaginationMode, bridge.resolvedPaginationMode)
         .task(id: bridgeRefreshKey) {
             bridge.updateContext(
                 navigator: navigator,
@@ -859,13 +897,13 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             )
             controller.setPageProgressionDirection(bridge.pageProgressionDirection)
         }
-        .onChange(of: bridge.pageProgressionDirection) { newValue in
-            controller.setPageProgressionDirection(newValue)
+        .task(id: bridge.pageProgressionDirection) {
+            controller.setPageProgressionDirection(bridge.pageProgressionDirection)
         }
-        .onChange(of: controller.visualState.structuralStateSerial) { _ in
+        .task(id: controller.visualState.structuralStateSerial) {
             syncHostNavigationVisibilityForPageTurnPhase()
         }
-        .onChange(of: bridge.lastTurnEvent?.serial) { _ in
+        .task(id: bridge.lastTurnEvent?.serial) {
             guard let event = bridge.lastTurnEvent else { return }
             switch event.kind {
             case .committed:
@@ -1220,7 +1258,8 @@ public struct Reader: View {
                         .task { @MainActor in
                             obscuredInsets = geometry.safeAreaInsets
                         }
-                        .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
+                        .task(id: geometry.safeAreaInsets) {
+                            let safeAreaInsets = geometry.safeAreaInsets
                             obscuredInsets = EdgeInsets(
                                 top: max(0, safeAreaInsets.top),
                                 leading: max(0, safeAreaInsets.leading),

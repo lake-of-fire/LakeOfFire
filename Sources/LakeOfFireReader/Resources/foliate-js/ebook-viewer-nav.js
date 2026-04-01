@@ -5,7 +5,6 @@ const FRACTION_EPSILON = 0.000001;
 let logEBookPageNumCounter = 0;
 const LOG_EBOOK_PAGE_NUM_LIMIT = 400;
 const MANABI_NAV_SENTINEL_ADJUST_ENABLED = true;
-let lastLocTotal = null;
 const NAV_PAGE_NUM_WHITELIST = new Set([
     'nav:set-page-targets',
     'nav:total-pages-source',
@@ -467,7 +466,6 @@ export class NavigationHUD {
         const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
         if (locTotal != null && locTotal > 0) {
             this.lastKnownLocationTotal = locTotal;
-            lastLocTotal = locTotal;
         }
         // Ensure section index is preserved for per-section totals/offsets
         const rendererIndex = (() => {
@@ -566,10 +564,10 @@ export class NavigationHUD {
         const scrubFrozenLabel = this.scrubSession?.active ? this.scrubSession.frozenLabel : null;
         const fullLabelCandidate = this.formatPrimaryLabel(detail, { allowRendererFallback: false });
         const rawLabel = fullLabelCandidate || scrubFrozenLabel || '';
-        const normalizedRaw = rawLabel ? rawLabel.replace(/^Loc\\s+/i, 'Loc ') : '';
+        const normalizedRaw = rawLabel ? rawLabel.replace(/^Page\\s+/i, 'Page ') : '';
         const condensed = normalizedRaw ? this.#condensePrimaryLabel(normalizedRaw) : '';
 
-        // Full shows the complete Loc string (with total when available); compact omits the total.
+        // Full shows the complete page string (with total when available); compact omits the total.
         fullLabelTarget.textContent = normalizedRaw || condensed;
         compactLabelTarget.textContent = condensed || normalizedRaw;
         if (overlayLabelTarget) {
@@ -703,7 +701,7 @@ export class NavigationHUD {
             }
             return label;
         }
-        // No fallback to page-based labels.
+        // No fallback beyond the derived page metrics.
         return '';
     }
 
@@ -713,11 +711,12 @@ export class NavigationHUD {
     }
 
     getPageEstimate(detail) {
-        // Only use location-derived current/total; ignore page-based metrics.
-        const locCurrent = typeof detail?.location?.current === 'number' ? detail.location.current : null;
-        const locTotal = typeof detail?.location?.total === 'number' ? detail.location.total : null;
-        if (locCurrent == null && locTotal == null) return null;
-        return { current: locCurrent != null ? locCurrent + 1 : null, total: locTotal };
+        const metrics = this.#computePageMetrics(detail);
+        if (!metrics) return null;
+        const current = typeof metrics.currentPageNumber === 'number' ? metrics.currentPageNumber : null;
+        const total = typeof metrics.totalPages === 'number' ? metrics.totalPages : null;
+        if (current == null && total == null) return null;
+        return { current, total };
     }
 
     getLocationTotalHint() {
@@ -765,29 +764,28 @@ export class NavigationHUD {
             return null;
         }
 
-        // Prefer location-based "Loc" display only.
-        const locCurrent = typeof detail.location?.current === 'number' ? detail.location.current : null;
-        const locTotal = typeof detail.location?.total === 'number' ? detail.location.total : null;
-        if (locCurrent != null) {
-            if (locTotal != null) lastLocTotal = locTotal;
-            const label = locTotal != null
-                ? `Loc ${locCurrent + 1} of ${locTotal}`
-                : `Loc ${locCurrent + 1}`;
+        const metrics = this.#computePageMetrics(detail);
+        if (metrics?.currentPageNumber != null) {
+            const currentPageNumber = metrics.currentPageNumber;
+            const totalPages = metrics.totalPages;
+            const label = totalPages != null
+                ? `Page ${currentPageNumber} of ${totalPages}`
+                : `Page ${currentPageNumber}`;
             this.lastPrimaryLabelDiagnostics = {
-                source: 'location-loc',
+                source: 'page-metrics',
                 label,
-                locationCurrent: locCurrent,
-                locationTotal: locTotal,
+                currentPageNumber,
+                totalPages,
                 totalPageCount: this.totalPageCount,
             };
             this.latestPrimaryLabel = label;
             return label;
         }
 
-        // If no location data, we won't show a label.
+        // If no page metrics are available yet, we won't show a label.
         this.latestPrimaryLabel = '';
         this.lastPrimaryLabelDiagnostics = {
-            source: 'no-location',
+            source: 'no-page-metrics',
             label: '',
             totalPageCount: this.totalPageCount,
         };
@@ -796,10 +794,10 @@ export class NavigationHUD {
 
     #condensePrimaryLabel(label) {
         if (typeof label !== 'string') return '';
-        // Prefer an explicit "Loc <n>" capture so we keep the prefix even if the suffix format changes.
-        const locMatch = label.match(/\bLoc\s*(\d+)/i);
-        if (locMatch) {
-            return `Loc ${locMatch[1]}`.replace(/\s+/g, ' ').trim();
+        // Prefer an explicit "Page <n>" capture so we keep the prefix even if the suffix format changes.
+        const pageMatch = label.match(/\bPage\s*(\d+)/i);
+        if (pageMatch) {
+            return `Page ${pageMatch[1]}`.replace(/\s+/g, ' ').trim();
         }
         // Otherwise strip any "of <total>" suffix (allowing for varied whitespace/non-breaking spaces).
         const trimmed = label.replace(/\s*of\s+.*$/i, '').trim();
@@ -1593,22 +1591,22 @@ export class NavigationHUD {
 
     #labelForDescriptor(descriptor) {
         if (!descriptor) return '';
-        const locCurrent = typeof descriptor.location?.current === 'number' ? descriptor.location.current : null;
-        const locTotal = typeof descriptor.location?.total === 'number' ? descriptor.location.total : null;
-        if (locCurrent != null) {
-            return `${locCurrent + 1}`;
-        }
-        const derivedTotal = locTotal
-            ?? this.lastKnownLocationTotal
-            ?? lastLocTotal
-            ?? this.lastPrimaryLabelDiagnostics?.locationTotal
-            ?? null;
+        const derivedTotal = this.lastPrimaryLabelDiagnostics?.totalPages
+            ?? this.lastPageMetricsSnapshot?.totalPages
+            ?? this.fallbackTotalPageCount
+            ?? (this.totalPageCount > 0 ? this.totalPageCount : null);
         if (typeof descriptor.fraction === 'number' && derivedTotal && derivedTotal > 0) {
             const clampedTotal = Math.max(1, derivedTotal);
             const idx = Math.round(Math.max(0, Math.min(1, descriptor.fraction)) * (clampedTotal - 1));
             return `${idx + 1}`;
         }
-        // No location info; leave label empty.
+        const currentPageNumber = this.lastPrimaryLabelDiagnostics?.currentPageNumber
+            ?? this.lastPageMetricsSnapshot?.currentPageNumber
+            ?? null;
+        if (typeof currentPageNumber === 'number' && currentPageNumber > 0) {
+            return `${currentPageNumber}`;
+        }
+        // No page info; leave label empty.
         return '';
     }
     

@@ -1,5 +1,5 @@
 {
-  "originHash" : "cd1021340fc0950b1902d5e6117ca4aa015090a8cfde65c8228ed72cac8fd3b1",
+  "originHash" : "0c7d0c287721b02c40e50c0b2b8d2e88c526a24972aee5c6a24129d5fa58dae2",
   "pins" : [
     {
       "identity" : "asyncview",
@@ -272,15 +272,6 @@
       }
     },
     {
-      "identity" : "swift-brave",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/swift-brave.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "e74acb0f59391a35172c13b26951be150a7efdf0"
-      }
-    },
-    {
       "identity" : "swift-clocks",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-clocks",
@@ -476,15 +467,6 @@
       "state" : {
         "revision" : "26986a57e31c813f98262ddb62d4b07d40008535",
         "version" : "26.0.1"
-      }
-    },
-    {
-      "identity" : "swiftui-webview",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/lake-of-fire/swiftui-webview.git",
-      "state" : {
-        "branch" : "main",
-        "revision" : "3598e1bf494d9c33b560811ed62a0b85a1a7b8f8"
       }
     },
     {

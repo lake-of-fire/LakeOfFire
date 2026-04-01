@@ -48,7 +48,7 @@ struct BookLibrarySheetsModifier: ViewModifier {
                             switch result {
                             case .success(let url):
                                 do {
-                                    guard let importedFileURL = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
+                                    guard let _ = try await ReaderFileManager.shared.importFile(fileURL: url, fromDownloadURL: nil) else {
                                         print("Couldn't import \(url.absoluteString)")
                                         return
                                     }
@@ -257,11 +257,12 @@ public struct BookLibraryView: View {
             await viewModel.fetchAllData()
         }
         .task { @MainActor in
+            let fileFilter = viewModel.fileFilter
             if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
                 try? await readerContentListViewModel.load(
                     contents: files,
                     contentFilter: { _, contentFile in
-                        guard let fileFilter = viewModel.fileFilter else { return true }
+                        guard let fileFilter else { return true }
                         return try fileFilter(contentFile)
                     },
                     sortOrder: .createdAt,
@@ -296,7 +297,7 @@ public struct BookLibraryView: View {
 
 @MainActor
 public class BookLibraryViewModel: ObservableObject {
-    public static let defaultOPDSURL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
+    nonisolated public static let defaultOPDSURL = URL(string: "https://reader.manabi.io/static/reader/books/opds/index.xml")!
     
     public let mediaTypeTitle: String
     public let mediaFileTypeTitle: String

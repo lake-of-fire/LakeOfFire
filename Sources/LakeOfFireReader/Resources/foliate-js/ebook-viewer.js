@@ -725,10 +725,9 @@ const getView = async (source, isCacheWarmer) => {
     if (!book) throw new Error('File type not supported')
     const view = document.createElement('foliate-view')
     view.dataset.isCache = isCacheWarmer;
-    //if (!isCacheWarmer) {
-    document.body.append(view);
+    const readerStage = document.getElementById('reader-stage');
+    (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
     forwardShadowErrors(view.shadowRoot);
-    //}
     if (isCacheWarmer) {
         view.style.display = 'none'
         view.style.contain = 'strict'
@@ -1408,7 +1407,7 @@ class Reader {
     this.#jumpInput = percentInput;
     this.#jumpButton = percentButton;
     this.#jumpUnitSelect = jumpUnitSelect;
-    this.jumpUnit = jumpUnitSelect?.value === 'loc' ? 'loc' : 'percent';
+    this.jumpUnit = 'percent';
     this.lastPageEstimate = null;
     this.#updateJumpUnitAvailability();
     this.#syncJumpInputWithState();
@@ -1420,33 +1419,18 @@ class Reader {
     percentInput.addEventListener('input', handleJumpInputChange);
 
     jumpUnitSelect?.addEventListener('change', () => {
-    const nextUnit = jumpUnitSelect.value === 'loc' ? 'loc' : 'percent';
-    if (this.jumpUnit === nextUnit) return;
-    const previousUnit = this.jumpUnit;
-    const currentValue = parseFloat(percentInput.value);
-    const converted = this.#convertJumpInputValue(currentValue, previousUnit, nextUnit);
-    this.jumpUnit = nextUnit;
-    this.#syncJumpInputWithState(converted);
+    this.jumpUnit = 'percent';
+    this.#syncJumpInputWithState();
     percentButton.disabled = true;
     });
 
     percentButton.addEventListener('click', () => {
     const value = parseFloat(percentInput.value);
     if (!this.#isJumpInputValueValid(value)) return;
-    if (this.jumpUnit === 'percent') {
     this.lastPercentValue = value;
     this.lastKnownFraction = value / 100;
     percentButton.disabled = true;
     this.view.goToFraction(value / 100);
-    } else {
-    const totalLocs = this.lastPageEstimate?.total;
-    const fraction = this.#fractionFromLocation(value, totalLocs);
-    if (fraction == null) return;
-    this.lastPercentValue = Math.round(fraction * 100);
-    this.lastKnownFraction = fraction;
-    percentButton.disabled = true;
-    this.view.goToFraction(fraction);
-    }
     this.closeSideBar();
     });
 
@@ -1681,17 +1665,7 @@ class Reader {
 
     #isJumpInputValueValid(value) {
     if (typeof value !== 'number' || isNaN(value)) return false;
-    if (this.jumpUnit === 'percent') {
     return value >= 0 && value <= 100 && value !== this.lastPercentValue;
-    }
-    const total = this.lastPageEstimate?.total;
-    if (value < 1) return false;
-    if (typeof total === 'number' && total > 0) {
-    if (value > total) return false;
-    const currentPage = this.lastPageEstimate?.current;
-    if (typeof currentPage === 'number' && value === currentPage) return false;
-    }
-    return typeof total === 'number' && total > 0;
     }
 
     #computeSectionTicks(pageCountsMap) {
@@ -1769,22 +1743,7 @@ class Reader {
     #convertJumpInputValue(value, fromUnit, toUnit) {
     if (typeof value !== 'number' || isNaN(value)) return null;
     if (fromUnit === toUnit) return value;
-    const totalLocs = this.lastPageEstimate?.total;
-    if (fromUnit === 'percent' && toUnit === 'loc') {
-    if (!totalLocs || totalLocs <= 0) return null;
-    if (totalLocs === 1) return 1;
-    const fraction = value / 100;
-    if (!isFinite(fraction)) return null;
-    const loc = Math.round(fraction * (totalLocs - 1)) + 1;
-    return Math.max(1, Math.min(totalLocs, loc));
-    }
-    if (fromUnit === 'loc' && toUnit === 'percent') {
-    if (!totalLocs || totalLocs <= 1) return null;
-    const clamped = Math.max(1, Math.min(totalLocs, Math.round(value)));
-    const fraction = (clamped - 1) / (totalLocs - 1);
-    return Math.max(0, Math.min(100, Math.round(fraction * 100)));
-    }
-    return null;
+    return fromUnit === 'percent' && toUnit === 'percent' ? value : null;
     }
 
     #syncJumpInputWithState(convertedValue = null) {
@@ -1793,7 +1752,6 @@ class Reader {
     const button = this.#jumpButton ?? document.getElementById('percent-jump-button');
     if (!this.#jumpInput) this.#jumpInput = input;
     if (!this.#jumpButton) this.#jumpButton = button;
-    if (this.jumpUnit === 'percent') {
     input.min = 0;
     input.max = 100;
     input.step = 'any';
@@ -1801,18 +1759,6 @@ class Reader {
     input.value = convertedValue;
     } else if (typeof this.lastPercentValue === 'number') {
     input.value = this.lastPercentValue;
-    }
-    } else {
-    input.min = 1;
-    input.max = this.lastPageEstimate?.total ?? '';
-    input.step = 1;
-    if (typeof convertedValue === 'number' && !isNaN(convertedValue)) {
-    input.value = convertedValue;
-    } else if (this.lastPageEstimate?.current != null) {
-    input.value = this.lastPageEstimate.current;
-    } else {
-    input.value = '';
-    }
     }
     if (button) {
     button.disabled = true;
@@ -1823,16 +1769,8 @@ class Reader {
     const select = this.#jumpUnitSelect ?? document.getElementById('jump-unit-select');
     if (!select) return;
     if (!this.#jumpUnitSelect) this.#jumpUnitSelect = select;
-    const locOption = Array.from(select.options).find(option => option.value === 'loc');
-    const hasLocs = typeof this.lastPageEstimate?.total === 'number' && this.lastPageEstimate.total > 0;
-    if (locOption) {
-    locOption.disabled = !hasLocs;
-    }
-    if (!hasLocs && this.jumpUnit === 'loc') {
-    this.jumpUnit = 'percent';
     select.value = 'percent';
-    this.#syncJumpInputWithState();
-    }
+    this.jumpUnit = 'percent';
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -2018,33 +1956,27 @@ class Reader {
             navHidden: navBar?.classList?.contains?.('nav-hidden') ?? null,
             sliderVisible: sliderEl?.style?.visibility ?? null,
         });
-            logBug('relocate:start', {
-                reason: detail?.reason ?? null,
-                sectionIndex: sectionIndexFromDetail,
-                fraction: fractionFromDetail,
-                bodyClasses: Array.from(document?.body?.classList ?? []),
-            });
 
-            // Previously forced nav visible on every relocate for debugging; that caused flicker when crossing sections.
-            // Keep state untouched so forward page turns can hide the nav without being re-shown here.
-            logNavHide('relocate:preserve-nav-state', {
-                source: detail?.reason ?? null,
-                navHiddenClass: navBar?.classList?.contains?.('nav-hidden') ?? null,
-                navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
-                bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
-                hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
-                pendingHideNavigationState,
-            });
+        // Previously forced nav visible on every relocate for debugging; that caused flicker when crossing sections.
+        // Keep state untouched so forward page turns can hide the nav without being re-shown here.
+        logNavHide('relocate:preserve-nav-state', {
+            source: detail?.reason ?? null,
+            navHiddenClass: navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            bodyNavHidden: document?.body?.classList?.contains?.('nav-hidden') ?? null,
+            hideNavigationDueToScroll: this.navHUD?.hideNavigationDueToScroll ?? null,
+            pendingHideNavigationState,
+        });
 
-            const {
-                fraction,
-                location,
-                tocItem,
-                pageItem,
-                cfi,
-                reason,
-                index: sectionIndex
-            } = detail
+        const {
+            fraction,
+            location,
+            tocItem,
+            pageItem,
+            cfi,
+            reason,
+            index: sectionIndex
+        } = detail
         // Normalize section index so downstream HUD can aggregate page counts reliably.
         const inferredSectionIndex = (() => {
             if (typeof detail?.sectionIndex === 'number') return detail.sectionIndex
@@ -2150,10 +2082,10 @@ class Reader {
 
         if (this.hasLoadedLastPosition) {
             this.#postUpdateReadingProgressMessage({
-            fraction,
-            cfi,
-            reason,
-            sectionIndex
+                fraction,
+                cfi,
+                reason,
+                sectionIndex: normalizedDetail.sectionIndex,
             })
         }
 
@@ -2179,8 +2111,6 @@ class Reader {
         const tooltipParts = [];
         if (navLabel) {
             tooltipParts.push(navLabel);
-        } else if (location?.current != null) {
-            tooltipParts.push(`Loc ${location.current}`);
         }
         tooltipParts.push(percent);
         slider.title = tooltipParts.filter(Boolean).join(' · ');

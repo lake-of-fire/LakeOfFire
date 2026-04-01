@@ -358,7 +358,7 @@ private class ReaderWebViewHandler {
 
     private func renderCachedReadabilityHTML(
         _ cachedHTML: String,
-        for content: ReaderContentProtocol,
+        for content: any ReaderContentProtocol,
         pageURL: URL
     ) {
         readerModeViewModel.readabilityContent = cachedHTML
@@ -378,7 +378,7 @@ private class ReaderWebViewHandler {
 
     private func deferCachedReadabilityRenderUntilAsyncCallerReady(
         cachedHTML: String,
-        content: ReaderContentProtocol,
+        content: any ReaderContentProtocol,
         pageURL: URL
     ) {
         deferredCachedReadabilityRenderTask?.cancel()
@@ -406,7 +406,7 @@ private class ReaderWebViewHandler {
     }
 
     private func deferReaderModeRecoveryUntilAsyncCallerReady(
-        content: ReaderContentProtocol,
+        content: any ReaderContentProtocol,
         pageURL: URL,
         reason: String
     ) {
@@ -1049,6 +1049,7 @@ private struct ReaderWebViewInternal: View {
     @AppStorage("ebookViewerLayout") private var ebookViewerLayout = "paginated"
     @AppStorage("bookWritingDirectionSetting") private var bookWritingDirection = "original"
 
+    @Environment(\.readerResolvedPaginationMode) private var readerResolvedPaginationMode
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     @Environment(\.contentBlockingRules) private var contentBlockingRules
     @Environment(\.contentBlockingEnabled) private var contentBlockingEnabled
@@ -1079,18 +1080,16 @@ private struct ReaderWebViewInternal: View {
             return .disabled
         }
 
-        // Phase 5 starts with a compact, runtime-only config derived from the existing
-        // ebook settings. Until the renderer promotes richer pagination state up to Swift,
-        // keep page length in explicit view-length mode and use a stable gutter.
-        let mode: WebViewPaginationMode
+        let fallbackMode: WebViewPaginationMode
         switch bookWritingDirection {
         case "vertical":
-            mode = .rightToLeft
+            fallbackMode = .rightToLeft
         case "horizontal", "original":
-            mode = .leftToRight
+            fallbackMode = .leftToRight
         default:
-            mode = .leftToRight
+            fallbackMode = .leftToRight
         }
+        let mode = readerResolvedPaginationMode ?? fallbackMode
 
         return WebViewPaginationConfiguration(
             mode: mode,
