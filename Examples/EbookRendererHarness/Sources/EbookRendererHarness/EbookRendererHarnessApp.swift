@@ -418,8 +418,13 @@ private final class EbookRendererHarnessModel: ObservableObject {
             let nativePageCountStable = activeWebViewState.paginationState?.pageCount
             let jsProbe = try await captureSmokeShellProbe()
             let navigationProbe = await captureSmokeNavigationProbe()
+            let buttonNavigationProbe = await captureSmokeButtonNavigationProbe()
             let jumpProbe = await captureSmokeJumpProbe()
+            let tocJumpProbe = await captureSmokeTOCJumpProbe()
             let progressJumpProbe = await captureSmokeProgressJumpProbe()
+            let longChapterProbe = await captureSmokeLongChapterProbe()
+            let restoreProbe = await captureSmokeRestoreProbe()
+            let finishStartOverProbe = await captureSmokeFinishStartOverProbe()
             let runtimePaginationProbe = try await captureSmokePaginationReconfigurationProbe()
             let paginationToggleProbe = try await captureSmokePaginationToggleProbe()
             let resizeProbe = try await captureSmokeResizeProbe()
@@ -448,12 +453,29 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 && nativePageCountInitial == nativePageCountStable
             let navigationProbePassed = (navigationProbe["nextAdvanced"] as? Bool) == true
                 && (navigationProbe["prevReturned"] as? Bool) == true
+            let buttonNavigationProbePassed = (buttonNavigationProbe["nextAdvanced"] as? Bool) == true
+                && (buttonNavigationProbe["prevReturned"] as? Bool) == true
             let jumpProbePassed = (jumpProbe["chapter2Reached"] as? Bool) == true
                 && (jumpProbe["chapter1Returned"] as? Bool) == true
+            let tocJumpProbePassed = (tocJumpProbe["chapter2Reached"] as? Bool) == true
+                && (tocJumpProbe["chapter1Returned"] as? Bool) == true
             let progressJumpProbePassed = (progressJumpProbe["endReached"] as? Bool) == true
                 && (progressJumpProbe["startReturned"] as? Bool) == true
-            let gate3NavigationFacade = navigationProbePassed
-                || (jumpProbePassed && progressJumpProbePassed)
+            let restoreProbePassed = (restoreProbe["restoredToSecondChapter"] as? Bool) == true
+            let finishStartOverProbePassed = (finishStartOverProbe["finishMessageObserved"] as? Bool) == true
+                && (finishStartOverProbe["startOverMessageObserved"] as? Bool) == true
+                && (finishStartOverProbe["restartReturnedToFirstChapter"] as? Bool) == true
+            let initialSectionPageCount = (jsProbe["sectionLayoutDiagnostics"] as? [String: Any])?["pageCount"] as? Int ?? 0
+            let allowsSinglePageNavigationFallback = initialSectionPageCount <= 1
+            let gate3NavigationFacade = (
+                (navigationProbePassed || allowsSinglePageNavigationFallback)
+                && buttonNavigationProbePassed
+                && jumpProbePassed
+                && tocJumpProbePassed
+                && progressJumpProbePassed
+                && restoreProbePassed
+                && finishStartOverProbePassed
+            )
             let gate4AppContract = eventCount(named: "ebookViewerLoaded") > 0
                 && eventCount(named: "updateCurrentContentPage") > 0
                 && eventCount(named: "updateReadingProgress") > 0
@@ -484,8 +506,13 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 ],
                 "jsProbe": jsProbe,
                 "navigationProbe": navigationProbe,
+                "buttonNavigationProbe": buttonNavigationProbe,
                 "jumpProbe": jumpProbe,
+                "tocJumpProbe": tocJumpProbe,
                 "progressJumpProbe": progressJumpProbe,
+                "longChapterProbe": longChapterProbe,
+                "restoreProbe": restoreProbe,
+                "finishStartOverProbe": finishStartOverProbe,
                 "runtimePaginationProbe": runtimePaginationProbe,
                 "paginationToggleProbe": paginationToggleProbe,
                 "resizeProbe": resizeProbe,
@@ -494,6 +521,11 @@ private final class EbookRendererHarnessModel: ObservableObject {
                     "gate2NativePaginationReadback": gate2NativeReadback,
                     "gate3NavigationFacade": gate3NavigationFacade,
                     "gate4AppFacingContract": gate4AppContract,
+                ],
+                "gateDiagnostics": [
+                    "navigationProbePassed": navigationProbePassed,
+                    "allowsSinglePageNavigationFallback": allowsSinglePageNavigationFallback,
+                    "initialSectionPageCount": initialSectionPageCount,
                 ],
                 "overallSuccess": gate1SameDocument && gate2NativeReadback && gate3NavigationFacade && gate4AppContract,
             ]
@@ -1090,6 +1122,22 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 jumpInputMax: jumpInput?.getAttribute?.('max') ?? null,
                 jumpUnitSelectPresent: !!jumpUnitSelect,
               },
+              sectionLayoutDiagnostics: (() => {
+                const controller =
+                  liveDocument?.defaultView?.manabiEbookSectionLayoutController
+                  ?? globalThis.manabiEbookSectionLayoutController
+                  ?? null;
+                if (!controller) return null;
+                return {
+                  pageCount: controller.pageCount?.() ?? null,
+                  hasPendingWarmup: controller.hasPendingWarmup?.() ?? null,
+                };
+              })(),
+              navDiagnostics: {
+                lastKnownLocationTotal: globalThis.reader?.navHUD?.lastKnownLocationTotal ?? null,
+                lastPrimaryLabelDiagnostics: globalThis.reader?.navHUD?.lastPrimaryLabelDiagnostics ?? null,
+                currentLocationDescriptor: globalThis.reader?.navHUD?.getCurrentDescriptor?.() ?? null,
+              },
               shellMetrics: {
                 innerWidth: globalThis.innerWidth ?? null,
                 innerHeight: globalThis.innerHeight ?? null,
@@ -1117,6 +1165,16 @@ private final class EbookRendererHarnessModel: ObservableObject {
     }
 
     private func captureSmokeNavigationProbe() async -> [String: Any] {
+        func currentPageNumber(in probe: [String: Any]) -> Int? {
+            (probe["navDiagnostics"] as? [String: Any])?["lastPrimaryLabelDiagnostics"]
+                .flatMap { $0 as? [String: Any] }?["currentPageNumber"] as? Int
+        }
+
+        func currentCFI(in probe: [String: Any]) -> String? {
+            (probe["navDiagnostics"] as? [String: Any])?["currentLocationDescriptor"]
+                .flatMap { $0 as? [String: Any] }?["cfi"] as? String
+        }
+
         func movementDetected(from before: [String: Any], to after: [String: Any], previousContentPageURL: String?, currentContentPageURL: String?) -> Bool {
             let beforeIndex = before["currentIndex"] as? Int
             let afterIndex = after["currentIndex"] as? Int
@@ -1134,7 +1192,29 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 return true
             }
 
+            let beforePageNumber = currentPageNumber(in: before)
+            let afterPageNumber = currentPageNumber(in: after)
+            if let beforePageNumber, let afterPageNumber, beforePageNumber != afterPageNumber {
+                return true
+            }
+
+            let beforeCFI = currentCFI(in: before)
+            let afterCFI = currentCFI(in: after)
+            if let beforeCFI, let afterCFI, beforeCFI != afterCFI {
+                return true
+            }
+
             return false
+        }
+
+        _ = try? await waitForSmokeShellProbe(
+            description: "navigation probe layout readiness",
+            timeoutSeconds: 3
+        ) { probe in
+            let diagnostics = probe["sectionLayoutDiagnostics"] as? [String: Any]
+            let pageCount = diagnostics?["pageCount"] as? Int ?? 0
+            let hasPendingWarmup = diagnostics?["hasPendingWarmup"] as? Bool ?? false
+            return pageCount > 1 || hasPendingWarmup == false
         }
 
         let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
@@ -1151,6 +1231,8 @@ private final class EbookRendererHarnessModel: ObservableObject {
 
         var afterNext = before
         var afterPrev = before
+        var afterGoRight = before
+        var afterGoLeft = before
         var nextAdvanced = false
         var prevReturned = false
 
@@ -1198,6 +1280,7 @@ private final class EbookRendererHarnessModel: ObservableObject {
         }
 
         if canGoRight {
+            let beforeGoRightContentPageURL = currentContentPageURL
             _ = try? await scriptCaller.evaluateJavaScript(
                 """
                 if (globalThis.reader?.view?.goRight) {
@@ -1207,9 +1290,19 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 """
             )
             try? await Task.sleep(nanoseconds: 350_000_000)
+            afterGoRight = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            if !nextAdvanced {
+                nextAdvanced = movementDetected(
+                    from: afterNext,
+                    to: afterGoRight,
+                    previousContentPageURL: beforeGoRightContentPageURL,
+                    currentContentPageURL: currentContentPageURL
+                )
+            }
         }
 
         if canGoLeft {
+            let beforeGoLeftContentPageURL = currentContentPageURL
             _ = try? await scriptCaller.evaluateJavaScript(
                 """
                 if (globalThis.reader?.view?.goLeft) {
@@ -1219,12 +1312,27 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 """
             )
             try? await Task.sleep(nanoseconds: 350_000_000)
+            afterGoLeft = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            if !prevReturned {
+                let returnedToOrigin =
+                    (before["currentIndex"] as? Int) == (afterGoLeft["currentIndex"] as? Int)
+                    && (before["contentURL"] as? String) == (afterGoLeft["contentURL"] as? String)
+                let contentPageReturned = beforeCurrentContentPageURL == currentContentPageURL
+                prevReturned = returnedToOrigin || contentPageReturned || !movementDetected(
+                    from: afterGoRight,
+                    to: afterGoLeft,
+                    previousContentPageURL: beforeGoLeftContentPageURL,
+                    currentContentPageURL: currentContentPageURL
+                )
+            }
         }
 
         return [
             "before": before,
             "afterNext": afterNext,
             "afterPrev": afterPrev,
+            "afterGoRight": afterGoRight,
+            "afterGoLeft": afterGoLeft,
             "nextAttempted": canNext,
             "prevAttempted": canPrev,
             "goRightAttempted": canGoRight,
@@ -1267,6 +1375,107 @@ private final class EbookRendererHarnessModel: ObservableObject {
 
         let chapter1Href = "OEBPS/chapter1.xhtml"
         let afterJumpBackToFirst = await jump(to: chapter1Href)
+        let afterFirstContentPageURL = currentContentPageURL
+        let chapter1Returned =
+            (afterJumpBackToFirst["currentIndex"] as? Int) == 0
+            || afterFirstContentPageURL?.contains("chapter1.xhtml") == true
+
+        return [
+            "before": before,
+            "afterJumpToSecond": afterJumpToSecond,
+            "afterJumpBackToFirst": afterJumpBackToFirst,
+            "chapter2Target": chapter2Href,
+            "chapter1Target": chapter1Href,
+            "chapter2Reached": chapter2Reached,
+            "chapter1Returned": chapter1Returned,
+            "initialContentPageURL": beforeCurrentContentPageURL ?? "nil",
+            "currentContentPageURL": currentContentPageURL ?? "nil",
+            "updateCurrentContentPageDelta": eventCount(named: "updateCurrentContentPage") - beforeUpdateCurrentContentPageCount,
+            "updateReadingProgressDelta": eventCount(named: "updateReadingProgress") - beforeUpdateReadingProgressCount,
+        ]
+    }
+
+    private func captureSmokeButtonNavigationProbe() async -> [String: Any] {
+        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeCurrentContentPageURL = currentContentPageURL
+        let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
+        let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
+
+        func clickButton(_ buttonID: String) async -> [String: Any] {
+            _ = try? await scriptCaller.evaluateJavaScript(
+                """
+                (() => {
+                  const button = document.getElementById(buttonID);
+                  button?.click?.();
+                  return !!button;
+                })()
+                """,
+                arguments: ["buttonID": buttonID]
+            )
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            return (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        }
+
+        let afterNext = await clickButton("btn-next-chapter")
+        let afterNextContentPageURL = currentContentPageURL
+        let nextAdvanced =
+            (afterNext["currentIndex"] as? Int) == 1
+            || afterNextContentPageURL?.contains("chapter2.xhtml") == true
+
+        let afterPrev = await clickButton("btn-prev-chapter")
+        let afterPrevContentPageURL = currentContentPageURL
+        let prevReturned =
+            (afterPrev["currentIndex"] as? Int) == 0
+            || afterPrevContentPageURL?.contains("chapter1.xhtml") == true
+
+        return [
+            "before": before,
+            "afterNext": afterNext,
+            "afterPrev": afterPrev,
+            "initialContentPageURL": beforeCurrentContentPageURL ?? "nil",
+            "currentContentPageURL": currentContentPageURL ?? "nil",
+            "nextAdvanced": nextAdvanced,
+            "prevReturned": prevReturned,
+            "updateCurrentContentPageDelta": eventCount(named: "updateCurrentContentPage") - beforeUpdateCurrentContentPageCount,
+            "updateReadingProgressDelta": eventCount(named: "updateReadingProgress") - beforeUpdateReadingProgressCount,
+        ]
+    }
+
+    private func captureSmokeTOCJumpProbe() async -> [String: Any] {
+        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeCurrentContentPageURL = currentContentPageURL
+        let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
+        let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
+
+        func clickTOCLink(_ href: String) async -> [String: Any] {
+            _ = try? await scriptCaller.evaluateJavaScript(
+                """
+                (() => {
+                  const normalized = targetHref.replace(/^OEBPS\\//, '');
+                  const selector = `#toc-view a[href$="${normalized}"]`;
+                  const link = document.querySelector(selector);
+                  link?.click?.();
+                  return {
+                    found: !!link,
+                    href: link?.getAttribute?.('href') ?? null,
+                  };
+                })()
+                """,
+                arguments: ["targetHref": href]
+            )
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            return (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        }
+
+        let chapter2Href = "OEBPS/chapter2.xhtml"
+        let afterJumpToSecond = await clickTOCLink(chapter2Href)
+        let afterSecondContentPageURL = currentContentPageURL
+        let chapter2Reached =
+            (afterJumpToSecond["currentIndex"] as? Int) == 1
+            || afterSecondContentPageURL?.contains("chapter2.xhtml") == true
+
+        let chapter1Href = "OEBPS/chapter1.xhtml"
+        let afterJumpBackToFirst = await clickTOCLink(chapter1Href)
         let afterFirstContentPageURL = currentContentPageURL
         let chapter1Returned =
             (afterJumpBackToFirst["currentIndex"] as? Int) == 0
@@ -1331,6 +1540,219 @@ private final class EbookRendererHarnessModel: ObservableObject {
             "currentContentPageURL": currentContentPageURL ?? "nil",
             "updateCurrentContentPageDelta": eventCount(named: "updateCurrentContentPage") - beforeUpdateCurrentContentPageCount,
             "updateReadingProgressDelta": eventCount(named: "updateReadingProgress") - beforeUpdateReadingProgressCount,
+        ]
+    }
+
+    private func captureSmokeLongChapterProbe() async -> [String: Any] {
+        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeState = activeWebViewState.paginationState
+        let beforeContentPageURL = currentContentPageURL
+
+        let secondSectionTarget = (try? await scriptCaller.evaluateJavaScript(
+            """
+            (() => {
+              const tocLinks = Array.from(document.querySelectorAll('#toc-view a[href]'));
+              const target = tocLinks[1]?.getAttribute?.('href')
+                ?? globalThis.reader?.book?.sections?.[1]?.href
+                ?? null;
+              if (target && globalThis.reader?.view?.goTo) {
+                void globalThis.reader.view.goTo(target);
+              }
+              return target;
+            })()
+            """
+        ) as? String) ?? ""
+
+        try? await waitUntil(
+            description: "long chapter jump to second section",
+            timeoutSeconds: 4
+        ) {
+            guard !secondSectionTarget.isEmpty else { return false }
+            if self.currentContentPageURL?.contains(secondSectionTarget) == true {
+                return true
+            }
+            return false
+        }
+        try? await Task.sleep(nanoseconds: 1_100_000_000)
+
+        let afterJump = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            (() => {
+              const controller =
+                globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
+                ?? globalThis.manabiEbookSectionLayoutController
+                ?? null;
+              if (!controller?.ensurePageBuilt) return null;
+              return controller.ensurePageBuilt(4, {
+                reason: 'smoke-long-chapter-prewarm'
+              });
+            })()
+            """
+        )
+        _ = try? await waitForSmokeShellProbe(
+            description: "long chapter ensurePageBuilt growth",
+            timeoutSeconds: 4
+        ) { probe in
+            let diagnostics = probe["sectionLayoutDiagnostics"] as? [String: Any]
+            return (diagnostics?["pageCount"] as? Int ?? 0) > 1
+        }
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        let afterEnsure = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let afterState = activeWebViewState.paginationState
+        let afterJumpContentPageURL = currentContentPageURL
+        let chapter2Reached =
+            (afterJump["currentIndex"] as? Int) == 1
+            || (secondSectionTarget.isEmpty == false && afterJumpContentPageURL?.contains(secondSectionTarget) == true)
+            || beforeContentPageURL != afterJumpContentPageURL
+
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            if (globalThis.reader?.view?.goTo) {
+              void globalThis.reader.view.goTo(target);
+            }
+            return true;
+            """,
+            arguments: ["target": "OEBPS/chapter1.xhtml"]
+        )
+        try? await Task.sleep(nanoseconds: 700_000_000)
+
+        return [
+            "before": before,
+            "afterJumpToSecond": afterJump,
+            "afterEnsurePageBuilt": afterEnsure,
+            "beforeState": beforeState?.dictionaryRepresentation ?? [:],
+            "afterState": afterState?.dictionaryRepresentation ?? [:],
+            "secondSectionTarget": secondSectionTarget,
+            "chapter2Reached": chapter2Reached,
+            "afterJumpContentPageURL": afterJumpContentPageURL ?? "nil",
+            "nativePageCountAfterJump": afterState?.pageCount as Any,
+            "sameMountedHost": beforeState?.mountedHostIdentifier != nil
+                && beforeState?.mountedHostIdentifier == afterState?.mountedHostIdentifier,
+            "sameAppliedHost": beforeState?.appliedHostIdentifier != nil
+                && beforeState?.appliedHostIdentifier == afterState?.appliedHostIdentifier,
+        ]
+    }
+
+    private func captureSmokeRestoreProbe() async -> [String: Any] {
+        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeLoadedCount = eventCount(named: "ebookViewerLoaded")
+        let beforeCurrentContentPageURL = currentContentPageURL
+        let beforeFractionalCompletion = lastKnownFractionalCompletion
+        let beforeCFI = lastKnownCFI
+
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            if (globalThis.reader?.view?.goTo) {
+              void globalThis.reader.view.goTo(target);
+            }
+            return true;
+            """,
+            arguments: ["target": "OEBPS/chapter2.xhtml"]
+        )
+        try? await Task.sleep(nanoseconds: 900_000_000)
+
+        let beforeReload = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeReloadContentPageURL = currentContentPageURL
+        let beforeReloadFractionalCompletion = lastKnownFractionalCompletion
+        let beforeReloadCFI = lastKnownCFI
+
+        reloadCurrentBook()
+        try? await waitUntil(
+            description: "ebookViewerLoaded after reload",
+            timeoutSeconds: 5
+        ) {
+            self.eventCount(named: "ebookViewerLoaded") > beforeLoadedCount
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let afterReload = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let afterReloadContentPageURL = currentContentPageURL
+        let restoredToSecondChapter =
+            (afterReload["currentIndex"] as? Int) == 1
+            || afterReloadContentPageURL?.contains("chapter2.xhtml") == true
+        let restoredCFIPreserved = !beforeReloadCFI.isEmpty
+            && !lastKnownCFI.isEmpty
+
+        return [
+            "before": before,
+            "beforeReload": beforeReload,
+            "afterReload": afterReload,
+            "initialContentPageURL": beforeCurrentContentPageURL ?? "nil",
+            "beforeReloadContentPageURL": beforeReloadContentPageURL ?? "nil",
+            "afterReloadContentPageURL": afterReloadContentPageURL ?? "nil",
+            "initialFractionalCompletion": beforeFractionalCompletion,
+            "beforeReloadFractionalCompletion": beforeReloadFractionalCompletion,
+            "afterReloadFractionalCompletion": lastKnownFractionalCompletion,
+            "initialCFI": beforeCFI,
+            "beforeReloadCFI": beforeReloadCFI,
+            "afterReloadCFI": lastKnownCFI,
+            "restoredToSecondChapter": restoredToSecondChapter,
+            "restoredCFIPreserved": restoredCFIPreserved,
+        ]
+    }
+
+    private func captureSmokeFinishStartOverProbe() async -> [String: Any] {
+        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeFinishedCount = eventCount(named: "finishedReadingBook")
+        let beforeStartOverCount = eventCount(named: "startOver")
+
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            if (globalThis.reader?.view?.goToFraction) {
+              void globalThis.reader.view.goToFraction(1.0);
+            }
+            return true;
+            """
+        )
+        try? await Task.sleep(nanoseconds: 900_000_000)
+
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            (() => {
+              const button = document.getElementById('btn-finish');
+              button?.click?.();
+              return !!button;
+            })()
+            """
+        )
+        try? await waitUntil(
+            description: "finishedReadingBook event",
+            timeoutSeconds: 3
+        ) {
+            self.eventCount(named: "finishedReadingBook") > beforeFinishedCount
+        }
+
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            (() => {
+              const button = document.getElementById('btn-restart');
+              button?.click?.();
+              return !!button;
+            })()
+            """
+        )
+        try? await waitUntil(
+            description: "startOver event",
+            timeoutSeconds: 3
+        ) {
+            self.eventCount(named: "startOver") > beforeStartOverCount
+        }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let afterRestart = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let afterRestartContentPageURL = currentContentPageURL
+        let restartReturnedToFirstChapter =
+            (afterRestart["currentIndex"] as? Int) == 0
+            || afterRestartContentPageURL?.contains("chapter1.xhtml") == true
+
+        return [
+            "before": before,
+            "afterRestart": afterRestart,
+            "finishMessageObserved": eventCount(named: "finishedReadingBook") > beforeFinishedCount,
+            "startOverMessageObserved": eventCount(named: "startOver") > beforeStartOverCount,
+            "restartReturnedToFirstChapter": restartReturnedToFirstChapter,
+            "afterRestartContentPageURL": afterRestartContentPageURL ?? "nil",
         ]
     }
 

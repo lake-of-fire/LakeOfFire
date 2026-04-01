@@ -105,7 +105,12 @@ As of 2026-03-31:
 - both automated smoke tests now also prove one runtime pagination gap reconfiguration on the same mounted `WKWebView` host
 - both automated smoke tests now also prove disable/re-enable pagination mode restoration on the same mounted `WKWebView` host
 - both automated smoke tests now also prove real href jump navigation (`reader.view.goTo(...)`) across chapter boundaries on the same mounted renderer path
+- the smoke suite now also proves shell-button chapter navigation through the real previous/next controls
+- the smoke suite now also proves TOC-link navigation through `#toc-view` anchors
 - both automated smoke tests now also prove progress-fraction jumps (`reader.view.goToFraction(...)`) across the same mounted renderer path
+- the smoke suite now also proves reload/reopen restoration back onto the same chapter with non-empty CFI persistence
+- the smoke suite now also proves finish-book and start-over shell-control flows
+- the smoke suite now also includes a generated long-chapter fixture that jumps into deeper content and records long-content diagnostics after that jump
 - the smoke suite now records shell-box diagnostics for the mounted stage, mounted `foliate-view`, and nav chrome, and it asserts those are sane during automated runs
 - that shell-box probe caught a real macOS harness regression: `#nav-bar` was stretching to the full viewport height, so the shell CSS now hard-pins it to a 63px bottom strip
 - the smoke tests now parse the structured `smoke.summary` JSON directly instead of relying only on regex matches, so failures point at the exact broken field more reliably
@@ -114,6 +119,9 @@ As of 2026-03-31:
   - `iframeCount == 0`
   - non-empty live `contentURL`
   - live `sectionLayoutController` present
+- there is also an opportunistic local-book diagnostic for:
+  - `/Users/alex/Downloads/[芥川龍之介] 羅生門.epub`
+  - it is intentionally skippable when that sample does not expose a deterministic second-section jump target in smoke mode
 
 ## Known issues
 

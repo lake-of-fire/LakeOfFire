@@ -304,6 +304,38 @@ const allowOversizeChunkOverflow = (chunkNode, chunkBody) => {
     chunkNode.style.overflow = 'visible'
 }
 
+const applyPageRootLayoutStyles = root => {
+    if (!(root instanceof HTMLElement)) return
+    root.style.position = 'relative'
+    root.style.inlineSize = '100%'
+    root.style.blockSize = '100%'
+    root.style.boxSizing = 'border-box'
+    root.style.overflow = 'hidden'
+}
+
+const applyPageLayoutStyles = pageNode => {
+    if (!(pageNode instanceof HTMLElement)) return
+    pageNode.style.inlineSize = '100%'
+    pageNode.style.blockSize = '100%'
+    pageNode.style.boxSizing = 'border-box'
+    pageNode.style.overflow = 'hidden'
+}
+
+const applyChunkLayoutStyles = (chunkNode, chunkBody) => {
+    if (chunkNode instanceof HTMLElement) {
+        chunkNode.style.inlineSize = '100%'
+        chunkNode.style.blockSize = '100%'
+        chunkNode.style.boxSizing = 'border-box'
+        chunkNode.style.overflow = 'hidden'
+    }
+    if (chunkBody instanceof HTMLElement) {
+        chunkBody.style.inlineSize = '100%'
+        chunkBody.style.blockSize = '100%'
+        chunkBody.style.boxSizing = 'border-box'
+        chunkBody.style.overflow = 'hidden'
+    }
+}
+
 const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersion, runtime }) => {
     const chunkNode = doc.createElement('section')
     chunkNode.className = 'manabi-tracking-section manabi-page-column-chunk'
@@ -315,6 +347,7 @@ const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersi
     chunkNode.dataset.manabiTrackingSectionId = chunkNode.dataset.manabiChunkId
     const chunkBody = doc.createElement('div')
     chunkBody.className = 'manabi-page-column-body'
+    applyChunkLayoutStyles(chunkNode, chunkBody)
     chunkNode.appendChild(chunkBody)
     pageNode.appendChild(chunkNode)
     runtime?.manabiCreateTrackingSectionChrome?.(chunkNode, columnIndex, {
@@ -461,6 +494,7 @@ export class EbookSectionLayout {
             if (!units?.length) {
                 liveRoot.innerHTML = ''
                 liveRoot.classList.add('manabi-page-root')
+                applyPageRootLayoutStyles(liveRoot)
                 this.#pageRecords = []
                 this.#buildState = null
                 this.#refreshLiveRoot({ runtime, root: liveRoot, complete: true })
@@ -903,12 +937,14 @@ export class EbookSectionLayout {
         this.#stagingRoot = root
         root.innerHTML = ''
         root.classList.add('manabi-page-root')
+        applyPageRootLayoutStyles(root)
         root.dataset.manabiLayoutVersion = String(layoutVersion)
         this.#pageRecords = []
 
         const pageNode = doc.createElement('div')
         pageNode.className = 'manabi-page'
         pageNode.dataset.manabiPageIndex = '0'
+        applyPageLayoutStyles(pageNode)
         root.appendChild(pageNode)
 
         const pageRecord = {
@@ -990,6 +1026,7 @@ export class EbookSectionLayout {
             state.pageNode = state.doc.createElement('div')
             state.pageNode.className = 'manabi-page'
             state.pageNode.dataset.manabiPageIndex = String(state.pageIndex)
+            applyPageLayoutStyles(state.pageNode)
             state.root.appendChild(state.pageNode)
             state.pageRecord = {
                 pageIndex: state.pageIndex,

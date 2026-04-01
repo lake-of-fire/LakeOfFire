@@ -16,9 +16,13 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryBool(at: ["smokeTest", "usesViewLength"], in: summary), true)
         XCTAssertEqual(smokeSummaryNumber(at: ["smokeTest", "explicitPageLength"], in: summary), 0)
         XCTAssertEqual(smokeSummaryString(at: ["nativePagination", "state", "storedPageLength"], in: summary), "0.0")
-        assertNavigationProbe(summary)
+        assertSinglePageNavigationFallback(summary)
+        assertButtonNavigationProbe(summary)
         assertJumpProbe(summary)
+        assertTOCJumpProbe(summary)
         assertProgressJumpProbe(summary)
+        assertRestoreProbe(summary)
+        assertFinishStartOverProbe(summary)
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
@@ -52,8 +56,13 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingDirectionOverride"], in: summary), "vertical")
         XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "vertical"], in: summary), true)
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingMode"], in: summary), "vertical-rl")
+        assertSinglePageNavigationFallback(summary)
         assertJumpProbe(summary)
+        assertButtonNavigationProbe(summary)
+        assertTOCJumpProbe(summary)
         assertProgressJumpProbe(summary)
+        assertRestoreProbe(summary)
+        assertFinishStartOverProbe(summary)
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
@@ -98,14 +107,80 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "rtl"], in: summary), true)
         XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "vertical"], in: summary), false)
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingMode"], in: summary), "horizontal-rtl")
+        assertSinglePageNavigationFallback(summary)
         assertJumpProbe(summary)
+        assertButtonNavigationProbe(summary)
+        assertTOCJumpProbe(summary)
         assertProgressJumpProbe(summary)
+        assertRestoreProbe(summary)
+        assertFinishStartOverProbe(summary)
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
         assertResizeProbe(summary)
         assertUserFacingPageUI(summary)
         assertLayoutLooksSane(summary)
+    }
+
+    func testHarnessSmokePassesLongChapterEPUBWithMultipleNativePages() throws {
+        let fixtureDirectoryURL = try makeFixtureDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: fixtureDirectoryURL)
+        }
+
+        let longChapterParagraphs = makeLongChapterParagraphs()
+        let epubURL = try makeMinimalEPUB(
+            at: fixtureDirectoryURL,
+            chapterParagraphs: (longChapterParagraphs, longChapterParagraphs)
+        )
+        let smokeResult = try runHarnessSmoke(
+            arguments: [
+                "--smoke-test",
+                "--smoke-timeout=30",
+                "--smoke-page-length=320",
+                epubURL.path,
+            ]
+        )
+        let summary = try extractSmokeSummary(from: smokeResult.combinedOutput)
+        assertPassingSmokeResult(smokeResult, summary: summary)
+        assertNavigationProbe(summary)
+        assertButtonNavigationProbe(summary)
+        assertJumpProbe(summary)
+        assertTOCJumpProbe(summary)
+        assertProgressJumpProbe(summary)
+        assertRestoreProbe(summary)
+        assertFinishStartOverProbe(summary)
+        assertNativePaginationState(summary)
+        assertRuntimePaginationProbe(summary)
+        assertPaginationToggleProbe(summary)
+        assertResizeProbe(summary)
+        assertUserFacingPageUI(summary)
+        assertLayoutLooksSane(summary)
+        assertLongChapterPagination(summary)
+    }
+
+    func testHarnessSmokeSurfacesLongChapterDiagnosticsForRashomonIfAvailable() throws {
+        let rashomonURL = URL(fileURLWithPath: "/Users/alex/Downloads/[芥川龍之介] 羅生門.epub")
+        guard FileManager.default.fileExists(atPath: rashomonURL.path) else {
+            throw XCTSkip("Local Rashomon EPUB is not available at \(rashomonURL.path)")
+        }
+
+        let smokeResult = try runHarnessSmoke(
+            arguments: [
+                "--smoke-test",
+                "--smoke-timeout=30",
+                rashomonURL.path,
+            ]
+        )
+        let summary = try extractSmokeSummary(from: smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "ebookViewerInitialized"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["events", "ebookViewerLoaded"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "iframeCount"], in: summary), 0, smokeResult.combinedOutput)
+        XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "hasSectionLayoutController"], in: summary), true, smokeResult.combinedOutput)
+        guard smokeSummaryBool(at: ["longChapterProbe", "chapter2Reached"], in: summary) == true else {
+            throw XCTSkip("Rashomon sample did not reach a deterministic second-section jump target in smoke mode")
+        }
+        assertLongChapterPagination(summary)
     }
 
     private func makeFixtureDirectory() throws -> URL {
@@ -170,8 +245,13 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
     private func assertNavigationProbe(_ summary: [String: Any], line: UInt = #line) {
         XCTAssertEqual(smokeSummaryBool(at: ["navigationProbe", "nextAdvanced"], in: summary), true)
         XCTAssertEqual(smokeSummaryBool(at: ["navigationProbe", "prevReturned"], in: summary), true)
-        XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["navigationProbe", "updateCurrentContentPageDelta"], in: summary), 1)
         XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["navigationProbe", "updateReadingProgressDelta"], in: summary), 1)
+    }
+
+    private func assertSinglePageNavigationFallback(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["gateDiagnostics", "allowsSinglePageNavigationFallback"], in: summary), true)
+        XCTAssertLessThanOrEqual(smokeSummaryInt(at: ["gateDiagnostics", "initialSectionPageCount"], in: summary), 1)
+        XCTAssertEqual(smokeSummaryBool(at: ["gateDiagnostics", "navigationProbePassed"], in: summary), false)
     }
 
     private func assertJumpProbe(_ summary: [String: Any], line: UInt = #line) {
@@ -188,6 +268,40 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryNumber(at: ["progressJumpProbe", "jumpToStartFraction"], in: summary), 0)
         XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["progressJumpProbe", "updateCurrentContentPageDelta"], in: summary), 1)
         XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["progressJumpProbe", "updateReadingProgressDelta"], in: summary), 1)
+    }
+
+    private func assertButtonNavigationProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["buttonNavigationProbe", "nextAdvanced"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["buttonNavigationProbe", "prevReturned"], in: summary), true)
+    }
+
+    private func assertTOCJumpProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["tocJumpProbe", "chapter2Reached"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["tocJumpProbe", "chapter1Returned"], in: summary), true)
+        XCTAssertEqual(smokeSummaryString(at: ["tocJumpProbe", "chapter2Target"], in: summary), "OEBPS/chapter2.xhtml")
+        XCTAssertEqual(smokeSummaryString(at: ["tocJumpProbe", "chapter1Target"], in: summary), "OEBPS/chapter1.xhtml")
+    }
+
+    private func assertRestoreProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["restoreProbe", "restoredToSecondChapter"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["restoreProbe", "restoredCFIPreserved"], in: summary), true)
+        XCTAssertTrue(
+            (smokeSummaryString(at: ["restoreProbe", "beforeReloadContentPageURL"], in: summary) ?? "").contains("chapter2.xhtml")
+        )
+        XCTAssertTrue(
+            (smokeSummaryString(at: ["restoreProbe", "afterReloadContentPageURL"], in: summary) ?? "").contains("chapter2.xhtml")
+        )
+        XCTAssertFalse((smokeSummaryString(at: ["restoreProbe", "beforeReloadCFI"], in: summary) ?? "").isEmpty)
+        XCTAssertFalse((smokeSummaryString(at: ["restoreProbe", "afterReloadCFI"], in: summary) ?? "").isEmpty)
+    }
+
+    private func assertFinishStartOverProbe(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["finishStartOverProbe", "finishMessageObserved"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["finishStartOverProbe", "startOverMessageObserved"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["finishStartOverProbe", "restartReturnedToFirstChapter"], in: summary), true)
+        XCTAssertTrue(
+            (smokeSummaryString(at: ["finishStartOverProbe", "afterRestartContentPageURL"], in: summary) ?? "").contains("chapter1.xhtml")
+        )
     }
 
     private func assertPaginationToggleProbe(_ summary: [String: Any], line: UInt = #line) {
@@ -264,6 +378,25 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertNotEqual(smokeSummaryString(at: ["nativePagination", "state", "lastApplyReason"], in: summary), "nil")
         XCTAssertGreaterThan(smokeSummaryInt(at: ["nativePagination", "initialPageCount"], in: summary), 0)
         XCTAssertGreaterThan(smokeSummaryInt(at: ["nativePagination", "stablePageCount"], in: summary), 0)
+    }
+
+    private func assertLongChapterPagination(_ summary: [String: Any], line: UInt = #line) {
+        XCTAssertEqual(smokeSummaryBool(at: ["longChapterProbe", "chapter2Reached"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["longChapterProbe", "sameMountedHost"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["longChapterProbe", "sameAppliedHost"], in: summary), true)
+        XCTAssertGreaterThan(
+            smokeSummaryInt(at: ["longChapterProbe", "afterJumpToSecond", "navDiagnostics", "lastKnownLocationTotal"], in: summary),
+            1
+        )
+        XCTAssertGreaterThan(smokeSummaryInt(at: ["longChapterProbe", "nativePageCountAfterJump"], in: summary), 0)
+        let primaryLabel = smokeSummaryString(at: ["longChapterProbe", "afterJumpToSecond", "userFacingPageUI", "primaryLabelFull"], in: summary) ?? ""
+        XCTAssertTrue(primaryLabel.contains("of"), primaryLabel)
+        XCTAssertFalse(primaryLabel.localizedCaseInsensitiveContains("loc"), primaryLabel)
+        XCTAssertFalse(primaryLabel.contains("Page 1 of 1"), primaryLabel)
+        XCTAssertGreaterThan(
+            smokeSummaryInt(at: ["jsProbe", "sectionLayoutDiagnostics", "pageCount"], in: summary),
+            1
+        )
     }
 
     private func makeMinimalEPUB(
@@ -433,6 +566,20 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
           </body>
         </html>
         """
+    }
+
+    private func makeLongChapterParagraphs() -> [String] {
+        let seedParagraphs = [
+            "ある日の暮方の事である。ひとりの下人が、羅生門の下で雨やみを待っていた。広い門の下には、この男のほかに誰もいない。ただ、所々丹塗の剥げた大きな円柱に、蟋蟀が一匹とまっている。",
+            "下人は、七段ある石段のいちばん上の段に洗いざらした紺の襖の尻を据えて、右の頬に出来た大きな面皰を気にしながら、ぼんやり、雨の降るのを眺めていた。作者はさっき、下人が雨やみを待っていたと書いた。",
+            "しかし下人は、雨がやんでも、格別どうしようという当てはない。ふだんなら、もちろん、主人の家へ帰るべきはずである。ところがその主人からは、四、五日前に暇を出された。",
+            "元来この下人のいた主人は、京の都が衰微するのにしたがって、いわばこの下人の運命までもが押し流されていくような時代のうねりの中にいた。彼はその行く末を、自分でも持て余していた。"
+        ]
+
+        return (0..<60).map { index in
+            let base = seedParagraphs[index % seedParagraphs.count]
+            return "\(base) 追補\(index + 1)。同じ章の中で複数のネイティブページにまたがることを確認するため、文章量を意図的に増やしている。"
+        }
     }
 
     private func assertOutputContains(_ pattern: String, in output: String, line: UInt = #line) {

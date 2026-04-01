@@ -1511,14 +1511,34 @@ export class NavigationHUD {
             this.lastTotalSource = null;
             return null;
         }
-        const precedence = ['page-targets', 'sections', 'fallback', 'renderer', 'detail', 'location'];
-        const best = candidates
+        const locationCandidate = candidates.find(candidate => candidate.source === 'location') ?? null;
+        const pageBasedPrecedence = ['page-targets', 'sections', 'renderer', 'detail', 'fallback'];
+        const bestPageBased = candidates
+            .filter(candidate => candidate.source !== 'location')
             .sort((a, b) => {
-                const pa = precedence.indexOf(a.source);
-                const pb = precedence.indexOf(b.source);
-                if (pa !== pb) return pa - pb; // lower index = higher priority
-                return (b.total ?? 0) - (a.total ?? 0); // tie-break by larger total
-            })[0];
+                const pa = pageBasedPrecedence.indexOf(a.source);
+                const pb = pageBasedPrecedence.indexOf(b.source);
+                if (pa !== pb) return pa - pb;
+                return (b.total ?? 0) - (a.total ?? 0);
+            })[0] ?? null;
+
+        let best = bestPageBased ?? locationCandidate;
+        const hasStructuredTotals = this.totalPageCount > 0 || this.#hasCompleteSectionCounts();
+        const locationClearlyBeatsWeakPageTotals =
+            !!locationCandidate
+            && locationCandidate.total > 1
+            && (
+                !bestPageBased
+                || bestPageBased.total <= 1
+                || (
+                    !hasStructuredTotals
+                    && bestPageBased.source === 'fallback'
+                    && locationCandidate.total > bestPageBased.total
+                )
+            );
+        if (locationClearlyBeatsWeakPageTotals) {
+            best = locationCandidate;
+        }
         this.lastTotalSource = best?.source ?? null;
         if (best?.total && best.source !== 'page-targets') {
             this.#updateFallbackTotalPages(best.total);
