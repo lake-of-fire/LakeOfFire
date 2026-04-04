@@ -53,7 +53,38 @@ fileprivate struct ThemeModifier: ViewModifier {
             return
         }
         do {
-            try await scriptCaller.evaluateJavaScript("document.body.style.fontSize = '\(size)px';", duplicateInMultiTargetFrames: true)
+            let result = try await scriptCaller.evaluateJavaScript(
+                """
+                const px = '\(size)px';
+                const docs = [document];
+                const liveDoc = globalThis.reader?.view?.document;
+                if (liveDoc && !docs.includes(liveDoc)) docs.push(liveDoc);
+                for (const doc of docs) {
+                    try { doc.documentElement?.style?.setProperty('font-size', px); } catch (_error) {}
+                    try { doc.body?.style?.setProperty('font-size', px); } catch (_error) {}
+                    try { doc.body?.setAttribute?.('data-manabi-diagnostic-font-size', px); } catch (_error) {}
+                }
+                globalThis.manabiDiagnosticFontSize = px;
+                return {
+                  requested: px,
+                  shellDocumentFontSize: (() => {
+                    try { return getComputedStyle(document.documentElement).fontSize; } catch (_error) { return null; }
+                  })(),
+                  shellBodyFontSize: (() => {
+                    try { return getComputedStyle(document.body).fontSize; } catch (_error) { return null; }
+                  })(),
+                  liveDocumentFontSize: (() => {
+                    try {
+                      const doc = globalThis.reader?.view?.document;
+                      return doc ? getComputedStyle(doc.documentElement || doc.body).fontSize : null;
+                    } catch (_error) { return null; }
+                  })(),
+                  hasReaderView: !!globalThis.reader?.view
+                };
+                """,
+                duplicateInMultiTargetFrames: true
+            )
+            Logger.shared.logger.info("# PAGETURN fontSize.apply reason=\(reason) result=\(String(describing: result))")
             await updateTrackingSettingsKey(reason: "font-size-change")
             await requestGeometryBake(reason: reason)
         } catch {
@@ -209,6 +240,12 @@ public struct ReaderPageTurnProbeSnapshot: Equatable {
     public var mountedHostIdentifier: String?
     public var appliedHostIdentifier: String?
     public var liveWebViewIdentifier: String?
+    public var currentSectionIndex: Int?
+    public var currentSectionHref: String?
+    public var currentPage: Int?
+    public var pageCount: Int?
+    public var canForward: Bool
+    public var canBackward: Bool
     public var interactionKind: String?
     public var interactionQualified: Bool?
     public var interactionDirection: String?
@@ -234,6 +271,12 @@ public struct ReaderPageTurnProbeSnapshot: Equatable {
         mountedHostIdentifier: String?,
         appliedHostIdentifier: String?,
         liveWebViewIdentifier: String?,
+        currentSectionIndex: Int?,
+        currentSectionHref: String?,
+        currentPage: Int?,
+        pageCount: Int?,
+        canForward: Bool,
+        canBackward: Bool,
         interactionKind: String?,
         interactionQualified: Bool?,
         interactionDirection: String?,
@@ -258,6 +301,12 @@ public struct ReaderPageTurnProbeSnapshot: Equatable {
         self.mountedHostIdentifier = mountedHostIdentifier
         self.appliedHostIdentifier = appliedHostIdentifier
         self.liveWebViewIdentifier = liveWebViewIdentifier
+        self.currentSectionIndex = currentSectionIndex
+        self.currentSectionHref = currentSectionHref
+        self.currentPage = currentPage
+        self.pageCount = pageCount
+        self.canForward = canForward
+        self.canBackward = canBackward
         self.interactionKind = interactionKind
         self.interactionQualified = interactionQualified
         self.interactionDirection = interactionDirection
@@ -285,6 +334,12 @@ public struct ReaderPageTurnProbeSnapshot: Equatable {
             "mountedHost=\(mountedHostIdentifier ?? "nil")",
             "appliedHost=\(appliedHostIdentifier ?? "nil")",
             "liveWebView=\(liveWebViewIdentifier ?? "nil")",
+            "currentSectionIndex=\(currentSectionIndex.map(String.init) ?? "nil")",
+            "currentSectionHref=\(currentSectionHref ?? "nil")",
+            "currentPage=\(currentPage.map(String.init) ?? "nil")",
+            "pageCount=\(pageCount.map(String.init) ?? "nil")",
+            "canForward=\(canForward)",
+            "canBackward=\(canBackward)",
             "interactionKind=\(interactionKind ?? "nil")",
             "interactionQualified=\(interactionQualified.map(String.init) ?? "nil")",
             "interactionDirection=\(interactionDirection ?? "nil")",
@@ -412,6 +467,14 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     var isRightToLeft: Bool
     var isVertical: Bool
     var isVerticalRightToLeft: Bool
+    var currentSectionIndex: Int?
+    var currentSectionHref: String?
+    var currentPage: Int?
+    var pageCount: Int?
+    var computedFontSizeCSS: String?
+    var currentPageTextSample: String?
+    var nextPageTextSample: String?
+    var probeError: String?
 
     var resolvedPaginationMode: WebViewPaginationMode {
         if isVertical {
@@ -423,6 +486,43 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     var pageProgressionDirection: PageTurnPageProgressionDirection {
         resolvedPaginationMode == .rightToLeft ? .rightToLeft : .leftToRight
     }
+
+    var canSemanticForward: Bool {
+        canForward
+    }
+
+    var canSemanticBackward: Bool {
+        canBackward
+    }
+
+    var logPayload: [String: String] {
+        [
+            "hasView": "\(hasView)",
+            "hasRenderer": "\(hasRenderer)",
+            "canNext": "\(canNext)",
+            "canPrev": "\(canPrev)",
+            "canForward": "\(canSemanticForward)",
+            "canBackward": "\(canSemanticBackward)",
+            "physicalCanForward": "\(canForward)",
+            "physicalCanBackward": "\(canBackward)",
+            "hasSectionLayoutController": "\(hasSectionLayoutController)",
+            "bookDirection": bookDirection ?? "nil",
+            "isRightToLeft": "\(isRightToLeft)",
+            "isVertical": "\(isVertical)",
+            "isVerticalRightToLeft": "\(isVerticalRightToLeft)",
+            "currentSectionIndex": currentSectionIndex.map(String.init) ?? "nil",
+            "currentSectionHref": currentSectionHref ?? "nil",
+            "currentPage": currentPage.map(String.init) ?? "nil",
+            "pageCount": pageCount.map(String.init) ?? "nil",
+            "computedFontSizeCSS": computedFontSizeCSS ?? "nil",
+            "currentPageTextSample": currentPageTextSample ?? "nil",
+            "nextPageTextSample": nextPageTextSample ?? "nil",
+            "probeError": probeError ?? "nil",
+            "resolvedPaginationMode": resolvedPaginationMode.rawValue.description,
+            "pageProgressionDirection": pageProgressionDirection.rawValue,
+            "supportsActivePageTurn": "\(supportsActivePageTurn)",
+        ]
+    }
 }
 
 @MainActor
@@ -432,6 +532,12 @@ fileprivate func readerPageTurnObject(_ value: Any?) -> [String: Any]? {
     }
     if let dictionary = value as? NSDictionary {
         return dictionary as? [String: Any]
+    }
+    if let string = value as? String,
+       let data = string.data(using: .utf8),
+       let object = try? JSONSerialization.jsonObject(with: data),
+       let dictionary = object as? [String: Any] {
+        return dictionary
     }
     return nil
 }
@@ -490,6 +596,12 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     @Published private(set) var supportsActivePageTurn = false
     @Published private(set) var pageProgressionDirection: PageTurnPageProgressionDirection = .leftToRight
     @Published private(set) var resolvedPaginationMode: WebViewPaginationMode = .leftToRight
+    @Published private(set) var currentSectionIndex: Int?
+    @Published private(set) var currentSectionHref: String?
+    @Published private(set) var currentPage: Int?
+    @Published private(set) var pageCount: Int?
+    @Published private(set) var canForward = false
+    @Published private(set) var canBackward = false
     @Published private(set) var lastTurnEvent: ReaderPageTurnTurnEvent?
 
     private var navigator: WebViewNavigator?
@@ -520,12 +632,21 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             supportsActivePageTurn = false
             pageProgressionDirection = .leftToRight
             resolvedPaginationMode = .leftToRight
+            currentSectionIndex = nil
+            currentSectionHref = nil
+            currentPage = nil
+            pageCount = nil
+            canForward = false
+            canBackward = false
             return
         }
 
         let paginationState = webViewState.paginationState
         let nextKey = [
             webViewState.pageURL.absoluteString,
+            webViewState.isLoading ? "loading" : "loaded",
+            webViewState.isProvisionallyNavigating ? "provisional" : "committed",
+            webViewState.pageTitle ?? "nil",
             paginationState?.appliedHostIdentifier ?? "nil",
             paginationState?.mountedHostIdentifier ?? "nil",
             paginationState.map { String($0.appliedConfiguration?.mode.rawValue ?? -1) } ?? "nil",
@@ -539,11 +660,30 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         capabilityRefreshTask?.cancel()
         capabilityRefreshTask = Task { [weak self] in
             guard let self else { return }
-            let probe = await self.fetchNavigationProbe()
-            guard !Task.isCancelled else { return }
-            supportsActivePageTurn = probe?.supportsActivePageTurn ?? false
-            pageProgressionDirection = probe?.pageProgressionDirection ?? .leftToRight
-            resolvedPaginationMode = probe?.resolvedPaginationMode ?? .leftToRight
+            let maxAttempts = 120
+            let retryDelayNanoseconds: UInt64 = 500_000_000
+            var lastProbe: ReaderPageTurnNavigationProbe?
+
+            for attempt in 1...maxAttempts {
+                let probe = await self.fetchNavigationProbe()
+                guard !Task.isCancelled else { return }
+                lastProbe = probe
+                if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1",
+                   let probe {
+                    Logger.shared.logger.info("# PAGETURN navProbe attempt=\(attempt) \(probe.logPayload)")
+                }
+                if probe?.supportsActivePageTurn == true {
+                    break
+                }
+                if attempt < maxAttempts {
+                    try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
+                }
+            }
+            if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1",
+               lastProbe?.supportsActivePageTurn != true {
+                Logger.shared.logger.warning("# PAGETURN navProbe.unresolved attempts=\(maxAttempts) last=\(lastProbe?.logPayload ?? [:])")
+            }
+            applyNavigationProbe(lastProbe)
         }
     }
 
@@ -554,9 +694,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         }
         let isAvailable = switch direction {
         case .forward:
-            probe.canForward
+            probe.canSemanticForward
         case .backward:
-            probe.canBackward
+            probe.canSemanticBackward
         }
         return isAvailable ? .both : .unavailable
     }
@@ -564,33 +704,36 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     func commitTurn(_ direction: PageTurnDirection) async throws {
         guard supportsActivePageTurn, let scriptCaller else { return }
 
-        let script: String
-        switch direction {
+        let functionName = switch direction {
         case .forward:
-            script = """
-            (async () => {
-              const view = globalThis.reader?.view;
-              if (!view || typeof view.next !== 'function') {
-                return false;
-              }
-              await view.next();
-              return true;
-            })()
-            """
+            "next"
         case .backward:
-            script = """
-            (async () => {
-              const view = globalThis.reader?.view;
-              if (!view || typeof view.prev !== 'function') {
-                return false;
-              }
-              await view.prev();
-              return true;
-            })()
-            """
+            "prev"
         }
 
+        let shouldLogDiagnostics = ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
+        let beforeProbe = shouldLogDiagnostics ? await fetchNavigationProbe() : nil
+
+        let script = """
+        const view = globalThis.reader?.view;
+        if (!view || typeof view.\(functionName) !== 'function') {
+          return false;
+        }
+        return await view.\(functionName)();
+        """
+
         let result = try await scriptCaller.evaluateJavaScript(script)
+        let afterProbe = shouldLogDiagnostics ? await fetchNavigationProbe() : nil
+        if let afterProbe {
+            applyNavigationProbe(afterProbe)
+        } else {
+            await refreshNavigationState()
+        }
+        if shouldLogDiagnostics {
+            Logger.shared.logger.info(
+                "# PAGETURN commitTurn direction=\(direction.rawValue) function=\(functionName) resultType=\(String(describing: type(of: result))) before=\(beforeProbe?.logPayload ?? [:]) after=\(afterProbe?.logPayload ?? [:])"
+            )
+        }
         guard readerPageTurnBool(result) else { return }
         publishTurnEvent(.committed, direction: direction)
     }
@@ -616,13 +759,23 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     private func fetchNavigationProbe() async -> ReaderPageTurnNavigationProbe? {
         guard let scriptCaller, scriptCaller.hasAsyncCaller else { return nil }
 
-        let result = try? await scriptCaller.evaluateJavaScript(
+        let result: Any?
+        do {
+            result = try await scriptCaller.evaluateJavaScript(
             """
-            (async () => {
+            try {
               const view = globalThis.reader?.view;
               const renderer = view?.renderer;
+              const sectionLayoutController = view?.document?.defaultView?.manabiEbookSectionLayoutController
+                ?? globalThis.manabiEbookSectionLayoutController
               const page = typeof renderer?.page === 'function' ? await renderer.page() : null;
               const pageCount = typeof renderer?.pages === 'function' ? await renderer.pages() : null;
+              const currentSectionIndex = Number.isFinite(renderer?.currentIndex) ? renderer.currentIndex : null;
+              const currentSectionHref = currentSectionIndex != null
+                ? renderer?.sections?.[currentSectionIndex]?.href
+                  ?? renderer?.sections?.[currentSectionIndex]?.url
+                  ?? null
+                : null;
               const atSectionStart = typeof renderer?.isAtSectionStart === 'function'
                 ? await renderer.isAtSectionStart()
                 : null;
@@ -641,7 +794,32 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
               const canForward = atSectionEnd === true
                 ? hasNextSection
                 : (Number.isFinite(page) && Number.isFinite(pageCount) ? page < pageCount || hasNextSection : false);
-              return {
+              const bodyStyle = globalThis.getComputedStyle?.(globalThis.document?.body ?? null);
+              const computedFontSizeCSS = bodyStyle?.fontSize ?? null;
+              const pageIndex = Number.isFinite(page) ? Math.max(0, page - 1) : 0;
+              const visibleRangeFor = index => {
+                try {
+                  return typeof sectionLayoutController?.visibleSourceRange === 'function'
+                    ? sectionLayoutController.visibleSourceRange(index)
+                    : null;
+                } catch {
+                  return null;
+                }
+              };
+              const sampleForRange = range => {
+                try {
+                  const text = range?.toString?.() ?? '';
+                  const normalized = String(text).replace(/\\s+/g, ' ').trim();
+                  return normalized ? normalized.slice(0, 180) : null;
+                } catch {
+                  return null;
+                }
+              };
+              const currentPageTextSample = sampleForRange(visibleRangeFor(pageIndex));
+              const nextPageTextSample = Number.isFinite(pageCount) && pageIndex + 1 < pageCount
+                ? sampleForRange(visibleRangeFor(pageIndex + 1))
+                : null;
+              return JSON.stringify({
                 hasView: !!view,
                 hasRenderer: !!renderer,
                 canNext: typeof view?.next === 'function',
@@ -659,13 +837,65 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 ),
                 isVertical: globalThis.manabiGetWritingDirectionSnapshot?.()?.vertical === true,
                 isVerticalRightToLeft: globalThis.manabiGetWritingDirectionSnapshot?.()?.verticalRTL === true,
-              };
-            })()
+                currentSectionIndex,
+                currentSectionHref,
+                currentPage: Number.isFinite(page) ? page : null,
+                pageCount: Number.isFinite(pageCount) ? pageCount : null,
+                computedFontSizeCSS,
+                currentPageTextSample,
+                nextPageTextSample,
+                probeError: null,
+              });
+            } catch (error) {
+              return JSON.stringify({
+                hasView: !!globalThis.reader?.view,
+                hasRenderer: !!globalThis.reader?.view?.renderer,
+                canNext: typeof globalThis.reader?.view?.next === 'function',
+                canPrev: typeof globalThis.reader?.view?.prev === 'function',
+                canForward: false,
+                canBackward: false,
+                hasSectionLayoutController: !!(
+                  globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
+                  ?? globalThis.manabiEbookSectionLayoutController
+                ),
+                bookDirection: globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? null,
+                isRightToLeft: !!(
+                  globalThis.manabiGetWritingDirectionSnapshot?.()?.rtl
+                  ?? ((globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? '').toLowerCase() === 'rtl')
+                ),
+                isVertical: globalThis.manabiGetWritingDirectionSnapshot?.()?.vertical === true,
+                isVerticalRightToLeft: globalThis.manabiGetWritingDirectionSnapshot?.()?.verticalRTL === true,
+                currentSectionIndex: Number.isFinite(globalThis.reader?.view?.renderer?.currentIndex)
+                  ? globalThis.reader.view.renderer.currentIndex
+                  : null,
+                currentSectionHref: Number.isFinite(globalThis.reader?.view?.renderer?.currentIndex)
+                  ? (
+                      globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                      ?? globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                      ?? null
+                    )
+                  : null,
+                currentPage: null,
+                pageCount: null,
+                computedFontSizeCSS: globalThis.getComputedStyle?.(globalThis.document?.body ?? null)?.fontSize ?? null,
+                currentPageTextSample: null,
+                nextPageTextSample: null,
+                probeError: String(error),
+              });
+            }
             """
-        )
+            )
+        } catch {
+            return nil
+        }
 
-        guard let dictionary = readerPageTurnObject(result) else { return nil }
-        return ReaderPageTurnNavigationProbe(
+        guard let dictionary = readerPageTurnObject(result) else {
+            if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                Logger.shared.logger.warning("# PAGETURN navProbe.nilResult resultType=\(String(describing: type(of: result)))")
+            }
+            return nil
+        }
+        let probe = ReaderPageTurnNavigationProbe(
             hasView: readerPageTurnBool(dictionary["hasView"]),
             hasRenderer: readerPageTurnBool(dictionary["hasRenderer"]),
             canNext: readerPageTurnBool(dictionary["canNext"]),
@@ -676,8 +906,82 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             bookDirection: dictionary["bookDirection"] as? String,
             isRightToLeft: readerPageTurnBool(dictionary["isRightToLeft"]),
             isVertical: readerPageTurnBool(dictionary["isVertical"]),
-            isVerticalRightToLeft: readerPageTurnBool(dictionary["isVerticalRightToLeft"])
+            isVerticalRightToLeft: readerPageTurnBool(dictionary["isVerticalRightToLeft"]),
+            currentSectionIndex: dictionary["currentSectionIndex"] as? Int ?? (dictionary["currentSectionIndex"] as? NSNumber)?.intValue,
+            currentSectionHref: dictionary["currentSectionHref"] as? String,
+            currentPage: dictionary["currentPage"] as? Int ?? (dictionary["currentPage"] as? NSNumber)?.intValue,
+            pageCount: dictionary["pageCount"] as? Int ?? (dictionary["pageCount"] as? NSNumber)?.intValue,
+            computedFontSizeCSS: dictionary["computedFontSizeCSS"] as? String,
+            currentPageTextSample: dictionary["currentPageTextSample"] as? String,
+            nextPageTextSample: dictionary["nextPageTextSample"] as? String,
+            probeError: dictionary["probeError"] as? String
         )
+        if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+            Logger.shared.logger.info("# PAGETURN navProbe.fetch \(probe.logPayload)")
+        }
+        return probe
+    }
+
+    func refreshNavigationState() async -> ReaderPageTurnNavigationProbe? {
+        let probe = await fetchNavigationProbe()
+        applyNavigationProbe(probe)
+        return probe
+    }
+
+    func moveToTextStartForDiagnostics() async -> Bool {
+        guard let scriptCaller else { return false }
+        let script = """
+        const view = globalThis.reader?.view;
+        const renderer = view?.renderer;
+        try {
+          if (!view) {
+            return 'error:noView';
+          }
+          if (typeof view.goToTextStart === 'function') {
+            await view.goToTextStart();
+            return 'ok:goToTextStart';
+          }
+          if (typeof renderer?.firstSection === 'function') {
+            await renderer.firstSection();
+            return 'ok:firstSection';
+          }
+          if (typeof view.goTo === 'function') {
+            await view.goTo(0);
+            return 'ok:goToZero';
+          }
+          return 'error:noMethod';
+        } catch (error) {
+          return `error:${String(error)}`;
+        }
+        """
+        do {
+            let result = try await scriptCaller.evaluateJavaScript(script)
+            let status = result as? String ?? String(describing: result)
+            let didMove = status.hasPrefix("ok:")
+            if didMove {
+                _ = await refreshNavigationState()
+            } else if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                Logger.shared.logger.warning("# PAGETURN autoSequence.reanchor.error status=\(status)")
+            }
+            return didMove
+        } catch {
+            if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                Logger.shared.logger.warning("# PAGETURN autoSequence.reanchor.error error=\(error.localizedDescription)")
+            }
+            return false
+        }
+    }
+
+    private func applyNavigationProbe(_ probe: ReaderPageTurnNavigationProbe?) {
+        supportsActivePageTurn = probe?.supportsActivePageTurn ?? false
+        pageProgressionDirection = probe?.pageProgressionDirection ?? .leftToRight
+        resolvedPaginationMode = probe?.resolvedPaginationMode ?? .leftToRight
+        currentSectionIndex = probe?.currentSectionIndex
+        currentSectionHref = probe?.currentSectionHref
+        currentPage = probe?.currentPage
+        pageCount = probe?.pageCount
+        canForward = probe?.canSemanticForward ?? false
+        canBackward = probe?.canSemanticBackward ?? false
     }
 
     private func makePlaceholderSnapshotImage(size: CGSize) -> PageTurnPlatformImage {
@@ -801,7 +1105,7 @@ fileprivate final class ReaderPageTurnIdentityMonitor: ObservableObject {
 
         guard previousSnapshot != snapshot else { return }
 
-        debugPrint("# PAGETURN identity", snapshot.dictionaryRepresentation)
+        Logger.shared.logger.info("# PAGETURN identity \(snapshot.dictionaryRepresentation)")
 
         guard let previousSnapshot else { return }
 
@@ -810,18 +1114,18 @@ fileprivate final class ReaderPageTurnIdentityMonitor: ObservableObject {
            previousSnapshot.liveWebViewIdentifier != nil,
            snapshot.liveWebViewIdentifier != nil,
            previousSnapshot.liveWebViewIdentifier != snapshot.liveWebViewIdentifier {
-            debugPrint(
-                "# PAGETURN identity.warning",
-                [
-                    "kind": "liveWebViewChanged",
-                    "pageURL": snapshot.pageURL,
-                    "previousLiveWebViewIdentifier": previousSnapshot.liveWebViewIdentifier ?? "nil",
-                    "nextLiveWebViewIdentifier": snapshot.liveWebViewIdentifier ?? "nil",
-                    "previousActiveEnabled": previousSnapshot.activeEnabled,
-                    "nextActiveEnabled": snapshot.activeEnabled,
-                    "previousMountedHostIdentifier": previousSnapshot.mountedHostIdentifier ?? "nil",
-                    "nextMountedHostIdentifier": snapshot.mountedHostIdentifier ?? "nil",
-                ] as [String: Any]
+            let warningPayload: [String: Any] = [
+                "kind": "liveWebViewChanged",
+                "pageURL": snapshot.pageURL,
+                "previousLiveWebViewIdentifier": previousSnapshot.liveWebViewIdentifier ?? "nil",
+                "nextLiveWebViewIdentifier": snapshot.liveWebViewIdentifier ?? "nil",
+                "previousActiveEnabled": previousSnapshot.activeEnabled,
+                "nextActiveEnabled": snapshot.activeEnabled,
+                "previousMountedHostIdentifier": previousSnapshot.mountedHostIdentifier ?? "nil",
+                "nextMountedHostIdentifier": snapshot.mountedHostIdentifier ?? "nil",
+            ]
+            Logger.shared.logger.warning(
+                "# PAGETURN identity.warning \(warningPayload)"
             )
         }
     }
@@ -858,6 +1162,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
     @StateObject private var layoutModel = makeReaderPageTurnLayoutModel()
     @StateObject private var bridge = ReaderPageTurnBridge()
     @StateObject private var identityMonitor = ReaderPageTurnIdentityMonitor()
+    @State private var autoProbeSequenceDidRun = false
 
     @Environment(\.webViewNavigator) private var navigator
     @Environment(\.readerPageTurnInteractionContext) private var interactionContext
@@ -900,6 +1205,23 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         .task(id: bridge.pageProgressionDirection) {
             controller.setPageProgressionDirection(bridge.pageProgressionDirection)
         }
+        .task(id: bridgeBootstrapPollingKey) {
+            guard shouldPollBridgeBootstrap else { return }
+            let maxAttempts = 120
+            let pollNanoseconds: UInt64 = 500_000_000
+            for _ in 1...maxAttempts {
+                guard shouldPollBridgeBootstrap else { break }
+                _ = await bridge.refreshNavigationState()
+                controller.setPageProgressionDirection(bridge.pageProgressionDirection)
+                let snapshot = await makeProbeSnapshot()
+                probeModel.update(snapshot)
+                logProbeSnapshotIfEnabled(snapshot)
+                if snapshot.supportsActivePageTurn {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: pollNanoseconds)
+            }
+        }
         .task(id: controller.visualState.structuralStateSerial) {
             syncHostNavigationVisibilityForPageTurnPhase()
         }
@@ -928,6 +1250,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             let snapshot = await makeProbeSnapshot()
             probeModel.update(snapshot)
             logProbeSnapshotIfEnabled(snapshot)
+            await runAutomaticProbeSequenceIfNeeded(snapshot)
         }
         .task(id: probeCommandBindingKey) {
             probeModel.bindCommandHandler { command in
@@ -941,11 +1264,30 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         return [
             requestedEnabled ? "requested" : "passThrough",
             readerViewModel.state.pageURL.absoluteString,
+            readerViewModel.state.isLoading ? "loading" : "loaded",
+            readerViewModel.state.isProvisionallyNavigating ? "provisional" : "committed",
+            readerViewModel.state.pageTitle ?? "nil",
             paginationState?.appliedHostIdentifier ?? "nil",
             paginationState?.mountedHostIdentifier ?? "nil",
             paginationState.map { String($0.appliedConfiguration?.mode.rawValue ?? -1) } ?? "nil",
             paginationState?.pageCount.map(String.init) ?? "nil",
             paginationState?.isAppliedToMountedHost == true ? "applied" : "notApplied",
+            navigator.hasAttachedWebView ? "attached" : "detached",
+        ].joined(separator: "|")
+    }
+
+    private var shouldPollBridgeBootstrap: Bool {
+        requestedEnabled
+            && isStructurallyEligibleForActiveTurns
+            && !bridge.supportsActivePageTurn
+    }
+
+    private var bridgeBootstrapPollingKey: String {
+        [
+            requestedEnabled ? "requested" : "passThrough",
+            isStructurallyEligibleForActiveTurns ? "eligible" : "ineligible",
+            bridge.supportsActivePageTurn ? "bridgeReady" : "bridgePending",
+            readerViewModel.state.pageURL.absoluteString,
             navigator.hasAttachedWebView ? "attached" : "detached",
         ].joined(separator: "|")
     }
@@ -1063,6 +1405,12 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             mountedHostIdentifier: paginationState?.mountedHostIdentifier,
             appliedHostIdentifier: paginationState?.appliedHostIdentifier,
             liveWebViewIdentifier: liveWebViewIdentifier,
+            currentSectionIndex: bridge.currentSectionIndex,
+            currentSectionHref: bridge.currentSectionHref,
+            currentPage: bridge.currentPage,
+            pageCount: bridge.pageCount,
+            canForward: bridge.canForward,
+            canBackward: bridge.canBackward,
             interactionKind: interaction?.kind.rawValue,
             interactionQualified: interaction?.qualified,
             interactionDirection: interaction?.direction?.rawValue,
@@ -1082,7 +1430,150 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
               || processInfo.arguments.contains("--ui-test-enable-page-turn-probe") else {
             return
         }
-        debugPrint("# PAGETURN probe", snapshot.summary)
+        Logger.shared.logger.info("# PAGETURN probe \(snapshot.summary)")
+    }
+
+    private var shouldRunAutomaticProbeSequence: Bool {
+        ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_AUTO_VERIFY_SEQUENCE"] == "1"
+    }
+
+    private func runAutomaticProbeSequenceIfNeeded(_ snapshot: ReaderPageTurnProbeSnapshot) async {
+        guard shouldRunAutomaticProbeSequence,
+              !autoProbeSequenceDidRun,
+              snapshot.activeEnabled,
+              snapshot.supportsActivePageTurn else {
+            return
+        }
+
+        var preparedSnapshot = snapshot
+        if !preparedSnapshot.canForward {
+            let didMoveToStart = await bridge.moveToTextStartForDiagnostics()
+            if didMoveToStart {
+                let refreshedSnapshot = await makeProbeSnapshot()
+                probeModel.update(refreshedSnapshot)
+                logProbeSnapshotIfEnabled(refreshedSnapshot)
+                preparedSnapshot = refreshedSnapshot
+                Logger.shared.logger.info("# PAGETURN autoSequence.reanchor didMoveToStart=true currentSectionIndex=\(preparedSnapshot.currentSectionIndex.map(String.init) ?? "nil") currentPage=\(preparedSnapshot.currentPage.map(String.init) ?? "nil") canForward=\(preparedSnapshot.canForward) canBackward=\(preparedSnapshot.canBackward)")
+            } else {
+                Logger.shared.logger.warning("# PAGETURN autoSequence.reanchor didMoveToStart=false currentSectionIndex=\(preparedSnapshot.currentSectionIndex.map(String.init) ?? "nil") currentPage=\(preparedSnapshot.currentPage.map(String.init) ?? "nil") canForward=\(preparedSnapshot.canForward) canBackward=\(preparedSnapshot.canBackward)")
+            }
+        }
+
+        guard preparedSnapshot.canForward else {
+            return
+        }
+
+        autoProbeSequenceDidRun = true
+        let baselineSectionIndex = preparedSnapshot.currentSectionIndex
+        let baselineSectionHref = preparedSnapshot.currentSectionHref
+        let baselinePage = preparedSnapshot.currentPage
+        let baselineCanBackward = preparedSnapshot.canBackward
+        Logger.shared.logger.info("# PAGETURN autoSequence.begin sectionIndex=\(baselineSectionIndex.map(String.init) ?? "nil") sectionHref=\(baselineSectionHref ?? "nil") currentPage=\(baselinePage.map(String.init) ?? "nil") pageCount=\(preparedSnapshot.pageCount.map(String.init) ?? "nil") canForward=\(preparedSnapshot.canForward) canBackward=\(baselineCanBackward)")
+
+        let forwardResult = await handleProbeCommand(.hostForwardTurn)
+        guard let forwardSnapshot = await waitForAutomaticProbeTransition(
+            expectedCommandPrefix: "committed:forward",
+            fallbackCommandResult: forwardResult,
+            baselineSectionIndex: baselineSectionIndex,
+            baselineSectionHref: baselineSectionHref,
+            baselinePage: baselinePage,
+            baselineCanBackward: baselineCanBackward
+        ) else {
+            Logger.shared.logger.warning("# PAGETURN autoSequence.forward.unresolved baselinePage=\(baselinePage.map(String.init) ?? "nil") result=\(forwardResult)")
+            return
+        }
+
+        Logger.shared.logger.info("# PAGETURN autoSequence.forward.success previousPage=\(baselinePage.map(String.init) ?? "nil") currentPage=\(forwardSnapshot.currentPage.map(String.init) ?? "nil") canBackward=\(forwardSnapshot.canBackward)")
+
+        guard forwardSnapshot.canBackward else {
+            Logger.shared.logger.warning("# PAGETURN autoSequence.backward.skipped reason=canBackwardFalse currentPage=\(forwardSnapshot.currentPage.map(String.init) ?? "nil")")
+            return
+        }
+
+        let backwardResult = await handleProbeCommand(.hostBackwardTurn)
+        guard let backwardSnapshot = await waitForAutomaticProbeReturn(
+            expectedCommandPrefix: "committed:backward",
+            fallbackCommandResult: backwardResult,
+            expectedSectionIndex: baselineSectionIndex,
+            expectedSectionHref: baselineSectionHref,
+            expectedPage: baselinePage,
+            expectedCanBackward: baselineCanBackward
+        ) else {
+            Logger.shared.logger.warning("# PAGETURN autoSequence.backward.unresolved expectedPage=\(baselinePage.map(String.init) ?? "nil") result=\(backwardResult)")
+            return
+        }
+
+        Logger.shared.logger.info("# PAGETURN autoSequence.backward.success restoredPage=\(backwardSnapshot.currentPage.map(String.init) ?? "nil") canBackward=\(backwardSnapshot.canBackward)")
+    }
+
+    private func waitForAutomaticProbeTransition(
+        expectedCommandPrefix: String,
+        fallbackCommandResult: String,
+        baselineSectionIndex: Int?,
+        baselineSectionHref: String?,
+        baselinePage: Int?,
+        baselineCanBackward: Bool,
+        timeoutNanoseconds: UInt64 = 8_000_000_000,
+        pollNanoseconds: UInt64 = 250_000_000
+    ) async -> ReaderPageTurnProbeSnapshot? {
+        let timeoutDate = Date().addingTimeInterval(TimeInterval(timeoutNanoseconds) / 1_000_000_000)
+        while Date() < timeoutDate {
+            _ = await bridge.refreshNavigationState()
+            let snapshot = await makeProbeSnapshot()
+            probeModel.update(snapshot)
+            logProbeSnapshotIfEnabled(snapshot)
+            if probeModel.lastCommandResult?.hasPrefix(expectedCommandPrefix) == true || fallbackCommandResult.hasPrefix(expectedCommandPrefix) {
+                if let baselineSectionIndex, let currentSectionIndex = snapshot.currentSectionIndex, currentSectionIndex != baselineSectionIndex {
+                    return snapshot
+                }
+                if let baselineSectionHref, let currentSectionHref = snapshot.currentSectionHref, currentSectionHref != baselineSectionHref {
+                    return snapshot
+                }
+                if let baselinePage, let currentPage = snapshot.currentPage, currentPage != baselinePage {
+                    return snapshot
+                }
+                if snapshot.canBackward != baselineCanBackward {
+                    return snapshot
+                }
+            }
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+        }
+        return nil
+    }
+
+    private func waitForAutomaticProbeReturn(
+        expectedCommandPrefix: String,
+        fallbackCommandResult: String,
+        expectedSectionIndex: Int?,
+        expectedSectionHref: String?,
+        expectedPage: Int?,
+        expectedCanBackward: Bool,
+        timeoutNanoseconds: UInt64 = 8_000_000_000,
+        pollNanoseconds: UInt64 = 250_000_000
+    ) async -> ReaderPageTurnProbeSnapshot? {
+        let timeoutDate = Date().addingTimeInterval(TimeInterval(timeoutNanoseconds) / 1_000_000_000)
+        while Date() < timeoutDate {
+            _ = await bridge.refreshNavigationState()
+            let snapshot = await makeProbeSnapshot()
+            probeModel.update(snapshot)
+            logProbeSnapshotIfEnabled(snapshot)
+            if probeModel.lastCommandResult?.hasPrefix(expectedCommandPrefix) == true || fallbackCommandResult.hasPrefix(expectedCommandPrefix) {
+                if let expectedSectionIndex, snapshot.currentSectionIndex == expectedSectionIndex {
+                    return snapshot
+                }
+                if let expectedSectionHref, snapshot.currentSectionHref == expectedSectionHref {
+                    return snapshot
+                }
+                if let expectedPage, snapshot.currentPage == expectedPage {
+                    return snapshot
+                }
+                if snapshot.canBackward == expectedCanBackward {
+                    return snapshot
+                }
+            }
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+        }
+        return nil
     }
 
     private func handleProbeCommand(_ command: ReaderPageTurnProbeCommand) async -> String {

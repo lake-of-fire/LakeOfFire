@@ -226,6 +226,13 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     @Persisted public var voiceFrameUrl: URL?
     @Persisted public var voiceAudioURL: URL?
     @Persisted public var audioSubtitlesURL: URL?
+    @Persisted public var audioSubtitlesRoleRawValue: String?
+    @Persisted public var primaryMediaIdentity: String?
+    @Persisted public var primaryMediaSourceURL: URL?
+    @Persisted public var primaryMediaKindRawValue: String?
+    @Persisted public var primaryMediaDuration: Double?
+    @Persisted public var primaryMediaLastPlaybackTime: Double?
+    @Persisted public var offlineMediaID: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     
@@ -335,11 +342,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
             bookmark.rssTitles.append(feed.title)
         }
         bookmark.isRSSAvailable = !bookmark.rssURLs.isEmpty
-        bookmark.voiceFrameUrl = voiceFrameUrl
-        bookmark.voiceAudioURL = voiceAudioURL ?? bookmark.voiceAudioURL
-        bookmark.audioSubtitlesURL = audioSubtitlesURL
-        bookmark.redditTranslationsUrl = redditTranslationsUrl
-        bookmark.redditTranslationsTitle = redditTranslationsTitle
+        copyReaderMediaState(
+            to: bookmark,
+            defaultAudioSubtitlesRole: .content
+        )
 
         bookmark.isReaderModeByDefault = isReaderModeByDefault
     }
@@ -540,6 +546,7 @@ public extension Feed {
                 let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
                 let existingSubtitle = existingEntry?.audioSubtitlesURL
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
+                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
                 feedEntry.updateCompoundKey()
                 debugPrint(
                     "# AUDIO-VTT feedEntry.persist.rss",
@@ -662,6 +669,7 @@ public extension Feed {
                 let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
                 let existingSubtitle = existingEntry?.audioSubtitlesURL
                 feedEntry.audioSubtitlesURL = audioSubtitlesURL
+                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
                 feedEntry.redditTranslationsTitle = redditTranslationsTitle
                 feedEntry.updateCompoundKey()
@@ -911,6 +919,13 @@ fileprivate struct FeedEntryPayload {
     let voiceFrameUrl: URL?
     let voiceAudioURL: URL?
     let audioSubtitlesURL: URL?
+    let audioSubtitlesRoleRawValue: String?
+    let primaryMediaIdentity: String?
+    let primaryMediaSourceURL: URL?
+    let primaryMediaKindRawValue: String?
+    let primaryMediaDuration: Double?
+    let primaryMediaLastPlaybackTime: Double?
+    let offlineMediaID: String?
     let redditTranslationsUrl: URL?
     let redditTranslationsTitle: String?
     let createdAt: Date
@@ -928,6 +943,14 @@ fileprivate struct FeedEntryPayload {
         voiceFrameUrl = entry.voiceFrameUrl
         voiceAudioURL = entry.voiceAudioURL
         audioSubtitlesURL = entry.audioSubtitlesURL
+        audioSubtitlesRoleRawValue = entry.audioSubtitlesRoleRawValue
+            ?? (entry.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+        primaryMediaIdentity = entry.primaryMediaIdentity
+        primaryMediaSourceURL = entry.primaryMediaSourceURL
+        primaryMediaKindRawValue = entry.primaryMediaKindRawValue
+        primaryMediaDuration = entry.primaryMediaDuration
+        primaryMediaLastPlaybackTime = entry.primaryMediaLastPlaybackTime
+        offlineMediaID = entry.offlineMediaID
         redditTranslationsUrl = entry.redditTranslationsUrl
         redditTranslationsTitle = entry.redditTranslationsTitle
         createdAt = existing?.createdAt ?? entry.createdAt
@@ -986,8 +1009,36 @@ fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any Reade
             "target=\(targetType)"
         )
     }
+    if content.audioSubtitlesRoleRawValue != payload.audioSubtitlesRoleRawValue {
+        content.audioSubtitlesRoleRawValue = payload.audioSubtitlesRoleRawValue
+        didChange = true
+    }
     if content.voiceAudioURL != payload.voiceAudioURL {
         content.voiceAudioURL = payload.voiceAudioURL
+        didChange = true
+    }
+    if content.primaryMediaIdentity != payload.primaryMediaIdentity {
+        content.primaryMediaIdentity = payload.primaryMediaIdentity
+        didChange = true
+    }
+    if content.primaryMediaSourceURL != payload.primaryMediaSourceURL {
+        content.primaryMediaSourceURL = payload.primaryMediaSourceURL
+        didChange = true
+    }
+    if content.primaryMediaKindRawValue != payload.primaryMediaKindRawValue {
+        content.primaryMediaKindRawValue = payload.primaryMediaKindRawValue
+        didChange = true
+    }
+    if content.primaryMediaDuration != payload.primaryMediaDuration {
+        content.primaryMediaDuration = payload.primaryMediaDuration
+        didChange = true
+    }
+    if content.primaryMediaLastPlaybackTime != payload.primaryMediaLastPlaybackTime {
+        content.primaryMediaLastPlaybackTime = payload.primaryMediaLastPlaybackTime
+        didChange = true
+    }
+    if content.offlineMediaID != payload.offlineMediaID {
+        content.offlineMediaID = payload.offlineMediaID
         didChange = true
     }
     if content.redditTranslationsUrl != payload.redditTranslationsUrl {

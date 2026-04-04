@@ -1003,6 +1003,12 @@ public struct ReaderWebView: View {
                     readerMediaPlayerViewModel: readerMediaPlayerViewModel,
                     scriptCaller: scriptCaller
                 )
+                debugPrint(
+                    "# READERWEBVIEW handler.init",
+                    "pageURL=\(readerViewModel.state.pageURL.absoluteString)",
+                    "hasAsyncCaller=\(scriptCaller.hasAsyncCaller)",
+                    "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
+                )
             } else if let handler {
                 handler.onNavigationCommitted = onNavigationCommitted
                 handler.onNavigationFinished = onNavigationFinished
@@ -1156,5 +1162,13 @@ private struct ReaderWebViewInternal: View {
             },
             hideNavigationDueToScroll: $hideNavigationDueToScroll
         )
+        .onAppear {
+            debugPrint(
+                "# READERWEBVIEW internal.onAppear",
+                "pageURL=\(state.pageURL.absoluteString)",
+                "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
+                "navigatorAttached=\(navigator.hasAttachedWebView)"
+            )
+        }
     }
 }

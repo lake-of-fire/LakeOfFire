@@ -2,13 +2,13 @@ import XCTest
 import BravePlaylist
 @testable import LakeOfFireWeb
 
-final class BravePlaylistWebSupportTests: XCTestCase {
+final class BraveMediaWebSupportTests: XCTestCase {
     func testScriptFactoryBuildsExpectedScripts() throws {
-        let scriptSet = try BravePlaylistWebScripts.make(
-            messageHandlerName: "playlistHandler",
+        let scriptSet = try BraveMediaWebScripts.make(
+            messageHandlerName: "mediaHandler",
             allowedDomains: ["youtube.com"],
             configuration: PlaylistScriptConfiguration(
-                messageHandlerName: "playlistHandler",
+                messageHandlerName: "mediaHandler",
                 securityToken: "security-token",
                 namespaceToken: "namespace"
             )
@@ -16,7 +16,7 @@ final class BravePlaylistWebSupportTests: XCTestCase {
 
         XCTAssertEqual(scriptSet.userScripts.count, 3)
         XCTAssertEqual(scriptSet.userScripts.first?.allowedDomains, ["youtube.com"])
-        XCTAssertTrue(scriptSet.userScripts[2].source.contains("playlistHandler"))
+        XCTAssertTrue(scriptSet.userScripts[2].source.contains("mediaHandler"))
         XCTAssertTrue(scriptSet.userScripts[2].source.contains("security-token"))
         XCTAssertEqual(
             scriptSet.processDocumentLoadJavaScript,
@@ -25,10 +25,10 @@ final class BravePlaylistWebSupportTests: XCTestCase {
     }
 
     func testMessageDecoderUsesScriptSecurityToken() throws {
-        let scriptSet = try BravePlaylistWebScripts.make(
-            messageHandlerName: "playlistHandler",
+        let scriptSet = try BraveMediaWebScripts.make(
+            messageHandlerName: "mediaHandler",
             configuration: PlaylistScriptConfiguration(
-                messageHandlerName: "playlistHandler",
+                messageHandlerName: "mediaHandler",
                 securityToken: "expected-token",
                 namespaceToken: "namespace"
             )
@@ -39,7 +39,7 @@ final class BravePlaylistWebSupportTests: XCTestCase {
             "state": "interactive",
         ]
 
-        let decoded = BravePlaylistWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
+        let decoded = BraveMediaWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
         XCTAssertEqual(decoded, .readyState(.init(state: "interactive")))
     }
 
@@ -67,7 +67,7 @@ final class BravePlaylistWebSupportTests: XCTestCase {
             isInvisible: false
         )
 
-        let preferred = BravePlaylistCandidateSelector.preferredCandidate(
+        let preferred = BraveMediaCandidateSelector.preferredCandidate(
             from: [invisibleVideo, visibleAudio]
         )
 
@@ -84,7 +84,7 @@ final class BravePlaylistWebSupportTests: XCTestCase {
             .expires: Date().addingTimeInterval(60),
         ])!
 
-        let context = BravePlaylistRequestContextBuilder.make(
+        let context = BraveMediaRequestContextBuilder.make(
             userAgent: "Manabi",
             referer: URL(string: "https://example.com/watch")!,
             cookies: [cookie]
@@ -125,7 +125,7 @@ final class BravePlaylistWebSupportTests: XCTestCase {
             resolutionMethod: .direct
         )
 
-        let download = try await BravePlaylistMediaDownloader.download(
+        let download = try await BraveMediaDownloader.download(
             media,
             using: makeSession()
         )

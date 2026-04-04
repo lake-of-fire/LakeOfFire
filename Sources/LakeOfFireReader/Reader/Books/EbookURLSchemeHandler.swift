@@ -6,6 +6,7 @@ import SwiftUtilities
 import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
+import LakeKit
 
 fileprivate let ebookHTMLDebugMarker = "芥川賞"
 fileprivate let ebookHTMLTargetSectionFragments = [
@@ -33,6 +34,10 @@ fileprivate func logEbookHTML(
     let segmentCount = html.components(separatedBy: "<manabi-segment").count - 1
     let hasTrackingFlag = html.contains("data-manabi-tracking-enabled")
     print("# EBOOKHTML stage=\(stage) cacheWarmer=\(isCacheWarmer) contentURL=\(contentURL.absoluteString) location=\(location) length=\(html.utf8.count) segmentCount=\(max(segmentCount, 0)) hasTrackingFlag=\(hasTrackingFlag)")
+}
+
+fileprivate func logEbookAsset(_ line: String) {
+    Logger.shared.logger.info("\(line)")
 }
 
 struct EBookProcessTextRequestKey: Hashable {
@@ -266,6 +271,12 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
 
         guard let url = urlSchemeTask.request.url else { return }
+        if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+            let mainDocumentURL = urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil"
+            logEbookAsset(
+                "# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)"
+            )
+        }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
@@ -562,6 +573,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 if let fileUrl = bundleURLFromWebURL(url),
                    let mimeType = mimeType(ofFileAtUrl: fileUrl),
                    let data = try? Data(contentsOf: fileUrl) {
+                    if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                        logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
+                    }
                     let response = HTTPURLResponse(
                         url: url,
                         mimeType: mimeType,
@@ -576,6 +590,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     }()
                 } else if let viewerHtmlPath = Bundle.module.path(forResource: "ebook-viewer", ofType: "html", inDirectory: "foliate-js") {
                     // File viewer bundle file.
+                    if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                        logEbookAsset("# EBOOKASSET fallbackViewerHTML url=\(url.absoluteString) path=\(viewerHtmlPath)")
+                    }
                     do {
                         let (response, data) = try await EBookLoadingActor().loadViewerFile(
                             at: viewerHtmlPath,
@@ -599,6 +616,9 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }()
                     }
                 } else {
+                    if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+                        logEbookAsset("# EBOOKASSET missing url=\(url.absoluteString)")
+                    }
                     await { @MainActor in
                         urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                     }()
@@ -612,7 +632,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         let assetName = url.deletingPathExtension().lastPathComponent
         let assetExtension = url.pathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
-        return Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
+        let resolvedURL = Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
+        if resolvedURL == nil, ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
+            logEbookAsset("# EBOOKASSET resolveMiss url=\(url.absoluteString) assetName=\(assetName) ext=\(assetExtension) dir=\(assetDirectory)")
+        }
+        return resolvedURL
     }
 
     @EbookURLSchemeActor

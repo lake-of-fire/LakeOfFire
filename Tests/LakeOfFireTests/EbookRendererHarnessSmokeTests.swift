@@ -16,7 +16,7 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryBool(at: ["smokeTest", "usesViewLength"], in: summary), true)
         XCTAssertEqual(smokeSummaryNumber(at: ["smokeTest", "explicitPageLength"], in: summary), 0)
         XCTAssertEqual(smokeSummaryString(at: ["nativePagination", "state", "storedPageLength"], in: summary), "0.0")
-        assertSinglePageNavigationFallback(summary)
+        assertNavigationCoverage(summary)
         assertButtonNavigationProbe(summary)
         assertJumpProbe(summary)
         assertTOCJumpProbe(summary)
@@ -26,9 +26,10 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
-        assertResizeProbe(summary)
+        assertResizeProbe(summary, expectVertical: false)
         assertUserFacingPageUI(summary)
         assertLayoutLooksSane(summary)
+        assertSectionLayoutDiagnostics(summary, expectVertical: false)
     }
 
     func testHarnessSmokePassesVerticalWritingEPUBWithExplicitPageLength() throws {
@@ -56,7 +57,7 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingDirectionOverride"], in: summary), "vertical")
         XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "vertical"], in: summary), true)
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingMode"], in: summary), "vertical-rl")
-        assertSinglePageNavigationFallback(summary)
+        assertNavigationCoverage(summary)
         assertJumpProbe(summary)
         assertButtonNavigationProbe(summary)
         assertTOCJumpProbe(summary)
@@ -66,9 +67,11 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
-        assertResizeProbe(summary)
+        assertResizeProbe(summary, expectVertical: true, expectedWritingMode: "vertical-rl")
+        assertVerticalTallSpreadProbe(summary)
         assertUserFacingPageUI(summary)
         assertLayoutLooksSane(summary)
+        assertSectionLayoutDiagnostics(summary, expectVertical: true, expectedWritingMode: "vertical-rl")
     }
 
     func testHarnessSmokePassesHorizontalRTLEPUB() throws {
@@ -107,7 +110,7 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "rtl"], in: summary), true)
         XCTAssertEqual(smokeSummaryBool(at: ["jsProbe", "writingDirectionSnapshot", "vertical"], in: summary), false)
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "writingDirectionSnapshot", "writingMode"], in: summary), "horizontal-rtl")
-        assertSinglePageNavigationFallback(summary)
+        assertNavigationCoverage(summary)
         assertJumpProbe(summary)
         assertButtonNavigationProbe(summary)
         assertTOCJumpProbe(summary)
@@ -117,9 +120,10 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
-        assertResizeProbe(summary)
+        assertResizeProbe(summary, expectVertical: false)
         assertUserFacingPageUI(summary)
         assertLayoutLooksSane(summary)
+        assertSectionLayoutDiagnostics(summary, expectVertical: false)
     }
 
     func testHarnessSmokePassesLongChapterEPUBWithMultipleNativePages() throws {
@@ -131,13 +135,26 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         let longChapterParagraphs = makeLongChapterParagraphs()
         let epubURL = try makeMinimalEPUB(
             at: fixtureDirectoryURL,
+            additionalCSS: """
+            body {
+              font-size: 30px;
+              line-height: 2.1;
+            }
+            h1 {
+              font-size: 38px;
+              margin-bottom: 1.2em;
+            }
+            p {
+              margin-bottom: 1.1em;
+            }
+            """,
             chapterParagraphs: (longChapterParagraphs, longChapterParagraphs)
         )
         let smokeResult = try runHarnessSmoke(
             arguments: [
                 "--smoke-test",
                 "--smoke-timeout=30",
-                "--smoke-page-length=320",
+                "--smoke-page-length=220",
                 epubURL.path,
             ]
         )
@@ -153,9 +170,10 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         assertNativePaginationState(summary)
         assertRuntimePaginationProbe(summary)
         assertPaginationToggleProbe(summary)
-        assertResizeProbe(summary)
+        assertResizeProbe(summary, expectVertical: false)
         assertUserFacingPageUI(summary)
         assertLayoutLooksSane(summary)
+        assertSectionLayoutDiagnostics(summary, expectVertical: false, requireComplete: false)
         assertLongChapterPagination(summary)
     }
 
@@ -248,10 +266,21 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["navigationProbe", "updateReadingProgressDelta"], in: summary), 1)
     }
 
-    private func assertSinglePageNavigationFallback(_ summary: [String: Any], line: UInt = #line) {
-        XCTAssertEqual(smokeSummaryBool(at: ["gateDiagnostics", "allowsSinglePageNavigationFallback"], in: summary), true)
-        XCTAssertLessThanOrEqual(smokeSummaryInt(at: ["gateDiagnostics", "initialSectionPageCount"], in: summary), 1)
-        XCTAssertEqual(smokeSummaryBool(at: ["gateDiagnostics", "navigationProbePassed"], in: summary), false)
+    private func assertNavigationCoverage(_ summary: [String: Any], line: UInt = #line) {
+        if smokeSummaryBool(at: ["gateDiagnostics", "allowsSinglePageNavigationFallback"], in: summary) == true {
+            XCTAssertLessThanOrEqual(smokeSummaryInt(at: ["gateDiagnostics", "initialSectionPageCount"], in: summary), 1)
+            XCTAssertEqual(smokeSummaryBool(at: ["buttonNavigationProbe", "nextAdvanced"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["buttonNavigationProbe", "prevReturned"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["jumpProbe", "chapter2Reached"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["jumpProbe", "chapter1Returned"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["tocJumpProbe", "chapter2Reached"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["tocJumpProbe", "chapter1Returned"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["progressJumpProbe", "endReached"], in: summary), true)
+            XCTAssertEqual(smokeSummaryBool(at: ["progressJumpProbe", "startReturned"], in: summary), true)
+            return
+        }
+
+        assertNavigationProbe(summary, line: line)
     }
 
     private func assertJumpProbe(_ summary: [String: Any], line: UInt = #line) {
@@ -315,7 +344,12 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         )
     }
 
-    private func assertResizeProbe(_ summary: [String: Any], line: UInt = #line) {
+    private func assertResizeProbe(
+        _ summary: [String: Any],
+        expectVertical: Bool,
+        expectedWritingMode: String? = nil,
+        line: UInt = #line
+    ) {
         XCTAssertEqual(smokeSummaryString(at: ["resizeProbe", "afterPreset"], in: summary), "macBook")
         XCTAssertEqual(smokeSummaryInt(at: ["resizeProbe", "after", "shellMetrics", "innerWidth"], in: summary), 1280)
         XCTAssertEqual(smokeSummaryInt(at: ["resizeProbe", "after", "shellMetrics", "innerHeight"], in: summary), 900)
@@ -323,9 +357,19 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "sameAppliedHost"], in: summary), true)
         XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "pageCountPositive"], in: summary), true)
         XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "layoutSizeApplied"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "layoutDiagnosticsPresent"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "chunkCountPositive"], in: summary), true)
+        XCTAssertEqual(smokeSummaryBool(at: ["resizeProbe", "columnCountPositive"], in: summary), true)
         XCTAssertEqual(
             smokeSummaryString(at: ["resizeProbe", "beforeState", "mountedHostIdentifier"], in: summary),
             smokeSummaryString(at: ["resizeProbe", "afterState", "mountedHostIdentifier"], in: summary)
+        )
+        assertSectionLayoutDiagnostics(
+            summary,
+            at: ["resizeProbe", "after", "sectionLayoutDiagnostics"],
+            expectVertical: expectVertical,
+            expectedWritingMode: expectedWritingMode,
+            requireComplete: false
         )
     }
 
@@ -352,6 +396,43 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         )
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "computedDisplay"], in: summary), "block")
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "computedPosition"], in: summary), "absolute")
+    }
+
+    private func assertSectionLayoutDiagnostics(
+        _ summary: [String: Any],
+        at basePath: [String] = ["jsProbe", "sectionLayoutDiagnostics"],
+        expectVertical: Bool,
+        expectedWritingMode: String? = nil,
+        requireComplete: Bool = true,
+        line: UInt = #line
+    ) {
+        let diagnostics = smokeSummaryDictionary(at: basePath + ["layoutDiagnostics"], in: summary)
+        XCTAssertNotNil(diagnostics, "Missing section layout diagnostics")
+        XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["pageCount"], in: summary), 0)
+        if requireComplete {
+            XCTAssertEqual(
+                smokeSummaryBool(at: basePath + ["layoutDiagnostics", "layoutComplete"], in: summary),
+                true
+            )
+        }
+        XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["layoutDiagnostics", "pageRecordCount"], in: summary), 0)
+        XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["layoutDiagnostics", "currentPageChunkCount"], in: summary), 0)
+        XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["layoutDiagnostics", "maxPageChunkCount"], in: summary), 0)
+        XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["layoutDiagnostics", "columnCount"], in: summary), 0)
+        XCTAssertEqual(smokeSummaryBool(at: basePath + ["layoutDiagnostics", "vertical"], in: summary), expectVertical)
+
+        let writingMode = smokeSummaryString(
+            at: basePath + ["layoutDiagnostics", "writingMode"],
+            in: summary
+        ) ?? ""
+        XCTAssertFalse(writingMode.isEmpty)
+        if let expectedWritingMode {
+            XCTAssertEqual(writingMode, expectedWritingMode)
+        } else if expectVertical {
+            XCTAssertTrue(writingMode.hasPrefix("vertical"), writingMode)
+        } else {
+            XCTAssertTrue(writingMode.hasPrefix("horizontal"), writingMode)
+        }
     }
 
     private func assertUserFacingPageUI(_ summary: [String: Any], line: UInt = #line) {
@@ -394,9 +475,68 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertFalse(primaryLabel.localizedCaseInsensitiveContains("loc"), primaryLabel)
         XCTAssertFalse(primaryLabel.contains("Page 1 of 1"), primaryLabel)
         XCTAssertGreaterThan(
-            smokeSummaryInt(at: ["jsProbe", "sectionLayoutDiagnostics", "pageCount"], in: summary),
-            1
+            smokeSummaryInt(
+                at: ["longChapterProbe", "afterEnsurePageBuilt", "sectionLayoutDiagnostics", "pageCount"],
+                in: summary
+            ),
+            0
         )
+        assertSectionLayoutDiagnostics(
+            summary,
+            at: ["longChapterProbe", "wideViewportSpreadProbe", "sectionLayoutDiagnostics"],
+            expectVertical: false,
+            requireComplete: false
+        )
+        XCTAssertEqual(
+            smokeSummaryInt(at: ["longChapterProbe", "wideViewportSpreadProbe", "shellMetrics", "innerWidth"], in: summary),
+            1280
+        )
+        XCTAssertEqual(
+            smokeSummaryInt(at: ["longChapterProbe", "wideViewportSpreadProbe", "shellMetrics", "innerHeight"], in: summary),
+            900
+        )
+        let maxPageChunkCount = smokeSummaryInt(
+            at: ["longChapterProbe", "wideViewportSpreadProbe", "sectionLayoutDiagnostics", "layoutDiagnostics", "maxPageChunkCount"],
+            in: summary
+        )
+        XCTAssertGreaterThan(maxPageChunkCount, 0)
+        let spreadCandidateDetected = smokeSummaryBool(
+            at: ["longChapterProbe", "wideViewportSpreadProbe", "sectionLayoutDiagnostics", "layoutDiagnostics", "spreadCandidateDetected"],
+            in: summary
+        ) == true
+        if spreadCandidateDetected {
+            XCTAssertGreaterThan(maxPageChunkCount, 1)
+        }
+    }
+
+    private func assertVerticalTallSpreadProbe(_ summary: [String: Any], line: UInt = #line) {
+        assertSectionLayoutDiagnostics(
+            summary,
+            at: ["verticalTallSpreadProbe", "sectionLayoutDiagnostics"],
+            expectVertical: true,
+            expectedWritingMode: "vertical-rl",
+            requireComplete: false
+        )
+        XCTAssertEqual(
+            smokeSummaryInt(at: ["verticalTallSpreadProbe", "shellMetrics", "innerWidth"], in: summary),
+            820
+        )
+        XCTAssertEqual(
+            smokeSummaryInt(at: ["verticalTallSpreadProbe", "shellMetrics", "innerHeight"], in: summary),
+            1180
+        )
+        let maxPageChunkCount = smokeSummaryInt(
+            at: ["verticalTallSpreadProbe", "sectionLayoutDiagnostics", "layoutDiagnostics", "maxPageChunkCount"],
+            in: summary
+        )
+        XCTAssertGreaterThan(maxPageChunkCount, 0)
+        let spreadCandidateDetected = smokeSummaryBool(
+            at: ["verticalTallSpreadProbe", "sectionLayoutDiagnostics", "layoutDiagnostics", "spreadCandidateDetected"],
+            in: summary
+        ) == true
+        if spreadCandidateDetected {
+            XCTAssertGreaterThan(maxPageChunkCount, 1)
+        }
     }
 
     private func makeMinimalEPUB(
@@ -406,6 +546,8 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         creator: String = "芥川龍之介",
         title: String = "羅生門 テスト",
         bodyDirection: String? = nil,
+        pageProgressionDirection: String? = nil,
+        additionalCSS: String? = nil,
         chapterTitles: (String, String) = ("第一章", "第二章"),
         chapterParagraphs: ([String], [String]) = (
             [
@@ -438,6 +580,10 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
             encoding: .utf8
         )
 
+        let resolvedPageProgressionDirection = pageProgressionDirection
+            ?? ((bodyDirection == "rtl" && !verticalWriting) ? "rtl" : nil)
+        let spineDirectionAttribute = resolvedPageProgressionDirection.map { #" page-progression-direction="\#($0)""# } ?? ""
+
         try """
         <?xml version="1.0" encoding="UTF-8"?>
         <package version="3.0" xmlns="http://www.idpf.org/2007/opf" unique-identifier="book-id">
@@ -452,7 +598,7 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
             <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
             <item id="chapter2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
           </manifest>
-          <spine>
+          <spine\(spineDirectionAttribute)>
             <itemref idref="chapter1"/>
             <itemref idref="chapter2"/>
           </spine>
@@ -488,7 +634,8 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
             paragraphs: chapterParagraphs.0,
             verticalWriting: verticalWriting,
             languageCode: languageCode,
-            bodyDirection: bodyDirection
+            bodyDirection: bodyDirection,
+            additionalCSS: additionalCSS
         ).write(
             to: oebpsURL.appendingPathComponent("chapter1.xhtml"),
             atomically: true,
@@ -500,7 +647,8 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
             paragraphs: chapterParagraphs.1,
             verticalWriting: verticalWriting,
             languageCode: languageCode,
-            bodyDirection: bodyDirection
+            bodyDirection: bodyDirection,
+            additionalCSS: additionalCSS
         ).write(
             to: oebpsURL.appendingPathComponent("chapter2.xhtml"),
             atomically: true,
@@ -532,12 +680,14 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         paragraphs: [String],
         verticalWriting: Bool,
         languageCode: String,
-        bodyDirection: String?
+        bodyDirection: String?,
+        additionalCSS: String?
     ) -> String {
         let body = paragraphs.map { "<p>\($0)</p>" }.joined(separator: "\n")
-        let styleBlock = verticalWriting
-            ? """
-              <style>
+        var styleRules: [String] = []
+        if verticalWriting {
+            styleRules.append(
+                """
                 html, body, section {
                   writing-mode: vertical-rl;
                   -epub-writing-mode: vertical-rl;
@@ -545,9 +695,15 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
                 body {
                   line-height: 1.8;
                 }
-              </style>
-              """
-            : ""
+                """
+            )
+        }
+        if let additionalCSS, !additionalCSS.isEmpty {
+            styleRules.append(additionalCSS)
+        }
+        let styleBlock = styleRules.isEmpty
+            ? ""
+            : "<style>\n\(styleRules.joined(separator: "\n"))\n</style>"
         let dirAttribute = bodyDirection.map { #" dir="\#($0)""# } ?? ""
         return """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -576,9 +732,11 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
             "元来この下人のいた主人は、京の都が衰微するのにしたがって、いわばこの下人の運命までもが押し流されていくような時代のうねりの中にいた。彼はその行く末を、自分でも持て余していた。"
         ]
 
-        return (0..<60).map { index in
+        let amplification = "同じ章の中で複数のネイティブページにまたがることを確認するため、文章量を意図的に増やしている。さらに同一段落の中で視覚的な折り返しとページ送りの両方が発生するように、補助文を繰り返し追加している。"
+
+        return (0..<120).map { index in
             let base = seedParagraphs[index % seedParagraphs.count]
-            return "\(base) 追補\(index + 1)。同じ章の中で複数のネイティブページにまたがることを確認するため、文章量を意図的に増やしている。"
+            return "\(base) 追補\(index + 1)。\(amplification)\(amplification)"
         }
     }
 

@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 import RealmSwift
+import CryptoKit
 #if os(macOS)
 import AppKit
 import Darwin
@@ -32,6 +33,30 @@ private func harnessStorageRootURL() -> URL {
 private func harnessRealmRootURL() -> URL {
     harnessRootURL()
         .appendingPathComponent("Realms", isDirectory: true)
+}
+
+private func sanitizedHarnessBookBasename(from fileName: String) -> String {
+    let stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+    let sanitized = stem
+        .lowercased()
+        .replacingOccurrences(
+            of: "[^a-z0-9]+",
+            with: "-",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    return sanitized.isEmpty ? "smoke-book" : sanitized
+}
+
+private func smokeImportFileName(for sourceURL: URL) throws -> String {
+    let fileData = try Data(contentsOf: sourceURL)
+    let digest = SHA256.hash(data: fileData)
+        .prefix(6)
+        .map { String(format: "%02x", $0) }
+        .joined()
+    let fileExtension = sourceURL.pathExtension.isEmpty ? "epub" : sourceURL.pathExtension.lowercased()
+    let basename = sanitizedHarnessBookBasename(from: sourceURL.lastPathComponent)
+    return "\(basename)-\(digest).\(fileExtension)"
 }
 
 private func makeHarnessReaderRealmConfiguration(rootURL: URL) -> Realm.Configuration {
@@ -423,6 +448,13 @@ private final class EbookRendererHarnessModel: ObservableObject {
             let tocJumpProbe = await captureSmokeTOCJumpProbe()
             let progressJumpProbe = await captureSmokeProgressJumpProbe()
             let longChapterProbe = await captureSmokeLongChapterProbe()
+            let verticalTallSpreadProbe = writingDirection == .vertical
+                ? await captureSmokeSpreadCandidateProbe(
+                    targetPreset: .ipadPortrait,
+                    ensurePageIndex: 2,
+                    reason: "vertical-tall-spread-candidate"
+                )
+                : [:]
             let restoreProbe = await captureSmokeRestoreProbe()
             let finishStartOverProbe = await captureSmokeFinishStartOverProbe()
             let runtimePaginationProbe = try await captureSmokePaginationReconfigurationProbe()
@@ -511,6 +543,7 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 "tocJumpProbe": tocJumpProbe,
                 "progressJumpProbe": progressJumpProbe,
                 "longChapterProbe": longChapterProbe,
+                "verticalTallSpreadProbe": verticalTallSpreadProbe,
                 "restoreProbe": restoreProbe,
                 "finishStartOverProbe": finishStartOverProbe,
                 "runtimePaginationProbe": runtimePaginationProbe,
@@ -588,7 +621,8 @@ private final class EbookRendererHarnessModel: ObservableObject {
         }
 
         let targetDirectory = RootRelativePath.ebooks
-        let targetFilePath = targetDirectory.appending(url.lastPathComponent)
+        let targetFileName = try smokeImportFileName(for: url)
+        let targetFilePath = targetDirectory.appending(targetFileName)
         let targetURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
 
         let shouldStopAccessingFile = url.startAccessingSecurityScopedResource()
@@ -599,11 +633,12 @@ private final class EbookRendererHarnessModel: ObservableObject {
         }
 
         try await drive.createDirectory(at: targetDirectory)
-        if !(try await drive.fileExists(at: targetFilePath)) {
-            try await drive.upload(from: url, to: targetFilePath)
+        if try await drive.fileExists(at: targetFilePath) {
+            try FileManager.default.removeItem(at: targetURL)
         }
+        try await drive.upload(from: url, to: targetFilePath)
 
-        appendEvent("import.smoke.bypass", payload: targetURL.path)
+        appendEvent("import.smoke.bypass", payload: "\(url.lastPathComponent) -> \(targetURL.lastPathComponent)")
         guard let readerURL = try await ReaderFileManager.shared.readerFileURL(for: targetURL, drive: drive) else {
             return nil
         }
@@ -957,6 +992,10 @@ private final class EbookRendererHarnessModel: ObservableObject {
                   const rootStyle = liveDocument?.documentElement
                     ? liveDocument.defaultView?.getComputedStyle?.(liveDocument.documentElement)
                     : null;
+                  const sectionLayoutController =
+                    liveDocument?.defaultView?.manabiEbookSectionLayoutController
+                    ?? globalThis.manabiEbookSectionLayoutController
+                    ?? null;
                   const stageView = document.querySelector('#reader-stage > foliate-view');
                   const shellNavBar = document.getElementById('nav-bar');
                   const readerStage = document.getElementById('reader-stage');
@@ -978,6 +1017,11 @@ private final class EbookRendererHarnessModel: ObservableObject {
                     direction: rootStyle?.direction ?? null,
                     columnWidth: rootStyle?.columnWidth ?? null,
                     columnGap: rootStyle?.columnGap ?? null,
+                    sectionLayoutDiagnostics: sectionLayoutController ? {
+                      pageCount: sectionLayoutController.pageCount?.() ?? null,
+                      hasPendingWarmup: sectionLayoutController.hasPendingWarmup?.() ?? null,
+                      layoutDiagnostics: sectionLayoutController.layoutDiagnostics?.() ?? null,
+                    } : null,
                   };
                 })()
                 """
@@ -1128,9 +1172,11 @@ private final class EbookRendererHarnessModel: ObservableObject {
                   ?? globalThis.manabiEbookSectionLayoutController
                   ?? null;
                 if (!controller) return null;
+                const layoutDiagnostics = controller.layoutDiagnostics?.() ?? null;
                 return {
                   pageCount: controller.pageCount?.() ?? null,
                   hasPendingWarmup: controller.hasPendingWarmup?.() ?? null,
+                  layoutDiagnostics,
                 };
               })(),
               navDiagnostics: {
@@ -1228,6 +1274,7 @@ private final class EbookRendererHarnessModel: ObservableObject {
         let canPrev = (navigationFunctions["viewPrev"] as? Bool) == true
         let canGoRight = (navigationFunctions["viewGoRight"] as? Bool) == true
         let canGoLeft = (navigationFunctions["viewGoLeft"] as? Bool) == true
+        let isRTL = ((before["writingDirectionSnapshot"] as? [String: Any])?["rtl"] as? Bool) == true
 
         var afterNext = before
         var afterPrev = before
@@ -1291,9 +1338,21 @@ private final class EbookRendererHarnessModel: ObservableObject {
             )
             try? await Task.sleep(nanoseconds: 350_000_000)
             afterGoRight = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
-            if !nextAdvanced {
+            if !nextAdvanced, !isRTL {
                 nextAdvanced = movementDetected(
                     from: afterNext,
+                    to: afterGoRight,
+                    previousContentPageURL: beforeGoRightContentPageURL,
+                    currentContentPageURL: currentContentPageURL
+                )
+            }
+            if !prevReturned, isRTL {
+                let returnedToOrigin =
+                    (before["currentIndex"] as? Int) == (afterGoRight["currentIndex"] as? Int)
+                    && (before["contentURL"] as? String) == (afterGoRight["contentURL"] as? String)
+                let contentPageReturned = beforeCurrentContentPageURL == currentContentPageURL
+                prevReturned = returnedToOrigin || contentPageReturned || !movementDetected(
+                    from: afterGoLeft,
                     to: afterGoRight,
                     previousContentPageURL: beforeGoRightContentPageURL,
                     currentContentPageURL: currentContentPageURL
@@ -1313,17 +1372,27 @@ private final class EbookRendererHarnessModel: ObservableObject {
             )
             try? await Task.sleep(nanoseconds: 350_000_000)
             afterGoLeft = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            if !nextAdvanced, isRTL {
+                nextAdvanced = movementDetected(
+                    from: afterNext,
+                    to: afterGoLeft,
+                    previousContentPageURL: beforeGoLeftContentPageURL,
+                    currentContentPageURL: currentContentPageURL
+                )
+            }
             if !prevReturned {
                 let returnedToOrigin =
                     (before["currentIndex"] as? Int) == (afterGoLeft["currentIndex"] as? Int)
                     && (before["contentURL"] as? String) == (afterGoLeft["contentURL"] as? String)
                 let contentPageReturned = beforeCurrentContentPageURL == currentContentPageURL
-                prevReturned = returnedToOrigin || contentPageReturned || !movementDetected(
-                    from: afterGoRight,
-                    to: afterGoLeft,
-                    previousContentPageURL: beforeGoLeftContentPageURL,
-                    currentContentPageURL: currentContentPageURL
-                )
+                if !isRTL {
+                    prevReturned = returnedToOrigin || contentPageReturned || !movementDetected(
+                        from: afterGoRight,
+                        to: afterGoLeft,
+                        previousContentPageURL: beforeGoLeftContentPageURL,
+                        currentContentPageURL: currentContentPageURL
+                    )
+                }
             }
         }
 
@@ -1396,6 +1465,15 @@ private final class EbookRendererHarnessModel: ObservableObject {
     }
 
     private func captureSmokeButtonNavigationProbe() async -> [String: Any] {
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            if (globalThis.reader?.view?.goToFraction) {
+              void globalThis.reader.view.goToFraction(1.0);
+            }
+            return true;
+            """
+        )
+        try? await Task.sleep(nanoseconds: 900_000_000)
         let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
         let beforeCurrentContentPageURL = currentContentPageURL
         let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
@@ -1422,6 +1500,15 @@ private final class EbookRendererHarnessModel: ObservableObject {
             (afterNext["currentIndex"] as? Int) == 1
             || afterNextContentPageURL?.contains("chapter2.xhtml") == true
 
+        _ = try? await scriptCaller.evaluateJavaScript(
+            """
+            if (globalThis.reader?.view?.goToFraction) {
+              void globalThis.reader.view.goToFraction(0.0);
+            }
+            return true;
+            """
+        )
+        try? await Task.sleep(nanoseconds: 900_000_000)
         let afterPrev = await clickButton("btn-prev-chapter")
         let afterPrevContentPageURL = currentContentPageURL
         let prevReturned =
@@ -1606,6 +1693,12 @@ private final class EbookRendererHarnessModel: ObservableObject {
             || (secondSectionTarget.isEmpty == false && afterJumpContentPageURL?.contains(secondSectionTarget) == true)
             || beforeContentPageURL != afterJumpContentPageURL
 
+        let wideViewportProbe = await captureSmokeSpreadCandidateProbe(
+            targetPreset: .macBook,
+            ensurePageIndex: 4,
+            reason: "wide-spread-candidate"
+        )
+
         _ = try? await scriptCaller.evaluateJavaScript(
             """
             if (globalThis.reader?.view?.goTo) {
@@ -1627,11 +1720,70 @@ private final class EbookRendererHarnessModel: ObservableObject {
             "chapter2Reached": chapter2Reached,
             "afterJumpContentPageURL": afterJumpContentPageURL ?? "nil",
             "nativePageCountAfterJump": afterState?.pageCount as Any,
+            "wideViewportSpreadProbe": wideViewportProbe,
             "sameMountedHost": beforeState?.mountedHostIdentifier != nil
                 && beforeState?.mountedHostIdentifier == afterState?.mountedHostIdentifier,
             "sameAppliedHost": beforeState?.appliedHostIdentifier != nil
                 && beforeState?.appliedHostIdentifier == afterState?.appliedHostIdentifier,
         ]
+    }
+
+    private func captureSmokeSpreadCandidateProbe(
+        targetPreset: HarnessViewportPreset,
+        ensurePageIndex: Int? = nil,
+        reason: String
+    ) async -> [String: Any] {
+        let originalPreset = viewportPreset
+        guard originalPreset != targetPreset else {
+            return (try? await captureSmokeShellProbe()) ?? [:]
+        }
+
+        viewportPreset = targetPreset
+        appendEvent("viewport.spreadCandidate.request", payload: "\(reason): \(originalPreset.rawValue)->\(targetPreset.rawValue)")
+        let expectedWidth = Int(targetPreset.size.width)
+        let expectedHeight = Int(targetPreset.size.height)
+        var probe = (try? await waitForSmokeShellProbe(
+            description: "spread candidate probe at \(targetPreset.rawValue)",
+            timeoutSeconds: 4,
+            condition: { probe in
+                let innerWidth = probe["shellMetrics"].flatMap { ($0 as? [String: Any])?["innerWidth"] as? Int }
+                let innerHeight = probe["shellMetrics"].flatMap { ($0 as? [String: Any])?["innerHeight"] as? Int }
+                let layoutDiagnostics = (probe["sectionLayoutDiagnostics"] as? [String: Any])?["layoutDiagnostics"] as? [String: Any]
+                let columnCount = layoutDiagnostics?["columnCount"] as? Int ?? 0
+                let maxPageChunkCount = layoutDiagnostics?["maxPageChunkCount"] as? Int ?? 0
+                return innerWidth == expectedWidth
+                    && innerHeight == expectedHeight
+                    && (columnCount > 0 || maxPageChunkCount > 0)
+            }
+        )) ?? [:]
+
+        if let ensurePageIndex {
+            _ = try? await scriptCaller.evaluateJavaScript(
+                """
+                (() => {
+                  const controller =
+                    globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
+                    ?? globalThis.manabiEbookSectionLayoutController
+                    ?? null;
+                  if (!controller?.ensurePageBuilt) return null;
+                  return controller.ensurePageBuilt(pageIndex, {
+                    reason: probeReason
+                  });
+                })()
+                """,
+                arguments: [
+                    "pageIndex": ensurePageIndex,
+                    "probeReason": "smoke-\(reason)",
+                ]
+            )
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            probe = (try? await captureSmokeShellProbe()) ?? probe
+        }
+
+        viewportPreset = originalPreset
+        appendEvent("viewport.spreadCandidate.restored", payload: "\(reason): \(originalPreset.rawValue)")
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        return probe
     }
 
     private func captureSmokeRestoreProbe() async -> [String: Any] {
@@ -1916,6 +2068,10 @@ private final class EbookRendererHarnessModel: ObservableObject {
         let pageCountPositive = (afterState?.pageCount ?? 0) > 0
         let layoutSizeApplied = Int(afterState?.appliedConfiguration?.layoutSize.width.rounded() ?? -1) == expectedWidth
             && Int(afterState?.appliedConfiguration?.layoutSize.height.rounded() ?? -1) == expectedHeight
+        let resizedLayoutDiagnostics = ((afterProbe["sectionLayoutDiagnostics"] as? [String: Any])?["layoutDiagnostics"] as? [String: Any]) ?? [:]
+        let resizedLayoutDiagnosticsPresent = resizedLayoutDiagnostics.isEmpty == false
+        let resizedChunkCountPositive = (resizedLayoutDiagnostics["currentPageChunkCount"] as? Int ?? 0) > 0
+        let resizedColumnCountPositive = (resizedLayoutDiagnostics["columnCount"] as? Int ?? 0) > 0
 
         viewportPreset = originalPreset
         appendEvent(
@@ -1934,6 +2090,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
             "sameAppliedHost": sameAppliedHost,
             "pageCountPositive": pageCountPositive,
             "layoutSizeApplied": layoutSizeApplied,
+            "layoutDiagnosticsPresent": resizedLayoutDiagnosticsPresent,
+            "chunkCountPositive": resizedChunkCountPositive,
+            "columnCountPositive": resizedColumnCountPositive,
         ]
     }
 
@@ -2014,6 +2173,120 @@ private final class EbookRendererHarnessModel: ObservableObject {
             return pretty
         }
         return String(describing: object)
+    }
+}
+
+private struct HarnessLayoutSummaryView: View {
+    let rawDiagnostics: String
+
+    private var diagnostics: [String: Any]? {
+        guard let data = rawDiagnostics.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return nil
+        }
+        return object
+    }
+
+    private func dictionary(_ path: [String]) -> [String: Any]? {
+        var current: Any? = diagnostics
+        for key in path {
+            guard let dictionary = current as? [String: Any] else { return nil }
+            current = dictionary[key]
+        }
+        return current as? [String: Any]
+    }
+
+    private func string(_ path: [String]) -> String? {
+        var current: Any? = diagnostics
+        for key in path {
+            guard let dictionary = current as? [String: Any] else { return nil }
+            current = dictionary[key]
+        }
+        if let string = current as? String {
+            return string
+        }
+        if let number = current as? NSNumber {
+            return number.stringValue
+        }
+        return nil
+    }
+
+    private func int(_ path: [String]) -> Int? {
+        var current: Any? = diagnostics
+        for key in path {
+            guard let dictionary = current as? [String: Any] else { return nil }
+            current = dictionary[key]
+        }
+        if let value = current as? Int {
+            return value
+        }
+        if let value = current as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
+
+    private func bool(_ path: [String]) -> Bool? {
+        var current: Any? = diagnostics
+        for key in path {
+            guard let dictionary = current as? [String: Any] else { return nil }
+            current = dictionary[key]
+        }
+        if let value = current as? Bool {
+            return value
+        }
+        if let value = current as? NSNumber {
+            return value.boolValue
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if diagnostics != nil {
+                let viewportPreset = string(["viewportPreset"]) ?? "unknown"
+                let viewportWidth = int(["viewportSize", "width"]) ?? 0
+                let viewportHeight = int(["viewportSize", "height"]) ?? 0
+                let layout = dictionary(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics"])
+                let stageWidth = int(["rendererLayout", "readerStageMetrics", "offsetWidth"]) ?? 0
+                let stageHeight = int(["rendererLayout", "readerStageMetrics", "offsetHeight"]) ?? 0
+                let chunkCount = int(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics", "currentPageChunkCount"]) ?? 0
+                let columnCount = int(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics", "columnCount"]) ?? 0
+                let pageRecordCount = int(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics", "pageRecordCount"]) ?? 0
+                let pageCount = int(["rendererLayout", "sectionLayoutDiagnostics", "pageCount"]) ?? 0
+                let vertical = bool(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics", "vertical"]) ?? false
+                let writingMode = string(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics", "writingMode"]) ?? "unknown"
+                let layoutComplete = bool(["rendererLayout", "sectionLayoutDiagnostics", "layoutDiagnostics", "layoutComplete"]) ?? false
+
+                GroupBox("Spread Diagnostics") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Viewport: \(viewportPreset) \(viewportWidth)x\(viewportHeight)")
+                        Text("Reader stage: \(stageWidth)x\(stageHeight)")
+                        if layout != nil {
+                            Text("Visible chunks: \(chunkCount)")
+                            Text("Column count: \(columnCount)")
+                            Text("Page records: \(pageRecordCount)")
+                            Text("Reported page count: \(pageCount)")
+                            Text("Writing mode: \(writingMode)")
+                            Text("Vertical layout: \(vertical ? "true" : "false")")
+                            Text("Layout complete: \(layoutComplete ? "true" : "false")")
+                        } else {
+                            Text("Section layout diagnostics are not available yet.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            Text(rawDiagnostics.isEmpty ? "No layout diagnostics yet." : rawDiagnostics)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding()
     }
 }
 
@@ -2298,11 +2571,7 @@ private struct HarnessWebViewPane: View {
                 .tabItem { Text("Dump") }
 
                 ScrollView {
-                    Text(model.latestLayoutDiagnostics.isEmpty ? "No layout diagnostics yet." : model.latestLayoutDiagnostics)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                    HarnessLayoutSummaryView(rawDiagnostics: model.latestLayoutDiagnostics)
                 }
                 .tabItem { Text("Layout") }
 

@@ -79,7 +79,8 @@ public struct DataSettingsForm: View {
                 .confirmationDialog("Clear Unsaved Web History?", isPresented: $isPresentingUnsavedReadingHistoryDeletionAlert) {
                     Button("Clear Unsaved Web History", role: .destructive) {
                         Task { @RealmBackgroundActor in
-                             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+                            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+                            let urls = Array(realm.objects(HistoryRecord.self).where({ !$0.isDeleted }).map(\.url))
 //                            await realm.asyncRefresh()
                             try await realm.asyncWrite {
                                 for record in realm.objects(HistoryRecord.self).where({ !$0.isDeleted }) {
@@ -87,6 +88,7 @@ public struct DataSettingsForm: View {
                                     record.refreshChangeMetadata(explicitlyModified: true)
                                 }
                             }
+                            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURLs: urls)
 //                            realm.refresh() // ?
                         }
                     }
@@ -102,6 +104,7 @@ public struct DataSettingsForm: View {
                     Button("Clear Unsaved RSS Feed Entries", role: .destructive) {
                         Task { @RealmBackgroundActor in
                             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
+                            let urls = Array(realm.objects(FeedEntry.self).where({ !$0.isDeleted }).map(\.url))
 //                            await realm.asyncRefresh()
                             try await realm.asyncWrite {
                                 for entry in realm.objects(FeedEntry.self).where({ !$0.isDeleted }) {
@@ -109,6 +112,7 @@ public struct DataSettingsForm: View {
                                     entry.refreshChangeMetadata(explicitlyModified: true)
                                 }
                             }
+                            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURLs: urls)
 //                            realm.refresh() // ?
                         }
                     }

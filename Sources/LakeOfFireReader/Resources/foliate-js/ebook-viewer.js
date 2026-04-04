@@ -597,7 +597,16 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
 }
 
 const makeNativeEpubLoader = async (url, isCacheWarmer) => {
+    logFix('nativeLoader:begin', {
+        sourceURL: url,
+        isCacheWarmer: !!isCacheWarmer,
+    });
     const { entries: rawEntries = [] } = await fetchNativeEntries(url)
+    logFix('nativeLoader:entries', {
+        sourceURL: url,
+        isCacheWarmer: !!isCacheWarmer,
+        count: rawEntries.length,
+    });
     const entries = rawEntries.map(entry => ({
         filename: entry.path,
         uncompressedSize: entry.size ?? 0,
@@ -682,11 +691,21 @@ name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 const getView = async (source, isCacheWarmer) => {
     let book
     if (source?.kind === 'native') {
+        logFix('getView:native-source', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+        });
         const {
             EPUB
             } = await import('./epub.js')
         const loader = await makeNativeEpubLoader(source.url, isCacheWarmer)
         book = await new EPUB(loader).init()
+        logFix('getView:native-book-ready', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+            bookDir: book?.dir ?? null,
+            hasPageList: Array.isArray(book?.pageList) && book.pageList.length > 0,
+        });
     } else if (source?.kind === 'file' && source.file?.size) {
         const file = source.file
         if (await isZip(file)) {
@@ -724,9 +743,18 @@ const getView = async (source, isCacheWarmer) => {
     }
     if (!book) throw new Error('File type not supported')
     const view = document.createElement('foliate-view')
+    logFix('getView:view-created', {
+        isCacheWarmer: !!isCacheWarmer,
+        tagName: view?.tagName ?? null,
+    });
     view.dataset.isCache = isCacheWarmer;
     const readerStage = document.getElementById('reader-stage');
     (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
+    logFix('getView:view-appended', {
+        isCacheWarmer: !!isCacheWarmer,
+        parentTag: view.parentElement?.tagName ?? null,
+        hasShadowRoot: !!view.shadowRoot,
+    });
     forwardShadowErrors(view.shadowRoot);
     if (isCacheWarmer) {
         view.style.display = 'none'
@@ -737,7 +765,17 @@ const getView = async (source, isCacheWarmer) => {
         view.style.height = 0
         view.style.pointerEvents = 'none'
     }
+    logFix('getView:view-open-begin', {
+        isCacheWarmer: !!isCacheWarmer,
+        bookDir: book?.dir ?? null,
+    });
     await view.open(book, isCacheWarmer)
+    logFix('getView:view-open-resolved', {
+        isCacheWarmer: !!isCacheWarmer,
+        hasRenderer: !!view?.renderer,
+        hasDocument: !!view?.document,
+        currentIndex: Number.isFinite(view?.renderer?.currentIndex) ? view.renderer.currentIndex : null,
+    });
 
     // Hide scrollbars on the scrolling container inside foliate-paginator's shadow DOM
     const paginator = view.shadowRoot?.querySelector('foliate-paginator');
@@ -1137,13 +1175,25 @@ class Reader {
     $('#dimming-overlay').addEventListener('click', () => this.closeSideBar())
     }
     async open(source) {
+    logFix('reader.open:begin', {
+    hasSource: !!source,
+    pageURL: window.location.href,
+    });
     this.setLoadingIndicator(true);
     this.hasLoadedLastPosition = false
     this.source = source
     this.view = await getView(source, false)
+    logFix('reader.open:view-ready', {
+    hasView: !!this.view,
+    hasRenderer: !!this.view?.renderer,
+    tagName: this.view?.tagName ?? null,
+    });
     // this.view.renderer.setAttribute('animated', true) // Flows top to bottom instead of like a book...
     if (typeof window.initialLayoutMode !== 'undefined') {
     this.view.renderer.setAttribute('flow', window.initialLayoutMode)
+    logFix('reader.open:flow-set', {
+    layoutMode: window.initialLayoutMode ?? null,
+    });
     }
     this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
     this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
@@ -1168,6 +1218,11 @@ class Reader {
     this.navHUD?.setIsRTL(this.isRTL);
     this.navHUD?.setPageTargets(book.pageList ?? []);
     this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
+    logFix('reader.open:configured', {
+    bookDir: this.bookDir ?? null,
+    isRTL: !!this.isRTL,
+    hasPageList: Array.isArray(book.pageList) && book.pageList.length > 0,
+    });
     //        this.view.renderer.next()
 
     $('#nav-bar').style.visibility = 'visible'
@@ -2609,12 +2664,37 @@ const throttle = (fn, intervalMs = 200) => {
     };
 };
 
+const logReaderBootstrapState = (event) => {
+    logFix(event, {
+        hasReader: !!globalThis.reader,
+        hasView: !!globalThis.reader?.view,
+        hasRenderer: !!globalThis.reader?.view?.renderer,
+        hasSectionLayoutController: !!(
+            globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
+            ?? globalThis.manabiEbookSectionLayoutController
+        ),
+        pageURL: window.location.href,
+    });
+};
+
 window.loadEBook = ({
     url,
     layoutMode,
 }) => {
+    logFix('loadEBook:called', {
+        hasURL: !!url,
+        layoutMode: layoutMode ?? null,
+        pageURL: window.location.href,
+    });
     let reader = new Reader()
     globalThis.reader = reader
+    logFix('loadEBook:reader-created', {
+        hasReader: !!globalThis.reader,
+        hasView: !!globalThis.reader?.view,
+    });
+    setTimeout(() => logReaderBootstrapState('loadEBook:delayed-state:1s'), 1000);
+    setTimeout(() => logReaderBootstrapState('loadEBook:delayed-state:3s'), 3000);
+    setTimeout(() => logReaderBootstrapState('loadEBook:delayed-state:8s'), 8000);
     if (pendingHideNavigationState !== null) {
         reader.setHideNavigationDueToScroll(pendingHideNavigationState);
         pendingHideNavigationState = null;
@@ -2630,6 +2710,11 @@ window.loadEBook = ({
     }
     Promise.resolve(reader.open(source))
     .then(async () => {
+    logFix('loadEBook:open-resolved', {
+    hasReader: !!globalThis.reader,
+    hasView: !!globalThis.reader?.view,
+    hasRenderer: !!globalThis.reader?.view?.renderer,
+    });
     try {
     const currentDoc = globalThis.reader?.view?.document
     if (currentDoc) {
@@ -2640,6 +2725,11 @@ window.loadEBook = ({
     }
     })
     .then(async () => {
+    logFix('loadEBook:posting-loaded', {
+    hasReader: !!globalThis.reader,
+    hasView: !!globalThis.reader?.view,
+    hasRenderer: !!globalThis.reader?.view?.renderer,
+    });
     window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
     })
     .catch(error => {
@@ -2739,4 +2829,8 @@ window.nextSection = async () => {
     }
 }
 
+logFix('module:posting-initialized', {
+    pageURL: window.location.href,
+    bodyReady: !!document.body,
+});
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})

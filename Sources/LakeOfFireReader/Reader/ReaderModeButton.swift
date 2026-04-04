@@ -11,10 +11,13 @@ public struct ReaderModeButton: View {
 
     public var body: some View {
         Button {
-            readerModeViewModel.showReaderView(
-                readerContent: readerContent,
-                scriptCaller: scriptCaller
-            )
+            Task { @MainActor in
+                await readerModeViewModel.willEnterReaderMode?(readerContent)
+                readerModeViewModel.showReaderView(
+                    readerContent: readerContent,
+                    scriptCaller: scriptCaller
+                )
+            }
         } label: {
             Label("Show Reader", systemImage: "doc.plaintext")
         }

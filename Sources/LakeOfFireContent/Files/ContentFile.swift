@@ -43,8 +43,7 @@ public class ContentFile: Bookmark {
     @MainActor
     public override func delete() async throws {
         try await ReaderFileManager.shared.delete(readerFileURL: url)
-//        try await deleteRealmData()
-        try await delete()
+        try await super.delete()
     }
     
     @MainActor

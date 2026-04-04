@@ -12,6 +12,7 @@ import WebKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
+import BravePlaylist
 
 private extension URL {
     var isAboutBlank: Bool { absoluteString == "about:blank" }
@@ -359,6 +360,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
     public var processHTML: ((String, Bool) async -> String)?
     public var navigator: WebViewNavigator?
+    public var willEnterReaderMode: ((ReaderContent) async -> Void)?
     public var defaultFontSize: Double?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     public var sharedFontCSSBase64: String?
@@ -4469,10 +4471,104 @@ private func locallyRetrievableReaderHTML(
     if html == nil, content.url.isSnippetURL {
         html = content.html
     }
-    guard let html else {
+    if let html {
+        let trimmedHTML = html.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHTML.isEmpty else {
+            return await mediaOnlyReaderHTML(for: content)
+        }
+        return await injectingPrimaryMediaIfNeeded(into: trimmedHTML, for: content)
+    }
+    return await mediaOnlyReaderHTML(for: content)
+}
+
+private func injectingPrimaryMediaIfNeeded(
+    into html: String,
+    for content: any ReaderContentProtocol
+) async -> String {
+    guard let mediaMarkup = await readerPrimaryMediaMarkup(for: content) else {
+        return html
+    }
+
+    if html.contains("manabi-primary-media"),
+       let primaryMediaSourceURL = content.primaryMediaSourceURL,
+       html.contains(primaryMediaSourceURL.absoluteString)
+    {
+        return html
+    }
+
+    guard let document = try? SwiftSoup.parse(html) else {
+        return mediaMarkup + html
+    }
+
+    if let readerContent = try? document.getElementById("reader-content") {
+        try? readerContent.prepend(mediaMarkup)
+        return (try? document.outerHtml()) ?? (mediaMarkup + html)
+    }
+
+    if let body = document.body() {
+        try? body.prepend(mediaMarkup)
+        return (try? document.outerHtml()) ?? (mediaMarkup + html)
+    }
+
+    return mediaMarkup + html
+}
+
+private func mediaOnlyReaderHTML(for content: any ReaderContentProtocol) async -> String? {
+    guard let mediaMarkup = await readerPrimaryMediaMarkup(for: content) else {
         return nil
     }
-    return html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : html
+
+    let title = content.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return buildCanonicalReadabilityHTML(
+        title: title.isEmpty ? "Media" : title,
+        byline: content.author,
+        publishedTime: nil,
+        content: mediaMarkup,
+        contentURL: content.url.canonicalReaderContentURL()
+    )
+}
+
+private func readerPrimaryMediaMarkup(for content: any ReaderContentProtocol) async -> String? {
+    guard let mediaURL = await resolvedReaderPrimaryMediaURL(for: content) else {
+        return nil
+    }
+
+    let escapedSource = escapeReadabilityHTMLAttribute(mediaURL.absoluteString)
+    let escapedTitle = escapeReadabilityHTMLAttribute(
+        content.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Media" : content.title
+    )
+
+    let mediaTag: String
+    switch content.primaryMediaPlaybackKind {
+    case .audio:
+        mediaTag = """
+        <audio class="manabi-primary-media-element" controls preload="metadata" src="\(escapedSource)">
+        <p>Your browser does not support embedded audio playback.</p>
+        </audio>
+        """
+    case .video, .none:
+        mediaTag = """
+        <video class="manabi-primary-media-element" controls playsinline preload="metadata" src="\(escapedSource)">
+        <p>Your browser does not support embedded video playback.</p>
+        </video>
+        """
+    }
+
+    return """
+    <figure class="manabi-primary-media" data-manabi-primary-media="true">
+        \(mediaTag)
+        <figcaption class="manabi-primary-media-caption">\(escapedTitle)</figcaption>
+    </figure>
+    """
+}
+
+private func resolvedReaderPrimaryMediaURL(for content: any ReaderContentProtocol) async -> URL? {
+    if let offlineMediaID = content.offlineMediaID,
+       let storedMedia = try? await PlaylistLibrary().storedMedia(id: offlineMediaID)
+    {
+        return storedMedia.localMediaURL
+    }
+    return content.primaryMediaSourceURL
 }
 
 @ReaderViewModelActor

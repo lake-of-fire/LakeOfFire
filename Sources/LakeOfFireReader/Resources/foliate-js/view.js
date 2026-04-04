@@ -5,7 +5,13 @@ const SEARCH_PREFIX = 'foliate-search:'
 
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {}
-const logBug = globalThis.logBug || (() => {})
+const logBug = (event, detail = {}) => {
+    try {
+        return globalThis.logBug?.(event, detail)
+    } catch (_error) {
+        return undefined
+    }
+}
 const logNavHide = globalThis.logNavHide || ((event, detail = {}) => {
     const payload = { event, ...detail };
     const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
@@ -392,26 +398,50 @@ export class View extends HTMLElement {
                 }
     }
     async prev(distance) {
-        if (
+        const useSectionJump =
             distance == null &&
             this.renderer?.getHasPrevSection?.() &&
             await this.renderer?.isAtSectionStart?.()
-        ) {
-            await this.renderer.prevSection()
-            return
+        logBug?.('view:prev', {
+            distance: distance ?? null,
+            useSectionJump,
+            hasPrevSection: this.renderer?.getHasPrevSection?.() ?? null,
+            bookDir: this.book?.dir ?? null,
+        })
+        if (useSectionJump) {
+            logBug?.('view:prev:section-jump', {
+                bookDir: this.book?.dir ?? null,
+            })
+            return await this.renderer.prevSection()
         }
-        await this.renderer.prev(distance)
+        logBug?.('view:prev:intra-section', {
+            distance: distance ?? null,
+            bookDir: this.book?.dir ?? null,
+        })
+        return await this.renderer.prev(distance)
     }
     async next(distance) {
-        if (
+        const useSectionJump =
             distance == null &&
             this.renderer?.getHasNextSection?.() &&
             await this.renderer?.isAtSectionEnd?.()
-        ) {
-            await this.renderer.nextSection()
-            return
+        logBug?.('view:next', {
+            distance: distance ?? null,
+            useSectionJump,
+            hasNextSection: this.renderer?.getHasNextSection?.() ?? null,
+            bookDir: this.book?.dir ?? null,
+        })
+        if (useSectionJump) {
+            logBug?.('view:next:section-jump', {
+                bookDir: this.book?.dir ?? null,
+            })
+            return await this.renderer.nextSection()
         }
-        await this.renderer.next(distance)
+        logBug?.('view:next:intra-section', {
+            distance: distance ?? null,
+            bookDir: this.book?.dir ?? null,
+        })
+        return await this.renderer.next(distance)
     }
     async goLeft() {
         const isForward = this.book.dir === 'rtl'

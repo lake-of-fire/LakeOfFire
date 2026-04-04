@@ -387,6 +387,11 @@ public class BookLibraryViewModel: ObservableObject {
                     object.audioSubtitlesURL = publication.audioSubtitlesURL
                     changed = true
                 }
+                let subtitleRole = publication.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
+                if object.audioSubtitlesRoleRawValue != subtitleRole {
+                    object.audioSubtitlesRoleRawValue = subtitleRole
+                    changed = true
+                }
                 return changed
             }
         }
@@ -522,4 +527,8 @@ public struct Publication: Identifiable, Hashable {
     public var summary: String?
     public var voiceAudioURL: URL?
     public var audioSubtitlesURL: URL?
+
+    public var hasContentAudio: Bool {
+        voiceAudioURL != nil || audioSubtitlesURL != nil
+    }
 }

@@ -41,6 +41,40 @@ public struct ReaderContentProgressMetadata {
     }
 }
 
+public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
+    case content
+    case media
+}
+
+public enum ReaderPrimaryMediaKind: String, CaseIterable, Sendable {
+    case audio
+    case video
+}
+
+public enum ReaderSubtitleOwningPane: String, CaseIterable, Sendable {
+    case primary
+    case transcript
+}
+
+public struct SelectedSubtitleSource: Hashable, Sendable {
+    public let identity: String
+    public let url: URL
+    public let role: AudioSubtitlesRole
+    public let owningPane: ReaderSubtitleOwningPane
+
+    public init(
+        identity: String,
+        url: URL,
+        role: AudioSubtitlesRole,
+        owningPane: ReaderSubtitleOwningPane
+    ) {
+        self.identity = identity
+        self.url = url
+        self.role = role
+        self.owningPane = owningPane
+    }
+}
+
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
     var realm: Realm? { get }
     
@@ -69,6 +103,13 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     var voiceFrameUrl: URL? { get set }
     var voiceAudioURL: URL? { get set }
     var audioSubtitlesURL: URL? { get set }
+    var audioSubtitlesRoleRawValue: String? { get set }
+    var primaryMediaIdentity: String? { get set }
+    var primaryMediaSourceURL: URL? { get set }
+    var primaryMediaKindRawValue: String? { get set }
+    var primaryMediaDuration: Double? { get set }
+    var primaryMediaLastPlaybackTime: Double? { get set }
+    var offlineMediaID: String? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
     
@@ -95,8 +136,85 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 }
 
 public extension ReaderContentProtocol {
+    var audioSubtitlesRole: AudioSubtitlesRole? {
+        get { audioSubtitlesRoleRawValue.flatMap(AudioSubtitlesRole.init(rawValue:)) }
+        set { audioSubtitlesRoleRawValue = newValue?.rawValue }
+    }
+
+    var primaryMediaKind: ReaderPrimaryMediaKind? {
+        get { primaryMediaKindRawValue.flatMap(ReaderPrimaryMediaKind.init(rawValue:)) }
+        set { primaryMediaKindRawValue = newValue?.rawValue }
+    }
+
+    var hasPrimaryMedia: Bool {
+        primaryMediaIdentity?.isEmpty == false
+            || primaryMediaSourceURL != nil
+            || offlineMediaID?.isEmpty == false
+    }
+
+    var primaryMediaPlaybackKind: ReaderPrimaryMediaKind? {
+        primaryMediaKind
+    }
+
+    var hasContentAudio: Bool {
+        voiceAudioURL != nil || (audioSubtitlesURL != nil && audioSubtitlesRole != .media)
+    }
+
+    var contentSubtitleURL: URL? {
+        audioSubtitlesRole == .media ? nil : audioSubtitlesURL
+    }
+
+    var mediaSubtitleURL: URL? {
+        audioSubtitlesRole == .media ? audioSubtitlesURL : nil
+    }
+
+    var contentSubtitleSource: SelectedSubtitleSource? {
+        guard let url = contentSubtitleURL else { return nil }
+        return SelectedSubtitleSource(
+            identity: "url:\(url.absoluteString)",
+            url: url,
+            role: .content,
+            owningPane: .primary
+        )
+    }
+
+    var mediaSubtitleSource: SelectedSubtitleSource? {
+        guard let url = mediaSubtitleURL else { return nil }
+        return SelectedSubtitleSource(
+            identity: "url:\(url.absoluteString)",
+            url: url,
+            role: .media,
+            owningPane: .transcript
+        )
+    }
+
     var hasAudio: Bool {
-        voiceAudioURL != nil || audioSubtitlesURL != nil
+        hasContentAudio
+    }
+
+    @discardableResult
+    func copyReaderMediaState<T: ReaderContentProtocol>(
+        to destination: T,
+        preservingExistingVoiceAudioURL: Bool = true,
+        defaultAudioSubtitlesRole: AudioSubtitlesRole? = nil
+    ) -> T {
+        destination.voiceFrameUrl = voiceFrameUrl
+        destination.audioSubtitlesURL = audioSubtitlesURL
+        destination.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? defaultAudioSubtitlesRole?.rawValue
+        if preservingExistingVoiceAudioURL {
+            destination.voiceAudioURL = voiceAudioURL ?? destination.voiceAudioURL
+        } else {
+            destination.voiceAudioURL = voiceAudioURL
+        }
+        destination.primaryMediaIdentity = primaryMediaIdentity
+        destination.primaryMediaSourceURL = primaryMediaSourceURL
+        destination.primaryMediaKindRawValue = primaryMediaKindRawValue
+        destination.primaryMediaDuration = primaryMediaDuration
+        destination.primaryMediaLastPlaybackTime = primaryMediaLastPlaybackTime
+        destination.offlineMediaID = offlineMediaID
+        destination.redditTranslationsUrl = redditTranslationsUrl
+        destination.redditTranslationsTitle = redditTranslationsTitle
+        return destination
     }
     
     var keyPrefix: String? {
@@ -475,6 +593,7 @@ public extension ReaderContentProtocol {
                 bookmark.isDeleted = true
                 bookmark.refreshChangeMetadata(explicitlyModified: true)
             }
+            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
             return true
         }()
     }
@@ -516,9 +635,7 @@ public extension ReaderContentProtocol {
                 }
                 record.isReaderModeByDefault = isReaderModeByDefault
                 record.isReaderModeAvailable = isReaderModeAvailable
-                record.voiceFrameUrl = voiceFrameUrl
-                record.audioSubtitlesURL = audioSubtitlesURL
-                record.voiceAudioURL = voiceAudioURL ?? record.voiceAudioURL
+                copyReaderMediaState(to: record)
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
@@ -541,9 +658,7 @@ public extension ReaderContentProtocol {
             if rssContainsFullContent {
                 record.content = content
             }
-            record.voiceFrameUrl = voiceFrameUrl
-            record.audioSubtitlesURL = audioSubtitlesURL
-            record.voiceAudioURL = voiceAudioURL ?? record.voiceAudioURL
+            copyReaderMediaState(to: record)
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard

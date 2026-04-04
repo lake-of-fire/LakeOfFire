@@ -458,18 +458,36 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
         }
+        if let mediaProgressValue, mediaProgressValue > 0 {
+            return true
+        }
         return false
+    }
+
+    private var mediaProgressValue: Double? {
+        guard let duration = item.primaryMediaDuration,
+              duration > 0,
+              let position = item.primaryMediaLastPlaybackTime
+        else {
+            return nil
+        }
+        return min(1, max(0, position / duration))
     }
     
     private var shouldShowProgressRow: Bool {
         if isProgressVisible { return true }
         if item.hasAudio { return !appearance.isEbookStyle }
+        if item.hasPrimaryMedia { return !appearance.isEbookStyle }
         return false
     }
     
     @ViewBuilder
     private var audioBadge: some View {
-        if item.hasAudio {
+        if item.primaryMediaPlaybackKind == .video {
+            Image(systemName: "video")
+                .imageScale(.small)
+                .foregroundStyle(.secondary)
+        } else if item.hasPrimaryMedia || item.hasAudio {
             Image(systemName: "headphones")
                 .imageScale(.small)
                 .foregroundStyle(.secondary)
@@ -604,6 +622,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             .lineLimit(1)
                             .allowsTightening(true)
                     }
+                } else if let mediaProgressValue {
+                    ProgressView(value: mediaProgressValue)
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .tint(.secondary)
+                        .frame(width: progressBarWidth)
                 }
             }
         }

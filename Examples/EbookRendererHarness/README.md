@@ -45,6 +45,7 @@ The harness currently covers:
 - writing-direction override
 - direct jump by CFI or href
 - structured pagination and renderer dumps
+- a dedicated `Layout` tab with a spread/layout summary above the raw renderer diagnostics dump
 
 ## Launching
 
@@ -111,6 +112,11 @@ As of 2026-03-31:
 - the smoke suite now also proves reload/reopen restoration back onto the same chapter with non-empty CFI persistence
 - the smoke suite now also proves finish-book and start-over shell-control flows
 - the smoke suite now also includes a generated long-chapter fixture that jumps into deeper content and records long-content diagnostics after that jump
+- the long-chapter smoke path now also captures a wide-viewport spread-candidate probe at the `macBook` preset and records:
+  - `maxPageChunkCount`
+  - `spreadCandidateDetected`
+  - the post-resize section-layout diagnostics snapshot used to judge whether multi-unit layout is even being considered
+- the vertical-writing smoke path now also captures a tall-viewport spread-candidate probe at the `ipadPortrait` preset and records the same diagnostics for the top-to-bottom multi-unit hypothesis
 - the smoke suite now records shell-box diagnostics for the mounted stage, mounted `foliate-view`, and nav chrome, and it asserts those are sane during automated runs
 - that shell-box probe caught a real macOS harness regression: `#nav-bar` was stretching to the full viewport height, so the shell CSS now hard-pins it to a 63px bottom strip
 - the smoke tests now parse the structured `smoke.summary` JSON directly instead of relying only on regex matches, so failures point at the exact broken field more reliably
@@ -119,6 +125,15 @@ As of 2026-03-31:
   - `iframeCount == 0`
   - non-empty live `contentURL`
   - live `sectionLayoutController` present
+- the harness `Layout` tab now surfaces section-layout diagnostics directly for manual inspection:
+  - reported page count
+  - page-record count
+  - current visible chunk count
+  - column count
+  - writing mode
+  - vertical-layout flag
+  - layout-complete state
+- the resize smoke probe now also verifies that those section-layout diagnostics remain present and coherent after switching to the `macBook` viewport preset
 - there is also an opportunistic local-book diagnostic for:
   - `/Users/alex/Downloads/[芥川龍之介] 羅生門.epub`
   - it is intentionally skippable when that sample does not expose a deterministic second-section jump target in smoke mode

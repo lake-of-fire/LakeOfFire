@@ -390,6 +390,7 @@ export class EbookSectionLayout {
                 },
                 pageCount: () => this.pageCount(),
                 hasPendingWarmup: () => this.hasPendingWarmup(),
+                layoutDiagnostics: () => this.layoutDiagnostics(),
                 ensurePageBuilt: (pageIndex, options) => this.ensurePageBuilt(pageIndex, options),
                 visibleSourceRange: pageIndex => this.visibleSourceRange(pageIndex),
                 captureLocationForPage: pageIndex => this.captureLocationForPage(pageIndex),
@@ -624,6 +625,38 @@ export class EbookSectionLayout {
 
     hasPendingWarmup() {
         return !this.isLayoutComplete()
+    }
+
+    layoutDiagnostics() {
+        const resolvedCurrentPageIndex = this.pageIndexForAnchor(this.#currentSourceAnchor) ?? 0
+        const currentPageRecord = this.#pageRecords[resolvedCurrentPageIndex] ?? null
+        const activeBuildPageRecord = this.#buildState?.pageRecord ?? null
+        const currentChunkCount = currentPageRecord?.chunkRecords?.length ?? 0
+        const activeBuildChunkCount = activeBuildPageRecord?.chunkRecords?.length ?? 0
+        const maxPageChunkCount = this.#pageRecords.reduce(
+            (max, pageRecord) => Math.max(max, pageRecord?.chunkRecords?.length ?? 0),
+            0
+        )
+        const buildMetrics = this.#buildState?.metrics ?? {
+            vertical: this.#doc?.body?.classList?.contains?.('reader-vertical-writing') === true,
+            verticalRTL: true,
+        }
+        return {
+            pageCount: this.pageCount(),
+            pageRecordCount: this.#pageRecords.length,
+            currentPageIndex: resolvedCurrentPageIndex,
+            currentPageChunkCount: currentChunkCount,
+            maxPageChunkCount,
+            activeBuildPageIndex: this.#buildState?.pageIndex ?? null,
+            activeBuildChunkCount,
+            columnCount: this.#buildState?.columnCount ?? currentChunkCount ?? 1,
+            spreadCandidateDetected: maxPageChunkCount > 1,
+            vertical: buildMetrics?.vertical ?? null,
+            writingMode: buildMetrics?.vertical === true
+                ? (buildMetrics?.verticalRTL === true ? 'vertical-rl' : 'vertical-lr')
+                : 'horizontal-tb',
+            layoutComplete: this.isLayoutComplete(),
+        }
     }
 
     ensurePageBuilt(pageIndex, { reason = 'ensure-page' } = {}) {

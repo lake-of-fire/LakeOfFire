@@ -221,6 +221,7 @@ public struct ReaderPackageEntrySource: Sendable {
 
 public actor ReaderPackageEntrySourceCache {
     public static let shared = ReaderPackageEntrySourceCache()
+    private static let diagnosticLocalFilePathQueryItemName = "diagnosticLocalFilePath"
 
     public struct CachedSource: Sendable {
         public let source: ReaderPackageEntrySource
@@ -272,10 +273,28 @@ public actor ReaderPackageEntrySourceCache {
         forPackageURL readerFileURL: URL,
         readerFileManager: ReaderFileManager
     ) async throws -> URL {
+        if let diagnosticLocalURL = diagnosticLocalURL(forPackageURL: readerFileURL) {
+            return diagnosticLocalURL
+        }
         if try await readerFileManager.directoryExists(directoryURL: readerFileURL) {
             return try readerFileManager.localDirectoryURL(forReaderFileURL: readerFileURL)
         }
         return try readerFileManager.localFileURL(forReaderFileURL: readerFileURL)
+    }
+
+    private static func diagnosticLocalURL(forPackageURL readerFileURL: URL) -> URL? {
+        guard let components = URLComponents(url: readerFileURL, resolvingAgainstBaseURL: false),
+              let encodedPath = components.queryItems?.first(where: { $0.name == diagnosticLocalFilePathQueryItemName })?.value,
+              !encodedPath.isEmpty
+        else {
+            return nil
+        }
+
+        let localURL = URL(fileURLWithPath: encodedPath).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: localURL.path) else {
+            return nil
+        }
+        return localURL
     }
 
     private static func freshnessToken(for localURL: URL) throws -> String {

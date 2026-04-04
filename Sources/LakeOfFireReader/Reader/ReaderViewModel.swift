@@ -24,6 +24,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
+    @AppStorage("readerFontSize") private var readerFontSize: Double?
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
@@ -285,14 +286,21 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func refreshSettingsInWebView(content: any ReaderContentProtocol, newState: WebViewState? = nil) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let resolvedFontSize = readerFontSize ?? 16
             try await self.scriptCaller.evaluateJavaScript("""
+                const px = '\(resolvedFontSize)px';
                 if (document.body.getAttribute('data-manabi-light-theme') !== '\(lightModeTheme)') {
                     document.body.setAttribute('data-manabi-light-theme', '\(lightModeTheme)');
                 }
                 if (document.body.getAttribute('data-manabi-dark-theme') !== '\(darkModeTheme)') {
                     document.body.setAttribute('data-manabi-dark-theme', '\(darkModeTheme)');
                 }
+                try { document.documentElement?.style?.setProperty('font-size', px); } catch (_error) {}
+                try { document.body?.style?.setProperty('font-size', px); } catch (_error) {}
+                try { document.body?.setAttribute?.('data-manabi-diagnostic-font-size', px); } catch (_error) {}
+                globalThis.manabiDiagnosticFontSize = px;
                 """, duplicateInMultiTargetFrames: true)
+            debugPrint("# PAGETURN refreshSettingsInWebView.applied", "fontSize=\(resolvedFontSize)")
             try await self.refreshTitleInWebView(content: content, newState: newState)
         }
     }

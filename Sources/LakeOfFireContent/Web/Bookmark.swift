@@ -65,6 +65,13 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var voiceFrameUrl: URL?
     @Persisted public var voiceAudioURL: URL?
     @Persisted public var audioSubtitlesURL: URL?
+    @Persisted public var audioSubtitlesRoleRawValue: String?
+    @Persisted public var primaryMediaIdentity: String?
+    @Persisted public var primaryMediaSourceURL: URL?
+    @Persisted public var primaryMediaKindRawValue: String?
+    @Persisted public var primaryMediaDuration: Double?
+    @Persisted public var primaryMediaLastPlaybackTime: Double?
+    @Persisted public var offlineMediaID: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     
@@ -148,6 +155,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
 
     @MainActor
     public func delete() async throws {
+        let url = url
         guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
         try await { @RealmBackgroundActor in
             guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
@@ -157,6 +165,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
                 content.isDeleted = true
                 content.refreshChangeMetadata(explicitlyModified: true)
             }
+            try await ReaderContentLoader.softDeleteTranscriptsIfNoRemainingOwners(contentURL: url)
         }()
     }
 }

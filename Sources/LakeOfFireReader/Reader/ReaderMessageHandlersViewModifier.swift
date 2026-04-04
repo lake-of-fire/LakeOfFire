@@ -1079,6 +1079,11 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
                 guard let self else { return }
+                debugPrint(
+                    "# READER ebookViewerInitialized",
+                    "page=\(readerViewModel.state.pageURL.absoluteString)",
+                    "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
+                )
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme,
                    (scheme == "ebook" || scheme == "ebook-url"),
@@ -1098,14 +1103,124 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                 }
             }),
+            (ReaderWebMediaBridge.messageHandlerName, { @RealmBackgroundActor [weak self] message in
+                guard self != nil else { return }
+                guard let decoded = ReaderWebMediaBridge.decode(message: message) else { return }
+                switch decoded {
+                case .readyState:
+                    return
+                case .media(let info):
+                    ReaderWebMediaBridge.postCandidateUpdate(info)
+                case .playback(let event):
+                    ReaderWebMediaBridge.postPlaybackUpdate(event)
+
+                    guard let pageURL = URL(string: event.snapshot.pageSrc),
+                          !pageURL.isNativeReaderView
+                    else { return }
+                    guard let sourceURL = URL(string: event.snapshot.effectiveSource),
+                          let scheme = sourceURL.scheme?.lowercased(),
+                          scheme == "http" || scheme == "https"
+                    else { return }
+
+                    let stableMediaIdentity = MediaTranscript.stableMediaIdentity(url: sourceURL)
+                    let playbackKind: ReaderPrimaryMediaKind?
+                    switch event.snapshot.mediaType {
+                    case .audio:
+                        playbackKind = .audio
+                    case .video:
+                        playbackKind = .video
+                    case .unknown:
+                        playbackKind = nil
+                    }
+
+                    let shouldWritePlaybackPosition: Bool = switch event.eventName {
+                    case .pause, .seeked, .ended, .heartbeat:
+                        true
+                    default:
+                        false
+                    }
+
+                    let shouldWriteDuration: Bool = switch event.eventName {
+                    case .loadedmetadata, .durationchange, .play, .playing:
+                        true
+                    default:
+                        false
+                    }
+
+                    guard shouldWritePlaybackPosition || shouldWriteDuration else { return }
+
+                    do {
+                        try await ReaderContentLoader.updateContent(url: pageURL) { object in
+                            guard object.primaryMediaIdentity == stableMediaIdentity else {
+                                return false
+                            }
+
+                            var changed = false
+                            if shouldWriteDuration,
+                               event.snapshot.duration.isFinite,
+                               event.snapshot.duration > 0,
+                               object.primaryMediaDuration != event.snapshot.duration
+                            {
+                                object.primaryMediaDuration = event.snapshot.duration
+                                changed = true
+                            }
+                            if shouldWritePlaybackPosition,
+                               event.snapshot.currentTime.isFinite,
+                               object.primaryMediaLastPlaybackTime != event.snapshot.currentTime
+                            {
+                                object.primaryMediaLastPlaybackTime = event.snapshot.currentTime
+                                changed = true
+                            }
+                            if let playbackKind,
+                               object.primaryMediaKind != playbackKind
+                            {
+                                object.primaryMediaKind = playbackKind
+                                changed = true
+                            }
+                            if object.primaryMediaSourceURL != sourceURL {
+                                object.primaryMediaSourceURL = sourceURL
+                                changed = true
+                            }
+                            return changed
+                        }
+                    } catch {
+                        print(error)
+                    }
+                }
+            }),
             ("videoStatus", { @RealmBackgroundActor [weak self] message in
                 guard let self else { return }
                 do {
-                    guard let result = VideoStatusMessage(fromMessage: message) else { return }
-                    //                    debugPrint("!!", result)
-                    if let pageURL = result.pageURL {
-                        _ = try await MediaStatus.getOrCreate(url: pageURL)
+                    guard let result = ExternalMediaSubtitlesMessage(fromMessage: message) else { return }
+                    guard let pageURL = result.pageURL, !pageURL.isNativeReaderView else { return }
+                    guard let preferredTrack = result.preferredTrack(for: .autoupdatingCurrent) else { return }
+                    try await ReaderContentLoader.updateContent(url: pageURL) { object in
+                        if object.audioSubtitlesURL != nil && object.audioSubtitlesRole != .media {
+                            return false
+                        }
+
+                        var changed = false
+                        if object.audioSubtitlesURL != preferredTrack.webVTTURL {
+                            object.audioSubtitlesURL = preferredTrack.webVTTURL
+                            changed = true
+                        }
+                        if object.audioSubtitlesRole != .media {
+                            object.audioSubtitlesRole = .media
+                            changed = true
+                        }
+                        return changed
                     }
+
+                    ReaderWebMediaBridge.postExternalSubtitlesUpdate(
+                        ReaderExternalMediaSubtitlesUpdate(
+                            canonicalContentURL: MediaTranscript.canonicalContentURL(from: pageURL),
+                            pageURL: pageURL,
+                            providerVideoID: result.providerVideoID,
+                            subtitleURL: preferredTrack.webVTTURL,
+                            languageCode: preferredTrack.languageCode,
+                            isAutoGenerated: preferredTrack.isAutoGenerated
+                        )
+                    )
                 } catch {
                     print(error)
                 }

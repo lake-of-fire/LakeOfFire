@@ -73,6 +73,10 @@ func smokeSummaryString(at path: [String], in object: [String: Any]) -> String? 
     smokeSummaryValue(at: path, in: object) as? String
 }
 
+func smokeSummaryDictionary(at path: [String], in object: [String: Any]) -> [String: Any]? {
+    smokeSummaryValue(at: path, in: object) as? [String: Any]
+}
+
 func smokeSummaryInt(at path: [String], in object: [String: Any]) -> Int {
     if let intValue = smokeSummaryValue(at: path, in: object) as? Int {
         return intValue

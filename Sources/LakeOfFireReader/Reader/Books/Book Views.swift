@@ -120,7 +120,7 @@ fileprivate struct StaticBookListRow: View {
             author: publication.author,
             publicationDate: publication.publicationDate,
             summary: publication.summary,
-            hasAudio: publication.voiceAudioURL != nil || publication.audioSubtitlesURL != nil,
+            hasContentAudio: publication.hasContentAudio,
             onTopTap: nil
         ) {
             EmptyView()
@@ -147,7 +147,7 @@ fileprivate struct DownloadableBookListRow: View {
             author: publication.author,
             publicationDate: publication.publicationDate,
             summary: publication.summary,
-            hasAudio: publication.voiceAudioURL != nil || publication.audioSubtitlesURL != nil,
+            hasContentAudio: publication.hasContentAudio,
             onTopTap: topTap
         ) {
             HidingDownloadButton(
@@ -225,7 +225,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     let author: String?
     let publicationDate: Date?
     let summary: String?
-    let hasAudio: Bool
+    let hasContentAudio: Bool
     let onTopTap: (() -> Void)?
     private let trailing: () -> Trailing
 
@@ -243,7 +243,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         author: String?,
         publicationDate: Date?,
         summary: String?,
-        hasAudio: Bool = false,
+        hasContentAudio: Bool = false,
         onTopTap: (() -> Void)? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
@@ -252,7 +252,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         self.author = author
         self.publicationDate = publicationDate
         self.summary = summary
-        self.hasAudio = hasAudio
+        self.hasContentAudio = hasContentAudio
         self.onTopTap = onTopTap
         self.trailing = trailing
     }
@@ -299,7 +299,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                     .multilineTextAlignment(.leading)
                     .lineLimit(3)
                 // Temporarily hide audiobook badge pending UX update.
-//                if hasAudio {
+//                if hasContentAudio {
 //                    HStack(spacing: 6) {
 //                        Image(systemName: "headphones")
 //                            .imageScale(.small)

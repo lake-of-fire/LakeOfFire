@@ -29,6 +29,8 @@ public extension URL {
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+    private static let diagnosticLocalFilePathQueryItemName = "diagnosticLocalFilePath"
+
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
@@ -59,6 +61,15 @@ public struct ReaderContentLoader {
     public static var bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
+
+    private static func diagnosticStartupEbookLocalPath(for url: URL) -> String? {
+        guard url.isEBookURL,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return nil }
+        return components.queryItems?
+            .first(where: { $0.name == diagnosticLocalFilePathQueryItemName })?
+            .value
+    }
 
     @MainActor
     public static func hasLocallyRetrievableHTML(
@@ -243,9 +254,61 @@ public struct ReaderContentLoader {
             }
         }
     }
+
+    @RealmBackgroundActor
+    public static func softDeleteTranscriptsIfNoRemainingOwners(contentURL url: URL) async throws {
+        try await softDeleteTranscriptsIfNoRemainingOwners(contentURLs: [url])
+    }
+
+    @RealmBackgroundActor
+    public static func softDeleteTranscriptsIfNoRemainingOwners(contentURLs urls: [URL]) async throws {
+        let canonicalURLs = Set(urls.map { MediaTranscript.canonicalContentURL(from: $0) })
+        guard !canonicalURLs.isEmpty else { return }
+
+        for canonicalURL in canonicalURLs {
+            let remainingOwners = try await loadAll(url: canonicalURL)
+            guard remainingOwners.isEmpty else { continue }
+
+            let sharedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
+            let transcripts = sharedRealm.objects(MediaTranscript.self)
+                .where { !$0.isDeleted }
+                .filter(NSPredicate(format: "contentURL == %@", canonicalURL.absoluteString))
+            guard !transcripts.isEmpty else { continue }
+
+            try await sharedRealm.asyncWrite {
+                for transcript in transcripts {
+                    transcript.isDeleted = true
+                    transcript.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        }
+    }
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        if let diagnosticLocalPath = diagnosticStartupEbookLocalPath(for: url) {
+            let historyRecord = HistoryRecord()
+            historyRecord.url = url
+            historyRecord.title = URL(fileURLWithPath: diagnosticLocalPath)
+                .deletingPathExtension()
+                .lastPathComponent
+            historyRecord.isReaderModeByDefault = true
+            historyRecord.rssContainsFullContent = false
+            historyRecord.isDemoted = false
+            historyRecord.updateCompoundKey()
+            debugPrint(
+                "# READERLOAD contentLoader.diagnosticStartupEbook",
+                "url=\(url.absoluteString)",
+                "localPath=\(diagnosticLocalPath)"
+            )
+            return historyRecord
+        }
+
+        if url.isTranscriptURL {
+            try Task.checkCancellation()
+            return await TranscriptPageRegistry.shared.makeReaderContent(for: url)
+        }
+
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
 

@@ -88,7 +88,13 @@ const CHEVRON_VISUALS_ENABLED = true;
 // Set to false to avoid mid-gesture state that previously required resets.
 const CHEVRON_SWIPE_PREVIEW_ENABLED = false;
 
-const logBug = globalThis.logBug || (() => {});
+const logBug = (event, detail = {}) => {
+    try {
+        return globalThis.logBug?.(event, detail)
+    } catch (_error) {
+        return undefined
+    }
+};
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -5565,6 +5571,13 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display...awaited promise")
         this.#index = index
+        logBug?.('paginator:display:index', {
+            index,
+            src: src ?? null,
+            sectionLocation: sectionLocation ?? null,
+            reason: reason ?? null,
+            anchor: summarizeAnchor(anchor),
+        });
         if (src) {
             const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
@@ -5652,6 +5665,15 @@ export class Paginator extends HTMLElement {
         const didDispatchSyntheticRelocate = shouldDispatchSyntheticRelocate
             ? await this.#dispatchSyntheticRelocate(reason ?? 'display', scrollToAnchorError)
             : false
+        logBug?.('paginator:display:post-scroll', {
+            index,
+            reason: reason ?? null,
+            relocateGenerationBeforeScroll,
+            relocateGenerationAfterScroll: this.#relocateGeneration,
+            shouldDispatchSyntheticRelocate,
+            didDispatchSyntheticRelocate,
+            scrollToAnchorError: scrollToAnchorError ? String(scrollToAnchorError) : null,
+        });
         if (scrollToAnchorError && !didDispatchSyntheticRelocate) {
             throw scrollToAnchorError
         }
@@ -5689,6 +5711,7 @@ export class Paginator extends HTMLElement {
         this.#forceEndTouchGesture('didDisplay')
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
+        return true
     }
     #canGoToIndex(index) {
         return index >= 0 && index <= this.sections.length - 1
@@ -5702,6 +5725,14 @@ export class Paginator extends HTMLElement {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const navigationReason = reason ?? (select ? 'selection' : 'navigation');
         const willLoadNewIndex = index !== this.#index;
+        logBug?.('paginator:goTo:start', {
+            index,
+            currentIndex: this.#index,
+            willLoadNewIndex,
+            reason: navigationReason,
+            anchor: summarizeAnchor(anchor),
+            hasSelect: !!select,
+        });
         this.dispatchEvent(new CustomEvent('goTo', {
             willLoadNewIndex: willLoadNewIndex
         }))
@@ -5789,11 +5820,12 @@ export class Paginator extends HTMLElement {
                 logBug?.('paginator:watchdog-unlock-goTo', { elapsedMs: elapsed });
             } else {
                 logBug?.('paginator:locked-goTo', { elapsedMs: elapsed });
-                return;
+                return false;
             }
         }
         const resolved = await target
         if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
+        return false
     }
     async #scrollPrev(distance) {
         if (!this.#view) return true
@@ -5861,20 +5893,42 @@ export class Paginator extends HTMLElement {
                 logBug?.('paginator:watchdog-unlock-turnPage', { dir, elapsedMs: elapsed });
             } else {
                 logBug?.('paginator:locked-turnPage', { dir, elapsedMs: elapsed });
-                return;
+                return false;
             }
         }
 
         this.#locked = true
         this.#lockTimestamp = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        logBug?.('paginator:turnPage:start', { dir, distance });
+        const beforeIndex = this.#index
+        const beforePage = await this.page().catch(() => null)
+        const beforePages = await this.pages().catch(() => null)
+        const adjacentIndex = this.#adjacentIndex(dir)
+        logBug?.('paginator:turnPage:start', {
+            dir,
+            distance,
+            currentIndex: beforeIndex,
+            adjacentIndex,
+            beforePage,
+            beforePages,
+        });
         try {
             const prev = dir === -1
             const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
-            logBug?.('paginator:turnPage:shouldGo', { dir, shouldGo });
+            logBug?.('paginator:turnPage:shouldGo', {
+                dir,
+                shouldGo,
+                currentIndex: this.#index,
+                adjacentIndex,
+            });
+            let didNavigate = false
             if (shouldGo) {
-                await this.#goTo({
-                    index: this.#adjacentIndex(dir),
+                logBug?.('paginator:turnPage:cross-section', {
+                    dir,
+                    currentIndex: this.#index,
+                    targetIndex: adjacentIndex,
+                });
+                didNavigate = await this.#goTo({
+                    index: adjacentIndex,
                     anchor: prev ? () => 1 : () => 0,
                     reason: 'page',
                 })
@@ -5882,10 +5936,24 @@ export class Paginator extends HTMLElement {
             if (shouldGo || !this.hasAttribute('animated')) {
                 await wait(100)
             }
+            const afterPage = await this.page().catch(() => null)
+            const afterPages = await this.pages().catch(() => null)
+            const resolved = didNavigate
+                || this.#index !== beforeIndex
+                || beforePage !== afterPage
+                || beforePages !== afterPages
+            return resolved
         } finally {
             // Never leave the paginator locked if navigation threw/cancelled.
             this.#locked = false
-            logBug?.('paginator:turnPage:end', { dir });
+            const afterPage = await this.page().catch(() => null)
+            const afterPages = await this.pages().catch(() => null)
+            logBug?.('paginator:turnPage:end', {
+                dir,
+                currentIndex: this.#index,
+                afterPage,
+                afterPages,
+            });
         }
     }
     async prev(distance) {
@@ -5895,14 +5963,24 @@ export class Paginator extends HTMLElement {
         return await this.#turnPage(1, distance)
     }
     async prevSection() {
+        const targetIndex = this.#adjacentIndex(-1)
+        logBug?.('paginator:prevSection', {
+            currentIndex: this.#index,
+            targetIndex,
+        });
         return await this.goTo({
-            index: this.#adjacentIndex(-1),
+            index: targetIndex,
             reason: 'page',
         })
     }
     async nextSection() {
+        const targetIndex = this.#adjacentIndex(1)
+        logBug?.('paginator:nextSection', {
+            currentIndex: this.#index,
+            targetIndex,
+        });
         return await this.goTo({
-            index: this.#adjacentIndex(1),
+            index: targetIndex,
             reason: 'page',
         })
     }

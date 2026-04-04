@@ -58,8 +58,30 @@ final class SmokeSummaryTestSupportTests: XCTestCase {
         let summary: [String: Any] = ["overallSuccess": true]
 
         XCTAssertNil(smokeSummaryBool(at: ["missing"], in: summary))
+        XCTAssertNil(smokeSummaryDictionary(at: ["missing"], in: summary))
         XCTAssertNil(smokeSummaryString(at: ["missing"], in: summary))
         XCTAssertNil(smokeSummaryNumber(at: ["missing"], in: summary))
         XCTAssertEqual(smokeSummaryInt(at: ["missing"], in: summary), 0)
+    }
+
+    func testSmokeSummaryDictionaryHelperReturnsNestedDictionary() {
+        let summary: [String: Any] = [
+            "jsProbe": [
+                "sectionLayoutDiagnostics": [
+                    "layoutDiagnostics": [
+                        "columnCount": 2,
+                        "writingMode": "horizontal-tb",
+                    ]
+                ]
+            ]
+        ]
+
+        let diagnostics = smokeSummaryDictionary(
+            at: ["jsProbe", "sectionLayoutDiagnostics", "layoutDiagnostics"],
+            in: summary
+        )
+
+        XCTAssertEqual(diagnostics?["columnCount"] as? Int, 2)
+        XCTAssertEqual(diagnostics?["writingMode"] as? String, "horizontal-tb")
     }
 }
