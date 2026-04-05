@@ -28,23 +28,10 @@ public extension ReaderContentProtocol {
         let targetURL = url
 
         try await { @RealmBackgroundActor in
-            let relatedObjects = try await ReaderContentLoader.loadAll(url: targetURL)
-
-            for case let object as (Object & ReaderContentProtocol) in relatedObjects {
-                guard let realm = object.realm else { continue }
-
-                let configuration = realm.configuration
-                let compoundKey = object.compoundKey
-                let objectType = type(of: object)
-
-                let backgroundRealm = try await RealmBackgroundActor.shared.cachedRealm(for: configuration)
-                guard let resolved = backgroundRealm.object(ofType: objectType, forPrimaryKey: compoundKey) as? (Object & ReaderContentProtocol) else { continue }
-
-                try await backgroundRealm.asyncWrite {
-                    block(backgroundRealm, resolved)
-                }
-
-                try await backgroundRealm.asyncRefresh()
+            try await ReaderContentLoader.updateContent(url: targetURL) { object in
+                guard let realm = object.realm else { return false }
+                block(realm, object)
+                return true
             }
         }()
     }

@@ -44,8 +44,15 @@ private struct SidebarColumn: View {
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         if horizontalSizeClass == .compact {
-                            DismissButton {
-                                viewModel.isLibraryPresented = false
+                            if #available(iOS 26, macOS 26, *) {
+                                Button("Done", role: .done) {
+                                    viewModel.isLibraryPresented = false
+                                }
+                            } else {
+                                Button("Done") {
+                                    viewModel.isLibraryPresented = false
+                                }
+                                .bold()
                             }
                         }
                     }

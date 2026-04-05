@@ -211,8 +211,7 @@ struct LibraryScriptsListView: View {
     func addScriptButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
             Task { @RealmBackgroundActor in
-                let script = try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
-                let scriptID = script.id
+                let scriptID = try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
                 await Task { @MainActor in
                     scrollProxy.scrollTo("library-sidebar-\(scriptID.uuidString)")
                 }.value
@@ -221,7 +220,13 @@ struct LibraryScriptsListView: View {
             Label("Add Script", systemImage: "plus.circle")
                 .bold()
         }
-        .labelStyle(.titleAndIcon)
+        .modifier {
+            if #available(iOS 26, macOS 26, *) {
+                $0.labelStyle(.titleOnly)
+            } else {
+                $0.labelStyle(.titleAndIcon)
+            }
+        }
         .keyboardShortcut("n", modifiers: [.command])
     }
 }

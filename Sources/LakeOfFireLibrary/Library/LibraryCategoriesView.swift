@@ -29,14 +29,6 @@ struct LibraryCategoriesView: View {
     @State private var window: NSWindow?
 #endif
     
-    var addButtonPlacement: ToolbarItemPlacement {
-#if os(iOS)
-        return .bottomBar
-#else
-        return .automatic
-#endif
-    }
-    
     @ViewBuilder var importExportView: some View {
         ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
 #if os(macOS)
@@ -230,24 +222,30 @@ struct LibraryCategoriesView: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             List(selection: $contentRoute) {
+                Section {
+                    userLibraryView
+                } header: {
+                    HStack {
+                        Text("User Library")
+                        Spacer(minLength: 12)
+                        addCategoryButton(scrollProxy: scrollProxy)
+                    }
+                }
+
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
                 .labelStyle(.titleOnly)
                 .accentColor(appTint)
                 
+                Section("Editor's Picks") {
+                    editorsPicksLibraryView
+                }
+
                 Section("Extensions") {
                     NavigationLink(value: ContentPaneRoute.userScripts, label: {
                         Label("User Scripts", systemImage: "wrench.and.screwdriver")
                     })
-                }
-                
-                Section("Library") {
-                    userLibraryView
-                }
-                
-                Section("Editor's Picks") {
-                    editorsPicksLibraryView
                 }
                 
                 Section("Archive") {
@@ -255,26 +253,12 @@ struct LibraryCategoriesView: View {
                 }
             }
             .listStyle(.sidebar)
-#if os(macOS)
-            .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 0) {
-                    addCategoryButton(scrollProxy: scrollProxy)
-                        .buttonStyle(.borderless)
-                        .padding()
-                    Spacer(minLength: 0)
-                }
-            }
-#endif
 #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     if viewModel.userLibraryCategories?.contains(where: { $0.isUserEditable }) ?? false {
                         EditButton()
                     }
-                }
-                ToolbarItem/*Group*/(placement: addButtonPlacement) {
-                    addCategoryButton(scrollProxy: scrollProxy)
-                    //                    Spacer(minLength: 0)
                 }
             }
 #endif
@@ -284,11 +268,10 @@ struct LibraryCategoriesView: View {
     @ViewBuilder func addCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
             Task { @RealmBackgroundActor in
-                let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                let ref = ThreadSafeReference(to: category)
+                let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
                 try await { @MainActor in
                     let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.resolve(ref) else { return }
+                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
                     categoryIDNeedsScrollTo = category.id.uuidString
                     try await Task.sleep(nanoseconds: 100_000_000)
                     //                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
@@ -296,15 +279,9 @@ struct LibraryCategoriesView: View {
                 }()
             }
         } label: {
-            Text("Add Category")
+            Label("Add Category", systemImage: "plus")
         }
-        .modifier {
-            if #available(iOS 26, macOS 26, *) {
-                $0
-            } else {
-                $0.buttonStyle(.borderless)
-            }
-        }
+        .buttonStyle(.bordered)
         .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in
             guard let categoryIDNeedsScrollTo = categoryIDNeedsScrollTo else { return }
             Task { @MainActor in // Untested whether this is needed
