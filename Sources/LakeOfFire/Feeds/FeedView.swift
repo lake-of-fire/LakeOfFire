@@ -52,8 +52,7 @@ public struct FeedView: View {
     @ObservedRealmObject var feed: Feed
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
-    
-    @SceneStorage("feedEntrySelection") private var feedEntrySelection: String?
+    @Environment(\.contentSelection) private var contentSelection
     
     public var body: some View {
         AsyncView(operation: { forceRefreshRequested in
@@ -68,7 +67,7 @@ public struct FeedView: View {
                     } else {
                         ReaderContentList(
                             contents: entries,
-                            entrySelection: $feedEntrySelection,
+                            entrySelection: contentSelection,
                             sortOrder: .publicationDate)
                     }
                 }

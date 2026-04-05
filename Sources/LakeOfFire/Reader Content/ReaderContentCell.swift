@@ -1,10 +1,12 @@
 import SwiftUI
 import RealmSwift
 import RealmSwiftGaps
+import LakeKit
+import ImageIO
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
-    static let shared = ReaderContentCellActor()
+    static var shared = ReaderContentCellActor()
 }
 
 @MainActor
@@ -13,58 +15,145 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var isFullArticleFinished: Bool? = nil
     @Published var forceShowBookmark = false
     @Published var title = ""
+    @Published var author: String?
     @Published var humanReadablePublicationDate: String?
     @Published var imageURL: URL?
+    @Published var sourceIconURL: URL?
+    @Published var sourceTitle: String?
 
     init() { }
-    
+
     @MainActor
-    func load(item: C) async throws {
+    func load(item: C, includeSource: Bool) async throws {
         guard let config = item.realm?.configuration else { return }
         let pk = item.compoundKey
         let imageURL = try await item.imageURLToDisplay()
-        try await { @ReaderContentCellActor in
+        try await { @ReaderContentCellActor [weak self] in
+            guard let self else { return }
             let realm = try await Realm(configuration: config, actor: ReaderContentCellActor.shared)
-            if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
-                try Task.checkCancellation()
-                let title = item.titleForDisplay
-                let humanReadablePublicationDate = item.displayPublicationDate ? item.humanReadablePublicationDate : nil
-                let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
-                try await { @MainActor [weak self] in
-                    try Task.checkCancellation()
-                    self?.title = title
-                    self?.imageURL = imageURL
-                    self?.humanReadablePublicationDate = humanReadablePublicationDate
-                    if let (progress, finished) = progressResult {
-                        self?.readingProgress = progress
-                        self?.isFullArticleFinished = finished
-                    }
-                }()
+            guard let item = realm.object(ofType: C.self, forPrimaryKey: pk) else { return }
+            try Task.checkCancellation()
+
+            let title = item.titleForDisplay
+            let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
+            let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
+            let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
+
+            var sourceIconURL: URL?
+            var sourceTitle: String?
+            if includeSource {
+                if item.url.isSnippetURL {
+                    sourceTitle = "Snippet"
+                } else if let feedEntry = item as? FeedEntry, let feed = feedEntry.getFeed() {
+                    sourceTitle = feed.title
+                    sourceIconURL = feed.iconUrl ?? item.sourceIconURL
+                } else if let host = item.url.host, !host.isEmpty {
+                    sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+                    sourceIconURL = item.sourceIconURL
+                }
             }
+
+            try await { @MainActor in
+                try Task.checkCancellation()
+                self.title = title
+                self.author = author.isEmpty ? nil : author
+                self.imageURL = imageURL
+                self.humanReadablePublicationDate = humanReadablePublicationDate
+                self.sourceIconURL = sourceIconURL
+                self.sourceTitle = sourceTitle
+                if let (progress, finished) = progressResult {
+                    self.readingProgress = progress
+                    self.isFullArticleFinished = finished
+                } else {
+                    self.readingProgress = nil
+                    self.isFullArticleFinished = nil
+                }
+            }()
         }()
     }
 }
 
-extension ReaderContentProtocol {
-    @ViewBuilder func readerContentCellView(
+public struct ReaderContentCellAppearance {
+    public var maxCellHeight: CGFloat
+    public var alwaysShowThumbnails: Bool
+    public var isEbookStyle: Bool
+    public var includeSource: Bool
+    public var thumbnailDimension: CGFloat?
+    public var thumbnailCornerRadius: CGFloat?
+
+    public init(
         maxCellHeight: CGFloat,
         alwaysShowThumbnails: Bool = true,
-        isEbookStyle: Bool = false
+        isEbookStyle: Bool = false,
+        includeSource: Bool = false,
+        thumbnailDimension: CGFloat? = nil,
+        thumbnailCornerRadius: CGFloat? = nil
+    ) {
+        self.maxCellHeight = maxCellHeight
+        self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.isEbookStyle = isEbookStyle
+        self.includeSource = includeSource
+        self.thumbnailDimension = thumbnailDimension
+        self.thumbnailCornerRadius = thumbnailCornerRadius
+    }
+}
+
+public enum ReaderContentCellStyle: Sendable {
+    case card
+    case plain
+}
+
+private struct ReaderContentCellStyleKey: EnvironmentKey {
+    static let defaultValue: ReaderContentCellStyle = .plain
+}
+
+public extension EnvironmentValues {
+    var readerContentCellStyle: ReaderContentCellStyle {
+        get { self[ReaderContentCellStyleKey.self] }
+        set { self[ReaderContentCellStyleKey.self] = newValue }
+    }
+}
+
+public extension View {
+    func readerContentCellStyle(_ style: ReaderContentCellStyle) -> some View {
+        environment(\.readerContentCellStyle, style)
+    }
+}
+
+extension ReaderContentProtocol {
+    @ViewBuilder public func readerContentCellView(
+        appearance: ReaderContentCellAppearance
     ) -> some View {
-        ReaderContentCell(
-            item: self,
-            maxCellHeight: maxCellHeight,
-            alwaysShowThumbnails: alwaysShowThumbnails,
-            isEbookStyle: isEbookStyle
+        ReaderContentCell(item: self, appearance: appearance)
+    }
+
+    @ViewBuilder public func readerContentCellView(
+        maxCellHeight: CGFloat,
+        alwaysShowThumbnails: Bool = true,
+        isEbookStyle: Bool = false,
+        includeSource: Bool = false,
+        thumbnailDimension: CGFloat? = nil,
+        thumbnailCornerRadius: CGFloat? = nil
+    ) -> some View {
+        readerContentCellView(
+            appearance: ReaderContentCellAppearance(
+                maxCellHeight: maxCellHeight,
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                isEbookStyle: isEbookStyle,
+                includeSource: includeSource,
+                thumbnailDimension: thumbnailDimension,
+                thumbnailCornerRadius: thumbnailCornerRadius
+            )
         )
     }
 }
 
-struct CloudDriveSyncStatusView: View { //, Equatable {
+struct CloudDriveSyncStatusView: View {
     @ObservedRealmObject var item: ContentFile
-    
+
     @EnvironmentObject var cloudDriveSyncStatusModel: CloudDriveSyncStatusModel
-    
+
     private var title: String? {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
@@ -83,7 +172,7 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
             return nil
         }
     }
-    
+
     private var systemImage: String? {
         switch cloudDriveSyncStatusModel.status {
         case .fileMissing:
@@ -102,153 +191,287 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
             return nil
         }
     }
-    
+
     var body: some View {
-        if let title = title, let systemImage = systemImage {
+        if let title, let systemImage {
             Label(title, systemImage: systemImage)
         } else {
-            Text("")
-                .hidden()
+            Text("").hidden()
         }
     }
 }
 
-struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View { //, Equatable {
+public struct ReaderContentBookCoverRenderedWidthPreferenceKey: PreferenceKey {
+    public static var defaultValue: CGFloat = 0
+
+    public static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
     @ObservedRealmObject var item: C
-    let maxCellHeight: CGFloat
-    var alwaysShowThumbnails = true
-    var isEbookStyle = false
-    
-    static var buttonSize: CGFloat {
-        return 26
-    }
-    
-    var scaledImageWidth: CGFloat {
-        return maxCellHeight
-    }
-    
+    var appearance: ReaderContentCellAppearance
+
+    static var buttonSize: CGFloat { 26 }
+
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
-    
+    @Environment(\.readerContentCellStyle) private var readerContentCellStyle
+    @Environment(\.stackListGroupBoxContentInsets) private var stackListGroupBoxContentInsets
+
+    @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
 
-    private var buttonSize: CGFloat {
-        return ReaderContentCell<C>.buttonSize
+    init(item: C, appearance: ReaderContentCellAppearance) {
+        self._item = ObservedRealmObject(wrappedValue: item)
+        self.appearance = appearance
     }
-    
+
+    init(
+        item: C,
+        maxCellHeight: CGFloat,
+        alwaysShowThumbnails: Bool = true,
+        isEbookStyle: Bool = false,
+        includeSource: Bool = false,
+        thumbnailDimension: CGFloat? = nil,
+        thumbnailCornerRadius: CGFloat? = nil
+    ) {
+        self.init(
+            item: item,
+            appearance: ReaderContentCellAppearance(
+                maxCellHeight: maxCellHeight,
+                alwaysShowThumbnails: alwaysShowThumbnails,
+                isEbookStyle: isEbookStyle,
+                includeSource: includeSource,
+                thumbnailDimension: thumbnailDimension,
+                thumbnailCornerRadius: thumbnailCornerRadius
+            )
+        )
+    }
+
+    private var buttonSize: CGFloat { Self.buttonSize }
+
+    private var thumbnailEdgeLength: CGFloat {
+        max(1, appearance.thumbnailDimension ?? appearance.maxCellHeight)
+    }
+
+    private var displayImageURL: URL? {
+        viewModel.imageURL ?? item.imageUrl
+    }
+
+    private var displaySourceIconURL: URL? {
+        viewModel.sourceIconURL ?? item.sourceIconURL
+    }
+
+    private var displaySourceTitle: String? {
+        if let title = viewModel.sourceTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        guard appearance.includeSource else { return nil }
+        if item.url.isSnippetURL {
+            return "Snippet"
+        }
+        if let host = item.url.host, !host.isEmpty {
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        }
+        return nil
+    }
+
+    private var displayAuthor: String? {
+        if let author = viewModel.author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
+            return author
+        }
+        let fallback = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? nil : fallback
+    }
+
+    private var displayTitle: String {
+        let title = viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty {
+            return title
+        }
+        let fallback = item.titleForDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return item.url.absoluteString
+    }
+
     private var isProgressVisible: Bool {
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
         }
         return false
     }
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if let imageUrl = viewModel.imageURL {
-                if isEbookStyle {
-                    BookThumbnail(imageURL: imageUrl, scaledImageWidth: scaledImageWidth, cellHeight: maxCellHeight)
-//                        .frame(maxWidth: scaledImageWidth, maxHeight: cellHeight)
-                } else {
-                    ReaderImage(imageUrl, maxWidth: scaledImageWidth, minHeight: maxCellHeight, maxHeight: maxCellHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: scaledImageWidth / 16))
-                }
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                Text(viewModel.title)
-                    .font(.headline)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                Spacer(minLength: 0)
-                HStack(alignment: .bottom, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack {
-                            if let publicationDate = viewModel.humanReadablePublicationDate {
-                                Text("\(publicationDate)")
-                                    .lineLimit(9001)
-                                    .font(.footnote)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                            if let item = item as? ContentFile {
-                                CloudDriveSyncStatusView(item: item)
-                                    .labelStyle(.iconOnly)
-                                    .font(.callout)
-                            }
-                        }
-                        .foregroundStyle(.secondary)
 
-                        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-                                ProgressView(value: min(1, readingProgressFloat))
-                                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
-                            }
-                    }
-#if os(macOS)
-                    .padding(.bottom, isProgressVisible ? buttonSize / 2 - 10 : buttonSize / 2 - 5)
-#elseif os(iOS)
-                    .padding(.bottom, isProgressVisible ? buttonSize / 2 - 3 : buttonSize / 2 - 7)
-#endif
+    private var titleLineLimit: Int {
+        appearance.maxCellHeight >= 110 ? 2 : 1
+    }
 
-                    Spacer(minLength: 0)
-                            
-                    HStack(alignment: .center, spacing: 0) {
-                        BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
-                            .buttonStyle(.borderless)
-                            .padding(.leading, 2)
-                        
-                        if let item = item as? (any DeletableReaderContent) {
-                            Menu {
-                                if let item = item as? ContentFile {
-                                    CloudDriveSyncStatusView(item: item)
-                                        .labelStyle(.titleAndIcon)
-                                    Divider()
-                                }
-                                
-                                Button(role: .destructive) {
-                                    readerContentListModalsModel.confirmDeletionOf = item
-                                    readerContentListModalsModel.confirmDelete = true
-                                } label: {
-                                    Label(item.deleteActionTitle, systemImage: "trash")
-                                }
-                            } label: {
-                                Label("More Options", systemImage: "ellipsis")
-                                //                                .foregroundStyle(.secondary)
-                                //                                .foregroundStyle(.blue)
-                                    .background(.white.opacity(0.0000000001))
-                                //                                .overlay(.white.opacity(0.0000000001))
-                                    .frame(width: buttonSize, height: buttonSize)
-                                //                                .background(.green)
-                                //                            #if os(macOS)
-                                //                                .padding(.horizontal, 4)
-                                //                                .padding(.vertical, 10)
-                                //                            #else
-                                //#endif
-                                    .labelStyle(.iconOnly)
-                            }
-                            .foregroundStyle(.secondary)
-                            //                        .frame(width: buttonSize, height: buttonSize)
-                            .menuIndicator(.hidden)
-                            .buttonStyle(.borderless)
-                            //                        .buttonStyle(.borderless)
-                            //                        .buttonStyle(.plain)
-                            //#if os(macOS)
-                            //                        .offset(y: -(buttonSize / 2.5)) // IDK why
-                            //                                                        //                        .offset(y: 3)
-                            //#endif
-                        }
-                    }
-                }
-                .padding(.trailing, 5)
-            }
-            .frame(maxHeight: maxCellHeight)
+    private var thumbnailCornerRadius: CGFloat {
+        if let custom = appearance.thumbnailCornerRadius {
+            return custom
         }
-        .frame(minWidth: maxCellHeight, idealHeight: alwaysShowThumbnails ? maxCellHeight : (viewModel.imageURL == nil ? nil : maxCellHeight))
+        return appearance.isEbookStyle ? max(4, thumbnailEdgeLength / 28) : max(8, thumbnailEdgeLength / 12)
+    }
+
+    private var contentColumnHeight: CGFloat? {
+        if appearance.thumbnailDimension != nil || displayImageURL != nil {
+            return appearance.maxCellHeight
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private var sourceOrAuthorRow: some View {
+        if appearance.isEbookStyle, let author = displayAuthor {
+            Text(author)
+                .lineLimit(1)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if appearance.includeSource, let sourceTitle = displaySourceTitle {
+            HStack(spacing: 6) {
+                if let sourceIconURL = displaySourceIconURL {
+                    ReaderContentSourceIconImage(sourceIconURL: sourceIconURL, iconSize: sourceIconSize)
+                }
+                Text(sourceTitle)
+                    .lineLimit(1)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var metadataRow: some View {
+        HStack(spacing: 6) {
+            if let publicationDate = viewModel.humanReadablePublicationDate {
+                Text(publicationDate)
+                    .lineLimit(1)
+                    .font(.footnote)
+            }
+            if let item = item as? ContentFile {
+                CloudDriveSyncStatusView(item: item)
+                    .labelStyle(.iconOnly)
+                    .font(.callout)
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var progressRow: some View {
+        if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
+            ProgressView(value: min(1, readingProgressFloat))
+                .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var controlsRow: some View {
+        HStack(alignment: .center, spacing: 0) {
+            BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                .buttonStyle(.borderless)
+                .padding(.leading, 2)
+
+            if let item = item as? (any DeletableReaderContent) {
+                Menu {
+                    if let item = item as? ContentFile {
+                        CloudDriveSyncStatusView(item: item)
+                            .labelStyle(.titleAndIcon)
+                        Divider()
+                    }
+
+                    Button(role: .destructive) {
+                        readerContentListModalsModel.confirmDeletionOf = item
+                        readerContentListModalsModel.confirmDelete = true
+                    } label: {
+                        Label(item.deleteActionTitle, systemImage: "trash")
+                    }
+                } label: {
+                    Label("More Options", systemImage: "ellipsis")
+                        .background(.white.opacity(0.0000000001))
+                        .frame(width: buttonSize, height: buttonSize)
+                        .labelStyle(.iconOnly)
+                }
+                .foregroundStyle(.secondary)
+                .menuIndicator(.hidden)
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnailView: some View {
+        if let imageURL = displayImageURL {
+            if appearance.isEbookStyle {
+                BookCoverImageView(imageURL: imageURL, dimension: thumbnailEdgeLength)
+            } else {
+                ReaderImage(
+                    imageURL,
+                    maxWidth: thumbnailEdgeLength,
+                    minHeight: thumbnailEdgeLength,
+                    maxHeight: thumbnailEdgeLength
+                )
+                .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
+            }
+        } else if appearance.alwaysShowThumbnails {
+            RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous)
+                .fill(Color.secondary.opacity(0.12))
+                .overlay {
+                    if let sourceIconURL = displaySourceIconURL {
+                        ReaderContentSourceIconImage(sourceIconURL: sourceIconURL, iconSize: thumbnailEdgeLength * 0.35)
+                    } else {
+                        Image(systemName: appearance.isEbookStyle ? "book.closed" : "doc.text")
+                            .font(.system(size: thumbnailEdgeLength * 0.28, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: thumbnailEdgeLength, height: thumbnailEdgeLength)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: readerContentCellStyle == .card ? .center : .top, spacing: 12) {
+            thumbnailView
+
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 6) {
+                    sourceOrAuthorRow
+                    Text(displayTitle)
+                        .font(.headline)
+                        .lineLimit(titleLineLimit)
+                        .multilineTextAlignment(.leading)
+                        .environment(\._lineHeightMultiple, 0.9)
+                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                Spacer(minLength: 4)
+
+                HStack(alignment: .bottom, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        metadataRow
+                        progressRow
+                    }
+                    Spacer(minLength: 0)
+                    controlsRow
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: contentColumnHeight, maxHeight: contentColumnHeight, alignment: .center)
+        }
+        .frame(
+            minWidth: appearance.maxCellHeight,
+            minHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil,
+            idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : nil,
+            maxHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil
+        )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered
         }
         .onAppear {
             Task { @MainActor in
-                try? await viewModel.load(item: item)
+                try? await viewModel.load(item: item, includeSource: appearance.includeSource)
             }
         }
         .onChange(of: item.imageUrl) { newImageURL in
@@ -257,5 +480,68 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 viewModel.imageURL = try await item.imageURLToDisplay()
             }
         }
+    }
+}
+
+public struct BookCoverImageView: View {
+    public let imageURL: URL
+    public let dimension: CGFloat
+
+    @State private var renderedCoverWidth: CGFloat = 0
+
+    public init(imageURL: URL, dimension: CGFloat) {
+        self.imageURL = imageURL
+        self.dimension = dimension
+    }
+
+    public var body: some View {
+        Color.clear
+            .frame(width: dimension, height: dimension)
+            .overlay {
+                ReaderImage(
+                    imageURL,
+                    contentMode: .fit,
+                    cornerRadius: max(4, dimension / 28)
+                )
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: dimension, maxHeight: dimension, alignment: .center)
+            }
+            .preference(key: ReaderContentBookCoverRenderedWidthPreferenceKey.self, value: renderedCoverWidth)
+            .task(id: "\(imageURL.absoluteString)|\(dimension)") {
+                let width = await resolveRenderedCoverWidth(imageURL: imageURL, dimension: dimension)
+                if abs(width - renderedCoverWidth) >= 0.5 {
+                    renderedCoverWidth = width
+                }
+            }
+    }
+
+    private func resolveRenderedCoverWidth(imageURL: URL, dimension: CGFloat) async -> CGFloat {
+        guard dimension > 0 else { return 0 }
+        guard let pixelSize = await imagePixelSize(for: imageURL), pixelSize.height > 0 else {
+            return 0
+        }
+        let aspectRatio = pixelSize.width / pixelSize.height
+        guard aspectRatio.isFinite, aspectRatio > 0 else { return 0 }
+        return min(dimension, dimension * aspectRatio)
+    }
+
+    private func imagePixelSize(for url: URL) async -> CGSize? {
+        await Task.detached(priority: .utility) {
+            if url.isFileURL,
+               let data = try? Data(contentsOf: url) {
+                return imagePixelSize(from: data)
+            }
+            return nil
+        }.value
+    }
+
+    private func imagePixelSize(from data: Data) -> CGSize? {
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else {
+            return nil
+        }
+        return CGSize(width: CGFloat(width.doubleValue), height: CGFloat(height.doubleValue))
     }
 }

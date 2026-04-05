@@ -377,11 +377,10 @@ struct LibraryCategoriesView: View {
     @ViewBuilder func addCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
             Task { @RealmBackgroundActor in
-                let category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                let ref = ThreadSafeReference(to: category)
+                let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
                 try await { @MainActor in
                     let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.resolve(ref) else { return }
+                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
                     categoryIDNeedsScrollTo = category.id.uuidString
                     try await Task.sleep(nanoseconds: 100_000_000)
 //                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)

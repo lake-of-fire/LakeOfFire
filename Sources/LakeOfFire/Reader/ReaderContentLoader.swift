@@ -126,6 +126,25 @@ public struct ReaderContentLoader {
         let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
         return candidates
     }
+
+    /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
+    @RealmBackgroundActor
+    public static func updateContent(
+        url: URL,
+        skipContentFiles: Bool = false,
+        skipFeedEntries: Bool = false,
+        mutate: (Object & ReaderContentProtocol) -> Bool
+    ) async throws {
+        let objects = try await loadAll(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+        for case let object as (Object & ReaderContentProtocol) in objects {
+            guard let realm = object.realm else { continue }
+            try await realm.asyncWrite {
+                if mutate(object) {
+                    object.refreshChangeMetadata(explicitlyModified: true)
+                }
+            }
+        }
+    }
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
@@ -206,7 +225,8 @@ public struct ReaderContentLoader {
             let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
             
-            let data = html.readerContentData
+            let normalizedHTML = normalizeSnippetSourceHTML(html)
+            let data = normalizedHTML.readerContentData
             
             let bookmark = bookmarkRealm.objects(Bookmark.self)
                 .sorted(by: \.createdAt, ascending: false)
@@ -365,7 +385,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(text: String) async throws -> (any ReaderContentProtocol)? {
-        let html = textToHTML(text, forceRaw: true)
+        let html = snippetHTML(fromRawText: text)
         return try await load(html: html)
     }
     
@@ -424,6 +444,135 @@ public struct ReaderContentLoader {
         return nil
     }
 
+    public static func snippetHTML(fromRawText text: String) -> String {
+        normalizeSnippetSourceHTML(textToHTML(text, forceRaw: true))
+    }
+
+    public static func snippetHTML(fromHTML html: String) -> String {
+        normalizeSnippetSourceHTML(html)
+    }
+
+    @MainActor
+    public static func snippetEditorHTML(
+        for content: any ReaderContentProtocol,
+        readerFileManager: ReaderFileManager = .shared
+    ) async throws -> String {
+        if let html = try await content.htmlToDisplay(readerFileManager: readerFileManager),
+           !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return normalizeSnippetSourceHTML(html)
+        }
+        return normalizeSnippetSourceHTML("<html><body></body></html>")
+    }
+
+    public static func loadPasteboardSnippetHTML() -> String? {
+#if os(macOS)
+        let html = NSPasteboard.general.string(forType: .html)
+        let text = NSPasteboard.general.string(forType: .string)
+#else
+        let pasteboard = UIPasteboard.general
+        let htmlData = pasteboard.data(forPasteboardType: UTType.html.identifier)
+        let htmlFromData = htmlData.flatMap {
+            String(data: $0, encoding: .utf8)
+                ?? String(data: $0, encoding: .unicode)
+                ?? String(data: $0, encoding: .utf16LittleEndian)
+                ?? String(data: $0, encoding: .utf16BigEndian)
+        }
+        let htmlFromValue = pasteboard.value(forPasteboardType: UTType.html.identifier) as? String
+        let html = htmlFromData ?? htmlFromValue
+        let text = pasteboard.string
+#endif
+
+        guard let payload = preferredPasteboardPayload(html: html, text: text) else {
+            return nil
+        }
+        let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
+        return normalizeSnippetSourceHTML(normalized.html)
+    }
+
+    @MainActor
+    public static func appendSnippetHTML(
+        _ appendedHTML: String,
+        to content: any ReaderContentProtocol
+    ) async throws -> (any ReaderContentProtocol)? {
+        guard content.url.isSnippetURL, let contentRef = ContentReference(content: content) else {
+            return nil
+        }
+
+        let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
+
+        try await { @RealmBackgroundActor in
+            guard let backgroundContent = try await contentRef.resolveOnBackgroundActor(),
+                  let realm = backgroundContent.realm else {
+                return
+            }
+
+            let mergedHTML = try appendSnippetHTML(
+                normalizedAppendedHTML,
+                toExistingHTML: backgroundContent.html
+            )
+
+            try await realm.asyncWrite {
+                backgroundContent.html = mergedHTML
+                backgroundContent.rssContainsFullContent = true
+                backgroundContent.isReaderModeByDefault = true
+                backgroundContent.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }()
+
+        return try await contentRef.resolveOnMainActor()
+    }
+
+    @MainActor
+    public static func updateSnippetHTML(
+        contentURL: URL,
+        html: String
+    ) async throws -> Bool {
+        let normalizedHTML = snippetHTML(fromHTML: html)
+        return try await { @RealmBackgroundActor in
+            var didChange = false
+            try await updateContent(url: contentURL) { object in
+                let existingHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
+                guard existingHTML != normalizedHTML else { return false }
+                object.html = normalizedHTML
+                didChange = true
+                return true
+            }
+            return didChange
+        }()
+    }
+
+    @MainActor
+    public static func updateSnippetContent(
+        contentURL: URL,
+        title: String,
+        html: String
+    ) async throws -> Bool {
+        let normalizedHTML = snippetHTML(fromHTML: html)
+        return try await { @RealmBackgroundActor in
+            var didChange = false
+            try await updateContent(url: contentURL) { object in
+                let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
+                let currentTitle = object.title
+                var objectDidChange = false
+
+                if currentTitle != title {
+                    object.title = title
+                    objectDidChange = true
+                }
+                if currentHTML != normalizedHTML {
+                    object.html = normalizedHTML
+                    objectDidChange = true
+                }
+
+                if objectDidChange {
+                    didChange = true
+                }
+                return objectDidChange
+            }
+            return didChange
+        }()
+    }
+
     static func preferredPasteboardPayload(html: String?, text: String?) -> (text: String, explicitHTML: Bool)? {
         if let html {
             return (html, true)
@@ -447,6 +596,49 @@ public struct ReaderContentLoader {
     public static func saveBookmark(text: String, title: String?, url: URL?, isFromClipboard: Bool, isReaderModeByDefault: Bool) async throws {
         let html = Self.textToHTML(text)
         try await _ = Bookmark.add(url: url, title: title ?? "", html: html, isFromClipboard: isFromClipboard, rssContainsFullContent: isFromClipboard, isReaderModeByDefault: isReaderModeByDefault, isReaderModeAvailable: false, isReaderModeOfferHidden: false, realmConfiguration: bookmarkRealmConfiguration)
+    }
+
+    private static let snippetWrapperClass = "manabi-snippet"
+
+    static func normalizeSnippetSourceHTML(_ html: String) -> String {
+        guard let doc = try? SwiftSoup.parse(html),
+              let body = doc.body() else {
+            return html
+        }
+
+        let bodyHTML = (try? body.html())?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !bodyHTML.isEmpty else {
+            return html
+        }
+
+        let bodyChildren = body.children()
+        let isAlreadyWrapped = !bodyChildren.isEmpty && bodyChildren.allSatisfy {
+            $0.hasClass(snippetWrapperClass)
+        }
+
+        guard !isAlreadyWrapped else {
+            return (try? doc.outerHtml()) ?? html
+        }
+
+        try? body.html(#"<div class="\#(snippetWrapperClass)">\#(bodyHTML)</div>"#)
+        return (try? doc.outerHtml()) ?? html
+    }
+
+    private static func appendSnippetHTML(_ appendedHTML: String, toExistingHTML existingHTML: String?) throws -> String {
+        let baseHTML = normalizeSnippetSourceHTML(existingHTML ?? "<html><body></body></html>")
+        let baseDoc = try SwiftSoup.parse(baseHTML)
+        let appendedDoc = try SwiftSoup.parse(normalizeSnippetSourceHTML(appendedHTML))
+
+        let existingBody = try baseDoc.body()
+        let appendedBody = try appendedDoc.body()
+        let appendedBodyHTML = try appendedBody?.html().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if appendedBodyHTML.isEmpty {
+            return try baseDoc.outerHtml()
+        }
+
+        try existingBody?.append(appendedBodyHTML)
+        return try baseDoc.outerHtml()
     }
 }
 

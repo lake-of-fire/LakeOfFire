@@ -20,10 +20,13 @@ fileprivate struct ReaderContentCellButtonStyle: ButtonStyle {
 
 fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol>: View {
     var content: C
+    let includeSource: Bool
     let maxCellHeight: CGFloat
     
     @StateObject var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
+    @Environment(\.contentSelection) private var contentSelection
+    @Environment(\.contentSelectionNavigationHint) private var contentSelectionNavigationHint
     @EnvironmentObject private var readerContent: ReaderContent
     @EnvironmentObject private var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
@@ -37,30 +40,32 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
         Button {
             guard !content.url.matchesReaderURL(readerContent.pageURL) else { return }
             Task { @MainActor in
+                contentSelectionNavigationHint?(content.url, content.compoundKey)
+                if contentSelection.wrappedValue != content.compoundKey {
+                    contentSelection.wrappedValue = content.compoundKey
+                }
                 try await navigator.load(
                     content: content,
                     readerModeViewModel: readerModeViewModel
                 )
             }
         } label: {
-            AnyView(
+            GroupBox {
                 content.readerContentCellView(
-                    maxCellHeight: maxCellHeight - (padding * 2),
-                    alwaysShowThumbnails: true
+                    appearance: ReaderContentCellAppearance(
+                        maxCellHeight: maxCellHeight - (padding * 2),
+                        alwaysShowThumbnails: true,
+                        isEbookStyle: content.isPhysicalMedia,
+                        includeSource: includeSource,
+                        thumbnailDimension: maxCellHeight - (padding * 2)
+                    )
                 )
-            )
-//                .background(Color.white.opacity(0.00000001)) // Clickability
-                                                             //                            .frame(maxWidth: max(155, min(maxWidth, viewWidth)))
+                .readerContentCellStyle(.card)
+            }
                 .frame(maxWidth: maxWidth)
-                .padding(padding)
-                .background(Color.groupBoxBackground)
+                .padding(.vertical, 4)
             //                .background(.regularMaterial)
             //                .background(.secondary.opacity(0.09))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(.secondary.opacity(0.2))
-                        .shadow(radius: 5)
-                }
         }
         //                    .buttonStyle(ReaderContentCellButtonStyle())
         .buttonStyle(.borderless)
@@ -93,25 +98,40 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
 
 fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: View {
     var filteredContents: [C]
+    let includeSource: Bool
     
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 100
-    @ScaledMetric(relativeTo: .headline) private var maxWidth = 275
-//    @State private var viewWidth: CGFloat = 0
+    @ScaledMetric(relativeTo: .headline) private var interItemSpacing: CGFloat = 16
     
-    var body: some View {
+    @ViewBuilder
+    private var scrollViewContent: some View {
         ScrollView(.horizontal) {
-            LazyHStack {
+            LazyHStack(spacing: interItemSpacing) {
                 ForEach(filteredContents, id: \.compoundKey) { (content: C) in
                     ReaderContentInnerHorizontalListItem(
                         content: content,
+                        includeSource: includeSource,
                         maxCellHeight: maxCellHeight
                     )
                 }
-//                .headerProminence(.increased)
             }
             .frame(minHeight: maxCellHeight)
             .fixedSize()
-//            .padding(.horizontal)
+        }
+    }
+
+    var body: some View {
+        Group {
+            if #available(iOS 17, macOS 14, *) {
+                scrollViewContent
+                    .scrollIndicators(.hidden)
+                    .scrollClipDisabled()
+            } else if #available(iOS 16, macOS 13, *) {
+                scrollViewContent
+                    .scrollIndicators(.hidden)
+            } else {
+                scrollViewContent
+            }
         }
 //        .geometryReader { geometry in
 //            Task { @MainActor in
@@ -122,13 +142,15 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
 //        }
     }
     
-    init(filteredContents: [C]) {
+    init(filteredContents: [C], includeSource: Bool) {
         self.filteredContents = filteredContents
+        self.includeSource = includeSource
     }
 }
 
 public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
     let contents: [C]
+    let includeSource: Bool
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
 
@@ -141,7 +163,7 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
     public var body: some View {
         ZStack {
             if viewModel.showLoadingIndicator || !viewModel.filteredContents.isEmpty {
-                ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents)
+                ReaderContentInnerHorizontalList(filteredContents: viewModel.filteredContents, includeSource: includeSource)
             }
             
             if viewModel.showLoadingIndicator {
@@ -164,8 +186,9 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol>: View {
         }
     }
     
-    public init(contents: [C], contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder? = nil) {
+    public init(contents: [C], includeSource: Bool = false, contentFilter: ((C) async throws -> Bool)? = nil, sortOrder: ReaderContentSortOrder? = nil) {
         self.contents = contents
+        self.includeSource = includeSource
         if let contentFilter = contentFilter {
             self.contentFilter = contentFilter
         }

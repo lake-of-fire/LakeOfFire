@@ -411,7 +411,7 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func createEmptyCategory(addToLibrary: Bool) async throws -> FeedCategory {
+    public func createEmptyCategory(addToLibrary: Bool) async throws -> UUID {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         let category = FeedCategory()
 //        await realm.asyncRefresh()
@@ -428,11 +428,11 @@ public class LibraryDataManager: NSObject {
                 configuration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
-        return category
+        return category.id
     }
     
     @RealmBackgroundActor
-    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> Feed? {
+    public func createEmptyFeed(inCategory category: ThreadSafeReference<FeedCategory>) async throws -> UUID? {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
         guard let category = realm.resolve(category) else { return nil }
         let feed = Feed()
@@ -442,7 +442,7 @@ public class LibraryDataManager: NSObject {
         try await realm.asyncWrite {
             realm.add(feed, update: .modified)
         }
-        return feed
+        return feed.id
     }
     
     @RealmBackgroundActor
@@ -490,7 +490,7 @@ public class LibraryDataManager: NSObject {
     }
     
     @RealmBackgroundActor
-    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> Feed? {
+    public func duplicateFeed(_ feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws -> UUID? {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.feedEntryRealmConfiguration)
         guard let category = realm.resolve(category), let feed = realm.resolve(feed) else { return nil }
         let existing = category.getFeeds()?.filter { $0.rssUrl == feed.rssUrl && $0.id != feed.id }.first
@@ -500,16 +500,15 @@ public class LibraryDataManager: NSObject {
         value.isDeleted = false
         value.isArchived = false
         value.categoryID = category.id
-        var new: Feed?
 //        await realm.asyncRefresh()
         try await realm.asyncWrite {
-            new = realm.create(Feed.self, value: value, update: .modified)
+            realm.create(Feed.self, value: value, update: .modified)
         }
-        return new!
+        return value.id
     }
     
     @RealmBackgroundActor
-    public func createEmptyScript(addToLibrary: Bool) async throws -> UserScript {
+    public func createEmptyScript(addToLibrary: Bool) async throws -> UUID {
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
         let script = UserScript()
         script.title = ""
@@ -525,7 +524,7 @@ public class LibraryDataManager: NSObject {
                 configuration.refreshChangeMetadata(explicitlyModified: true)
             }
         }
-        return script
+        return script.id
     }
     
     @RealmBackgroundActor

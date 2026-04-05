@@ -90,7 +90,9 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor public var readerContentFiles: [ContentFile]? {
         return files?.filter {
-            ReaderContentLoader.supportsReaderContent(mimeType: $0.mimeType, pathExtension: $0.url.pathExtension) && !$0.isDeleted
+            ReaderContentLoader.supportsReaderContent(mimeType: $0.mimeType, pathExtension: $0.url.pathExtension)
+            && !$0.isDeleted
+            && !$0.url.isEBookURL
         }
     }
     

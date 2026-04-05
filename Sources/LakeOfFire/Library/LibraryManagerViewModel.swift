@@ -234,7 +234,8 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             category = realm.resolve(categoryRef)
         }
         if category == nil {
-            category = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+            category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID)
             
             if let category {
                 try await realm.asyncWrite {
@@ -245,8 +246,9 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
         }
         guard let category = category else { return }
 //        await realm.asyncRefresh()
-        guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
+        guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ThreadSafeReference(to: category)) else { return }
 //        await realm.asyncRefresh()
+        guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
         try await realm.asyncWrite {
             feed.rssUrl = rssURL
             if let title = title {
@@ -255,7 +257,6 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             feed.refreshChangeMetadata(explicitlyModified: true)
         }
         let assignRef = ThreadSafeReference(to: category)
-        let feedID = feed.id
         try await { @MainActor in
             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             await realm.asyncRefresh()
@@ -272,11 +273,12 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     @RealmBackgroundActor
     func duplicate(feed: ThreadSafeReference<Feed>, inCategory category: ThreadSafeReference<FeedCategory>, overwriteExisting: Bool) async throws {
         do {
-            guard let newFeed = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true) else { return }
-            let feedRef = ThreadSafeReference(to: newFeed)
+            guard let newFeedID = try await LibraryDataManager.shared.duplicateFeed(feed, inCategory: category, overwriteExisting: true) else { return }
             Task { @MainActor in
                 let realm = try await Realm(configuration: ReaderContentLoader.feedEntryRealmConfiguration)
-                guard let category = realm.resolve(category), let newFeed = realm.resolve(feedRef) else { return }
+                guard let category = realm.resolve(category),
+                      let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID)
+                else { return }
                 navigationPath.removeLast(navigationPath.count)
                 navigationPath.append(category)
                 selectedFeed = newFeed

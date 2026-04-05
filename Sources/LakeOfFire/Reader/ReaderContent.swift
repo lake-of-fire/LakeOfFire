@@ -97,9 +97,11 @@ public class ReaderContent: ObservableObject {
         contentTitleSubject.send(trimmed)
 
         do {
-            try await content.writeAllRelatedAsync { _, object in
+            let contentURL = content.url
+            try await ReaderContentLoader.updateContent(url: contentURL) { object in
+                guard object.title != trimmed else { return false }
                 object.title = trimmed
-                object.refreshChangeMetadata(explicitlyModified: true)
+                return true
             }
         } catch {
             debugPrint("# READER contentTitle.update.failed", error.localizedDescription)

@@ -7,11 +7,21 @@ public extension URL {
             return nil
         }
         guard let components = URLComponents(url: self, resolvingAgainstBaseURL: false),
-              let queryItems = components.queryItems,
-              let rawValue = queryItems.first(where: { $0.name == "q" })?.value else {
+              let percentEncodedQuery = components.percentEncodedQuery else {
             return nil
         }
-        let withSpaces = rawValue.replacingOccurrences(of: "+", with: " ")
-        return withSpaces.removingPercentEncoding ?? withSpaces
+
+        for pair in percentEncodedQuery.split(separator: "&", omittingEmptySubsequences: false) {
+            let pieces = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let rawName = pieces.first else { continue }
+            let name = rawName.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String(rawName)
+            guard name == "q" else { continue }
+
+            let rawValue = pieces.count > 1 ? String(pieces[1]) : ""
+            let withSpaces = rawValue.replacingOccurrences(of: "+", with: " ")
+            return withSpaces.removingPercentEncoding ?? withSpaces
+        }
+
+        return nil
     }
 }

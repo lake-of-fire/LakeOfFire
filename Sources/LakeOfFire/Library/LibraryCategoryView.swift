@@ -381,8 +381,7 @@ struct LibraryCategoryView: View {
             Task { @MainActor in
                 let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
                 try await { @RealmBackgroundActor in
-                    guard let feed = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref) else { return }
-                    let feedID = feed.id
+                    guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref) else { return }
                     try await { @MainActor in
                         scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
                         let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)

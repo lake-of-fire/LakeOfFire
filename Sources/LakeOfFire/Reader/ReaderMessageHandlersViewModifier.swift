@@ -113,9 +113,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 do {
-                    try await content.asyncWrite { _, content in
-                        content.isReaderModeAvailable = false
-                        content.refreshChangeMetadata(explicitlyModified: true)
+                    try await ReaderContentLoader.updateContent(url: url) { object in
+                        guard object.isReaderModeAvailable else { return false }
+                        object.isReaderModeAvailable = false
+                        return true
                     }
                     
                     try await { @RealmBackgroundActor in
@@ -140,9 +141,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 guard !result.outputHTML.isEmpty else {
-                    try? await content.asyncWrite { _, content in
-                        content.isReaderModeAvailable = false
-                        content.refreshChangeMetadata(explicitlyModified: true)
+                    try? await ReaderContentLoader.updateContent(url: url) { object in
+                        guard object.isReaderModeAvailable else { return false }
+                        object.isReaderModeAvailable = false
+                        return true
                     }
                     return
                 }
@@ -172,11 +174,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 
                 do {
-                    if !content.isReaderModeAvailable {
-                        try await content.asyncWrite { _, content in
-                            content.isReaderModeAvailable = true
-                            content.refreshChangeMetadata(explicitlyModified: true)
-                        }
+                    try await ReaderContentLoader.updateContent(url: url) { object in
+                        guard !object.isReaderModeAvailable else { return false }
+                        object.isReaderModeAvailable = true
+                        return true
                     }
                     
                     try await { @RealmBackgroundActor in
@@ -206,17 +207,25 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
-                    guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let content = try await ReaderViewModel.getContent(forURL: windowURL) else { return }
+                    guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let _ = try await ReaderViewModel.getContent(forURL: windowURL) else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }
-                    try await content.asyncWrite { _, content in
-                        content.rssURLs.removeAll()
-                        content.rssTitles.removeAll()
-                        content.rssURLs.append(objectsIn: urls)
-                        content.rssTitles.append(objectsIn: titles)
-                        content.isRSSAvailable = !content.rssURLs.isEmpty
-                        content.refreshChangeMetadata(explicitlyModified: true)
+                    try await ReaderContentLoader.updateContent(url: windowURL) { object in
+                        let existingURLs = Array(object.rssURLs)
+                        let existingTitles = Array(object.rssTitles)
+                        let isRSSAvailable = !urls.isEmpty
+                        guard existingURLs != urls
+                            || existingTitles != titles
+                            || object.isRSSAvailable != isRSSAvailable else {
+                            return false
+                        }
+                        object.rssURLs.removeAll()
+                        object.rssTitles.removeAll()
+                        object.rssURLs.append(objectsIn: urls)
+                        object.rssTitles.append(objectsIn: titles)
+                        object.isRSSAvailable = isRSSAvailable
+                        return true
                     }
                 } catch {
                     print(error)
@@ -313,11 +322,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     
     @MainActor
     func showOriginal() async throws {
-        if readerContent.content?.isReaderModeByDefault ?? false {
-            try await readerContent.content?.asyncWrite { _, content in
-                content.isReaderModeByDefault = false
-                content.refreshChangeMetadata(explicitlyModified: true)
-            }
+        let contentURL = readerContent.content?.url
+            ?? ReaderContentLoader.getContentURL(fromLoaderURL: readerContent.pageURL)
+            ?? readerContent.pageURL
+        try await ReaderContentLoader.updateContent(url: contentURL) { object in
+            guard object.isReaderModeByDefault else { return false }
+            object.isReaderModeByDefault = false
+            return true
         }
         navigator.reload()
     }
