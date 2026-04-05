@@ -1,8 +1,13 @@
 import SwiftUI
+import Foundation
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
 import ImageIO
+
+private let ebookAbsoluteDateFormatter: DateFormatter = {
+    ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
+}()
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
@@ -123,9 +128,23 @@ public extension View {
 
 extension ReaderContentProtocol {
     @ViewBuilder public func readerContentCellView(
+        appearance: ReaderContentCellAppearance,
+        customMenuOptions: ((Self) -> AnyView)?
+    ) -> some View {
+        ReaderContentCell(
+            item: self,
+            appearance: appearance,
+            customMenuOptions: customMenuOptions
+        )
+    }
+
+    @ViewBuilder public func readerContentCellView(
         appearance: ReaderContentCellAppearance
     ) -> some View {
-        ReaderContentCell(item: self, appearance: appearance)
+        readerContentCellView(
+            appearance: appearance,
+            customMenuOptions: nil
+        )
     }
 
     @ViewBuilder public func readerContentCellView(
@@ -212,6 +231,7 @@ public struct ReaderContentBookCoverRenderedWidthPreferenceKey: PreferenceKey {
 struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View {
     @ObservedRealmObject var item: C
     var appearance: ReaderContentCellAppearance
+    var customMenuOptions: ((C) -> AnyView)? = nil
 
     static var buttonSize: CGFloat { 26 }
 
@@ -222,9 +242,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
 
-    init(item: C, appearance: ReaderContentCellAppearance) {
+    init(item: C, appearance: ReaderContentCellAppearance, customMenuOptions: ((C) -> AnyView)? = nil) {
         self._item = ObservedRealmObject(wrappedValue: item)
         self.appearance = appearance
+        self.customMenuOptions = customMenuOptions
     }
 
     init(
@@ -259,8 +280,16 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         viewModel.imageURL ?? item.imageUrl
     }
 
-    private var displaySourceIconURL: URL? {
+    private var resolvedSourceIconURL: URL? {
         viewModel.sourceIconURL ?? item.sourceIconURL
+    }
+
+    private var usesSourceIconAsThumbnail: Bool {
+        displayImageURL == nil && resolvedSourceIconURL != nil
+    }
+
+    private var inlineSourceIconURL: URL? {
+        usesSourceIconAsThumbnail ? nil : resolvedSourceIconURL
     }
 
     private var displaySourceTitle: String? {
@@ -285,6 +314,22 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return fallback.isEmpty ? nil : fallback
     }
 
+    private var comparisonTitles: [String] {
+        [viewModel.title, item.titleForDisplay]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+    }
+
+    private func isSameAsAnyTitle(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return comparisonTitles.contains(normalized)
+    }
+
+    private var bookAuthorText: String? {
+        guard let author = displayAuthor, !isSameAsAnyTitle(author) else { return nil }
+        return author
+    }
+
     private var displayTitle: String {
         let title = viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !title.isEmpty {
@@ -304,6 +349,21 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return false
     }
 
+    private var publicationDateText: String? {
+        if let formatted = viewModel.humanReadablePublicationDate, !formatted.isEmpty {
+            return formatted
+        }
+        if appearance.isEbookStyle {
+            if let fallback = item.humanReadablePublicationDate?.trimmingCharacters(in: .whitespacesAndNewlines), !fallback.isEmpty {
+                return fallback
+            }
+            if let date = item.publicationDate {
+                return ReaderDateFormatter.absoluteString(from: date, dateFormatter: ebookAbsoluteDateFormatter)
+            }
+        }
+        return nil
+    }
+
     private var titleLineLimit: Int {
         appearance.maxCellHeight >= 110 ? 2 : 1
     }
@@ -312,7 +372,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if let custom = appearance.thumbnailCornerRadius {
             return custom
         }
-        return appearance.isEbookStyle ? max(4, thumbnailEdgeLength / 28) : max(8, thumbnailEdgeLength / 12)
+
+        let containerCornerRadius = stackListCornerRadius
+        let insetOffset = min(stackListGroupBoxContentInsets.leading, stackListGroupBoxContentInsets.top)
+        let baseCornerRadius = max(0, containerCornerRadius - insetOffset)
+        let scale = min(thumbnailEdgeLength / max(appearance.maxCellHeight, 1), 1)
+        let scaledCornerRadius = baseCornerRadius * scale
+        let upperBound = min(containerCornerRadius, thumbnailEdgeLength / 2)
+
+        return max(0, min(upperBound, scaledCornerRadius))
     }
 
     private var contentColumnHeight: CGFloat? {
@@ -322,16 +390,49 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return nil
     }
 
+    private enum ThumbnailChoice {
+        case image(URL)
+        case icon(URL)
+        case initial(String)
+    }
+
+    private var fallbackInitial: String {
+        guard let first = displayTitle.first else { return "#" }
+        return String(first).uppercased()
+    }
+
+    private var thumbnailChoice: ThumbnailChoice? {
+        if let imageURL = displayImageURL {
+            return .image(imageURL)
+        }
+        if let iconURL = resolvedSourceIconURL {
+            return .icon(iconURL)
+        }
+        return appearance.alwaysShowThumbnails ? .initial(fallbackInitial) : nil
+    }
+
+    private var hasVisibleThumbnail: Bool {
+        thumbnailChoice != nil
+    }
+
+    private var usesPlainLayout: Bool {
+        readerContentCellStyle == .plain
+    }
+
+    private var showsAudioBadge: Bool {
+        !item.voiceAudioURLs.isEmpty
+    }
+
     @ViewBuilder
     private var sourceOrAuthorRow: some View {
-        if appearance.isEbookStyle, let author = displayAuthor {
+        if appearance.isEbookStyle, let author = bookAuthorText {
             Text(author)
                 .lineLimit(1)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else if appearance.includeSource, let sourceTitle = displaySourceTitle {
             HStack(spacing: 6) {
-                if let sourceIconURL = displaySourceIconURL {
+                if let sourceIconURL = inlineSourceIconURL {
                     ReaderContentSourceIconImage(sourceIconURL: sourceIconURL, iconSize: sourceIconSize)
                 }
                 Text(sourceTitle)
@@ -343,20 +444,67 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     @ViewBuilder
-    private var metadataRow: some View {
-        HStack(spacing: 6) {
-            if let publicationDate = viewModel.humanReadablePublicationDate {
-                Text(publicationDate)
-                    .lineLimit(1)
-                    .font(.footnote)
+    private var topStatusRow: some View {
+        HStack(spacing: 8) {
+            if showsAudioBadge {
+                Image(systemName: "headphones")
+                    .imageScale(.small)
             }
+
+            if appearance.isEbookStyle, !isProgressVisible {
+                Text("NEW")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule().fill(
+                            Color(
+                                red: 0x1d / 255.0,
+                                green: 0x46 / 255.0,
+                                blue: 0x75 / 255.0
+                            )
+                        )
+                    )
+            }
+
             if let item = item as? ContentFile {
                 CloudDriveSyncStatusView(item: item)
                     .labelStyle(.iconOnly)
                     .font(.callout)
+                    .imageScale(.small)
             }
         }
         .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var metadataRow: some View {
+        HStack(spacing: 6) {
+            if let publicationDate = publicationDateText {
+                Text(publicationDate)
+                    .lineLimit(1)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.9)
+                    .font(.footnote)
+                    .layoutPriority(2)
+            }
+
+            Spacer(minLength: 0)
+
+            BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
+                .labelStyle(.iconOnly)
+                .frame(width: viewModel.forceShowBookmark ? buttonSize : 0, height: buttonSize)
+                .opacity(viewModel.forceShowBookmark ? 1 : 0)
+                .accessibilityHidden(!viewModel.forceShowBookmark)
+
+            controlsRow
+        }
+        .foregroundStyle(.secondary)
+        .buttonStyle(.clearBordered)
+        .controlSize(.small)
     }
 
     @ViewBuilder
@@ -369,41 +517,63 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var controlsRow: some View {
-        HStack(alignment: .center, spacing: 0) {
-            BookmarkButton(width: buttonSize, height: buttonSize, iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
-                .buttonStyle(.borderless)
-                .padding(.leading, 2)
-
-            if let item = item as? (any DeletableReaderContent) {
-                Menu {
+        if let item = item as? (any DeletableReaderContent) {
+            Menu {
                     if let item = item as? ContentFile {
                         CloudDriveSyncStatusView(item: item)
                             .labelStyle(.titleAndIcon)
                         Divider()
                     }
 
+                    AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+                    if let customMenuOptions {
+                        customMenuOptions(self.item)
+                    }
+
+                    Divider()
+
                     Button(role: .destructive) {
-                        readerContentListModalsModel.confirmDeletionOf = item
+                        readerContentListModalsModel.confirmDeletionOf = [item]
                         readerContentListModalsModel.confirmDelete = true
                     } label: {
                         Label(item.deleteActionTitle, systemImage: "trash")
                     }
-                } label: {
-                    Label("More Options", systemImage: "ellipsis")
-                        .background(.white.opacity(0.0000000001))
-                        .frame(width: buttonSize, height: buttonSize)
-                        .labelStyle(.iconOnly)
-                }
-                .foregroundStyle(.secondary)
-                .menuIndicator(.hidden)
-                .buttonStyle(.borderless)
+            } label: {
+                Label("More Options", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
             }
+            .modifier {
+                if #available(iOS 16, macOS 13, *) {
+                    $0.menuStyle(.button)
+                } else {
+                    $0
+                }
+            }
+            .menuIndicator(.hidden)
+        } else if let customMenuOptions {
+            Menu {
+                AnyView(self.item.bookmarkButtonView(iconOnly: false))
+                customMenuOptions(self.item)
+            } label: {
+                Label("More Options", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
+            }
+            .modifier {
+                if #available(iOS 16, macOS 13, *) {
+                    $0.menuStyle(.button)
+                } else {
+                    $0
+                }
+            }
+            .menuIndicator(.hidden)
         }
     }
 
     @ViewBuilder
-    private var thumbnailView: some View {
-        if let imageURL = displayImageURL {
+    private func thumbnailView(for thumbnailChoice: ThumbnailChoice) -> some View {
+        switch thumbnailChoice {
+        case .image(let imageURL):
             if appearance.isEbookStyle {
                 BookCoverImageView(imageURL: imageURL, dimension: thumbnailEdgeLength)
             } else {
@@ -415,55 +585,85 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 )
                 .clipShape(RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous))
             }
-        } else if appearance.alwaysShowThumbnails {
-            RoundedRectangle(cornerRadius: thumbnailCornerRadius, style: .continuous)
-                .fill(Color.secondary.opacity(0.12))
-                .overlay {
-                    if let sourceIconURL = displaySourceIconURL {
-                        ReaderContentSourceIconImage(sourceIconURL: sourceIconURL, iconSize: thumbnailEdgeLength * 0.35)
-                    } else {
-                        Image(systemName: appearance.isEbookStyle ? "book.closed" : "doc.text")
-                            .font(.system(size: thumbnailEdgeLength * 0.28, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: thumbnailEdgeLength, height: thumbnailEdgeLength)
+        case .icon(let sourceIconURL):
+            ReaderContentThumbnailTile(
+                content: .icon(sourceIconURL, placeholder: fallbackInitial),
+                width: thumbnailEdgeLength,
+                height: thumbnailEdgeLength,
+                cornerRadius: thumbnailCornerRadius
+            )
+        case .initial(let letter):
+            ReaderContentThumbnailTile(
+                content: .initial(letter),
+                width: thumbnailEdgeLength,
+                height: thumbnailEdgeLength,
+                cornerRadius: thumbnailCornerRadius
+            )
         }
     }
 
     var body: some View {
-        HStack(alignment: readerContentCellStyle == .card ? .center : .top, spacing: 12) {
-            thumbnailView
+        HStack(alignment: usesPlainLayout ? .center : .top, spacing: 12) {
+            if let thumbnailChoice {
+                thumbnailView(for: thumbnailChoice)
+            }
 
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 6) {
-                    sourceOrAuthorRow
-                    Text(displayTitle)
-                        .font(.headline)
-                        .lineLimit(titleLineLimit)
-                        .multilineTextAlignment(.leading)
-                        .environment(\._lineHeightMultiple, 0.9)
-                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            Group {
+                if usesPlainLayout {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            sourceOrAuthorRow
 
-                Spacer(minLength: 4)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(displayTitle)
+                                    .font(.headline)
+                                    .lineLimit(titleLineLimit)
+                                    .multilineTextAlignment(.leading)
+                                    .environment(\._lineHeightMultiple, 0.875)
+                                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .layoutPriority(1)
 
-                HStack(alignment: .bottom, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        metadataRow
+                                topStatusRow
+                            }
+                        }
+
                         progressRow
+                        metadataRow
                     }
-                    Spacer(minLength: 0)
-                    controlsRow
+                    .frame(maxWidth: .infinity, minHeight: contentColumnHeight, maxHeight: contentColumnHeight, alignment: .top)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            sourceOrAuthorRow
+                            Text(displayTitle)
+                                .font(.headline)
+                                .lineLimit(titleLineLimit)
+                                .multilineTextAlignment(.leading)
+                                .environment(\._lineHeightMultiple, 0.875)
+                                .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .layoutPriority(1)
+
+                            topStatusRow
+                        }
+
+                        Spacer(minLength: 4)
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            progressRow
+                            metadataRow
+                        }
+                        .offset(y: 2)
+                    }
+                    .frame(height: contentColumnHeight, alignment: .top)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: contentColumnHeight, maxHeight: contentColumnHeight, alignment: .center)
         }
         .frame(
             minWidth: appearance.maxCellHeight,
             minHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil,
-            idealHeight: appearance.alwaysShowThumbnails ? appearance.maxCellHeight : nil,
+            idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil,
             maxHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil
         )
         .onHover { hovered in
@@ -479,6 +679,52 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             Task { @MainActor in
                 viewModel.imageURL = try await item.imageURLToDisplay()
             }
+        }
+    }
+}
+
+private struct ReaderContentThumbnailTile: View {
+    enum Content {
+        case icon(URL, placeholder: String)
+        case initial(String)
+    }
+
+    let content: Content
+    let width: CGFloat
+    let height: CGFloat
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.secondary.opacity(0.18), Color.secondary.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            if case let .icon(iconURL, _) = content {
+                ReaderContentSourceIconImage(sourceIconURL: iconURL, iconSize: min(width, height) * 0.52)
+            }
+
+            if let placeholderLetter {
+                Text(placeholderLetter)
+                    .font(.system(size: min(width, height) * 0.42, weight: .semibold, design: .rounded))
+                    .minimumScaleFactor(0.4)
+                    .foregroundStyle(Color.secondary.opacity(0.9))
+            }
+        }
+        .frame(width: width, height: height)
+    }
+
+    private var placeholderLetter: String? {
+        switch content {
+        case .icon(_, let placeholder):
+            return placeholder.isEmpty ? nil : placeholder
+        case .initial(let letter):
+            return letter.isEmpty ? nil : letter
         }
     }
 }

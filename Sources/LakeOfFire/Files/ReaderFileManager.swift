@@ -344,15 +344,22 @@ public class ReaderFileManager: ObservableObject {
         }
         
         do {
-            guard let contentRef = try await refreshFilesMetadata(
+            _ = try await refreshFilesMetadata(
                 drive: drive,
                 relativePath: targetDirectory
-            )?.first else {
-                debugPrint("Warning: No file metadata returned for import")
+            )
+            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+            let importedFileURL = try targetFilePath.fileURL(forRoot: drive.rootDirectory)
+            guard let importedReaderFileURL = try await readerFileURL(for: importedFileURL, drive: drive) else {
+                debugPrint("Warning: Unable to resolve reader file URL for imported file", importedFileURL)
                 return nil
             }
-            let realm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-            guard let content = realm.resolve(contentRef) else { return nil }
+            guard let content = realm.objects(ContentFile.self)
+                .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), importedReaderFileURL.absoluteString as CVarArg))
+                .first else {
+                debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
+                return nil
+            }
             Task.detached { [weak self] in
                 try await self?.refreshAllFilesMetadata()
             }

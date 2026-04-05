@@ -31,8 +31,14 @@ extension ContentFile: DeletableReaderContent {
     @MainActor
     public func delete() async throws {
         try await ReaderFileManager.shared.delete(readerFileURL: url)
-//        try await deleteRealmData()
-        try await delete()
+        guard let contentRef = ReaderContentLoader.ContentReference(content: self) else { return }
+        try await { @RealmBackgroundActor in
+            guard let content = try await contentRef.resolveOnBackgroundActor() else { return }
+            try await content.realm?.asyncWrite {
+                content.isDeleted = true
+                content.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }()
     }
     
     @MainActor

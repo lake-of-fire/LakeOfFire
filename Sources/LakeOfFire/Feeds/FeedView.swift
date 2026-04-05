@@ -3,6 +3,7 @@ import RealmSwift
 import RealmSwiftGaps
 import AsyncView
 import Combine
+import LakeKit
 
 let feedQueue = DispatchQueue(label: "FeedQueue")
 
@@ -63,12 +64,29 @@ public struct FeedView: View {
                     if isHorizontal {
                         ReaderContentHorizontalList(
                             contents: entries,
-                            sortOrder: .publicationDate)
+                            sortOrder: .publicationDate,
+                            includeSource: false,
+                            contentSelection: contentSelection
+                        ) {
+                            EmptyView()
+                        }
                     } else {
                         ReaderContentList(
                             contents: entries,
-                            entrySelection: contentSelection,
-                            sortOrder: .publicationDate)
+                            sortOrder: .publicationDate,
+                            includeSource: false,
+                            entrySelection: contentSelection
+                        ) {
+                        } emptyStateView: {
+                            EmptyStateBoxView(
+                                title: Text("No Entries Available"),
+                                text: Text("This feed is empty. Try refreshing or checking back later."),
+                                systemImageName: "newspaper.fill"
+                            )
+                        }
+#if os(iOS)
+                        .listStyle(.insetGrouped)
+#endif
                     }
                 }
             }

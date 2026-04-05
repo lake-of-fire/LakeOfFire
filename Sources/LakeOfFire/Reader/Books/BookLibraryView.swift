@@ -327,10 +327,13 @@ public class BookLibraryViewModel: ObservableObject {
                 await downloadable.existsLocally()
             else { continue }
             downloads.insert(downloadable)
+            _ = try? await readerFileManager.importFile(
+                fileURL: downloadable.localDestination,
+                fromDownloadURL: downloadable.url
+            )
         }
         if !downloads.isEmpty {
             await DownloadController.shared.ensureDownloaded(downloads)
-            try? await readerFileManager.refreshAllFilesMetadata()
         }
     }
 

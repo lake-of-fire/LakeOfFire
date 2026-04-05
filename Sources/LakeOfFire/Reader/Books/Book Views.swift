@@ -180,7 +180,10 @@ fileprivate struct DownloadableBookListRow: View {
             let wasAlreadyDownloaded = await downloadable.existsLocally()
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
-                try? await ReaderFileManager.shared.refreshAllFilesMetadata()
+                _ = try? await ReaderFileManager.shared.importFile(
+                    fileURL: downloadable.localDestination,
+                    fromDownloadURL: downloadable.url
+                )
             }
             onSelected?(wasAlreadyDownloaded)
         }
@@ -189,7 +192,10 @@ fileprivate struct DownloadableBookListRow: View {
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
-            try? await ReaderFileManager.shared.refreshAllFilesMetadata()
+            _ = try? await ReaderFileManager.shared.importFile(
+                fileURL: downloadable.localDestination,
+                fromDownloadURL: downloadable.url
+            )
             wasDownloaded = true
         }
     }
