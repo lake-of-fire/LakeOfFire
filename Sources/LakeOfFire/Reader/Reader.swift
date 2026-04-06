@@ -446,15 +446,16 @@ public struct Reader: View {
         .ignoresSafeArea(.all, edges: .all)
         .modifier {
             if #available(iOS 26, *) {
-                $0.safeAreaBar(edge: .bottom, spacing: 0) {
-                    if let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
-                        Color.white.opacity(0.0000000001)
-                            .frame(height: additionalBottomSafeAreaInset)
-                            .onTapGesture {
-                                onAdditionalSafeAreaBarTap?()
-                            }
+                $0
+                    .safeAreaBar(edge: .bottom, spacing: 0) {
+                        if let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
+                            Color.white.opacity(0.0000000001)
+                                .frame(height: additionalBottomSafeAreaInset)
+                                .onTapGesture {
+                                    onAdditionalSafeAreaBarTap?()
+                                }
+                        }
                     }
-                }
             } else { $0 }
         }
 #endif

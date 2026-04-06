@@ -99,89 +99,15 @@ public struct LibraryManagerView: View {
     @State private var libraryCategoryViewModel: LibraryCategoryViewModel?
     
     public var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility, sidebar: {
-            NavigationStack(path: $viewModel.navigationPath) {
-                LibraryCategoriesView()
-#if os(iOS)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            if horizontalSizeClass == .compact {
-                                Button {
-                                    viewModel.isLibraryPresented = false
-                                } label: {
-                                    Text("Done")
-                                        .bold()
-                                }
-                            }
-                        }
-                    }
-#endif
-                    .navigationDestination(for: FeedCategory.self) { category in
-                        if let libraryConfiguration = viewModel.libraryConfiguration {
-                            LibraryCategoryViewContainer(category: category, libraryConfiguration: libraryConfiguration, selectedFeed: $viewModel.selectedFeed)
-                        }
-                    }
-                    .navigationDestination(for: LibraryRoute.self) { route in
-                        // If we have more routes, gotta differentiate them here as a possible TODO.
-                        LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
-                            .navigationTitle("User Scripts")
-                    }
+        NavigationSplitView(
+            columnVisibility: $columnVisibility,
+            sidebar: {
+                sidebarView
+            },
+            detail: {
+                detailView
             }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
-#endif
-        }, detail: {
-            VStack {
-                if let feed = viewModel.selectedFeed {
-#if os(macOS)
-                    ScrollView {
-                        LibraryFeedView(feed: feed)
-                        //                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
-                    }
-#else
-                    LibraryFeedView(feed: feed)
-                    //                            .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
-#endif
-                }
-                if let script = viewModel.selectedScript {
-#if os(macOS)
-                    ScrollView {
-                        LibraryScriptForm(script: script)
-                        //                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
-                    }
-#else
-                    LibraryScriptForm(script: script)
-                    //                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
-#endif
-                }
-                if viewModel.selectedFeed == nil && viewModel.selectedScript == nil {
-                    Spacer()
-                    Text("Select a category and feed to edit.\nImport or export user feeds (excluding Manabi Reader defaults) via the toolbar.")
-                        .multilineTextAlignment(.center)
-                        .padding().padding()
-                        .foregroundColor(.secondary)
-                        .font(.callout)
-                    Spacer()
-                }
-            }
-#if os(macOS)
-            .textFieldStyle(.roundedBorder)
-#endif
-            //                .fixedSize(horizontal: false, vertical: true)
-            //            }
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        viewModel.isLibraryPresented = false
-                    } label: {
-                        Text("Done")
-                            .bold()
-                    }
-                }
-#endif
-            }
-        })
+        )
         .navigationSplitViewStyle(.balanced)
         .onChange(of: viewModel.selectedFeed) { feed in
             Task { @MainActor in
@@ -196,6 +122,109 @@ public struct LibraryManagerView: View {
                     viewModel.selectedFeed = nil
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var sidebarView: some View {
+        NavigationStack(path: $viewModel.navigationPath) {
+            LibraryCategoriesView()
+#if os(iOS)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        if horizontalSizeClass == .compact {
+                            if #available(iOS 26, macOS 26, *) {
+                                Button("Done") {
+                                    viewModel.isLibraryPresented = false
+                                }
+                            } else {
+                                Button {
+                                    viewModel.isLibraryPresented = false
+                                } label: {
+                                    Text("Done")
+                                        .bold()
+                                }
+                            }
+                        }
+                    }
+                }
+#endif
+                .navigationDestination(for: FeedCategory.self) { category in
+                    if let libraryConfiguration = viewModel.libraryConfiguration {
+                        LibraryCategoryViewContainer(
+                            category: category,
+                            libraryConfiguration: libraryConfiguration,
+                            selectedFeed: $viewModel.selectedFeed
+                        )
+                    }
+                }
+                .navigationDestination(for: LibraryRoute.self) { _ in
+                    LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
+                        .navigationTitle("User Scripts")
+                }
+        }
+#if os(macOS)
+        .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
+#endif
+    }
+
+    @ViewBuilder
+    private var detailView: some View {
+        VStack {
+            if let feed = viewModel.selectedFeed {
+#if os(macOS)
+                ScrollView {
+                    LibraryFeedView(feed: feed)
+                    //                                .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
+                }
+#else
+                LibraryFeedView(feed: feed)
+                //                            .id("library-manager-feed-view-\(feed.id.uuidString)") // Because it's hard to reuse form instance across feed objects. ?
+#endif
+            }
+            if let script = viewModel.selectedScript {
+#if os(macOS)
+                ScrollView {
+                    LibraryScriptForm(script: script)
+                    //                                .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
+                }
+#else
+                LibraryScriptForm(script: script)
+                //                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
+#endif
+            }
+            if viewModel.selectedFeed == nil && viewModel.selectedScript == nil {
+                Spacer()
+                Text("Select a category and feed to edit.\nImport or export user feeds (excluding Manabi Reader defaults) via the toolbar.")
+                    .multilineTextAlignment(.center)
+                    .padding().padding()
+                    .foregroundColor(.secondary)
+                    .font(.callout)
+                Spacer()
+            }
+        }
+#if os(macOS)
+        .textFieldStyle(.roundedBorder)
+#endif
+        //                .fixedSize(horizontal: false, vertical: true)
+        //            }
+        .toolbar {
+#if os(iOS)
+            ToolbarItem(placement: .confirmationAction) {
+                if #available(iOS 26, macOS 26, *) {
+                    Button("Done") {
+                        viewModel.isLibraryPresented = false
+                    }
+                } else {
+                    Button {
+                        viewModel.isLibraryPresented = false
+                    } label: {
+                        Text("Done")
+                            .bold()
+                    }
+                }
+            }
+#endif
         }
     }
     

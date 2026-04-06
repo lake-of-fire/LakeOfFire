@@ -812,15 +812,6 @@ public class ReaderModeViewModel: ObservableObject {
         let fontHash = readerFontPayloadHash(base64)
         let js = """
         (function() {
-            const postFontLoad = (event, payload) => {
-                try {
-                    const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print;
-                    handler && handler.postMessage && handler.postMessage(Object.assign({
-                        message: "# FONTLOAD js.readerInjection." + event,
-                        pageURL: window.location.href
-                    }, payload || {}));
-                } catch (_) {}
-            };
             const setFontPendingState = (pending) => {
                 const root = document.documentElement;
                 if (!root) return;
@@ -865,7 +856,6 @@ public class ReaderModeViewModel: ObservableObject {
                     style.dataset.manabiInjectedFontFamily = desiredFamily;
                 }
                 (document.head || document.documentElement).appendChild(style);
-                postFontLoad('reinsertedFromCache', { cssBytes: css.length, mode: 'blob-link' });
                 return style;
             };
             globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
@@ -905,9 +895,7 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     (document.head || document.documentElement).appendChild(style);
                     root.dataset.manabiFontInjected = '1';
-                    postFontLoad('inserted', { cssBytes: css.length, mode: 'blob-link' });
                 } else {
-                    postFontLoad('reusedExisting', { cssBytes: (globalThis.manabiReaderFontCSSText || '').length, mode: style.tagName });
                 }
                 if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
                     window.manabiApplyDirectionalInjectedFont();
@@ -918,13 +906,8 @@ public class ReaderModeViewModel: ObservableObject {
                     || null;
                 await waitForFontReady(resolvedFamily);
                 setFontPendingState(false);
-                postFontLoad('fontReady', {
-                    family: resolvedFamily,
-                    status: document.fonts?.status || 'unknown'
-                });
             })().catch((e) => {
                 setFontPendingState(false);
-                postFontLoad('error', { error: String(e) });
                 try { console.log('manabi font inject error', e); } catch (_) {}
             });
         })();

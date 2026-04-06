@@ -15,6 +15,8 @@ let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
 @MainActor
 fileprivate class LibraryCategoriesViewModel: ObservableObject {
     @Published var categories: [FeedCategory]? = nil
+    @Published var userLibraryCategories: [FeedCategory]? = nil
+    @Published var editorsPicksLibraryCategories: [FeedCategory]? = nil
     @Published var archivedCategories: [FeedCategory]? = nil
     
     @RealmBackgroundActor
@@ -63,7 +65,10 @@ fileprivate class LibraryCategoriesViewModel: ObservableObject {
                 
                 guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: libraryConfigurationID) else { return }
                 self.libraryConfiguration = libraryConfiguration
-                self.categories = Array(libraryConfiguration.getCategories() ?? [])
+                let categories = Array(libraryConfiguration.getCategories() ?? [])
+                self.categories = categories
+                self.userLibraryCategories = categories.filter(\.isUserEditable)
+                self.editorsPicksLibraryCategories = categories.filter { !$0.isUserEditable }
 
                 let activeCategoryIDs = libraryConfiguration.getActiveCategories()?.map { $0.id } ?? []
                 self.archivedCategories = Array(realm.objects(FeedCategory.self).where { ($0.isArchived || !$0.id.in(activeCategoryIDs)) && !$0.isDeleted })
@@ -155,14 +160,6 @@ struct LibraryCategoriesView: View {
     
     @State private var selection = Set<AnyHashable>()
     
-    var addButtonPlacement: ToolbarItemPlacement {
-#if os(iOS)
-        return .bottomBar
-#else
-        return .automatic
-#endif
-    }
-    
     @ViewBuilder var importExportView: some View {
         ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
 #if os(macOS)
@@ -219,8 +216,8 @@ struct LibraryCategoriesView: View {
         })
     }
     
-    @ViewBuilder var libraryView: some View {
-        ForEach(viewModel.categories ?? []) { category in
+    @ViewBuilder var userLibraryView: some View {
+        ForEach(viewModel.userLibraryCategories ?? []) { category in
             NavigationLink(value: category) {
                 FeedCategoryButtonLabel(
                     title: category.title,
@@ -230,6 +227,7 @@ struct LibraryCategoriesView: View {
                 )
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
+            .id("library-sidebar-\(category.id.uuidString)")
             .listRowSeparator(.hidden)
             .deleteDisabled(!category.isUserEditable)
             .moveDisabled(!category.isUserEditable)
@@ -264,6 +262,24 @@ struct LibraryCategoriesView: View {
             viewModel.deleteCategory(at: $0)
         }
     }
+
+    @ViewBuilder var editorsPicksLibraryView: some View {
+        ForEach(viewModel.editorsPicksLibraryCategories ?? []) { category in
+            NavigationLink(value: category) {
+                FeedCategoryButtonLabel(
+                    title: category.title,
+                    backgroundImageURL: category.backgroundImageUrl,
+                    isCompact: true,
+                    showEditingDisabled: !category.isUserEditable
+                )
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .id("library-sidebar-\(category.id.uuidString)")
+            .listRowSeparator(.hidden)
+            .deleteDisabled(true)
+            .moveDisabled(true)
+        }
+    }
     
     @ViewBuilder var archiveView: some View {
         ForEach(viewModel.archivedCategories ?? []) { category in
@@ -272,6 +288,7 @@ struct LibraryCategoriesView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .saturation(0)
             }
+            .id("library-sidebar-\(category.id.uuidString)")
             .listRowSeparator(.hidden)
             .swipeActions(edge: .leading) {
                 if viewModel.showRestoreButton(category: category) {
@@ -327,11 +344,25 @@ struct LibraryCategoriesView: View {
     var body: some View {
         ScrollViewReader { scrollProxy in
             List(selection: $selection) {
+                Section {
+                    userLibraryView
+                } header: {
+                    HStack {
+                        Text("User Library")
+                        Spacer(minLength: 12)
+                        addCategoryButton(scrollProxy: scrollProxy)
+                    }
+                }
+
                 Section(header: EmptyView(), footer: Text("Uses the OPML file format for RSS reader compatibility. User Scripts can also be shared. User Library exports exclude system-provided data.").font(.footnote).foregroundColor(.secondary)) {
                     importExportView
                 }
                 .labelStyle(.titleOnly)
                 .tint(appTint)
+                
+                Section("Editor's Picks") {
+                    editorsPicksLibraryView
+                }
                 
                 Section("Extensions") {
                     NavigationLink(value: LibraryRoute.userScripts, label: {
@@ -339,35 +370,17 @@ struct LibraryCategoriesView: View {
                     })
                 }
                 
-                Section("Library") {
-                    libraryView
-                }
-                
                 Section("Archive") {
                     archiveView
                 }
             }
             .listStyle(.sidebar)
-#if os(macOS)
-            .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 0) {
-                    addCategoryButton(scrollProxy: scrollProxy)
-                        .buttonStyle(.borderless)
-                        .padding()
-                    Spacer(minLength: 0)
-                }
-            }
-#endif
 #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if viewModel.categories?.contains(where: { $0.isUserEditable }) ?? false {
+                    if viewModel.userLibraryCategories?.contains(where: { $0.isUserEditable }) ?? false {
                         EditButton()
                     }
-                }
-                ToolbarItemGroup(placement: addButtonPlacement) {
-                    addCategoryButton(scrollProxy: scrollProxy)
-                    Spacer(minLength: 0)
                 }
             }
 #endif
@@ -388,11 +401,9 @@ struct LibraryCategoriesView: View {
                 }()
             }
         } label: {
-            Label("Add Category", systemImage: "plus.circle")
-                .bold()
+            Label("Add Category", systemImage: "plus")
         }
-        .labelStyle(.titleAndIcon)
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
         .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in
             guard let categoryIDNeedsScrollTo = categoryIDNeedsScrollTo else { return }
             Task { @MainActor in // Untested whether this is needed
