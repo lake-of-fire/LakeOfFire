@@ -308,7 +308,6 @@ fileprivate struct ReaderWebViewInternal: View {
                 )
             ),
             bounces: bounces,
-            persistentWebViewID: persistentWebViewID,
             schemeHandlers: [
                 (internalURLSchemeHandler, "internal"),
                 (readerFileURLSchemeHandler, "reader-file"),
