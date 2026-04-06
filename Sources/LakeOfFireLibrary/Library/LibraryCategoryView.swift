@@ -379,7 +379,7 @@ struct LibraryCategoryView: View {
     }
     
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
-        Button {
+        let button = Button {
             Task { @MainActor in
                 let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
                 try await { @RealmBackgroundActor in
@@ -397,16 +397,20 @@ struct LibraryCategoryView: View {
             Label("Add Feed", systemImage: "plus.circle")
                 .bold()
         }
-        .modifier {
-            if #available(iOS 26, macOS 26, *) {
-                $0.labelStyle(.titleOnly)
-            } else {
-                $0.labelStyle(.titleAndIcon)
-            }
+
+        if #available(iOS 26, macOS 26, *) {
+            button
+                .labelStyle(.titleOnly)
+                .buttonStyle(.borderless)
+                .disabled(libraryCategoryViewModel.category.opmlURL != nil)
+                .keyboardShortcut("n", modifiers: [.command])
+        } else {
+            button
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.borderless)
+                .disabled(libraryCategoryViewModel.category.opmlURL != nil)
+                .keyboardShortcut("n", modifiers: [.command])
         }
-        .buttonStyle(.borderless)
-        .disabled(libraryCategoryViewModel.category.opmlURL != nil)
-        .keyboardShortcut("n", modifiers: [.command])
     }
     
     @ViewBuilder private var moreOptionsMenu: some View {

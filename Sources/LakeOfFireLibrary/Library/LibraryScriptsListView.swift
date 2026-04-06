@@ -208,8 +208,9 @@ struct LibraryScriptsListView: View {
         }
     }
     
+    @ViewBuilder
     func addScriptButton(scrollProxy: ScrollViewProxy) -> some View {
-        Button {
+        let button = Button {
             Task { @RealmBackgroundActor in
                 let scriptID = try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
                 await Task { @MainActor in
@@ -220,13 +221,15 @@ struct LibraryScriptsListView: View {
             Label("Add Script", systemImage: "plus.circle")
                 .bold()
         }
-        .modifier {
-            if #available(iOS 26, macOS 26, *) {
-                $0.labelStyle(.titleOnly)
-            } else {
-                $0.labelStyle(.titleAndIcon)
-            }
+
+        if #available(iOS 26, macOS 26, *) {
+            button
+                .labelStyle(.titleOnly)
+                .keyboardShortcut("n", modifiers: [.command])
+        } else {
+            button
+                .labelStyle(.titleAndIcon)
+                .keyboardShortcut("n", modifiers: [.command])
         }
-        .keyboardShortcut("n", modifiers: [.command])
     }
 }
