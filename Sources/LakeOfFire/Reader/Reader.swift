@@ -7,6 +7,49 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
+private struct ReaderStatusBarFadeMask: ViewModifier {
+    var topFadeHeight: CGFloat
+    var edgeOpacity: CGFloat = 0.125
+
+    func body(content: Content) -> some View {
+        content.mask {
+            GeometryReader { proxy in
+                let containerHeight = proxy.size.height
+                let clampedTopFadeHeight = min(topFadeHeight, containerHeight)
+                let centerHeight = max(0, containerHeight - clampedTopFadeHeight)
+
+                VStack(spacing: 0) {
+                    if clampedTopFadeHeight > 0 {
+                        VStack(spacing: 0) {
+                            Color.white.opacity(edgeOpacity)
+                                .frame(height: clampedTopFadeHeight / 2)
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .white.opacity(1), location: 0),
+                                    .init(color: .white.opacity(edgeOpacity), location: 1),
+                                ],
+                                startPoint: .bottom,
+                                endPoint: .top
+                            )
+                            .frame(height: clampedTopFadeHeight / 2)
+                        }
+                        .frame(height: clampedTopFadeHeight)
+                    }
+
+                    Color.white
+                        .frame(height: centerHeight)
+                }
+            }
+        }
+    }
+}
+
+private extension View {
+    func readerStatusBarFade(top: CGFloat, edgeOpacity: CGFloat = 0.125) -> some View {
+        modifier(ReaderStatusBarFadeMask(topFadeHeight: top, edgeOpacity: edgeOpacity))
+    }
+}
+
 typealias ReaderSettingsJavaScriptEvaluator = (_ js: String, _ duplicateInMultiTargetFrames: Bool) async throws -> Void
 
 @MainActor
@@ -443,6 +486,9 @@ public struct Reader: View {
             buildMenu: buildMenu
         )
 #if os(iOS)
+        .readerStatusBarFade(
+            top: max(0, (obscuredInsets?.top ?? 0) + 8 + 2)
+        )
         .ignoresSafeArea(.all, edges: .all)
         .modifier {
             if #available(iOS 26, *) {

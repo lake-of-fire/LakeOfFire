@@ -419,6 +419,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         readerContentCellStyle == .plain
     }
 
+    private var cardBottomRowOffset: CGFloat {
+        4
+    }
+
     private var showsAudioBadge: Bool {
         !item.voiceAudioURLs.isEmpty
     }
@@ -654,7 +658,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             progressRow
                             metadataRow
                         }
-                        .offset(y: 2)
+                        .offset(y: cardBottomRowOffset)
                     }
                     .frame(height: contentColumnHeight, alignment: .top)
                 }
