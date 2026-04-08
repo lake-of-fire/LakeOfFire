@@ -10,6 +10,10 @@ import UIKit
 import RealmSwiftGaps
 import UniformTypeIdentifiers
 
+private func logReaderLoad(_ message: String) {
+    debugPrint("# READERLOAD \(message)")
+}
+
 fileprivate extension URL {
     func settingScheme(_ value: String) -> URL {
         let components = NSURLComponents.init(url: self, resolvingAgainstBaseURL: true)
@@ -87,9 +91,15 @@ public struct ReaderContentLoader {
            let readerURLItem = components.queryItems?.first(where: { $0.name == "reader-url" }),
            let readerURLValue = readerURLItem.value,
            let contentURL = URL(string: readerURLValue) {
+            logReaderLoad(
+                "stage=loaderURL.resolve source=components pageURL=\(pageURL.absoluteString) contentURL=\(contentURL.absoluteString)"
+            )
             return contentURL
         }
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
+            logReaderLoad(
+                "stage=loaderURL.resolve source=stringPrefix pageURL=\(pageURL.absoluteString) contentURL=\(contentURL.absoluteString)"
+            )
             return contentURL
         }
         return nil
@@ -97,6 +107,9 @@ public struct ReaderContentLoader {
     
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
+        logReaderLoad(
+            "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
+        )
         let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
         let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
         try Task.checkCancellation()
@@ -124,6 +137,9 @@ public struct ReaderContentLoader {
         }
         
         let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
+        logReaderLoad(
+            "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count)"
+        )
         return candidates
     }
 
@@ -148,18 +164,23 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        logReaderLoad(
+            "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+        )
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
             
             if url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/") {
                 // Don't persist about:load
                 // TODO: Perhaps return an empty history record to avoid catching the wrong content in this interim, though.
+                logReaderLoad("stage=contentLoader.load.skip reason=internalLoader url=\(url.absoluteString)")
                 return nil
             } else if url.absoluteString == "about:blank" { //}&& !persist {
                 let historyRecord = HistoryRecord()
                 historyRecord.url = url
                 historyRecord.isDemoted = true
                 historyRecord.updateCompoundKey()
+                logReaderLoad("stage=contentLoader.load.aboutBlank url=\(url.absoluteString)")
                 return ReaderContentLoader.ContentReference(content: historyRecord)
             }
             
@@ -170,6 +191,9 @@ public struct ReaderContentLoader {
             })
             
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
+                logReaderLoad(
+                    "stage=contentLoader.load.addHistoryVisit url=\(url.absoluteString) contentType=\(String(describing: type(of: nonHistoryMatch))) key=\(nonHistoryMatch.compoundKey)"
+                )
                 match = try await nonHistoryMatch.addHistoryRecord(realmConfiguration: historyRealmConfiguration, pageURL: url)
             } else if match == nil, !url.isEBookURL {
                 let historyRecord = HistoryRecord()
@@ -184,6 +208,9 @@ public struct ReaderContentLoader {
                     }
                 }
                 match = historyRecord
+                logReaderLoad(
+                    "stage=contentLoader.load.createdHistory url=\(url.absoluteString) persist=\(persist)"
+                )
             }
             
             try Task.checkCancellation()
@@ -209,7 +236,15 @@ public struct ReaderContentLoader {
             return ReaderContentLoader.ContentReference(content: match)
         }()
         try Task.checkCancellation()
-        return try await contentRef?.resolveOnMainActor()
+        let content = try await contentRef?.resolveOnMainActor()
+        if let content {
+            logReaderLoad(
+                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML)"
+            )
+        } else {
+            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil")
+        }
+        return content
     }
     
     @MainActor
@@ -275,6 +310,9 @@ public struct ReaderContentLoader {
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
         let contentURL = content.url
+        logReaderLoad(
+            "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
+        )
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
             readerFileManager: readerFileManager
@@ -282,8 +320,14 @@ public struct ReaderContentLoader {
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
+                logReaderLoad(
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=snippetLoader"
+                )
                 return loaderURL
             }
+            logReaderLoad(
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect"
+            )
             return content.url
         }
 
@@ -291,6 +335,9 @@ public struct ReaderContentLoader {
             if content.isReaderModeByDefault,
                contentHasLocallyRetrievableHTML,
                let loaderURL = readerLoaderURL(for: contentURL) {
+                logReaderLoad(
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault"
+                )
                 return loaderURL
             }
 
@@ -310,17 +357,29 @@ public struct ReaderContentLoader {
                     readerFileManager: readerFileManager
                )) == true,
                let matchingURL = readerLoaderURL(for: matchingContent.url) {
+                logReaderLoad(
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString)"
+                )
                 return matchingURL
             }
+            logReaderLoad(
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect"
+            )
             return content.url
         }
 
         if contentURL.isReaderFileURL,
            contentHasLocallyRetrievableHTML,
            let loaderURL = readerLoaderURL(for: contentURL) {
+            logReaderLoad(
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader"
+            )
             return loaderURL
         }
         
+        logReaderLoad(
+            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback"
+        )
         return content.url
     }
 
@@ -378,9 +437,14 @@ public struct ReaderContentLoader {
 
     public static func readerLoaderURL(for contentURL: URL) -> URL? {
         guard let encodedURL = contentURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            logReaderLoad("stage=contentLoader.readerLoaderURL.failed contentURL=\(contentURL.absoluteString)")
             return nil
         }
-        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
+        let loaderURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
+        logReaderLoad(
+            "stage=contentLoader.readerLoaderURL contentURL=\(contentURL.absoluteString) loaderURL=\(loaderURL?.absoluteString ?? "nil")"
+        )
+        return loaderURL
     }
     
     @MainActor

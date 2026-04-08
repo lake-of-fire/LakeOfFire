@@ -1,6 +1,10 @@
 import SwiftUI
 import Combine
 
+private func logReaderLoad(_ message: String) {
+    debugPrint("# READERLOAD \(message)")
+}
+
 @MainActor
 public class ReaderContent: ObservableObject {
     @Published public var content: (any ReaderContentProtocol)? {
@@ -47,19 +51,31 @@ public class ReaderContent: ObservableObject {
     internal func load(url: URL) async throws {
         let resolvedContentURL = ReaderContentLoader.getContentURL(fromLoaderURL: url) ?? url
         let displayURL = resolvedContentURL
+        logReaderLoad(
+            "stage=readerContent.load.begin requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil") hasLoadingTask=\(loadingTask != nil)"
+        )
 
         if let loadingTask, pageURL.matchesReaderURL(url) {
+            logReaderLoad(
+                "stage=readerContent.load.reuseLoadingTask requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString)"
+            )
             _ = try await loadingTask.value
             return
         }
 
         if let existingContent = content, existingContent.url.matchesReaderURL(resolvedContentURL) {
             if !pageURL.matchesReaderURL(url) {
+                logReaderLoad(
+                    "stage=readerContent.load.reuseExistingContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString)"
+                )
                 pageURL = displayURL
             }
             return
         }
 
+        logReaderLoad(
+            "stage=readerContent.load.clearState requestURL=\(url.absoluteString) newPageURL=\(displayURL.absoluteString)"
+        )
         content = nil
         pageURL = displayURL
         
@@ -68,21 +84,37 @@ public class ReaderContent: ObservableObject {
             try Task.checkCancellation()
             let content = try await ReaderViewModel.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(resolvedContentURL) else {
+                logReaderLoad(
+                    "stage=readerContent.load.mismatchedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"
+                )
                 debugPrint("Warning: Mismatched URL in ReaderContent.load:", url.absoluteString, content.url)
                 return nil
             }
             self?.content = content
+            logReaderLoad(
+                "stage=readerContent.load.contentResolved requestURL=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
+            )
             return content
         }
-        try await loadingTask?.value
+        let loadedContent = try await loadingTask?.value
         loadingTask = nil
+        let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
+        logReaderLoad(
+            "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
+        )
     }
     
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
         if let content {
+            logReaderLoad(
+                "stage=readerContent.getContent.cached pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) key=\(content.compoundKey)"
+            )
             return content
         }
+        logReaderLoad(
+            "stage=readerContent.getContent.awaitLoadingTask pageURL=\(pageURL.absoluteString) hasLoadingTask=\(loadingTask != nil)"
+        )
         return try await loadingTask?.value
     }
 

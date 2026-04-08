@@ -402,16 +402,29 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            debugPrint(
+                "# READERLOAD stage=navigator.loadContent.begin contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault)"
+            )
             if let readerModeViewModel {
                 let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
                     
                     let isLoading = (previouslyLoadedContent ?? content).isReaderModeByDefault
                     readerModeViewModel.readerModeLoading(isLoading)
+                    debugPrint(
+                        "# READERLOAD stage=navigator.loadContent.readerModeLoading targetURL=\(url.absoluteString) loading=\(isLoading) previousContentURL=\(previouslyLoadedContent?.url.absoluteString ?? "nil")"
+                    )
 //                    debugPrint("# WebViewNavigator load", isLoading)
                 }
             }
             load(URLRequest(url: url))
+            debugPrint(
+                "# READERLOAD stage=navigator.loadContent.dispatched targetURL=\(url.absoluteString)"
+            )
+        } else {
+            debugPrint(
+                "# READERLOAD stage=navigator.loadContent.missingURL contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
+            )
         }
     }
 }

@@ -5,6 +5,10 @@ import RealmSwiftGaps
 import SwiftUtilities
 import LakeKit
 
+private func logReaderLoad(_ message: String) {
+    debugPrint("# READERLOAD \(message)")
+}
+
 public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {
     public let id: String
     public let title: String
@@ -204,9 +208,15 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                 else {
                     return
                 }
+                logReaderLoad(
+                    "stage=contentList.selectionChanged selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil)"
+                )
 
                 Task { @MainActor in
                     if let onSelection {
+                        logReaderLoad(
+                            "stage=contentList.selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                        )
                         onSelection(selectedContent)
                         if entrySelection == itemSelection {
                             entrySelection = nil
@@ -215,6 +225,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     }
 
                     guard shouldSyncToReader else { return }
+                    logReaderLoad(
+                        "stage=contentList.selectionDispatch mode=navigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                    )
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
                     do {
                         try await navigator.load(
@@ -222,6 +235,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                             readerModeViewModel: readerModeViewModel
                         )
                     } catch {
+                        logReaderLoad(
+                            "stage=contentList.selectionDispatchFailed selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) error=\(error.localizedDescription)"
+                        )
                         debugPrint("Failed to load reader content for selection", error)
                     }
                     if entrySelection == itemSelection {
@@ -263,10 +279,18 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
         oldPageURL: URL? = nil
     ) {
         viewModel.refreshSelectionTask?.cancel()
-        guard !isReaderProvisionallyNavigating else { return }
+        guard !isReaderProvisionallyNavigating else {
+            logReaderLoad(
+                "stage=contentList.refreshSelection.skip reason=readerProvisionallyNavigating readerPageURL=\(readerPageURL.absoluteString)"
+            )
+            return
+        }
 
         let currentSelection = entrySelection
         let filteredContentURLs = viewModel.filteredContents.map(\.url)
+        logReaderLoad(
+            "stage=contentList.refreshSelection.begin readerPageURL=\(readerPageURL.absoluteString) oldPageURL=\(oldPageURL?.absoluteString ?? "nil") currentSelection=\(currentSelection ?? "nil") filteredCount=\(filteredContentURLs.count)"
+        )
 
         viewModel.refreshSelectionTask = Task.detached {
             try Task.checkCancellation()
@@ -278,6 +302,9 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                    !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     async let clearTask = { @MainActor in
                         try Task.checkCancellation()
+                        logReaderLoad(
+                            "stage=contentList.refreshSelection.clear reason=selectionDoesNotMatchReader selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString)"
+                        )
                         self.entrySelection = nil
                     }()
                     try await clearTask
@@ -290,22 +317,14 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                        currentSelection != nil {
                         async let clearTask = { @MainActor in
                             try Task.checkCancellation()
+                            logReaderLoad(
+                                "stage=contentList.refreshSelection.clear reason=readerPageMissingFromList selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString)"
+                            )
                             self.entrySelection = nil
                         }()
                         try await clearTask
                     }
                     return
-                }
-
-                if currentSelection == nil,
-                   oldPageURL != readerPageURL,
-                   let idx = filteredContentURLs.firstIndex(of: readerPageURL) {
-                    let contentKey = await viewModel.filteredContentIDs[idx]
-                    async let selectTask = { @MainActor in
-                        try Task.checkCancellation()
-                        self.entrySelection = contentKey
-                    }()
-                    try await selectTask
                 }
             } catch { }
         }
