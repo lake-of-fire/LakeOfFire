@@ -521,57 +521,42 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var controlsRow: some View {
-        if let item = item as? (any DeletableReaderContent) {
-            Menu {
-                    if let item = item as? ContentFile {
-                        CloudDriveSyncStatusView(item: item)
-                            .labelStyle(.titleAndIcon)
-                        Divider()
-                    }
+        let deletable = item as? (any DeletableReaderContent)
 
-                    AnyView(self.item.bookmarkButtonView(iconOnly: false))
-
-                    if let customMenuOptions {
-                        customMenuOptions(self.item)
-                    }
-
-                    Divider()
-
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.confirmDeletionOf = [item]
-                        readerContentListModalsModel.confirmDelete = true
-                    } label: {
-                        Label(item.deleteActionTitle, systemImage: "trash")
-                    }
-            } label: {
-                Label("More Options", systemImage: "ellipsis")
-                    .labelStyle(.iconOnly)
+        Menu {
+            if let item = item as? ContentFile {
+                CloudDriveSyncStatusView(item: item)
+                    .labelStyle(.titleAndIcon)
+                Divider()
             }
-            .modifier {
-                if #available(iOS 16, macOS 13, *) {
-                    $0.menuStyle(.button)
-                } else {
-                    $0
-                }
-            }
-            .menuIndicator(.hidden)
-        } else if let customMenuOptions {
-            Menu {
-                AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+            AnyView(self.item.bookmarkButtonView(iconOnly: false))
+
+            if let customMenuOptions {
                 customMenuOptions(self.item)
-            } label: {
-                Label("More Options", systemImage: "ellipsis")
-                    .labelStyle(.iconOnly)
             }
-            .modifier {
-                if #available(iOS 16, macOS 13, *) {
-                    $0.menuStyle(.button)
-                } else {
-                    $0
+
+            if let deletable {
+                Divider()
+                Button(role: .destructive) {
+                    readerContentListModalsModel.confirmDeletionOf = [deletable]
+                    readerContentListModalsModel.confirmDelete = true
+                } label: {
+                    Label(deletable.deleteActionTitle, systemImage: "trash")
                 }
             }
-            .menuIndicator(.hidden)
+        } label: {
+            Label("More Options", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
         }
+        .modifier {
+            if #available(iOS 16, macOS 13, *) {
+                $0.menuStyle(.button)
+            } else {
+                $0
+            }
+        }
+        .menuIndicator(.hidden)
     }
 
     @ViewBuilder
@@ -607,7 +592,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     var body: some View {
-        HStack(alignment: usesPlainLayout ? .center : .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             if let thumbnailChoice {
                 thumbnailView(for: thumbnailChoice)
             }
@@ -632,8 +617,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             }
                         }
 
-                        progressRow
-                        metadataRow
+                        Spacer(minLength: 4)
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            progressRow
+                            metadataRow
+                        }
                     }
                     .frame(maxWidth: .infinity, minHeight: contentColumnHeight, maxHeight: contentColumnHeight, alignment: .top)
                 } else {

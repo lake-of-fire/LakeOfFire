@@ -14,6 +14,8 @@ private func logReaderLoad(_ message: String) {
 
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
+    private static var inFlightContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
+
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
     
@@ -118,27 +120,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
     // TODO: Move to Loader probably
     @MainActor
     public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        logReaderLoad(
-            "stage=readerViewModel.getContent.begin pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
-        )
-        if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL), let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
-            try Task.checkCancellation()
-            logReaderLoad(
-                "stage=readerViewModel.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
-            )
-            return content
-        } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
-            try Task.checkCancellation()
-            logReaderLoad(
-                "stage=readerViewModel.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
-            )
-            return content
-        }
-        try Task.checkCancellation()
-        logReaderLoad(
-            "stage=readerViewModel.getContent.missing pageURL=\(pageURL.absoluteString)"
-        )
-        return nil
+        try await ReaderContentLoader.getContent(forURL: pageURL, countsAsHistoryVisit: countsAsHistoryVisit)
     }
     
     @MainActor

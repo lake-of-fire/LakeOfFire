@@ -30,6 +30,9 @@ public extension URL {
 
 /// Loads from any source by URL.
 public struct ReaderContentLoader {
+    @MainActor
+    private static var inFlightGetContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
+
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
@@ -141,6 +144,97 @@ public struct ReaderContentLoader {
             "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count)"
         )
         return candidates
+    }
+
+    @RealmBackgroundActor
+    private static func storedContentReference(for url: URL) async throws -> ReaderContentLoader.ContentReference? {
+        try Task.checkCancellation()
+        guard !(url.scheme == "internal" && url.absoluteString.hasPrefix("internal://local/load/")) else {
+            return nil
+        }
+        guard url.absoluteString != "about:blank" else {
+            return nil
+        }
+
+        let candidates = try await loadAll(url: url)
+        let match = candidates.max(by: {
+            ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
+        })
+        guard let match else {
+            return nil
+        }
+        return ReaderContentLoader.ContentReference(content: match)
+    }
+
+    @MainActor
+    public static func lookupStoredContent(url: URL) async throws -> (any ReaderContentProtocol)? {
+        let resolvedURL = getContentURL(fromLoaderURL: url) ?? url
+        let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
+            try await storedContentReference(for: resolvedURL)
+        }()
+        try Task.checkCancellation()
+        return try await contentRef?.resolveOnMainActor()
+    }
+
+    @MainActor
+    public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
+        let taskKey = "\(resolvedURL.absoluteString)|history:\(countsAsHistoryVisit)"
+        if let existingTask = inFlightGetContentTasks[taskKey] {
+            logReaderLoad(
+                "stage=contentLoader.getContent.coalesced pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+            )
+            return try await existingTask.value
+        }
+        if countsAsHistoryVisit {
+            let nonHistoryTaskKey = "\(resolvedURL.absoluteString)|history:false"
+            if let existingTask = inFlightGetContentTasks[nonHistoryTaskKey] {
+                logReaderLoad(
+                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+                )
+                let existingContent = try await existingTask.value
+                if existingContent == nil || existingContent is HistoryRecord {
+                    return existingContent
+                }
+            }
+        } else {
+            let historyTaskKey = "\(resolvedURL.absoluteString)|history:true"
+            if let existingTask = inFlightGetContentTasks[historyTaskKey] {
+                logReaderLoad(
+                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString)"
+                )
+                return try await existingTask.value
+            }
+        }
+
+        let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
+            logReaderLoad(
+                "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+            )
+            if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
+               let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
+                try Task.checkCancellation()
+                logReaderLoad(
+                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
+                )
+                return content
+            } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
+                try Task.checkCancellation()
+                logReaderLoad(
+                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
+                )
+                return content
+            }
+            try Task.checkCancellation()
+            logReaderLoad(
+                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString)"
+            )
+            return nil
+        }
+
+        inFlightGetContentTasks[taskKey] = task
+        defer { inFlightGetContentTasks[taskKey] = nil }
+        return try await task.value
     }
 
     /// Update all reader-content objects that share the given URL. The updater returns true if it mutated the object.
@@ -341,17 +435,8 @@ public struct ReaderContentLoader {
                 return loaderURL
             }
 
-            let matchingContentURL = try await Task { @RealmBackgroundActor () -> URL? in
-                let allContents = try await loadAll(url: contentURL)
-                return allContents.first(where: { $0.isReaderModeByDefault })?.url
-            }.value
-
-            if let matchingContentURL,
-               let matchingContent = try await load(
-                    url: matchingContentURL,
-                    persist: false,
-                    countsAsHistoryVisit: false
-               ),
+            if let matchingContent = try await lookupStoredContent(url: contentURL),
+               matchingContent.isReaderModeByDefault,
                (try? await hasLocallyRetrievableHTML(
                     for: matchingContent,
                     readerFileManager: readerFileManager

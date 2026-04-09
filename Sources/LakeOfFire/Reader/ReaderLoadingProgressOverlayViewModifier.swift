@@ -230,11 +230,6 @@ private struct ReaderLoadingOverlay: View {
         }
 
         guard isVisible else {
-            cancelHideWork()
-            if displayedMessage != nil || isShowingStatus {
-                displayedMessage = nil
-                isShowingStatus = false
-            }
             return
         }
 
@@ -265,15 +260,9 @@ private struct ReaderLoadingOverlay: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
         } else {
             if displayedMessage != nil {
-                debugPrint(
-                    "# READERLOAD stage=overlay.status",
-                    "context=\(context)",
-                    "action=hide",
-                    "message=\(displayedMessage ?? "")",
-                    "isLoading=\(isLoading)"
-                )
+                cancelHideWork()
+                return
             }
-            scheduleHide()
         }
     }
 
