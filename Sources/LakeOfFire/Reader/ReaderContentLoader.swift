@@ -32,6 +32,11 @@ public extension URL {
 public struct ReaderContentLoader {
     @MainActor
     private static var inFlightGetContentTasks: [String: Task<(any ReaderContentProtocol)?, Error>] = [:]
+    @RealmBackgroundActor
+    private static var inFlightLoadAllTasks: [String: Task<[ContentReference], Error>] = [:]
+    @RealmBackgroundActor
+    private static var recentLoadAllCache: [String: (timestamp: Date, references: [ContentReference])] = [:]
+    private static let loadAllCacheTTL: TimeInterval = 5
 
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
@@ -107,9 +112,43 @@ public struct ReaderContentLoader {
         }
         return nil
     }
+
+    private static func loadAllTaskKey(url: URL, skipContentFiles: Bool, skipFeedEntries: Bool) -> String {
+        "\(url.absoluteString)|contentFiles:\(!skipContentFiles)|feedEntries:\(!skipFeedEntries)"
+    }
+
+    @RealmBackgroundActor
+    private static func resolveContentReferences(
+        _ references: [ContentReference]
+    ) async throws -> [(any ReaderContentProtocol)] {
+        var resolvedContents = [(any ReaderContentProtocol)]()
+        resolvedContents.reserveCapacity(references.count)
+        for reference in references {
+            if let content = try await reference.resolveOnBackgroundActor() {
+                resolvedContents.append(content)
+            }
+        }
+        return resolvedContents
+    }
     
     @RealmBackgroundActor
     public static func loadAll(url: URL, skipContentFiles: Bool = false, skipFeedEntries: Bool = false) async throws -> [(any ReaderContentProtocol)] {
+        let taskKey = loadAllTaskKey(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
+        if let cached = recentLoadAllCache[taskKey],
+           Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
+            logReaderLoad(
+                "stage=contentLoader.loadAll.cacheHit url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries) count=\(cached.references.count)"
+            )
+            return try await resolveContentReferences(cached.references)
+        }
+        if let existingTask = inFlightLoadAllTasks[taskKey] {
+            logReaderLoad(
+                "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
+            )
+            return try await resolveContentReferences(existingTask.value)
+        }
+
+        let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
         logReaderLoad(
             "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
         )
@@ -143,7 +182,14 @@ public struct ReaderContentLoader {
         logReaderLoad(
             "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count)"
         )
-        return candidates
+            return candidates.compactMap(ContentReference.init(content:))
+        }
+
+        inFlightLoadAllTasks[taskKey] = task
+        defer { inFlightLoadAllTasks[taskKey] = nil }
+        let references = try await task.value
+        recentLoadAllCache[taskKey] = (timestamp: Date(), references: references)
+        return try await resolveContentReferences(references)
     }
 
     @RealmBackgroundActor
