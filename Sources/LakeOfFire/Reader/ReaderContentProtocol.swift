@@ -28,6 +28,11 @@ public actor ReaderContentReadingProgressLoader {
     public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
 }
 
+public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
+    case content
+    case media
+}
+
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
     var realm: Realm? { get }
     
@@ -56,7 +61,10 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     
     // Feed entry metadata.
     var voiceFrameUrl: URL? { get set }
+    var voiceAudioURL: URL? { get set }
     var voiceAudioURLs: RealmSwift.List<URL> { get set }
+    var audioSubtitlesURL: URL? { get set }
+    var audioSubtitlesRoleRawValue: String? { get set }
     var redditTranslationsUrl: URL? { get set }
     var redditTranslationsTitle: String? { get set }
     
@@ -83,6 +91,54 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 }
 
 public extension ReaderContentProtocol {
+    var resolvedVoiceAudioURLs: [URL] {
+        var urls = Array(voiceAudioURLs)
+        if let voiceAudioURL, !urls.contains(voiceAudioURL) {
+            urls.insert(voiceAudioURL, at: 0)
+        }
+        return urls
+    }
+
+    var audioSubtitlesRole: AudioSubtitlesRole? {
+        get { audioSubtitlesRoleRawValue.flatMap(AudioSubtitlesRole.init(rawValue:)) }
+        set { audioSubtitlesRoleRawValue = newValue?.rawValue }
+    }
+
+    var hasContentAudio: Bool {
+        voiceAudioURL != nil || !voiceAudioURLs.isEmpty || (audioSubtitlesURL != nil && audioSubtitlesRole != .media)
+    }
+
+    var hasAudio: Bool {
+        hasContentAudio
+    }
+
+    var contentSubtitleURL: URL? {
+        audioSubtitlesRole == .media ? nil : audioSubtitlesURL
+    }
+
+    @discardableResult
+    func copyReaderMediaState<T: ReaderContentProtocol>(
+        to destination: T,
+        preservingExistingVoiceAudioURL: Bool = true,
+        defaultAudioSubtitlesRole: AudioSubtitlesRole? = nil
+    ) -> T {
+        destination.voiceFrameUrl = voiceFrameUrl
+        let resolvedVoiceAudioURLs = resolvedVoiceAudioURLs
+        let resolvedVoiceAudioURL = resolvedVoiceAudioURLs.first
+        if preservingExistingVoiceAudioURL {
+            destination.voiceAudioURL = resolvedVoiceAudioURL ?? destination.voiceAudioURL
+        } else {
+            destination.voiceAudioURL = resolvedVoiceAudioURL
+        }
+        destination.voiceAudioURLs.removeAll()
+        destination.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLs)
+        destination.audioSubtitlesURL = audioSubtitlesURL
+        destination.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? defaultAudioSubtitlesRole?.rawValue
+        destination.redditTranslationsUrl = redditTranslationsUrl
+        destination.redditTranslationsTitle = redditTranslationsTitle
+        return destination
+    }
+
     var keyPrefix: String? {
         return nil
     }
@@ -363,6 +419,13 @@ public extension ReaderContentProtocol {
         let rssContainsFullContent = rssContainsFullContent
         let isReaderModeAvailable = isReaderModeAvailable
         let isReaderModeOfferHidden = isReaderModeOfferHidden
+        let voiceFrameURL = voiceFrameUrl
+        let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
+        let resolvedVoiceAudioURL = resolvedVoiceAudioURLList.first
+        let resolvedAudioSubtitlesURL = audioSubtitlesURL
+        let resolvedAudioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue
+        let resolvedRedditTranslationsURL = redditTranslationsUrl
+        let resolvedRedditTranslationsTitle = redditTranslationsTitle
         try await { @RealmBackgroundActor [weak self] in
             guard let self = self else { return }
             let bookmark = try await Bookmark.add(
@@ -381,8 +444,22 @@ public extension ReaderContentProtocol {
                 realmConfiguration: realmConfiguration
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
-            if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
-                content.configureBookmark(bookmark)
+            if let managedBookmark = realm.object(ofType: Bookmark.self, forPrimaryKey: bookmark.compoundKey) {
+                try await realm.asyncWrite {
+                    if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
+                        content.configureBookmark(managedBookmark)
+                    } else {
+                        managedBookmark.voiceFrameUrl = voiceFrameURL
+                        managedBookmark.voiceAudioURL = resolvedVoiceAudioURL
+                        managedBookmark.voiceAudioURLs.removeAll()
+                        managedBookmark.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                        managedBookmark.audioSubtitlesURL = resolvedAudioSubtitlesURL
+                        managedBookmark.audioSubtitlesRoleRawValue = resolvedAudioSubtitlesRoleRawValue ?? (resolvedAudioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+                        managedBookmark.redditTranslationsUrl = resolvedRedditTranslationsURL
+                        managedBookmark.redditTranslationsTitle = resolvedRedditTranslationsTitle
+                    }
+                    managedBookmark.refreshChangeMetadata(explicitlyModified: true)
+                }
             }
             
             if let historyRecord = try await HistoryRecord.get(forURL: url), historyRecord.isDemoted != false {
@@ -448,11 +525,12 @@ public extension ReaderContentProtocol {
                     record.content = content
                 }
                 record.voiceFrameUrl = voiceFrameUrl
-                for audioURL in voiceAudioURLs {
-                    if !record.voiceAudioURLs.contains(audioURL) {
-                        record.voiceAudioURLs.append(audioURL)
-                    }
-                }
+                let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
+                record.voiceAudioURL = resolvedVoiceAudioURLList.first
+                record.voiceAudioURLs.removeAll()
+                record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+                record.audioSubtitlesURL = audioSubtitlesURL
+                record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
                 record.injectEntryImageIntoHeader = injectEntryImageIntoHeader
                 record.publicationDate = publicationDate
 //                record.isReaderModeByDefault = isReaderModeByDefault
@@ -476,7 +554,11 @@ public extension ReaderContentProtocol {
                 record.content = content
             }
             record.voiceFrameUrl = voiceFrameUrl
-            record.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+            let resolvedVoiceAudioURLList = resolvedVoiceAudioURLs
+            record.voiceAudioURL = resolvedVoiceAudioURLList.first
+            record.voiceAudioURLs.append(objectsIn: resolvedVoiceAudioURLList)
+            record.audioSubtitlesURL = audioSubtitlesURL
+            record.audioSubtitlesRoleRawValue = audioSubtitlesRoleRawValue ?? (audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
             record.publicationDate = publicationDate
             record.displayPublicationDate = displayPublicationDate
             record.isFromClipboard = isFromClipboard

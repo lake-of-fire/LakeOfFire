@@ -67,6 +67,7 @@ public struct ReadabilityParsedMessage {
     public let readabilityContainerRootSelector: NestedDOMRootSelector?
     public let title: String
     public let byline: String
+    public let publishedTime: String?
     public let content: String
     public let inputHTML: String
     public let outputHTML: String
@@ -84,9 +85,10 @@ public struct ReadabilityParsedMessage {
         
         title = body["title"] as! String
         byline = body["byline"] as! String
+        publishedTime = body["publishedTime"] as? String
         content = body["content"] as! String
         inputHTML = body["inputHTML"] as! String
-        outputHTML = body["outputHTML"] as! String
+        outputHTML = body["outputHTML"] as? String ?? ""
     }
 }
 
@@ -145,7 +147,10 @@ public struct PageMetadataUpdatedMessage {
     public let url: URL?
     
     public init?(fromMessage message: WebViewMessage) {
-        guard let body = message.body as? [String: Any], let title = body["title"] as? String, let author = body["title"] as? String else { return nil }
+        guard let body = message.body as? [String: Any],
+              let title = body["title"] as? String,
+              let author = body["author"] as? String
+        else { return nil }
         self.title = title
         self.author = author
         url = URL(string: body["url"] as! String)
@@ -198,12 +203,13 @@ public struct WritingDirectionMessage {
 //    }
 //}
 
-public struct FractionalCompletionMessage {
+public struct FractionalCompletionMessage: Sendable {
     public var fractionalCompletion: Float
     public var cfi: String
     public var reason: String
     public var mainDocumentURL: URL?
-    
+    public var sectionIndex: Int?
+
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
         fractionalCompletion = Float(completion)
@@ -211,6 +217,11 @@ public struct FractionalCompletionMessage {
         self.reason = reason
         if let rawPage = body["mainDocumentURL"] as? String, let pageURL = URL(string: rawPage) {
             mainDocumentURL = pageURL
+        }
+        if let rawSectionIndex = body["sectionIndex"] as? Int {
+            sectionIndex = rawSectionIndex
+        } else if let doubleIndex = body["sectionIndex"] as? Double {
+            sectionIndex = Int(doubleIndex)
         }
     }
 }

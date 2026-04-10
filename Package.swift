@@ -46,7 +46,7 @@ let package = Package(
         .package(url: "https://github.com/EmergeTools/Pow.git", revision: "1b4b1dda28c50b95f0872927ee2226fe8b58950e"),
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
         .package(path: "../LakeKit"),
-        .package(url: "https://github.com/nicklockwood/LRUCache.git", branch: "main"),
+        .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
     ],
     targets: [
         .target(
@@ -100,6 +100,11 @@ let package = Package(
             resources: [
                 .copy("Samples"),
             ]
+        ),
+        .testTarget(
+            name: "LakeOfFireTests",
+            dependencies: ["LakeOfFire"],
+            path: "Tests/LakeOfFireTests"
         ),
     ]
 )

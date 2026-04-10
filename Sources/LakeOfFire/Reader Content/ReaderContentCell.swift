@@ -424,7 +424,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsAudioBadge: Bool {
-        !item.voiceAudioURLs.isEmpty
+        item.hasAudio
     }
 
     @ViewBuilder

@@ -1,9 +1,69 @@
 import SwiftUI
+@preconcurrency import WebKit
 import OrderedCollections
 import SwiftUIWebView
 import RealmSwift
 import RealmSwiftGaps
 import LakeKit
+
+private struct ReaderSizeTrackingCacheEntry: Codable {
+    let id: String
+    let inlineSize: Double
+    let blockSize: Double
+    let blockStart: Double?
+}
+
+private struct ReaderSizeTrackingCacheSnapshot: Codable {
+    let cacheKey: String
+    let savedAt: Date
+    let reason: String?
+    let entries: [ReaderSizeTrackingCacheEntry]
+}
+
+private struct ReaderSizeTrackingCacheBucket: Codable {
+    var snapshots: [ReaderSizeTrackingCacheSnapshot] = []
+
+    init(snapshots: [ReaderSizeTrackingCacheSnapshot] = []) {
+        self.snapshots = snapshots
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let snapshots = try? container.decode([ReaderSizeTrackingCacheSnapshot].self) {
+            self.snapshots = snapshots
+            return
+        }
+        if let legacyEntries = try? container.decode([ReaderSizeTrackingCacheEntry].self) {
+            self.snapshots = [
+                ReaderSizeTrackingCacheSnapshot(
+                    cacheKey: "legacy",
+                    savedAt: Date(),
+                    reason: "legacy",
+                    entries: legacyEntries
+                )
+            ]
+            return
+        }
+        self.snapshots = []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(snapshots)
+    }
+
+    mutating func upsertSnapshot(_ snapshot: ReaderSizeTrackingCacheSnapshot, limit: Int) {
+        snapshots.removeAll { $0.cacheKey == snapshot.cacheKey }
+        snapshots.insert(snapshot, at: 0)
+        if snapshots.count > limit {
+            snapshots.removeLast(snapshots.count - limit)
+        }
+    }
+
+    func snapshot(for cacheKey: String) -> ReaderSizeTrackingCacheSnapshot? {
+        snapshots.first { $0.cacheKey == cacheKey }
+    }
+}
 
 @MainActor
 fileprivate class ReaderMessageHandlers: Identifiable {
@@ -24,6 +84,162 @@ fileprivate class ReaderMessageHandlers: Identifiable {
     }
 
     private var lastNavigationVisibilityEvent: NavigationVisibilityEvent?
+    private let trackingSizeCache = LRUFileCache<String, ReaderSizeTrackingCacheBucket>(
+        namespace: "reader-pagination-size-tracking-cache-v2",
+        version: 2,
+        totalBytesLimit: 20 * 1024 * 1024,
+        countLimit: 10_000
+    )
+    private let trackingSizeHistoryLimit = 10
+    fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?
+
+    nonisolated private func makeBucketKey(from cacheKey: String) -> String {
+        let parts = cacheKey.split(separator: "|").map(String.init)
+        var book: String?
+        var href: String?
+        for part in parts {
+            if part.hasPrefix("book:") {
+                book = String(part.dropFirst("book:".count))
+            } else if part.hasPrefix("href:") {
+                href = String(part.dropFirst("href:".count))
+            }
+        }
+        if let book, let href {
+            return "book:\(book)|href:\(href)"
+        } else if let href {
+            return "href:\(href)"
+        } else {
+            return "legacy:\(cacheKey)"
+        }
+    }
+
+    @MainActor
+    fileprivate func scheduleEbookViewerInitializationFallback(in frameInfo: WKFrameInfo? = nil) {
+        registerEbookViewerFrame(frameInfo)
+        let url = readerViewModel.state.pageURL
+        guard let scheme = url.scheme,
+              (scheme == "ebook" || scheme == "ebook-url"),
+              url.absoluteString.hasPrefix("\(scheme)://"),
+              url.isEBookURL,
+              let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))")
+        else {
+            return
+        }
+
+        ebookBootstrapFallbackTask?.cancel()
+        ebookBootstrapFallbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for attempt in 0..<40 {
+                if Task.isCancelled { return }
+                let delayNs: UInt64
+                switch attempt {
+                case 0:
+                    delayNs = 300_000_000
+                case 1:
+                    delayNs = 700_000_000
+                default:
+                    delayNs = 1_000_000_000
+                }
+                try? await Task.sleep(nanoseconds: delayNs)
+                if Task.isCancelled { return }
+                do {
+                    let result = try await scriptCaller.evaluateJavaScript(
+                        """
+                        return (() => {
+                            const startedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
+                            const startedAgeMs = startedAt > 0 ? (Date.now() - startedAt) : null;
+                            const hasReader = !!globalThis.reader;
+                            const hasView = !!globalThis.reader?.view;
+                            const hasRenderer = !!globalThis.reader?.view?.renderer;
+                            const hasSectionLayoutController = !!globalThis.manabiEbookSectionLayoutController
+                                || !!globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController;
+                            const hasLivePageRoot = !!document?.querySelector?.('.manabi-page-root');
+                            const hasLiveChunk = !!document?.querySelector?.('.manabi-page-root .manabi-page-column-chunk');
+                            const hasLiveChunkBody = !!document?.querySelector?.('.manabi-page-root .manabi-page-column-body');
+                            const hasLiveChunkText = (() => {
+                                const node = document?.querySelector?.('.manabi-page-root .manabi-page-column-chunk');
+                                const text = node?.textContent || '';
+                                return text.trim().length > 0;
+                            })();
+                            const isStaleStart = startedAgeMs !== null && startedAgeMs > 2500;
+                            if (
+                                hasRenderer
+                                || hasSectionLayoutController
+                                || hasLiveChunkBody
+                                || hasLiveChunkText
+                                || (hasLivePageRoot && hasLiveChunk)
+                            ) return "ready";
+                            if (globalThis.manabiLoadEBookStarted && !hasReader && startedAgeMs !== null && startedAgeMs > 1200) {
+                                globalThis.manabiLoadEBookStarted = false;
+                            }
+                            if (
+                                globalThis.manabiLoadEBookStarted
+                                && isStaleStart
+                                && !hasRenderer
+                                && !hasSectionLayoutController
+                                && !hasLiveChunkBody
+                                && !hasLiveChunkText
+                                && !(hasLivePageRoot && hasLiveChunk)
+                            ) {
+                                try { globalThis.reader?.close?.(); } catch (_error) {}
+                                try { globalThis.reader?.view?.close?.(); } catch (_error) {}
+                                globalThis.reader = null;
+                                globalThis.manabiLoadEBookStarted = false;
+                                globalThis.manabiLoadEBookReady = false;
+                                globalThis.manabiLoadEBookLastState = "fallback-stale-reset";
+                            }
+                            if (globalThis.manabiLoadEBookStarted && hasView) return "started-pending";
+                            if (globalThis.manabiLoadEBookStarted && hasReader) return "reader-created";
+                            if (globalThis.manabiLoadEBookStarted) return "started-no-reader";
+                            if (typeof window.loadEBook !== "function") return "loadEBook-missing";
+                            window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck();
+                            try {
+                                window.loadEBook({ url, layoutMode });
+                                return "start-requested";
+                            } catch (error) {
+                                globalThis.manabiLoadEBookStarted = false;
+                                return "start-error:" + String(error);
+                            }
+                        })();
+                        """,
+                        arguments: [
+                            "url": loaderURL.absoluteString,
+                            "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
+                        ],
+                        in: frameInfo
+                    )
+                    let state = String(describing: result ?? "nil")
+                    debugPrint(
+                        "# READER ebookViewerInitialized.fallback",
+                        "attempt=\(attempt)",
+                        "state=\(state)",
+                        "page=\(url.absoluteString)"
+                    )
+                    if state == "ready" {
+                        return
+                    }
+                } catch {
+                    debugPrint(
+                        "# READER ebookViewerInitialized.fallback.error",
+                        "attempt=\(attempt)",
+                        "error=\(error)",
+                        "page=\(url.absoluteString)"
+                    )
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func registerEbookViewerFrame(_ frameInfo: WKFrameInfo?) {
+        guard let frameInfo else { return }
+        let pageURL = readerViewModel.state.pageURL
+        _ = scriptCaller.addMultiTargetFrame(
+            frameInfo,
+            uuid: "ebook-viewer-frame:\(pageURL.absoluteString)",
+            canonicalURL: pageURL
+        )
+    }
     
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -43,6 +259,150 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     level: .init(rawValue: result.severity.lowercased()) ?? .info,
                     "[JS] \(result.severity.capitalized) [\(mainDocumentURL?.lastPathComponent ?? "(unknown URL)")]: \(result.message ?? result.arguments?.map { "\($0 ?? "nil")" }.joined(separator: " ") ?? "(no message)")"
                 )
+            }),
+            ("print", { @MainActor [weak self] message in
+                guard let self else { return }
+                if let logMessage = message.body as? String {
+                    if logMessage.contains("\"html:shell-loaded\"")
+                        || logMessage.contains("\"module:posting-initialized\"")
+                        || logMessage.contains("\"ebookViewerInitialized:posted\"") {
+                        scheduleEbookViewerInitializationFallback(in: message.frameInfo)
+                    }
+                    if logMessage.contains("\"reader.open:view-ready\"")
+                        || logMessage.contains("\"loadEBook:posting-loaded\"")
+                        || logMessage.contains("\"loadEBook:delayed-state:1s\"")
+                        || logMessage.contains("\"loadEBook:delayed-state:3s\"")
+                        || logMessage.contains("\"loadEBook:delayed-state:8s\"") {
+                        registerEbookViewerFrame(message.frameInfo)
+                    }
+                    if logMessage.hasPrefix("# EBOOKFIX1")
+                        || logMessage.hasPrefix("# BOOKBUG1")
+                        || logMessage.hasPrefix("# EBOOKHTML")
+                        || logMessage.hasPrefix("# EBOOKFETCH") {
+                        Logger.shared.logger.info("\(logMessage)")
+                    }
+                    debugPrint(logMessage)
+                    return
+                }
+                guard let payload = message.body as? [String: Any] else {
+                    debugPrint("# READER readabilityInit.swiftLog", "body=\(String(describing: message.body))")
+                    return
+                }
+                let logMessage = payload["message"] as? String ?? "# READER SwiftReadability.print"
+                var components: [String] = []
+                if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
+                    components.append("windowURL=\(windowURL)")
+                }
+                if let pageURL = payload["pageURL"] as? String, !pageURL.isEmpty {
+                    components.append("pageURL=\(pageURL)")
+                }
+                for (key, value) in payload where key != "message" && key != "windowURL" && key != "pageURL" {
+                    let printable: String
+                    if value is NSNull {
+                        printable = "null"
+                    } else {
+                        printable = String(describing: value)
+                    }
+                    components.append("\(key)=\(printable)")
+                }
+                if components.isEmpty {
+                    debugPrint(logMessage)
+                } else {
+                    debugPrint(logMessage, components.joined(separator: " "))
+                }
+            }),
+            ("trackingBookKey", { [weak self] message in
+                guard let body = message.body as? [String: Any],
+                      let bookKey = body["bookKey"] as? String else { return }
+                Task { @MainActor in
+                    try? await self?.scriptCaller.evaluateJavaScript(
+                        "window.paginationTrackingBookKey = bookKey;",
+                        arguments: ["bookKey": bookKey],
+                        in: message.frameInfo
+                    )
+                    debugPrint("# READER paginationBookKey.set", "key=\(bookKey.prefix(72))…")
+                }
+            }),
+            ("trackingSizeCache", { [weak self] message in
+                guard let self else { return }
+                guard let body = message.body as? [String: Any],
+                      let command = body["command"] as? String,
+                      let key = body["key"] as? String else { return }
+
+                let bucketKey = makeBucketKey(from: key)
+
+                switch command {
+                case "set":
+                    if let entries = body["entries"] as? [[String: Any]] {
+                        let decoded: [ReaderSizeTrackingCacheEntry] = entries.compactMap { dict in
+                            guard let id = dict["id"] as? String,
+                                  let inlineSize = dict["inlineSize"] as? Double,
+                                  let blockSize = dict["blockSize"] as? Double else { return nil }
+                            let blockStart = dict["blockStart"] as? Double
+                            return ReaderSizeTrackingCacheEntry(
+                                id: id,
+                                inlineSize: inlineSize,
+                                blockSize: blockSize,
+                                blockStart: blockStart
+                            )
+                        }
+                        var bucket = trackingSizeCache.value(forKey: bucketKey) ?? ReaderSizeTrackingCacheBucket()
+                        let snapshot = ReaderSizeTrackingCacheSnapshot(
+                            cacheKey: key,
+                            savedAt: Date(),
+                            reason: body["reason"] as? String,
+                            entries: decoded
+                        )
+                        bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
+                        trackingSizeCache.setValue(bucket, forKey: bucketKey)
+                        debugPrint(
+                            "# READER trackingSizeCache set",
+                            "bucket=\(bucketKey.prefix(72))…",
+                            "cacheKey=\(key.prefix(72))…",
+                            "entries=\(decoded.count)",
+                            "snapshots=\(bucket.snapshots.count)",
+                            "reason=\(snapshot.reason ?? "<nil>")"
+                        )
+                    }
+                case "get":
+                    guard let requestId = body["requestId"] as? String else { return }
+                    if let bucket = trackingSizeCache.value(forKey: bucketKey),
+                       let cached = bucket.snapshot(for: key)?.entries {
+                        do {
+                            let data = try JSONEncoder().encode(cached)
+                            if let json = String(data: data, encoding: .utf8) {
+                                let js = "window.manabiResolveTrackingSizeCache(requestId, \(json))"
+                                Task { @MainActor in
+                                    try? await self.scriptCaller.evaluateJavaScript(
+                                        js,
+                                        arguments: ["requestId": requestId],
+                                        in: message.frameInfo
+                                    )
+                                }
+                            }
+                            debugPrint(
+                                "# READER trackingSizeCache hit",
+                                "bucket=\(bucketKey.prefix(72))…",
+                                "cacheKey=\(key.prefix(72))…",
+                                "entries=\(cached.count)",
+                                "snapshots=\(bucket.snapshots.count)"
+                            )
+                        } catch {
+                            // Ignore encoding errors.
+                        }
+                    } else {
+                        Task { @MainActor in
+                            try? await self.scriptCaller.evaluateJavaScript(
+                                "window.manabiResolveTrackingSizeCache(requestId, null)",
+                                arguments: ["requestId": requestId],
+                                in: message.frameInfo
+                            )
+                        }
+                        debugPrint("# READER trackingSizeCache miss", "key=\(key.prefix(72))…")
+                    }
+                default:
+                    break
+                }
             }),
             ("readerOnError", { [weak self] message in
                 guard let self else { return }
@@ -261,21 +621,33 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
                 guard let self else { return }
+                ebookBootstrapFallbackTask?.cancel()
+                ebookBootstrapFallbackTask = nil
+                registerEbookViewerFrame(message.frameInfo)
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme,
                    (scheme == "ebook" || scheme == "ebook-url"),
                    url.absoluteString.hasPrefix("\(scheme)://"),
                    url.isEBookURL,
                    let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
+                    debugPrint(
+                        "# READER ebookViewerInitialized",
+                        "page=\(url.absoluteString)",
+                        "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
+                    )
+                    _ = try? await scriptCaller.evaluateJavaScript(
+                        "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                        in: message.frameInfo
+                    )
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         try await scriptCaller.evaluateJavaScript(
                             "window.loadEBook({ url, layoutMode })",
                             arguments: [
                                 "url": loaderURL.absoluteString,
-                                //                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
-                                "layoutMode": "paginated",
-                            ]
+                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated",
+                            ],
+                            in: message.frameInfo
                         )
                     }
                 }
@@ -380,6 +752,7 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     
     @State private var readerMessageHandlers: ReaderMessageHandlers?
+    @State private var lastAppendedHandlerKeys: [String] = []
     
     func body(content: Content) -> some View {
         content
@@ -395,6 +768,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         navigator: navigator,
                         hideNavigationDueToScroll: hideNavigationDueToScroll
                     )
+                    if readerViewModel.state.pageURL.isEBookURL {
+                        readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
+                    }
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
                     readerMessageHandlers.scriptCaller = scriptCaller
@@ -403,15 +779,29 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.readerContent = readerContent
                     readerMessageHandlers.navigator = navigator
                     readerMessageHandlers.hideNavigationDueToScroll = hideNavigationDueToScroll
+                    if readerViewModel.state.pageURL.isEBookURL {
+                        readerMessageHandlers.scheduleEbookViewerInitializationFallback()
+                    }
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
+                let handlerKeys = Array(webViewMessageHandlers.handlers.keys).sorted()
+                guard handlerKeys != lastAppendedHandlerKeys else { return }
                 if let existing = readerMessageHandlers?.webViewMessageHandlers {
                     readerMessageHandlers?.webViewMessageHandlers = existing + webViewMessageHandlers
+                    lastAppendedHandlerKeys = handlerKeys
                 }
             }
             .task(id: hideNavigationDueToScroll.wrappedValue) {
                 await pushHideNavigationStateToWebView()
+            }
+            .task(id: readerViewModel.state.pageURL) { @MainActor in
+                if readerViewModel.state.pageURL.isEBookURL {
+                    readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
+                } else {
+                    readerMessageHandlers?.ebookBootstrapFallbackTask?.cancel()
+                    readerMessageHandlers?.ebookBootstrapFallbackTask = nil
+                }
             }
             .task(id: readerContent.pageURL) {
                 await pushHideNavigationStateToWebView()

@@ -27,7 +27,10 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     @Persisted public var rssTitles = RealmSwift.List<String>()
     @Persisted public var isRSSAvailable = false
     @Persisted public var voiceFrameUrl: URL?
+    @Persisted public var voiceAudioURL: URL?
     @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
+    @Persisted public var audioSubtitlesURL: URL?
+    @Persisted public var audioSubtitlesRoleRawValue: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     

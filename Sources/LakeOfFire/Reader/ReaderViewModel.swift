@@ -18,6 +18,7 @@ public class ReaderViewModel: NSObject, ObservableObject {
 
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
+    @Published public private(set) var ebookViewerLoadedProbeSummary: String?
     
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
@@ -31,6 +32,11 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     public var allScripts: [WebViewUserScript] {
         return (webViewSystemScripts ?? []) + (webViewUserScripts ?? [])
+    }
+
+    @MainActor
+    public func setEbookViewerLoadedProbeSummary(_ summary: String?) {
+        ebookViewerLoadedProbeSummary = summary
     }
     
     public init(realmConfiguration: Realm.Configuration = Realm.Configuration.defaultConfiguration, systemScripts: [WebViewUserScript]) {

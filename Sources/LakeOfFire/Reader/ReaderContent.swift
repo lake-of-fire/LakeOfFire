@@ -14,6 +14,7 @@ public class ReaderContent: ObservableObject {
         }
     }// = ReaderContentLoader.unsavedHome
     @Published public var pageURL = URL(string: "about:blank")! { didSet { syncLocationBarTitle() } }
+    @Published public var currentSectionIndex: Int?
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
     @Published public var isRenderingReaderHTML = false
@@ -46,6 +47,11 @@ public class ReaderContent: ObservableObject {
         guard !newTitle.isEmpty else { return }
         contentTitleSubject.send(newTitle)
     }
+
+    private func matchesResolvedContentURL(_ contentURL: URL, resolvedContentURL: URL) -> Bool {
+        contentURL.absoluteString == resolvedContentURL.absoluteString
+            || contentURL.matchesReaderURL(resolvedContentURL)
+    }
     
     @MainActor
     internal func load(url: URL) async throws {
@@ -63,7 +69,16 @@ public class ReaderContent: ObservableObject {
             return
         }
 
-        if let existingContent = content, existingContent.url.matchesReaderURL(resolvedContentURL) {
+        if let existingContent = content,
+           matchesResolvedContentURL(existingContent.url, resolvedContentURL: resolvedContentURL) {
+            let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
+                || pageURL.matchesReaderURL(displayURL)
+            if pageAlreadyMatchesDisplay {
+                logReaderLoad(
+                    "stage=readerContent.load.reuseCanonicalContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) pageURL=\(pageURL.absoluteString)"
+                )
+                return
+            }
             if !pageURL.matchesReaderURL(url) {
                 logReaderLoad(
                     "stage=readerContent.load.reuseExistingContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) displayURL=\(displayURL.absoluteString)"
@@ -77,6 +92,7 @@ public class ReaderContent: ObservableObject {
             "stage=readerContent.load.clearState requestURL=\(url.absoluteString) newPageURL=\(displayURL.absoluteString)"
         )
         content = nil
+        currentSectionIndex = nil
         pageURL = displayURL
         
         loadingTask?.cancel()

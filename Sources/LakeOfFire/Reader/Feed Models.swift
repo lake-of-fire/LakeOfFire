@@ -219,7 +219,10 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
         set { }
     }
     @Persisted public var voiceFrameUrl: URL?
+    @Persisted public var voiceAudioURL: URL?
     @Persisted public var voiceAudioURLs = RealmSwift.List<URL>()
+    @Persisted public var audioSubtitlesURL: URL?
+    @Persisted public var audioSubtitlesRoleRawValue: String?
     @Persisted public var redditTranslationsUrl: URL?
     @Persisted public var redditTranslationsTitle: String?
     
@@ -333,11 +336,11 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
             bookmark.rssTitles.append(feed.title)
         }
         bookmark.isRSSAvailable = !bookmark.rssURLs.isEmpty
-        bookmark.voiceFrameUrl = voiceFrameUrl
-        bookmark.voiceAudioURLs.removeAll()
-        bookmark.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
-        bookmark.redditTranslationsUrl = redditTranslationsUrl
-        bookmark.redditTranslationsTitle = redditTranslationsTitle
+        copyReaderMediaState(
+            to: bookmark,
+            preservingExistingVoiceAudioURL: false,
+            defaultAudioSubtitlesRole: .content
+        )
         
         bookmark.isReaderModeByDefault = isReaderModeByDefault
     }
@@ -476,6 +479,14 @@ public extension Feed {
                     imageUrl = URL(string: rawImageURL)
                 }
                 let content = item.content?.contentEncoded ?? item.description
+                let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let audioSubtitlesURL: URL? = rawSubtitleHref
+                    .flatMap { rawValue in
+                        guard !rawValue.isEmpty else { return nil }
+                        return URL(string: rawValue)
+                            ?? rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
+                    }
                 
                 var title = item.title
                 do {
@@ -504,6 +515,8 @@ public extension Feed {
                 feedEntry.imageUrl = imageUrl
                 feedEntry.sourceIconURL = iconUrl
                 feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+                feedEntry.audioSubtitlesURL = audioSubtitlesURL
+                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
                 feedEntry.updateCompoundKey()
                 incomingIDs.append(feedEntry.compoundKey)
                 return feedEntry
@@ -520,6 +533,7 @@ public extension Feed {
                 }
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
+            let payloads = entriesToPersist.map(FeedEntryPayload.init)
             if !entriesToPersist.isEmpty {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -530,6 +544,9 @@ public extension Feed {
                     }
                     realm.add(entriesToPersist, update: .modified)
                 }
+            }
+            for payload in payloads {
+                try await syncRelatedReaderContent(with: payload)
             }
         }()
     }
@@ -578,6 +595,24 @@ public extension Feed {
                     .filter { $0.attributes?.rel == "voice-audio" }
                     .compactMap { $0.attributes?.href }
                     .compactMap { URL(string: $0) }
+
+                let rawAtomSubtitleHref = item.links?
+                    .first { link in
+                        guard link.attributes?.rel == "voice-audio-subtitles" else { return false }
+                        let normalizedType = link.attributes?.type?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lowercased()
+                        guard let normalizedType, !normalizedType.isEmpty else { return true }
+                        return normalizedType.contains("vtt")
+                    }?
+                    .attributes?.href?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let audioSubtitlesURL: URL? = rawAtomSubtitleHref
+                    .flatMap { rawValue in
+                        guard !rawValue.isEmpty else { return nil }
+                        return URL(string: rawValue)
+                            ?? rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
+                    }
                 
                 // TODO: Refactor into community commentary links
                 var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
@@ -616,7 +651,10 @@ public extension Feed {
                 feedEntry.publicationDate = item.published ?? item.updated
                 feedEntry.html = item.content?.value
                 feedEntry.voiceFrameUrl = voiceFrameUrl
+                feedEntry.voiceAudioURL = voiceAudioURLs.first
                 feedEntry.voiceAudioURLs.append(objectsIn: voiceAudioURLs)
+                feedEntry.audioSubtitlesURL = audioSubtitlesURL
+                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
                 feedEntry.redditTranslationsUrl = redditTranslationsUrl
                 feedEntry.redditTranslationsTitle = redditTranslationsTitle
                 feedEntry.updateCompoundKey()
@@ -624,6 +662,7 @@ public extension Feed {
                 return feedEntry
             }
             let entriesToPersist = try await filterEntriesToPersist(realm: realm, entries: feedEntries)
+            let payloads = entriesToPersist.map(FeedEntryPayload.init)
             if !entriesToPersist.isEmpty || deleteOrphans {
                 await realm.asyncRefresh()
                 try await realm.asyncWrite {
@@ -642,6 +681,9 @@ public extension Feed {
                     }
                     realm.add(entriesToPersist, update: .modified)
                 }
+            }
+            for payload in payloads {
+                try await syncRelatedReaderContent(with: payload)
             }
         }()
     }
@@ -727,14 +769,25 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
                     switch property.type {
                     case .string:
                         if let entryList = entry.value(forKey: propertyName) as? List<String>,
-                           let existingList = existingEntry.value(forKey: propertyName) as? List<String> {
-                            if entryList != existingList {
-                                differentEntries.append(entry)
-                                break
-                            }
+                           let existingList = existingEntry.value(forKey: propertyName) as? List<String>,
+                           entryList != existingList {
+                            differentEntries.append(entry)
+                            break
+                        }
+                        if let entryList = entry.value(forKey: propertyName) as? List<URL>,
+                           let existingList = existingEntry.value(forKey: propertyName) as? List<URL>,
+                           entryList.map(\.absoluteString) != existingList.map(\.absoluteString) {
+                            differentEntries.append(entry)
+                            break
                         }
                     default:
-                        fatalError("Comparison for \(property.type) property type for feed entries not currently supported")
+                        debugPrint(
+                            "# FEED filterEntriesToPersist.unsupportedArrayType",
+                            "property=\(propertyName)",
+                            "type=\(property.type)"
+                        )
+                        differentEntries.append(entry)
+                        break
                     }
                 } else if entry.value(forKey: propertyName) as? NSObject != existingEntry.value(forKey: propertyName) as? NSObject {
                     differentEntries.append(entry)
@@ -747,6 +800,114 @@ fileprivate func filterEntriesToPersist(realm: Realm, entries: [FeedEntry]) asyn
     }
     
     return differentEntries
+}
+
+fileprivate struct FeedEntryPayload {
+    let url: URL
+    let title: String
+    let author: String
+    let imageUrl: URL?
+    let sourceIconURL: URL?
+    let publicationDate: Date?
+    let content: Data?
+    let voiceFrameUrl: URL?
+    let voiceAudioURL: URL?
+    let voiceAudioURLs: [URL]
+    let audioSubtitlesURL: URL?
+    let audioSubtitlesRoleRawValue: String?
+    let redditTranslationsUrl: URL?
+    let redditTranslationsTitle: String?
+
+    init(entry: FeedEntry) {
+        url = entry.url
+        title = entry.title
+        author = entry.author
+        imageUrl = entry.imageUrl
+        sourceIconURL = entry.sourceIconURL
+        publicationDate = entry.publicationDate
+        content = entry.content
+        voiceFrameUrl = entry.voiceFrameUrl
+        voiceAudioURLs = entry.resolvedVoiceAudioURLs
+        voiceAudioURL = voiceAudioURLs.first
+        audioSubtitlesURL = entry.audioSubtitlesURL
+        audioSubtitlesRoleRawValue = entry.audioSubtitlesRoleRawValue
+            ?? (entry.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil)
+        redditTranslationsUrl = entry.redditTranslationsUrl
+        redditTranslationsTitle = entry.redditTranslationsTitle
+    }
+}
+
+@discardableResult
+fileprivate func applyPayload(_ payload: FeedEntryPayload, to content: any ReaderContentProtocol) -> Bool {
+    var didChange = false
+    if content.title != payload.title {
+        content.title = payload.title
+        didChange = true
+    }
+    if content.author != payload.author {
+        content.author = payload.author
+        didChange = true
+    }
+    if content.imageUrl != payload.imageUrl {
+        content.imageUrl = payload.imageUrl
+        didChange = true
+    }
+    if content.sourceIconURL != payload.sourceIconURL {
+        content.sourceIconURL = payload.sourceIconURL
+        didChange = true
+    }
+    if content.publicationDate != payload.publicationDate {
+        content.publicationDate = payload.publicationDate
+        didChange = true
+    }
+    if content.content != payload.content {
+        content.content = payload.content
+        didChange = true
+    }
+    if content.voiceFrameUrl != payload.voiceFrameUrl {
+        content.voiceFrameUrl = payload.voiceFrameUrl
+        didChange = true
+    }
+    if content.voiceAudioURL != payload.voiceAudioURL {
+        content.voiceAudioURL = payload.voiceAudioURL
+        didChange = true
+    }
+    let existingVoiceAudioURLs = Array(content.voiceAudioURLs)
+    if existingVoiceAudioURLs != payload.voiceAudioURLs {
+        content.voiceAudioURLs.removeAll()
+        content.voiceAudioURLs.append(objectsIn: payload.voiceAudioURLs)
+        didChange = true
+    }
+    if content.audioSubtitlesURL != payload.audioSubtitlesURL {
+        content.audioSubtitlesURL = payload.audioSubtitlesURL
+        didChange = true
+    }
+    if content.audioSubtitlesRoleRawValue != payload.audioSubtitlesRoleRawValue {
+        content.audioSubtitlesRoleRawValue = payload.audioSubtitlesRoleRawValue
+        didChange = true
+    }
+    if content.redditTranslationsUrl != payload.redditTranslationsUrl {
+        content.redditTranslationsUrl = payload.redditTranslationsUrl
+        didChange = true
+    }
+    if content.redditTranslationsTitle != payload.redditTranslationsTitle {
+        content.redditTranslationsTitle = payload.redditTranslationsTitle
+        didChange = true
+    }
+    return didChange
+}
+
+@RealmBackgroundActor
+fileprivate func syncRelatedReaderContent(with payload: FeedEntryPayload) async throws {
+    let mirrors = try await ReaderContentLoader.loadAll(url: payload.url, skipFeedEntries: true)
+    for case let object as (Object & ReaderContentProtocol) in mirrors {
+        guard let realm = object.realm else { continue }
+        try await realm.asyncWrite {
+            if applyPayload(payload, to: object) {
+                object.refreshChangeMetadata(explicitlyModified: true)
+            }
+        }
+    }
 }
 
 fileprivate func cleanRssData(_ rssData: Data) -> Data {

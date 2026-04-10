@@ -5,7 +5,7 @@ import BigSyncKit
 import Combine
 import SwiftUIWebView
 import BackgroundAssets
-import Collections
+import OrderedCollections
 import SwiftUIDownloads
 import RealmSwiftGaps
 

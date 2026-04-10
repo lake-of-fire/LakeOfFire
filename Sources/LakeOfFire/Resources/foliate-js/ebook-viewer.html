@@ -4,6 +4,11 @@
         <meta charset="utf-8" />
         <meta name="color-scheme" content="light dark" />
         <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, initial-scale=1.0">
+            <script>
+                try {
+                    window.webkit?.messageHandlers?.print?.postMessage?.('# EBOOKFIX1 {"event":"html:shell-loaded"}');
+                } catch (_error) {}
+            </script>
             <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob:; font-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' blob: 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data: *; frame-src blob: data:; object-src blob: data:; form-action 'none';" />
             <style>
                 body {
@@ -26,10 +31,25 @@
                 html {
                     height: 100%;
                 }
+                html, body {
+                    overflow-x: hidden;
+                    overscroll-behavior-x: contain;
+                }
                 body {
                     --manabi-red: #ff4500;
                     --secondary-color: #7a7a7a;
-                    --tertiary-color: #fbfbfb;
+                    --tertiary-color: #c3c3c3;
+                    --nav-primary-font-size: 0.72rem;
+                    --nav-secondary-font-size: calc(0.86rem + 2px);
+                    --nav-accent-color: #3d3d3d;
+                    --nav-horizontal-padding: 34px;
+                    --nav-relocate-bg: rgba(0, 0, 0, 0.08);
+                    --scrubber-progress-color: color-mix(in srgb, var(--secondary-color) 70%, white 30%);
+                    --scrubber-track-rest-color: color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
+                    --nav-relocate-icon-color: var(--scrubber-progress-color);
+                    --nav-relocate-baseline-offset: 4px;
+                    --nav-section-progress-font-size: 16px;
+                    --nav-compact-percent-min-width: 72px;
                     
                     margin: 0 auto;
                     height: 100%;
@@ -41,6 +61,8 @@
                     body {
                         --secondary-color: #7f7f7f;
                         --tertiary-color: #1e1e1e;
+                        --nav-accent-color: #d0d0d0;
+                        --nav-relocate-bg: rgba(255, 255, 255, 0.14);
                     }
                 }
                 
@@ -75,21 +97,34 @@
                     stroke-width: 2px;
                     flex-shrink: 0;
                 }
+                .icon.finish-icon {
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
+                    stroke: currentcolor;
+                }
                 .empty-state-icon {
                     margin: auto;
                 }
                 .toolbar {
                     box-sizing: border-box;
                     position: absolute;
-                    z-index: 1;
+                    z-index: 4;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
                     width: 100dvw;
-                    height: 30px;
+                    height: 63px;
                     /*padding: 6px;*/
                     transition: opacity 250ms ease;
                     visibility: hidden;
+                }
+                #reader-stage {
+                    position: absolute;
+                    inset: 0;
+                    overflow: hidden;
+                    z-index: 1;
                 }
                 .toolbar button {
                     padding: 3px 8px;
@@ -102,31 +137,14 @@
                     justify-content: start;
                     min-width: 0;
                     gap: 4px;
-                }
-                /* Left stack: label left, icon right */
-                #left-stack .button-label {
-                    order: 1;
-                }
-                #left-stack .icon {
-                    order: 2;
-                    margin-left: auto;
-                }
-                
-                /* Right stack: label right, icon left */
-                #right-stack .button-label {
-                    order: 2;
-                    margin-left: auto;
-                }
-                #right-stack .icon {
-                    order: 1;
+                    font-size: 12px;
+                    font-weight: 600;
                 }
                 .toolbar button:hover {
                     background: rgba(0, 0, 0, .1);
                     color: currentcolor;
                 }
                 .toolbar button .button-label {
-                    font-size: x-small;
-                    font-weight: 600;
                     pointer-events: none;
                     color: inherit;
                     white-space: nowrap;
@@ -148,9 +166,6 @@
                 .toolbar button[data-button-type="next"]:has(.button-label:not(:empty)) {
                     color: var(--manabi-red);
                 }
-                .toolbar button[data-button-type="finish"]:has(.button-label:not(:empty)) {
-                    color: green;
-                }
                 .button-stack{
                     display: grid;          /* let children overlap yet contribute width */
                 }
@@ -158,82 +173,464 @@
                     grid-area: 1 / 1;       /* all share same cell */
                 }
                 /* keep the hidden rule */
-                .button-stack > button[hidden] {
-                    visibility: hidden;
-                    pointer-events: none;
-                    display: block !important; /* ensure grid space is still taken */
-                    height: 0;
-                    overflow: hidden;
+                .button-stack > button[hidden],
+                .button-stack > button[aria-hidden="true"] {
+                    display: none !important;
                 }
                 #nav-bar {
-                    z-index: 3;
+                    z-index: 5;
+                    left: 0;
+                    right: 0;
                     bottom: 0;
+                    height: 63px !important;
+                    min-height: 63px;
+                    max-height: 63px;
+                    flex: 0 0 63px;
                     -webkit-backdrop-filter: blur(30px);
                     contain: strict;
+                    padding: 0;
                 }
                 body.nav-hidden {
                     --manabi-highlight-opacity: 0.5;
                 }
-                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
-                #nav-bar.nav-hidden-due-to-scroll #left-stack,
-                #nav-bar.nav-hidden-due-to-scroll #right-stack,
-                body.nav-hidden #progress-wrapper,
-                body.nav-hidden #left-stack,
-                body.nav-hidden #right-stack {
+                /* Prevent accidental text selection on nav chrome */
+                .nav-relocate-button,
+                .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
+                #nav-primary-text,
+                #nav-primary-text-full,
+                #nav-primary-text-compact,
+                #nav-bottom-row,
+                #progress-wrapper,
+                #nav-top-row,
+                #nav-hidden-buttons button,
+                #btn-prev-chapter,
+                #btn-next-chapter,
+                .button-label,
+                .side-nav,
+                #nav-bar,
+                #nav-bar * {
+                    user-select: none;
+                    -webkit-user-select: none;
+                }
+                #nav-bar *,
+                #nav-bottom-row,
+                #progress-wrapper,
+                .nav-relocate-button,
+                .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
+                #nav-primary-text {
+                    transition: opacity 240ms ease;
+                }
+                .nav-fade-out {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
+                #nav-content {
+                    display: flex;
+                    flex-direction: column;
+                    width: 100%;
+                    gap: 0;
+                }
+                #nav-top-row {
+                    position: relative;
+                    display: block;
+                    padding: 0 var(--nav-horizontal-padding);
+                    height: 33px;
+                    box-sizing: border-box;
+                }
+                #nav-primary-text {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    text-align: center;
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    position: absolute;
+                    top: 3px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    white-space: nowrap;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    pointer-events: none;
+                    height: 26px;
+                    box-sizing: border-box;
+                }
+                #nav-primary-percent {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    position: absolute;
+                    top: 3px;
+                    right: var(--nav-horizontal-padding);
+                    min-width: var(--nav-compact-percent-min-width);
+                    text-align: right;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    pointer-events: none;
+                    height: 12px;
+                    opacity: 0;
+                }
+                #nav-primary-text-compact,
+                #nav-primary-percent {
+                    margin-top: 14px;
+                }
+                .nav-primary-layer {
+                    position: absolute;
+                    inset: 0;
+                    display: block;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                }
+                #nav-primary-text {
+                    --label-variant: full;
+                }
+                #nav-primary-text[data-label-variant="full"] #nav-primary-text-full {
+                    opacity: 1;
+                }
+                #nav-primary-text[data-label-variant="full"] #nav-primary-text-compact {
+                    opacity: 0;
+                }
+                #nav-primary-text[data-label-variant="compact"] #nav-primary-text-full {
+                    opacity: 0;
+                }
+                #nav-primary-text[data-label-variant="compact"] ~ #nav-primary-percent,
+                #nav-primary-text[data-label-variant="compact"]  #nav-primary-text-compact {
+                    opacity: 0.8;
+                }
+                #nav-primary-text-compact {
+                    text-align: left;
+                    box-sizing: border-box;
+                }
+                #nav-primary-percent[hidden] {
+                    display: none;
+                }
+                /* Hidden-state overlay copies the nav label without moving the original */
+                #nav-hidden-overlay {
+                    position: fixed;
+                    left: 0;
+                    right: 0;
+                    bottom: 16px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 10px;
+                    pointer-events: none;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                    z-index: 6;
+                    padding: 0 var(--nav-horizontal-padding);
+                    box-sizing: border-box;
+                }
+                #nav-hidden-overlay .nav-hidden-label {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    white-space: nowrap;
+                    text-align: left;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                #nav-hidden-overlay .nav-hidden-percent {
+                    text-align: right;
+                }
+                body.nav-hidden #nav-primary-text,
+                body.nav-hidden #nav-primary-percent {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
+                body.nav-hidden #nav-hidden-overlay {
+                /*#nav-bar.nav-hidden-due-to-scroll #nav-hidden-overlay {*/
+                    opacity: 1;
+                }
+                #nav-bar.nav-hidden-due-to-scroll {
+                    display: none;
+                }
+                .nav-section-progress {
+                    font-size: var(--nav-section-progress-font-size, 14px);
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    white-space: nowrap;
+                    transition: opacity 375ms ease-out;
+                }
+                .nav-section-progress[hidden] {
+                    display: none;
+                }
+                .nav-relocate-button {
+                    display: flex;
+                    align-items: flex-end;
+                    justify-content: flex-start;
+                    flex-direction: row;
+                    gap: 4px;
+                    border: none;
+                    background-color: var(--nav-relocate-bg);
+                    color: var(--nav-relocate-icon-color, var(--nav-accent-color, var(--secondary-color)));
+                    font-size: var(--nav-section-progress-font-size, 16px);
+                    font-weight: 500;
+                    padding: 4px 12px;
+                    min-height: 26px;
+                    border-radius: 999px;
+                    cursor: pointer;
+                    transition: color 0.2s ease, opacity 375ms ease-out, background-color 0.2s ease;
+                    position: absolute;
+                    bottom: calc(-1 * var(--nav-relocate-baseline-offset));
+                    direction: ltr;
+                    line-height: 1.2;
+                }
+                .nav-relocate-button:disabled {
+                    opacity: 0.35;
+                    cursor: default;
+                }
+                .nav-relocate-button[hidden] {
+                    display: none;
+                }
+                .nav-relocate-button[data-nav-edge='left'] {
+                    left: var(--nav-horizontal-padding);
+                    right: auto;
+                }
+                .nav-relocate-button[data-nav-edge='right'] {
+                    right: var(--nav-horizontal-padding);
+                    left: auto;
+                }
+                .nav-relocate-icon {
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
+                    color: var(--nav-relocate-icon-color, currentColor);
+                    fill: currentColor;
+                    flex-shrink: 0;
+                }
+                .nav-relocate-page {
+                    min-width: 0;
+                    margin: 0;
+                    text-align: inherit;
+                    color: var(--nav-relocate-icon-color, currentColor);
+                    font-size: var(--nav-section-progress-font-size, 16px);
+                    white-space: nowrap;
+                    direction: ltr;
+                    unicode-bidi: plaintext;
+                }
+                .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
+                    text-align: left;
+                }
+                .nav-relocate-button[data-nav-edge='right'] .nav-relocate-page {
+                    text-align: right;
+                }
+                #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
+                #nav-bar.nav-hidden-due-to-scroll .nav-section-progress {
                     opacity: 0;
                     pointer-events: none;
                 }
-                #progress-button {
-                    all: unset; /* Remove default styling */
-                    margin: 0 5px;
-                    padding: 1px 8px;
-                    color: var(--secondary-color);
-                    border: 1px solid var(--secondary-color);
-                    cursor: pointer;
-                    background: none;
-                    font-size: x-small;
-                    font-weight: 600;
-                    -webkit-user-select: none;
-                    visibility: hidden;
-                    text-align: center;
-                    border-radius: 9999px; /* Creates a capsule shape */
-                    display: inline-block; /* Ensures proper rendering for pill shape */
+                body.nav-hidden .nav-relocate-button,
+                body.nav-hidden .nav-section-progress,
+                body.nav-hidden #nav-section-progress-leading,
+                body.nav-hidden #nav-section-progress-trailing,
+                body.nav-hidden #nav-bottom-row,
+                body.nav-hidden #progress-wrapper {
+                    opacity: 0;
+                    pointer-events: none;
                 }
-                #progress-button:hover {
-                    background: rgba(0, 0, 0, .1);
-                    color: currentcolor;
-                    border-color: currentcolor;
+                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
+                #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+                #completion-stack {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                    min-width: 0;
+                    width: auto;
+                    position: absolute;
+                    top: 2px;
+                    left: 50%;
+                    right: auto;
+                    transform: translateX(-50%);
+                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    direction: ltr;
+                }
+                #completion-stack[hidden] {
+                    display: none;
+                }
+                #completion-stack button {
+                    border: none;
+                    border-radius: 999px;
+                    padding: 4px 6px;
+                    min-height: 26px;
+                    font-weight: 600;
+                    font-size: 14px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    white-space: nowrap;
+                    direction: ltr;
+                }
+                #completion-stack .button-label {
+                    margin: 0 !important;
+                    font-size: 14px;
+                }
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing {
+                    position: absolute;
+                    bottom: 0;
+                    font-size: var(--nav-section-progress-font-size, 14px);
+                    line-height: var(--nav-section-progress-font-size, 14px);
+                    white-space: nowrap;
+                    pointer-events: none;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                #nav-section-progress-leading {
+                    left: var(--nav-horizontal-padding);
+                    text-align: left;
+                }
+                #nav-section-progress-trailing {
+                    right: var(--nav-horizontal-padding);
+                    text-align: right;
+                }
+                .toolbar button[data-button-type="finish"]:has(.button-label:not(:empty)) {
+                    --finish-button-color: #1fa352;
+                }
+                #btn-finish {
+                    background-color: var(--finish-button-color, #1fa352);
+                    color: #fff;
+                    box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                    flex-direction: row;
+                }
+                #btn-finish .icon {
+                    color: inherit;
+                    order: 0;
+                }
+                #btn-finish .button-label {
+                    order: 1;
+                }
+                #btn-restart {
+                    background-color: var(--manabi-red, #ff4500);
+                    color: #fff;
+                    box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                }
+                #btn-restart .icon {
+                    color: inherit;
+                }
+                #nav-bottom-row {
+                    width: 100%;
+                    padding: 5px var(--nav-horizontal-padding) 7px;
+                    box-sizing: border-box;
+                    display: flex;
+                    align-items: center;
+                    transition: opacity 375ms ease-out;
+                }
+                #progress-wrapper {
+                    display: flex;
+                    align-items: center;
+                    width: 100%;
+                    flex: 1;
+                    --thumb-size: 24px;
+                    gap: 12px;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
+                    transition: opacity 375ms ease-out;
+                    position: relative;
                 }
                 #progress-slider {
                     flex-grow: 1;
-                    margin: 0 12px;
+                    margin: 0;
                     visibility: hidden;
                     /*accent-color: GrayText;*/
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
+                }
+                #progress-ticks {
+                    position: absolute;
+                    left: calc(0.5 * var(--thumb-size));
+                    right: calc(0.5 * var(--thumb-size));
+                    bottom: -2px;
+                    height: 4px;
+                    pointer-events: none;
+                }
+                #progress-ticks .tick {
+                    position: absolute;
+                    bottom: 0;
+                    width: 1px;
+                    height: 3px;
+                    background: currentColor;
+                    opacity: 0.35;
+                    transform: translateX(-0.5px);
+                }
+                #nav-hidden-buttons {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 1px;
+                    height: 1px;
+                    overflow: hidden;
+                    clip: rect(0 0 0 0);
+                    clip-path: inset(50%);
+                    pointer-events: none;
+                }
+                #nav-hidden-buttons button {
+                    position: absolute;
+                    left: -9999px;
                 }
                 #side-bar {
                     visibility: hidden;
                     box-sizing: border-box;
                     position: absolute;
-                    z-index: 4;
+                    position: fixed;
                     top: 0;
                     left: 0;
                     height: 100dvh;
                     width: 320px;
-                    transform: translateX(-320px);
+                    /*transform: translateX(-320px);*/
+                    pointer-events: none;
+                    z-index: 4;
+                    contain: layout paint style;
+                }
+                #side-bar.show {
+                    pointer-events: auto;
+                }
+                #side-bar .side-bar-panel {
+                    visibility: hidden;
+                    box-sizing: border-box;
+                    width: min(320px, calc(100vw - 40px));
+                    max-width: 360px;
+                    height: 100%;
+                    transform: translate3d(-100%, 0, 0);
                     display: flex;
                     flex-direction: column;
-                    /*background: Canvas;*/
                     background-color: rgba(0, 0, 0, .05);
                     backdrop-filter: blur(20px);
                     color: CanvasText;
                     box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 40px rgba(0, 0, 0, .2);
-                    transition: visibility 0s linear 300ms, transform 300ms ease;
+                    transition: transform 300ms ease, visibility 0s linear 300ms;
+                    direction: ltr;
+                    text-align: left;
                     contain: strict;
+                    position: relative;
                 }
-                #side-bar.show {
+                #side-bar.show .side-bar-panel {
                     visibility: visible;
-                    transform: translateX(0);
+                    transform: translate3d(0, 0, 0);
                     transition-delay: 0s;
+                }
+                #side-bar .side-bar-panel * {
+                    direction: ltr;
                 }
                 #side-bar-close-button {
                     all: unset;
@@ -244,6 +641,7 @@
                     font-weight: bold;
                     color: var(--secondary-color);
                     cursor: pointer;
+                    pointer-events: auto;
                 }
                 #side-bar-close-button:hover {
                     color: currentcolor;
@@ -251,31 +649,34 @@
                 #loading-indicator, #dimming-overlay {
                     visibility: hidden;
                     position: fixed;
-                    z-index: 2;
+                    z-index: 4;
                     top: 0;
                     left: 0;
-                    width: 100dvw;
-                    height: 100dvh;
+                    width: 100%;
+                    height: 100%;
                     opacity: 0;
                     transition: visibility 0s linear 300ms, opacity 300ms ease;
                     contain: strict;
+                    pointer-events: none; /* do not block nav/chevrons */
                 }
                 #loading-indicator {
-                    background: rgba(255, 255, 255, 1);
-                }
-                @media (prefers-color-scheme: dark) {
-                    #loading-indicator {
-                        background: rgba(0, 0, 0, 1);
-                    }
+                    background: transparent;
                 }
                 #dimming-overlay {
                     background: rgba(0, 0, 0, .2);
+                }
+                #loading-indicator.show,
+                #dimming-overlay.show {
+                    visibility: visible;
+                    opacity: 1;
+                    transition-delay: 0s;
                 }
                 #side-bar-header {
                     padding: 1rem;
                     display: flex;
                     border-bottom: 1px solid rgba(0, 0, 0, .1);
                     align-items: center;
+                    position: relative;
                 }
                 #side-bar-cover {
                     height: 10vh;
@@ -302,6 +703,8 @@
                 #toc-view {
                     padding: .5rem;
                     overflow-y: scroll;
+                    direction: ltr;
+                    text-align: left;
                 }
                 #toc-view li, #toc-view ol {
                     margin: 0;
@@ -347,21 +750,7 @@
                     display: none;
                 }
                 
-                body.loading #loading-indicator {
-                    visibility: visible !important;
-                    opacity: 1 !important;
-                    transition-delay: 0s !important;
-                    pointer-events: auto !important;
-                }
-                body.loading foliate-view,
-                body.loading .side-nav,
-                body.loading #btn-prev-chapter,
-                body.loading #btn-next-chapter,
-                body.loading #btn-finish,
-                body.loading #btn-restart {
-                    visibility: hidden !important;
-                    pointer-events: none !important;
-                }
+                /* body.loading rules unused; indicator is toggled directly */
                 
                 /* From https://github.com/swordray/ispinner/blob/3e3b49eac80c9ba7494cb9485bb85f17e712292c/ispinner.css */
                 .ispinner {
@@ -444,30 +833,6 @@
                     transform: translate(-50%, -50%);
                 }
                 
-                /* Short-label support for narrow viewports */
-                .toolbar button .button-label.short {
-                    display: none;
-                }
-                @media (max-width: 480px) {
-                    .toolbar button .button-label.full {
-                        display: none;
-                    }
-                    .toolbar button .button-label.short {
-                        display: inline;
-                    }
-                }
-                
-                /* Ensure left/right button stacks match width */
-                #left-stack, #right-stack {
-                    display: grid;
-                    grid-template-columns: 1fr;
-                }
-                #left-stack > button,
-                #right-stack > button {
-                    width: 100%;
-                    max-width: 100%;
-                }
-                
                 /* Center-align prev/next labels within their buttons */
                 button[data-button-type="prev"] .button-label,
                 button[data-button-type="next"] .button-label {
@@ -479,7 +844,7 @@
                 .side-nav {
                     position: fixed;
                     top: 30px;
-                    bottom: 30px;
+                    bottom: 60px;
                     width: var(--side-nav-width, 32px);
                     height: auto;
                     padding: 0;
@@ -497,29 +862,21 @@
                 }
                 .side-nav .icon {
                     opacity: 0;
-                    transition: opacity 0.25s ease-out;
+                    transition: opacity 180ms ease-out, filter 180ms ease-out;
                     /*pointer-events: none;*/
-                    
+
                     width: 18px;
                     height: 48px;
                     stroke-width: 4px;
                     stroke: var(--secondary-color);
                 }
-                .side-nav .icon {
-                    opacity: 0;
-                }
                 .side-nav .icon.chevron-visible {
-                    transition: opacity 0.02s ease-in, filter 0.2s ease-in 0.1s;
+                    opacity: 1 !important;
+                    filter: brightness(1.05);
+                    transition: opacity 90ms ease-in, filter 160ms ease;
                 }
                 .side-nav:active .icon,
-                .side-nav.pressed .icon,
-                .side-nav:active .icon.chevron-visible,
-                .side-nav.pressed .icon.chevron-visible {
-                    transition: opacity 0.02s ease-in, filter ease-in 0.03s;
-                }
-                .side-nav:active .icon,
-                .side-nav.pressed .icon,
-                .side-nav .icon.chevron-visible {
+                .side-nav.pressed .icon {
                     opacity: 1 !important;
                     stroke: CanvasText;
                 }
@@ -559,23 +916,24 @@
                 /* Generated with Input range slider CSS style generator (version 20211225)
                  https://toughengineer.github.io/demo/slider-styler */
                 input[type=range].styled-slider {
-                    height: 30px;
-                    /*-webkit-appearance: none;*/
+                    height: 20px;
+                    -webkit-appearance: none;
                     background: transparent;
+                    --thumb-size: 24px;
                 }
                 input[type=range].styled-slider:focus {
                     outline: none;
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb {
                     -webkit-appearance: none;
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 16px;
+                    width: var(--thumb-size);
+                    height: 14px;
+                    border-radius: 14px;
                     background: var(--theme-background-color);
                     border: 1px solid var(--secondary-color);
                     /*box-shadow: 0 0 1px CanvasText;*/
-                    box-shadow: 0 0 2px var(--secondary-color);
-                    margin-top: calc(2px * 0.5 - 16px * 0.5);
+                    box-shadow: 0 0 1px var(--secondary-color);
+                    margin-top: calc(2px * 0.5 - 14px * 0.5);
                 }
                 input[type=range].styled-slider::-webkit-slider-runnable-track {
                     height: 2px;
@@ -586,7 +944,8 @@
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb:hover,
                 input[type=range].styled-slider::-webkit-slider-thumb:active {
-                    background: CanvasText;
+                    /*background: CanvasText;*/
+                    background: var(--tertiary-color);
                     cursor: pointer;
                 }
                 input[type=range].styled-slider:hover::-webkit-slider-runnable-track,
@@ -594,17 +953,18 @@
                     cursor: pointer;
                 }
                 input[type=range].styled-slider.slider-progress::-webkit-slider-runnable-track {
-                    background: linear-gradient(to right, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                    background: linear-gradient(to right, var(--scrubber-progress-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    var(--scrubber-track-rest-color);
                 }
                 input[type=range].styled-slider.slider-progress:dir(rtl)::-webkit-slider-runnable-track {
-                    background: linear-gradient(to left, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                    background: linear-gradient(to left, var(--scrubber-progress-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    var(--scrubber-track-rest-color);
                 }
                 input[type=range].styled-slider.slider-progress {
                     --range: calc(var(--max) - var(--min));
                     --ratio: calc((var(--value) - var(--min)) / var(--range));
-                    --sx: calc(0.5 * 16px + var(--ratio) * (100% - 16px));
+                    --sx: calc(0.5 * var(--thumb-size) + var(--ratio) * (100% - var(--thumb-size)));
+                    accent-color: #ffffff;
                 }
                 
                 /* Performance optimization */
@@ -612,6 +972,13 @@
                     contain: strict;
                     will-change: transform;
                     transform: translateZ(0);
+                }
+                #reader-stage > foliate-view {
+                    position: absolute;
+                    inset: 0;
+                    display: block;
+                    width: 100%;
+                    height: 100%;
                 }
                 
                 /* View Transitions */
@@ -666,60 +1033,86 @@
         
         <div id="dimming-overlay" aria-hidden="true"></div>
         <div id="side-bar">
-            <div id="side-bar-header">
-                <img id="side-bar-cover">
-                    <div>
-                        <h1 id="side-bar-title"></h1>
-                        <p id="side-bar-author"></p>
-                    </div>
-                    <button id="side-bar-close-button" aria-label="Close">
-                        &times;
-                    </button>
-            </div>
-            <div id="percent-jump-container" style="padding: 1rem; display: flex; align-items: center; gap: 0.5rem;">
-                <label for="percent-jump-input" style="white-space: nowrap; font-size: small;">Jump to:</label>
-                <input type="number" id="percent-jump-input" min="0" max="100" style="width: 4em; font-size: small;" />
-                <span style="font-size: small;">%</span>
-                <button id="percent-jump-button" disabled style="font-size: small;">Go</button>
-            </div>
-            <div id="toc-view"></div>
-        </div>
-        <div id="nav-bar" class="toolbar">
-            <div id="left-button-container" style="display: grid; grid-template-columns: 1fr;">
-                <div id="left-stack" class="button-stack">
-                    <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
-                        <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                        <span class="button-label full">Previous</span>
-                        <span class="button-label short">Prev</span>
-                    </button>
+            <div class="side-bar-panel" dir="ltr">
+                <div id="side-bar-header">
+                    <img id="side-bar-cover">
+                        <div>
+                            <h1 id="side-bar-title"></h1>
+                            <p id="side-bar-author"></p>
+                        </div>
+                        <button id="side-bar-close-button" type="button" aria-label="Close">
+                            &times;
+                        </button>
                 </div>
+                <div id="percent-jump-container" style="padding: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <label for="percent-jump-input" style="white-space: nowrap; font-size: small;">Jump to %:</label>
+                    <input type="number" id="percent-jump-input" min="0" max="100" style="width: 2.2em; font-size: small;" />
+                    <button id="percent-jump-button" disabled style="font-size: small;">Go</button>
+                </div>
+                <div id="toc-view"></div>
             </div>
-            <div id="progress-wrapper" style="display: flex; flex: 1; justify-content: center; align-items: center;">
-                <button id="progress-button"></button>
-                <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
-                    <datalist id="tick-marks"></datalist>
-            </div>
-            <div id="right-button-container" style="display: grid; grid-template-columns: 1fr;">
-                <div id="right-stack" class="button-stack">
-                    <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
-                        <span class="button-label full">Next</span>
-                        <span class="button-label short">Next</span>
-                        <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
+        </div>
+        <div id="reader-stage" aria-hidden="false"></div>
+        <div id="nav-bar" class="toolbar">
+            <div id="nav-content">
+                <div id="nav-top-row">
+                    <div id="nav-primary-text" aria-live="polite">
+                        <span id="nav-primary-text-full" class="nav-primary-layer"></span>
+                        <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
+                    </div>
+                    <div id="nav-primary-percent" aria-live="polite" hidden></div>
+                    <div id="completion-stack" class="button-stack" hidden>
+                        <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
+                            <svg class="icon finish-icon" width="1em" height="1em" viewBox="0 0 49.328125 52.400390625" aria-hidden="true">
+                                <g fill-rule="nonzero" transform="scale(1,-1) translate(0,-52.400390625)">
+                                    <path fill="currentColor" stroke="currentColor" stroke-width="3" d="M24.6640625,5.37109375C36.115234375,5.37109375 45.482421875,14.73828125 45.482421875,26.2109375C45.482421875,37.662109375 36.115234375,47.029296875 24.6640625,47.029296875C13.212890625,47.029296875 3.845703125,37.662109375 3.845703125,26.2109375C3.845703125,14.73828125 13.212890625,5.37109375 24.6640625,5.37109375ZM24.6640625,6.423828125C13.771484375,6.423828125 4.8984375,15.296875 4.8984375,26.2109375C4.8984375,37.103515625 13.771484375,45.9765625 24.6640625,45.9765625C35.578125,45.9765625 44.4296875,37.103515625 44.4296875,26.2109375C44.4296875,15.296875 35.578125,6.423828125 24.6640625,6.423828125ZM21.78515625,15.51171875C22.0,15.51171875 22.21484375,15.576171875 22.365234375,15.833984375L34.568359375,34.654296875C34.654296875,34.783203125 34.697265625,34.93359375 34.697265625,35.0625C34.697265625,35.44921875 34.375,35.685546875 34.095703125,35.685546875C33.880859375,35.685546875 33.666015625,35.556640625 33.537109375,35.341796875L21.763671875,17.166015625L14.8671875,25.029296875C14.716796875,25.22265625 14.544921875,25.287109375 14.30859375,25.287109375C14.05078125,25.287109375 13.70703125,25.09375 13.70703125,24.685546875C13.70703125,24.4921875 13.771484375,24.298828125 13.921875,24.1484375L21.205078125,15.791015625C21.419921875,15.5546875 21.5703125,15.51171875 21.78515625,15.51171875Z" />
+                                </g>
+                            </svg>
+                            <span class="button-label">Finish Chapter</span>
+                        </button>
+                        <button id="btn-restart" data-button-type="restart" aria-label="Start over">
+                            <span class="button-label">Start Over</span>
+                            <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
+                                <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled>
+                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
+                        </svg>
+                        <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
                     </button>
-                    <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                        <span class="button-label full">Finish Book</span>
-                        <span class="button-label short">Finish</span>
-                        <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
-                    </button>
-                    <button id="btn-restart" data-button-type="restart" aria-label="Start over">
-                        <span class="button-label full">Start Over</span>
-                        <span class="button-label short">Restart</span>
-                        <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
-                            <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
+                    <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled>
+                        <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
+                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
                         </svg>
                     </button>
+                    <div id="nav-section-progress-leading" class="nav-section-progress" aria-live="polite"></div>
+                    <div id="nav-section-progress-trailing" class="nav-section-progress" aria-live="polite"></div>
+                </div>
+                <div id="nav-bottom-row">
+                    <div id="progress-wrapper">
+                        <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any">
+                        <div id="progress-ticks" aria-hidden="true"></div>
+                    </div>
                 </div>
             </div>
+            <div id="nav-hidden-buttons" aria-hidden="true">
+                <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter" tabindex="-1">
+                    <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
+                    <span class="button-label">Previous</span>
+                </button>
+                <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter" tabindex="-1">
+                    <span class="button-label">Next</span>
+                    <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
+                </button>
+            </div>
+        </div>
+        <div id="nav-hidden-overlay" aria-hidden="true">
+            <span id="nav-hidden-primary-text" class="nav-hidden-label"></span>
+            <span id="nav-hidden-primary-percent" class="nav-hidden-label nav-hidden-percent"></span>
         </div>
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">

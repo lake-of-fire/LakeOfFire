@@ -3,6 +3,17 @@ import Combine
 import RealmSwiftGaps
 import RealmSwift
 
+private struct CategoryCardActionGateKey: EnvironmentKey {
+    static let defaultValue: () -> Bool = { true }
+}
+
+public extension EnvironmentValues {
+    public var categoryCardActionGate: () -> Bool {
+        get { self[CategoryCardActionGateKey.self] }
+        set { self[CategoryCardActionGateKey.self] = newValue }
+    }
+}
+
 @MainActor
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration?
@@ -114,7 +125,7 @@ public struct MangaCategoryButton: View {
     var isCompact = false
     
     public var body: some View {
-        Button(action: {
+        CategoryCardButton(action: {
             withAnimation {
                 categorySelection = "manga"
             }
@@ -126,7 +137,6 @@ public struct MangaCategoryButton: View {
                 isCompact: isCompact
             )
         }
-        .buttonStyle(ReaderCategoryButtonStyle())
     }
     
     public init(
@@ -146,14 +156,13 @@ public struct BooksCategoryButton: View {
     var isCompact = false
     
     public var body: some View {
-        Button(action: {
+        CategoryCardButton(action: {
             withAnimation {
                 categorySelection = "books"
             }
         }) {
             FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, /*font: font,*/ isCompact: isCompact)
         }
-        .buttonStyle(ReaderCategoryButtonStyle())
     }
     
     public init(
@@ -175,7 +184,7 @@ public struct FeedCategoryButton: View {
     var isCompact = false
     
     public var body: some View {
-        Button(action: {
+        CategoryCardButton(action: {
             feedSelection = nil
             categorySelection = category.id.uuidString
         }) {
@@ -186,7 +195,6 @@ public struct FeedCategoryButton: View {
                 isCompact: isCompact
             )
         }
-        .buttonStyle(ReaderCategoryButtonStyle())
     }
     
     public init(category: FeedCategory, feedSelection: Binding<String?>, categorySelection: Binding<String?>, /*font: Font = Font.title3,*/ isCompact: Bool) {
@@ -198,31 +206,51 @@ public struct FeedCategoryButton: View {
     }
 }
 
-struct ReaderCategoryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Self.Configuration) -> some View {
-        configuration.label
-//            .clipped()
-//#if os(iOS)
-//            .clipShape(Capsule())
-//#else
+fileprivate struct CategoryCardDecoration: ViewModifier {
+    var isPressed: Bool
+
+    func body(content: Content) -> some View {
+        content
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(.secondary.opacity(0.2))
                     .shadow(radius: 5)
             }
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-//#endif
-            .buttonStyle(.borderless)
-        //            .buttonStyle(.plain)
-//            .brightness(-0.1)
-            .scaleEffect(configuration.isPressed ? 0.994 : 1.0)
-            .brightness(configuration.isPressed ? -0.06 : 0)
-            .animation(.easeOut(duration: 0.05), value: configuration.isPressed)
-//            .overlay(
-//                RoundedRectangle(cornerRadius: 6, style: .continuous)
-//                    .stroke(Color.secondary.opacity(0.4), lineWidth: 1)
-//            )
+            .scaleEffect(isPressed ? 0.994 : 1.0)
+            .brightness(isPressed ? -0.06 : 0)
+            .animation(.easeOut(duration: 0.05), value: isPressed)
     }
+}
+
+public struct CategoryCardButton<Label: View>: View {
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+    @Environment(\.categoryCardActionGate) private var categoryCardActionGate
+
+    public var body: some View {
+        Button {
+            guard categoryCardActionGate() else { return }
+            action()
+        } label: {
+            label()
+        }
+        .buttonStyle(CategoryCardButtonStyle())
+    }
+
+    public init(action: @escaping () -> Void, @ViewBuilder label: @escaping () -> Label) {
+        self.action = action
+        self.label = label
+    }
+}
+
+public struct CategoryCardButtonStyle: ButtonStyle {
+    public func makeBody(configuration: Self.Configuration) -> some View {
+        configuration.label
+            .modifier(CategoryCardDecoration(isPressed: configuration.isPressed))
+    }
+
+    public init() {}
 }
 
 public struct FeedCategoryButtonLabel: View {

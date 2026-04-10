@@ -514,7 +514,7 @@ private func propagateReaderModeDefaults(
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
     public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
-    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async -> SwiftSoup.Document)? = nil
+    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
     public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
@@ -1432,7 +1432,7 @@ public class ReaderModeViewModel: ObservableObject {
             var doc: SwiftSoup.Document?
             
             if let processReadabilityContent {
-                doc = await processReadabilityContent(
+                doc = try await processReadabilityContent(
                     readabilityContent,
                     url,
                     nil,
@@ -1746,6 +1746,21 @@ public class ReaderModeViewModel: ObservableObject {
         await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
+        if !scriptCaller.hasAsyncCaller {
+            debugPrint("# READER paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(newState.pageURL.absoluteString)")
+        } else {
+            do {
+                try await scriptCaller.evaluateJavaScript(
+                    "window.paginationTrackingBookKey = bookKey;",
+                    arguments: ["bookKey": newState.pageURL.absoluteString],
+                    in: nil,
+                    duplicateInMultiTargetFrames: true
+                )
+                debugPrint("# READER paginationBookKey.set", "key=\(newState.pageURL.absoluteString.prefix(72))…")
+            } catch {
+                debugPrint("# READER paginationBookKey.set.error", error.localizedDescription)
+            }
+        }
 
         if consumeSyntheticReaderLoaderExpectationIfNeeded(for: newState.pageURL) {
             return
