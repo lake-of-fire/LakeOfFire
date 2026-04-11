@@ -12,10 +12,10 @@ public extension EnvironmentValues {
     }
 }
 
-public typealias ContentSelectionNavigationHint = (_ url: URL, _ selectionKey: String) -> Void
+public typealias ContentSelectionNavigationHint = @Sendable (_ url: URL, _ selectionKey: String) -> Void
 
 private struct ContentSelectionNavigationHintKey: EnvironmentKey {
-    static let defaultValue: ContentSelectionNavigationHint? = nil
+    nonisolated(unsafe) static var defaultValue: ContentSelectionNavigationHint? = nil
 }
 
 public extension EnvironmentValues {

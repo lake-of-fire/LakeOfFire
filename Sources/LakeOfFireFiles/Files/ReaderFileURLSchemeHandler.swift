@@ -1,5 +1,5 @@
 import Foundation
-import WebKit
+@preconcurrency import WebKit
 import RealmSwift
 import LakeOfFireContent
 import LakeOfFireCore
@@ -15,7 +15,7 @@ fileprivate extension URL {
 
 @globalActor
 public actor ReaderFileURLSchemeActor {
-    public static var shared = ReaderFileURLSchemeActor()
+    public static let shared = ReaderFileURLSchemeActor()
     
     public init() { }
 }

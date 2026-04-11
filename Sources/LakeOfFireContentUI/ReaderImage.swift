@@ -25,7 +25,7 @@ func readerImageData(url: URL) async throws -> Data? {
     return try cachedSource.source.readEntry(subpath: subpathValue)
 }
 
-fileprivate final class ReaderImageLoadTask: Nuke.Cancellable {
+fileprivate final class ReaderImageLoadTask: Nuke.Cancellable, @unchecked Sendable {
     var task: Task<Void, Never>?
     var fallbackTask: (any Nuke.Cancellable)?
 
@@ -35,18 +35,18 @@ fileprivate final class ReaderImageLoadTask: Nuke.Cancellable {
     }
 }
 
-fileprivate final class ReaderImageDataLoader: DataLoading {
+fileprivate final class ReaderImageDataLoader: DataLoading, @unchecked Sendable {
     private let defaultDataLoader: DataLoading = DataLoader()
-    private let interceptor: (URL) async throws -> Data?
+    private let interceptor: @Sendable (URL) async throws -> Data?
 
-    init(interceptor: @escaping (URL) async throws -> Data?) {
+    init(interceptor: @escaping @Sendable (URL) async throws -> Data?) {
         self.interceptor = interceptor
     }
 
     func loadData(
         with request: URLRequest,
-        didReceiveData: @escaping (Data, URLResponse) -> Void,
-        completion: @escaping (Error?) -> Void
+        didReceiveData: @escaping @Sendable (Data, URLResponse) -> Void,
+        completion: @escaping @Sendable (Error?) -> Void
     ) -> any Nuke.Cancellable {
         let task = ReaderImageLoadTask()
 

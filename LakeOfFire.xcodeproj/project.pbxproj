@@ -49,7 +49,6 @@
 		2BFA44983712707BC65BA6B8 /* ReaderShareUtilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69EA54B3EF4F8B69D803E51C /* ReaderShareUtilities.swift */; };
 		2F7554D92ABFBD1CB3574D75 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
 		31468B7EF1F8A8831C8C3DE6 /* InjectionImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FAEB0ECDA76E201CCE82DF1 /* InjectionImport.swift */; };
-		319A356008C45A53F499E19E /* BravePlaylist.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FFC4CB4345F5CEBAFE9D1814 /* BravePlaylist.framework */; };
 		33A7DACD7C6B5B016FAA9987 /* InternalReaderProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */; };
 		33CC9909CA5E197BFED3B045 /* LibraryScriptsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DAC56FCCA2E942C1845B876 /* LibraryScriptsListView.swift */; };
 		346AB819113016A861919749 /* LakeOfFireContent.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 6BD002B4AF393DCC6EC66505 /* LakeOfFireContent.framework */; };
@@ -112,6 +111,7 @@
 		749F15F847BC15A8A7FFCAD0 /* Collections.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C61C089C1B653DE60FEEFBE1 /* Collections.framework */; };
 		753ADCD5A87C3A0D016E3C91 /* ReaderContentList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ABCCFDB971B5C888BE1180E /* ReaderContentList.swift */; };
 		763044613154FD7BF689E236 /* User Scripts in Resources */ = {isa = PBXBuildFile; fileRef = 498DFDA5ADCDD665A18EF048 /* User Scripts */; };
+		78F868BAF9F257A8C2FE6DA0 /* WebMedia.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = DBE47979CC3D42F9E0252798 /* WebMedia.framework */; };
 		793E22245AC31BCA04D92EAF /* Feed Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58665BB5C4CA1B4D6F5B559 /* Feed Models.swift */; };
 		7B4D92915A36D2E6FF70FB0D /* OPDSSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AA2729664E7B820C30DACA8 /* OPDSSupport.swift */; };
 		7BB80508A803B8DC9FC7F6F4 /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
@@ -136,6 +136,7 @@
 		888A159F1C7F492ADB84ECCA /* ParseData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89514077A2D3DFC4E370326C /* ParseData.swift */; };
 		888ABEFBE854CFC4BCB9E116 /* RealmSwift.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0F4B272DCBA00EB914C6C3FC /* RealmSwift.framework */; };
 		89133F99D9FE053692F8034B /* libJapaneseLanguageTools.a in Dependencies */ = {isa = PBXBuildFile; fileRef = 0F9C33E6F42DE554CC16A86A /* libJapaneseLanguageTools.a */; };
+		896D2AE648E23D7415B7F641 /* WebMediaWebSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75D18B21A6E57C5099A83891 /* WebMediaWebSupport.swift */; };
 		8A3F0E04EA80C3C503F5A753 /* FaviconFinder.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 44214EC7D4875D6794B8842B /* FaviconFinder.framework */; };
 		8A8F7A9547174A85D5E0FE10 /* TuistBundle+LakeOfFireReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590BB72CD030D9F284EC87EE /* TuistBundle+LakeOfFireReader.swift */; };
 		8B85B40F5E7D21FDB5ED4F44 /* AsyncView.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */; };
@@ -143,7 +144,6 @@
 		8C0E291CD8F6E880DBC3C2F5 /* OpenGraph.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 0DBF1743F0462956A696C598 /* OpenGraph.framework */; };
 		8F83E3E0D028AB91C912C310 /* ReaderModeButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB3093361E7F10B9B618FEA /* ReaderModeButton.swift */; };
 		8FB6AF011166D0B829C8402D /* ReaderEbookTextProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2978E35BD495BD01CCF9EFB7 /* ReaderEbookTextProcessor.swift */; };
-		8FD81BD546A0208E3D511FA8 /* BravePlaylist.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = FFC4CB4345F5CEBAFE9D1814 /* BravePlaylist.framework */; };
 		903B51BDA1AABDC47FE5421F /* ReadabilityScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8625A31BA38EBA3A697ABC3 /* ReadabilityScript.swift */; };
 		904D7665C2D44BD7789E9EE3 /* Feed Model Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2685ABB176319217D80A76B /* Feed Model Extensions.swift */; };
 		90CB3289582C5298DAB5E2C7 /* AdblockStatsUserScript.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AACB1DB248432581D82792C /* AdblockStatsUserScript.swift */; };
@@ -152,7 +152,6 @@
 		94F504531CE5AC44C222E0A6 /* ReaderContentCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = FECE32BA7953906A59D3AD88 /* ReaderContentCell.swift */; };
 		9698ECA908D8785FCB9C32FC /* URL+ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE1C1D617EC7AA8E290627A /* URL+ReaderView.swift */; };
 		97AFAE4255BB5CC3F3631B7A /* PDFJSWeb in Resources */ = {isa = PBXBuildFile; fileRef = A40C9908B4E643535FB1DD19 /* PDFJSWeb */; };
-		9910A9B964EEFF2561975DE7 /* BravePlaylistWebSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51D26A36A35198ABF9A3DA34 /* BravePlaylistWebSupport.swift */; };
 		993045C9816D79E9C2785E47 /* ReaderFileManagerSetupModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21B11E43A2FD82E69D4CC4A3 /* ReaderFileManagerSetupModifier.swift */; };
 		99A1E1DB4C820A806F6F2124 /* LakeOfFireFiles.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = 2D68419CA5CC8F156867D74D /* LakeOfFireFiles.framework */; };
 		9D6967E73D73D9B01A65EACE /* SwiftUIWebView.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F16024B793962C7E13A53B8C /* SwiftUIWebView.framework */; };
@@ -206,6 +205,7 @@
 		E40BEFFD185C2D40898AFB05 /* ReaderJavascriptMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53F17C3796C1E84F4A6763B /* ReaderJavascriptMessages.swift */; };
 		E47875329F47EC333928799F /* ReaderImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB3D57A2BA8CEA920148526 /* ReaderImage.swift */; };
 		E596C832BAC2BA44FD068B28 /* ContentSelectionEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BF29C0CC1012A991B7536F6 /* ContentSelectionEnvironment.swift */; };
+		E64A5580AD8A943DD8C2CAFB /* WebMedia.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = DBE47979CC3D42F9E0252798 /* WebMedia.framework */; };
 		E7E3D2C99B45173435E98B02 /* BookGridCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48C42D6E7E1ACFA977D35C9E /* BookGridCell.swift */; };
 		E9266CEF96F206AF24F0084D /* ReaderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8DB8BE5FC8753325BDABE3 /* ReaderViewModel.swift */; };
 		E93D8B027EAA158D32354DCA /* LakeOfFireCore.framework in Dependencies */ = {isa = PBXBuildFile; fileRef = AC8C8D88C3F1C5A4CE388150 /* LakeOfFireCore.framework */; };
@@ -441,7 +441,7 @@
 			dstSubfolderSpec = 16;
 			files = (
 				19AE9D394A65661F7F599AEE /* BigSyncKit.framework in Dependencies */,
-				319A356008C45A53F499E19E /* BravePlaylist.framework in Dependencies */,
+				78F868BAF9F257A8C2FE6DA0 /* WebMedia.framework in Dependencies */,
 				ED786D9E19DD9A9A419F258E /* ExpandableText.framework in Dependencies */,
 				89133F99D9FE053692F8034B /* libJapaneseLanguageTools.a in Dependencies */,
 				847D1840A086D6418AFFBF4B /* LakeImage.framework in Dependencies */,
@@ -513,7 +513,7 @@
 			buildActionMask = 8;
 			dstSubfolderSpec = 16;
 			files = (
-				8FD81BD546A0208E3D511FA8 /* BravePlaylist.framework in Dependencies */,
+				E64A5580AD8A943DD8C2CAFB /* WebMedia.framework in Dependencies */,
 				649A667CE90B232AA9D70E78 /* LakeOfFireAdblock.framework in Dependencies */,
 				A68CA45F11D331E6974F99F8 /* LakeOfFireCore.framework in Dependencies */,
 			);
@@ -718,7 +718,6 @@
 		4E18D0EF549BDEF032346A8D /* EbookURLSchemeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookURLSchemeHandler.swift; sourceTree = "<group>"; };
 		4EDC5FF6B5096B69511853D5 /* URL+HashlessComparison.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+HashlessComparison.swift"; sourceTree = "<group>"; };
 		5126A6F6B4DB514C3874C507 /* FeedKit.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FeedKit.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		51D26A36A35198ABF9A3DA34 /* BravePlaylistWebSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BravePlaylistWebSupport.swift; sourceTree = "<group>"; };
 		52D3E99961AAEC5C03051E6A /* CloudDriveSyncStatusModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudDriveSyncStatusModel.swift; sourceTree = "<group>"; };
 		555FB666591E0A35784F8676 /* LibraryScriptFormSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryScriptFormSections.swift; sourceTree = "<group>"; };
 		590BB72CD030D9F284EC87EE /* TuistBundle+LakeOfFireReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TuistBundle+LakeOfFireReader.swift"; sourceTree = "<group>"; };
@@ -746,6 +745,7 @@
 		71055BD9BD930E5A8E35AABC /* OPDS2Parser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OPDS2Parser.swift; sourceTree = "<group>"; };
 		71FBF0C1DA553663DD278EAD /* CSS */ = {isa = PBXFileReference; path = CSS; sourceTree = "<group>"; };
 		72660A52642E1A0CEF58E180 /* URL+ReaderFileURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+ReaderFileURL.swift"; sourceTree = "<group>"; };
+		75D18B21A6E57C5099A83891 /* WebMediaWebSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebMediaWebSupport.swift; sourceTree = "<group>"; };
 		7864C63653918DC62961A70B /* String+StrippingHTML.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "String+StrippingHTML.swift"; sourceTree = "<group>"; };
 		787C519A0EFE9A11225DCB45 /* LakeOfFireShareSupport-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "LakeOfFireShareSupport-Info.plist"; sourceTree = "<group>"; };
 		79288AE1E6372F266249CEC8 /* InternalReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalReaderProtocol.swift; sourceTree = "<group>"; };
@@ -808,6 +808,7 @@
 		D88FA43EDACF313C14B7BDCC /* URL+EBook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "URL+EBook.swift"; sourceTree = "<group>"; };
 		D9A9E2BDEC10079CE6CED146 /* ReaderToastBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderToastBar.swift; sourceTree = "<group>"; };
 		DAFB8F45684C4D923369DC75 /* ReaderContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContent.swift; sourceTree = "<group>"; };
+		DBE47979CC3D42F9E0252798 /* WebMedia.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = WebMedia.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		DC499D3A8D09972FF34A6EAF /* ReaderEnvironmentViewModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderEnvironmentViewModifier.swift; sourceTree = "<group>"; };
 		DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = DebouncedOnChange.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		E25057F44128F064A752E967 /* ReadabilityImagesUserScript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadabilityImagesUserScript.swift; sourceTree = "<group>"; };
@@ -837,7 +838,6 @@
 		FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BraveAdblock.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		FECE32BA7953906A59D3AD88 /* ReaderContentCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContentCell.swift; sourceTree = "<group>"; };
 		FF1DC7352A947E0860D33ECE /* EbookReaderProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EbookReaderProtocol.swift; sourceTree = "<group>"; };
-		FFC4CB4345F5CEBAFE9D1814 /* BravePlaylist.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = BravePlaylist.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1072,7 +1072,7 @@
 		6860D32804BD42F7546E075C /* Web Browser */ = {
 			isa = PBXGroup;
 			children = (
-				51D26A36A35198ABF9A3DA34 /* BravePlaylistWebSupport.swift */,
+				75D18B21A6E57C5099A83891 /* WebMediaWebSupport.swift */,
 				42F3FDA3419CCB559BEDA806 /* WebMedia.swift */,
 				6FE045814BB20B76DE1F0FA1 /* YouTubeAdBlockUserScript.swift */,
 				7D0F27FBAED87D83219151DB /* YouTubeCaptionsUserScript.swift */,
@@ -1160,7 +1160,7 @@
 				3A7E4DAE4A84C6DF703E10EF /* AsyncView.framework */,
 				6EDE2EDB73B67694E353D62A /* BigSyncKit.framework */,
 				FE42629FADDAF228EC7BFC28 /* BraveAdblock.framework */,
-				FFC4CB4345F5CEBAFE9D1814 /* BravePlaylist.framework */,
+				DBE47979CC3D42F9E0252798 /* WebMedia.framework */,
 				C61C089C1B653DE60FEEFBE1 /* Collections.framework */,
 				DD892CD97F506B30609A2CFA /* DebouncedOnChange.framework */,
 				2D1235D7683CF901922B01A2 /* ExpandableText.framework */,
@@ -1871,7 +1871,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7E266BBA5BBC1FCD3B310DF3 /* TeamChat.swift in Sources */,
-				9910A9B964EEFF2561975DE7 /* BravePlaylistWebSupport.swift in Sources */,
+				896D2AE648E23D7415B7F641 /* WebMediaWebSupport.swift in Sources */,
 				41371385755623B920A6D2E6 /* WebMedia.swift in Sources */,
 				8727866394456193176A54E7 /* YouTubeAdBlockUserScript.swift in Sources */,
 				45BA3C0FED27C99878047D4A /* YouTubeCaptionsUserScript.swift in Sources */,
@@ -2157,7 +2157,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_SWIFT_FLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireAdblock;
 				PRODUCT_NAME = LakeOfFireAdblock;
@@ -2291,7 +2291,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -2376,7 +2376,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -2460,7 +2460,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -2547,7 +2547,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -2632,7 +2632,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -2716,7 +2716,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -2790,7 +2790,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_SWIFT_FLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireAdblock;
 				PRODUCT_NAME = LakeOfFireAdblock;
@@ -2845,7 +2845,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -3003,7 +3003,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
@@ -3085,7 +3085,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_SWIFT_FLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireOPDS;
 				PRODUCT_NAME = LakeOfFireOPDS;
@@ -3139,7 +3139,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -3220,7 +3220,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -3294,7 +3294,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_SWIFT_FLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireOPDS;
 				PRODUCT_NAME = LakeOfFireOPDS;
@@ -3339,7 +3339,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_SWIFT_FLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireShareSupport;
 				PRODUCT_NAME = LakeOfFireShareSupport;
@@ -3395,7 +3395,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
@@ -3496,7 +3496,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
@@ -3593,7 +3593,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/GRDB.swift/Sources/GRDBSQLite/module.modulemap",
@@ -3692,7 +3692,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_CFLAGS = (
 					"$(inherited)",
 					"-fmodule-map-file=$(SRCROOT)/../../Tuist/.build/checkouts/realm-core/src/module.modulemap",
@@ -3759,7 +3759,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACH_O_TYPE = staticlib;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				OTHER_SWIFT_FLAGS = "$(inherited)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.tuist.LakeOfFireShareSupport;
 				PRODUCT_NAME = LakeOfFireShareSupport;

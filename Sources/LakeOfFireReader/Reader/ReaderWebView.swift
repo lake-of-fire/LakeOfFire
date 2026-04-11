@@ -664,6 +664,13 @@ private class ReaderWebViewHandler {
                 newState: state,
                 scriptCaller: scriptCaller
             )
+            let hasReaderContent = (try? await scriptCaller.evaluateJavaScript(
+                "return !!document.getElementById('reader-content')"
+            ) as? Bool) ?? false
+            self.readerModeViewModel.handleRenderedReaderDocumentReady(
+                pageURL: state.pageURL,
+                hasReaderContent: hasReaderContent
+            )
             self.logNativeReaderSurfaceSnapshot(source: "readerWebView.onNavigationFinished", state: state)
             self.logNativeViewportDOMProbe(source: "readerWebView.onNavigationFinished", state: state)
             Task { @MainActor [weak self] in
@@ -1021,7 +1028,16 @@ public struct ReaderWebView: View {
                 handler.scriptCaller = scriptCaller
             }
             ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
-            ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
+            ebookURLSchemeHandler.ebookTextProcessor = { contentURL, sectionLocation, content, isCacheWarmer, processReadabilityContent, processHTML in
+                try await ebookTextProcessor(
+                    contentURL: contentURL,
+                    sectionLocation: sectionLocation,
+                    content: content,
+                    isCacheWarmer: isCacheWarmer,
+                    processReadabilityContent: processReadabilityContent,
+                    processHTML: processHTML
+                )
+            }
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
             ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64

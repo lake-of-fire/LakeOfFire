@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftUIWebView
 
 public struct WebViewNavigatorEnvironmentKey: EnvironmentKey {
-    public static var defaultValue = WebViewNavigator()
+    nonisolated(unsafe) public static var defaultValue = WebViewNavigator()
 }
 
 public extension EnvironmentValues {

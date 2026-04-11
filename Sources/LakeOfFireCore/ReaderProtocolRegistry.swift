@@ -6,11 +6,13 @@ public protocol ReaderProtocol {
 }
 
 public extension ReaderProtocol {
+    @MainActor
     static func register(inReistry registry: ReaderProtocolRegistry = ReaderProtocolRegistry.shared) {
         registry.register(self)
     }
 }
 
+@MainActor
 public class ReaderProtocolRegistry {
     public static let shared = ReaderProtocolRegistry(readerProtocols: [
         EbookReaderProtocol.self,

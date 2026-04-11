@@ -1,6 +1,7 @@
 import Foundation
 
 public extension URL {
+    @MainActor
     var contentTypeTitle: String? {
         guard !isNativeReaderView else {
             return nil
@@ -17,6 +18,7 @@ public extension URL {
         }
     }
 
+    @MainActor
     var hostContentTypeTitle: String? {
         guard !isNativeReaderView else {
             return nil

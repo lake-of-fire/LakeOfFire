@@ -17,6 +17,57 @@ const CHUNK_ATOMIC_TAG_NAMES = new Set([
 const WARMUP_DELAY_MS = 16
 const WARMUP_PAGE_BATCH = 2
 const STAGING_ROOT_ID_SUFFIX = '-ebook-layout-staging'
+const PRESERVED_SOURCE_SNAPSHOT_KEY = '__manabiEbookPreservedSourceSnapshot'
+const MIN_CHUNK_UNITS_BEFORE_OVERFLOW_BOUNDARY = 12
+const MIN_CHUNK_TEXT_LENGTH_BEFORE_OVERFLOW_BOUNDARY = 20
+
+const deriveVisibleUnitDiagnostics = ({
+    columnCount,
+    spreadCandidateDetected,
+    vertical,
+    currentPageIndex = null,
+    pageCount = null,
+}) => {
+    const resolvedColumnCount = Math.max(1, Number.parseInt(String(columnCount || 1), 10) || 1)
+    const multiUnitActive = spreadCandidateDetected === true && resolvedColumnCount > 1
+    const visibleUnitKind = multiUnitActive
+        ? (vertical === true ? 'paginatedRowSet' : 'pageSpread')
+        : 'singlePage'
+    const visibleUnitAxis = vertical === true ? 'vertical' : 'horizontal'
+    const visiblePageCount = multiUnitActive ? resolvedColumnCount : 1
+    const currentUnitIndex = Number.isFinite(currentPageIndex)
+        ? Math.floor(currentPageIndex / visiblePageCount)
+        : null
+    const leadingPageIndex = Number.isFinite(currentPageIndex)
+        ? currentPageIndex - (currentPageIndex % visiblePageCount)
+        : null
+    const trailingPageIndex = leadingPageIndex != null
+        ? leadingPageIndex + Math.max(0, visiblePageCount - 1)
+        : null
+    const resolvedPageCount = Number.isFinite(pageCount)
+        ? Math.max(0, Number.parseInt(String(pageCount), 10) || 0)
+        : null
+    const hasLeadingSingleton = multiUnitActive
+        && leadingPageIndex === 0
+        && currentPageIndex === 0
+    const hasTrailingSingleton = multiUnitActive
+        && resolvedPageCount != null
+        && leadingPageIndex != null
+        && leadingPageIndex > 0
+        && (resolvedPageCount - leadingPageIndex) === 1
+    return {
+        visibleUnitKind,
+        visibleUnitAxis,
+        visiblePageCount,
+        currentUnitIndex,
+        leadingPageIndex,
+        trailingPageIndex,
+        hasLeadingSingleton,
+        hasTrailingSingleton,
+        multiUnitActive,
+        spreadPagesAllowedForViewport: multiUnitActive,
+    }
+}
 
 const logReaderPerf = (event, detail = {}) => {
     try {
@@ -34,11 +85,56 @@ const copyAttributes = (from, to) => {
     }
 }
 
+const snapshotAttributes = element => {
+    if (!(element instanceof Element)) return []
+    return Array.from(element.attributes).map(({ name, value }) => ({ name, value }))
+}
+
+const applyStoredAttributes = (element, attributes) => {
+    if (!(element instanceof Element) || !Array.isArray(attributes)) return
+    for (const entry of attributes) {
+        if (!entry?.name) continue
+        try {
+            element.setAttribute(entry.name, entry.value ?? '')
+        } catch (_error) {}
+    }
+}
+
 const resolveSectionRoot = doc => {
     const readerContent = doc?.getElementById?.('reader-content')
     if (!(readerContent instanceof HTMLElement)) return null
     const pageNode = readerContent.querySelector(':scope > .page') || readerContent
     return pageNode.querySelector('article') || pageNode
+}
+
+const rootLooksPaginated = root => {
+    if (!(root instanceof HTMLElement)) return false
+    return root.classList.contains('manabi-page-root')
+        || root.querySelector?.('.manabi-page-column-chunk') != null
+        || root.querySelector?.('.manabi-page') != null
+}
+
+const capturePreservedSourceSnapshot = ({ doc, root }) => {
+    if (!(doc instanceof Document) || !(root instanceof HTMLElement)) return null
+    return {
+        bodyHTML: doc.body?.innerHTML ?? '',
+        bodyClassName: doc.body?.className ?? '',
+        bodyAttributes: snapshotAttributes(doc.body),
+        documentElementAttributes: snapshotAttributes(doc.documentElement),
+        rootInnerHTML: root.innerHTML ?? '',
+        contentURL: doc.defaultView?.manabiCurrentContentURL ?? doc.URL ?? null,
+        capturedAt: Date.now(),
+    }
+}
+
+const preservedSourceSnapshotForRuntime = runtime => {
+    const snapshot = runtime?.[PRESERVED_SOURCE_SNAPSHOT_KEY]
+    return snapshot && typeof snapshot === 'object' ? snapshot : null
+}
+
+const storePreservedSourceSnapshot = (runtime, snapshot) => {
+    if (!runtime || !snapshot) return
+    runtime[PRESERVED_SOURCE_SNAPSHOT_KEY] = snapshot
 }
 
 const createStagingRootForLiveRoot = liveRoot => {
@@ -120,6 +216,15 @@ const cloneChunkShell = sourceElement => {
         if (clone.classList.contains('manabi-tracking-section') && clone.dataset.manabiTrackingSectionKind !== 'title') {
             clone.classList.remove('manabi-tracking-section')
             clone.classList.add('manabi-semantic-section')
+        }
+        const tagName = clone.tagName?.toLowerCase?.() || ''
+        if (clone instanceof HTMLElement && (tagName === 'section' || tagName === 'article' || tagName === 'div')) {
+            clone.style.display = 'block'
+            clone.style.inlineSize = '100%'
+            clone.style.maxInlineSize = '100%'
+            clone.style.minInlineSize = '0'
+            clone.style.margin = '0'
+            clone.style.boxSizing = 'border-box'
         }
     }
     return clone
@@ -296,6 +401,18 @@ const chunkBodyHasOverflow = (chunkBody, vertical) => {
         : chunkBody.scrollHeight > chunkBody.clientHeight + slack
 }
 
+const normalizedChunkBodyTextLength = chunkBody => {
+    if (!(chunkBody instanceof HTMLElement)) return 0
+    return (chunkBody.textContent || '').replace(/\s+/g, '').length
+}
+
+const shouldDelayChunkOverflowBoundary = (chunkBody, appendState, unit) => {
+    const unitCount = appendState?.unitCount ?? 0
+    if (unitCount >= MIN_CHUNK_UNITS_BEFORE_OVERFLOW_BOUNDARY) return false
+    if (normalizedChunkBodyTextLength(chunkBody) >= MIN_CHUNK_TEXT_LENGTH_BEFORE_OVERFLOW_BOUNDARY) return false
+    return unit?.kind === 'segment' || unit?.type === 'text'
+}
+
 const allowOversizeChunkOverflow = (chunkNode, chunkBody) => {
     if (!(chunkNode instanceof HTMLElement) || !(chunkBody instanceof HTMLElement)) return
     chunkNode.classList.add('manabi-page-column-chunk-oversize')
@@ -307,28 +424,108 @@ const allowOversizeChunkOverflow = (chunkNode, chunkBody) => {
 const applyPageRootLayoutStyles = root => {
     if (!(root instanceof HTMLElement)) return
     root.style.position = 'relative'
+    root.style.left = '0px'
+    root.style.top = '0px'
+    root.style.display = 'block'
+    root.style.visibility = 'visible'
+    root.style.pointerEvents = 'auto'
+    root.style.transform = 'none'
+    root.style.transition = 'none'
+    // Keep the physical page strip LTR so host page indices map to scroll offsets
+    // consistently. Individual page content still retains its own document
+    // direction and writing mode.
+    root.style.direction = 'ltr'
     root.style.inlineSize = '100%'
+    root.style.minInlineSize = '100%'
+    root.style.maxInlineSize = 'none'
     root.style.blockSize = '100%'
     root.style.boxSizing = 'border-box'
-    root.style.overflow = 'hidden'
+    root.style.overflow = 'visible'
 }
 
-const applyPageLayoutStyles = pageNode => {
+const updatePageRootLayoutExtent = (root, { inlineSize = null, pageCount = 1 } = {}) => {
+    if (!(root instanceof HTMLElement)) return
+    if (Number.isFinite(inlineSize) && inlineSize > 0) {
+        const totalInlineSize = Math.max(1, pageCount) * inlineSize
+        const totalInlineSizeCSS = `${totalInlineSize}px`
+        root.style.inlineSize = totalInlineSizeCSS
+        root.style.minInlineSize = totalInlineSizeCSS
+    } else {
+        root.style.inlineSize = '100%'
+        root.style.minInlineSize = '100%'
+    }
+}
+
+const resolvePageViewportSize = root => {
+    if (!(root instanceof HTMLElement)) {
+        return { inlineSize: null, blockSize: null }
+    }
+    const rect = root.getBoundingClientRect?.() ?? null
+    const inlineSize = Math.max(
+        1,
+        Math.round(rect?.width || root.clientWidth || root.offsetWidth || 0)
+    )
+    const blockSize = Math.max(
+        1,
+        Math.round(rect?.height || root.clientHeight || root.offsetHeight || 0)
+    )
+    return {
+        inlineSize: Number.isFinite(inlineSize) ? inlineSize : null,
+        blockSize: Number.isFinite(blockSize) ? blockSize : null,
+    }
+}
+
+const applyPageLayoutStyles = (pageNode, { inlineSize = null, blockSize = null, pageIndex = 0 } = {}) => {
     if (!(pageNode instanceof HTMLElement)) return
-    pageNode.style.inlineSize = '100%'
-    pageNode.style.blockSize = '100%'
+    pageNode.style.position = 'absolute'
+    pageNode.style.left = Number.isFinite(inlineSize) && inlineSize > 0
+        ? `${Math.max(0, pageIndex) * inlineSize}px`
+        : '0px'
+    pageNode.style.top = '0px'
+    pageNode.style.display = 'flex'
+    pageNode.style.flexDirection = 'row'
+    pageNode.style.flex = '0 0 auto'
+    if (Number.isFinite(inlineSize) && inlineSize > 0) {
+        const inlineSizeCSS = `${inlineSize}px`
+        pageNode.style.inlineSize = inlineSizeCSS
+        pageNode.style.minInlineSize = inlineSizeCSS
+        pageNode.style.maxInlineSize = inlineSizeCSS
+    } else {
+        pageNode.style.inlineSize = '100%'
+        pageNode.style.minInlineSize = '100%'
+        pageNode.style.maxInlineSize = '100%'
+    }
+    if (Number.isFinite(blockSize) && blockSize > 0) {
+        const blockSizeCSS = `${blockSize}px`
+        pageNode.style.blockSize = blockSizeCSS
+        pageNode.style.minBlockSize = blockSizeCSS
+    } else {
+        pageNode.style.blockSize = '100%'
+        pageNode.style.minBlockSize = '100%'
+    }
     pageNode.style.boxSizing = 'border-box'
+    pageNode.style.gap = '0px'
+    pageNode.style.padding = '0 18px 24px 18px'
     pageNode.style.overflow = 'hidden'
 }
 
 const applyChunkLayoutStyles = (chunkNode, chunkBody) => {
     if (chunkNode instanceof HTMLElement) {
+        chunkNode.style.display = 'flex'
+        chunkNode.style.flexDirection = 'column'
+        chunkNode.style.flex = '1 1 0'
+        chunkNode.style.minInlineSize = '0'
+        chunkNode.style.minBlockSize = '0'
         chunkNode.style.inlineSize = '100%'
         chunkNode.style.blockSize = '100%'
         chunkNode.style.boxSizing = 'border-box'
         chunkNode.style.overflow = 'hidden'
     }
     if (chunkBody instanceof HTMLElement) {
+        chunkBody.style.display = 'block'
+        chunkBody.style.flex = '1 1 auto'
+        chunkBody.style.minInlineSize = '0'
+        chunkBody.style.minBlockSize = '0'
         chunkBody.style.inlineSize = '100%'
         chunkBody.style.blockSize = '100%'
         chunkBody.style.boxSizing = 'border-box'
@@ -338,7 +535,7 @@ const applyChunkLayoutStyles = (chunkNode, chunkBody) => {
 
 const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersion, runtime }) => {
     const chunkNode = doc.createElement('section')
-    chunkNode.className = 'manabi-tracking-section manabi-page-column-chunk'
+    chunkNode.className = 'manabi-semantic-section manabi-page-column-chunk'
     chunkNode.dataset.manabiTrackingOrigin = 'js'
     chunkNode.dataset.manabiTrackingSectionKind = 'chunk'
     chunkNode.dataset.manabiPageIndex = String(pageIndex)
@@ -350,9 +547,6 @@ const createChunkSection = ({ doc, pageNode, pageIndex, columnIndex, layoutVersi
     applyChunkLayoutStyles(chunkNode, chunkBody)
     chunkNode.appendChild(chunkBody)
     pageNode.appendChild(chunkNode)
-    runtime?.manabiCreateTrackingSectionChrome?.(chunkNode, columnIndex, {
-        includePreviewUI: false,
-    })
     return { chunkNode, chunkBody }
 }
 
@@ -372,6 +566,7 @@ export class EbookSectionLayout {
     #buildState = null
     #warmupTimer = null
     #warmupToken = 0
+    #sourceContentURL = null
 
     attach(doc) {
         if (this.#doc === doc) return
@@ -440,6 +635,7 @@ export class EbookSectionLayout {
         this.#controller = null
         this.#currentSourceAnchor = null
         this.#buildState = null
+        this.#sourceContentURL = null
     }
 
     getSourceDocument() {
@@ -631,6 +827,24 @@ export class EbookSectionLayout {
         const resolvedCurrentPageIndex = this.pageIndexForAnchor(this.#currentSourceAnchor) ?? 0
         const currentPageRecord = this.#pageRecords[resolvedCurrentPageIndex] ?? null
         const activeBuildPageRecord = this.#buildState?.pageRecord ?? null
+        const liveRoot = this.#root ?? null
+        const liveCurrentPageNode = liveRoot?.querySelector?.(`:scope > .manabi-page[data-manabi-page-index="${resolvedCurrentPageIndex}"]`) ?? null
+            ?? liveRoot?.querySelector?.(`.manabi-page[data-manabi-page-index="${resolvedCurrentPageIndex}"]`) ?? null
+            ?? liveRoot?.querySelector?.('.manabi-page') ?? null
+        const liveCurrentChunkNode = liveCurrentPageNode?.querySelector?.(`:scope > .manabi-page-column-chunk[data-manabi-column-index="0"]`) ?? null
+            ?? liveCurrentPageNode?.querySelector?.(':scope > .manabi-page-column-chunk')
+            ?? liveCurrentPageNode?.querySelector?.('.manabi-page-column-chunk')
+            ?? null
+        const currentChunkBody = liveCurrentChunkNode?.querySelector?.('.manabi-page-column-body') ?? null
+        const liveRootRect = liveRoot?.getBoundingClientRect?.() ?? null
+        const liveCurrentPageRect = liveCurrentPageNode?.getBoundingClientRect?.() ?? null
+        const liveCurrentChunkRect = liveCurrentChunkNode?.getBoundingClientRect?.() ?? null
+        const liveCurrentChunkStyle = liveCurrentChunkNode instanceof Element
+            ? liveCurrentChunkNode.ownerDocument?.defaultView?.getComputedStyle?.(liveCurrentChunkNode)
+            : null
+        const currentChunkBodyStyle = currentChunkBody instanceof Element
+            ? currentChunkBody.ownerDocument?.defaultView?.getComputedStyle?.(currentChunkBody)
+            : null
         const currentChunkCount = currentPageRecord?.chunkRecords?.length ?? 0
         const activeBuildChunkCount = activeBuildPageRecord?.chunkRecords?.length ?? 0
         const maxPageChunkCount = this.#pageRecords.reduce(
@@ -641,20 +855,68 @@ export class EbookSectionLayout {
             vertical: this.#doc?.body?.classList?.contains?.('reader-vertical-writing') === true,
             verticalRTL: true,
         }
+        const spreadCandidateDetected = maxPageChunkCount > 1
+        const visibleUnitDiagnostics = deriveVisibleUnitDiagnostics({
+            columnCount: this.#buildState?.columnCount ?? currentChunkCount ?? 1,
+            spreadCandidateDetected,
+            vertical: buildMetrics?.vertical === true,
+            currentPageIndex: resolvedCurrentPageIndex,
+            pageCount: this.pageCount(),
+        })
         return {
             pageCount: this.pageCount(),
             pageRecordCount: this.#pageRecords.length,
+            liveRootExists: !!liveRoot,
+            liveRootClassName: liveRoot?.className ?? null,
+            liveRootChildCount: liveRoot?.childElementCount ?? null,
+            liveRootRectWidth: liveRootRect ? Math.round(liveRootRect.width) : null,
+            liveRootRectHeight: liveRootRect ? Math.round(liveRootRect.height) : null,
+            liveCurrentPageExists: !!liveCurrentPageNode,
+            liveCurrentPageClassName: liveCurrentPageNode?.className ?? null,
+            liveCurrentPageRectWidth: liveCurrentPageRect ? Math.round(liveCurrentPageRect.width) : null,
+            liveCurrentPageRectHeight: liveCurrentPageRect ? Math.round(liveCurrentPageRect.height) : null,
+            liveCurrentPageContainsChunkBody: liveCurrentPageNode instanceof Element
+                ? !!liveCurrentPageNode.querySelector('.manabi-page-column-body')
+                : null,
+            liveCurrentChunkExists: !!liveCurrentChunkNode,
+            liveCurrentChunkTagName: liveCurrentChunkNode?.tagName?.toLowerCase?.() ?? null,
+            liveCurrentChunkClassName: liveCurrentChunkNode?.className ?? null,
+            liveCurrentChunkDisplay: liveCurrentChunkStyle?.display ?? null,
+            liveCurrentChunkPosition: liveCurrentChunkStyle?.position ?? null,
+            liveCurrentChunkFlex: liveCurrentChunkStyle?.flex ?? null,
+            liveCurrentChunkRectWidth: liveCurrentChunkRect ? Math.round(liveCurrentChunkRect.width) : null,
+            liveCurrentChunkRectHeight: liveCurrentChunkRect ? Math.round(liveCurrentChunkRect.height) : null,
+            liveCurrentChunkInnerHTMLLength: liveCurrentChunkNode?.innerHTML?.length ?? null,
+            liveCurrentChunkContainsChunkBody: liveCurrentChunkNode instanceof Element
+                ? !!liveCurrentChunkNode.querySelector('.manabi-page-column-body')
+                : null,
+            liveCurrentChunkChildCount: liveCurrentChunkNode?.childElementCount ?? null,
+            liveCurrentChunkTextLength: liveCurrentChunkNode?.textContent?.length ?? null,
+            currentChunkBodyChildCount: currentChunkBody?.childElementCount ?? null,
+            currentChunkBodyTextLength: currentChunkBody?.textContent?.length ?? null,
+            currentChunkBodyDisplay: currentChunkBodyStyle?.display ?? null,
+            currentChunkBodyPosition: currentChunkBodyStyle?.position ?? null,
+            currentChunkBodyFlex: currentChunkBodyStyle?.flex ?? null,
             currentPageIndex: resolvedCurrentPageIndex,
             currentPageChunkCount: currentChunkCount,
             maxPageChunkCount,
             activeBuildPageIndex: this.#buildState?.pageIndex ?? null,
             activeBuildChunkCount,
             columnCount: this.#buildState?.columnCount ?? currentChunkCount ?? 1,
-            spreadCandidateDetected: maxPageChunkCount > 1,
+            unitCount: this.#unitRecords.length,
+            currentChunkClientWidth: currentChunkBody?.clientWidth ?? null,
+            currentChunkClientHeight: currentChunkBody?.clientHeight ?? null,
+            currentChunkScrollWidth: currentChunkBody?.scrollWidth ?? null,
+            currentChunkScrollHeight: currentChunkBody?.scrollHeight ?? null,
+            currentChunkOverflow: currentChunkBody instanceof HTMLElement
+                ? chunkBodyHasOverflow(currentChunkBody, buildMetrics?.vertical === true)
+                : null,
+            spreadCandidateDetected,
             vertical: buildMetrics?.vertical ?? null,
             writingMode: buildMetrics?.vertical === true
                 ? (buildMetrics?.verticalRTL === true ? 'vertical-rl' : 'vertical-lr')
                 : 'horizontal-tb',
+            ...visibleUnitDiagnostics,
             layoutComplete: this.isLayoutComplete(),
         }
     }
@@ -841,35 +1103,84 @@ export class EbookSectionLayout {
     }
 
     #prepareSourceSnapshot({ doc, runtime, root }) {
+        const preservedSnapshot = preservedSourceSnapshotForRuntime(runtime)
+        const liveRootIsPaginated = rootLooksPaginated(root)
+        const currentContentURL = runtime?.manabiCurrentContentURL ?? doc?.URL ?? null
+        const preservedSnapshotMatchesCurrentContent =
+            !preservedSnapshot?.contentURL || preservedSnapshot.contentURL === currentContentURL
+
+        if (this.#sourceContentURL && currentContentURL && this.#sourceContentURL !== currentContentURL) {
+            logReaderPerf('ebook-layout-source-reset-content-url', {
+                previousContentURL: this.#sourceContentURL,
+                currentContentURL,
+                layoutVersion: this.#layoutVersion,
+            })
+            this.#normalizedRootHTML = null
+            this.#sourceDoc = null
+            this.#sourceRoot = null
+            this.#unitRecords = []
+            this.#unitIndicesBySourceNode = new Map()
+        }
+
         if (this.#normalizedRootHTML == null) {
+            if (liveRootIsPaginated && preservedSnapshot && preservedSnapshotMatchesCurrentContent) {
+                this.#normalizedRootHTML = preservedSnapshot.rootInnerHTML || null
+            } else {
             this.#normalizedRootHTML = root.innerHTML
             root.innerHTML = this.#normalizedRootHTML
             runtime?.manabiNormalizeLegacyTrackingStructure?.(doc)
             runtime?.manabiBuildSentenceArchive?.(doc)
             this.#normalizedRootHTML = root.innerHTML
+                const refreshedSnapshot = capturePreservedSourceSnapshot({ doc, root })
+                storePreservedSourceSnapshot(runtime, refreshedSnapshot)
+                this.#sourceContentURL = refreshedSnapshot?.contentURL ?? currentContentURL
+            }
             this.#sourceDoc = null
             this.#sourceRoot = null
         } else if (
             this.#sourceDoc instanceof Document
             && this.#sourceRoot instanceof HTMLElement
             && this.#unitRecords.length > 0
+            && (!currentContentURL || this.#sourceContentURL === currentContentURL)
         ) {
             logReaderPerf('ebook-layout-source-snapshot-reused', {
                 unitCount: this.#unitRecords.length,
                 layoutVersion: this.#layoutVersion,
+                contentURL: this.#sourceContentURL ?? null,
             })
             return this.#unitRecords
         } else {
-            root.innerHTML = this.#normalizedRootHTML
-            runtime?.manabiBuildSentenceArchive?.(doc)
+            if (!liveRootIsPaginated) {
+                runtime?.manabiBuildSentenceArchive?.(doc)
+                const refreshedSnapshot = capturePreservedSourceSnapshot({ doc, root })
+                storePreservedSourceSnapshot(runtime, refreshedSnapshot)
+                this.#normalizedRootHTML = root.innerHTML
+                this.#sourceContentURL = refreshedSnapshot?.contentURL ?? currentContentURL
+            }
         }
 
         if (!(this.#sourceDoc instanceof Document) || !(this.#sourceRoot instanceof HTMLElement)) {
             this.#sourceDoc = doc.implementation.createHTMLDocument('')
-            copyAttributes(doc.documentElement, this.#sourceDoc.documentElement)
-            copyAttributes(doc.body, this.#sourceDoc.body)
-            this.#sourceDoc.body.className = doc.body.className
-            this.#sourceDoc.body.innerHTML = doc.body.innerHTML
+            if (preservedSnapshot && preservedSnapshotMatchesCurrentContent) {
+                applyStoredAttributes(this.#sourceDoc.documentElement, preservedSnapshot.documentElementAttributes)
+                applyStoredAttributes(this.#sourceDoc.body, preservedSnapshot.bodyAttributes)
+                this.#sourceDoc.body.className = preservedSnapshot.bodyClassName || ''
+                this.#sourceDoc.body.innerHTML = preservedSnapshot.bodyHTML || ''
+                this.#sourceContentURL = preservedSnapshot.contentURL ?? currentContentURL
+                logReaderPerf('ebook-layout-source-snapshot-restored', {
+                    layoutVersion: this.#layoutVersion,
+                    bodyHTMLLength: preservedSnapshot.bodyHTML?.length ?? 0,
+                    capturedAt: preservedSnapshot.capturedAt ?? null,
+                    liveRootWasPaginated: liveRootIsPaginated,
+                    contentURL: this.#sourceContentURL ?? null,
+                })
+            } else {
+                copyAttributes(doc.documentElement, this.#sourceDoc.documentElement)
+                copyAttributes(doc.body, this.#sourceDoc.body)
+                this.#sourceDoc.body.className = doc.body.className
+                this.#sourceDoc.body.innerHTML = doc.body.innerHTML
+                this.#sourceContentURL = currentContentURL
+            }
             this.#sourceRoot = resolveSectionRoot(this.#sourceDoc)
         }
 
@@ -972,12 +1283,20 @@ export class EbookSectionLayout {
         root.classList.add('manabi-page-root')
         applyPageRootLayoutStyles(root)
         root.dataset.manabiLayoutVersion = String(layoutVersion)
+        const pageViewportSize = resolvePageViewportSize(root)
         this.#pageRecords = []
+        updatePageRootLayoutExtent(root, {
+            inlineSize: pageViewportSize.inlineSize,
+            pageCount: 1,
+        })
 
         const pageNode = doc.createElement('div')
         pageNode.className = 'manabi-page'
         pageNode.dataset.manabiPageIndex = '0'
-        applyPageLayoutStyles(pageNode)
+        applyPageLayoutStyles(pageNode, {
+            ...pageViewportSize,
+            pageIndex: 0,
+        })
         root.appendChild(pageNode)
 
         const pageRecord = {
@@ -1019,6 +1338,7 @@ export class EbookSectionLayout {
             targetUnitIndex,
             targetSourceLocation,
             stopAfterPageIndex: null,
+            pageViewportSize,
             unitIndex: 0,
             pageIndex: 0,
             columnIndex: 0,
@@ -1059,8 +1379,15 @@ export class EbookSectionLayout {
             state.pageNode = state.doc.createElement('div')
             state.pageNode.className = 'manabi-page'
             state.pageNode.dataset.manabiPageIndex = String(state.pageIndex)
-            applyPageLayoutStyles(state.pageNode)
+            applyPageLayoutStyles(state.pageNode, {
+                ...state.pageViewportSize,
+                pageIndex: state.pageIndex,
+            })
             state.root.appendChild(state.pageNode)
+            updatePageRootLayoutExtent(state.root, {
+                inlineSize: state.pageViewportSize.inlineSize,
+                pageCount: state.pageIndex + 1,
+            })
             state.pageRecord = {
                 pageIndex: state.pageIndex,
                 pageNode: state.pageNode,
@@ -1111,7 +1438,9 @@ export class EbookSectionLayout {
                         state.units.splice(state.unitIndex, 1, ...splitUnits)
                         continue
                     }
-                    allowOversizeChunkOverflow(state.chunkNode, state.chunkBody)
+                    if (!shouldDelayChunkOverflowBoundary(state.chunkBody, state.appendState, unit)) {
+                        allowOversizeChunkOverflow(state.chunkNode, state.chunkBody)
+                    }
                 }
                 this.#assignUnitToCurrentChunk(state, state.unitIndex)
                 state.unitIndex += 1
@@ -1119,6 +1448,12 @@ export class EbookSectionLayout {
             }
 
             if (!chunkBodyHasOverflow(state.chunkBody, state.metrics.vertical)) {
+                this.#assignUnitToCurrentChunk(state, state.unitIndex)
+                state.unitIndex += 1
+                continue
+            }
+
+            if (shouldDelayChunkOverflowBoundary(state.chunkBody, state.appendState, unit)) {
                 this.#assignUnitToCurrentChunk(state, state.unitIndex)
                 state.unitIndex += 1
                 continue
@@ -1161,6 +1496,7 @@ export class EbookSectionLayout {
         const commitStart = perfNow()
         liveRoot.className = stagingRoot.className
         liveRoot.dataset.manabiLayoutVersion = stagingRoot.dataset.manabiLayoutVersion || ''
+        liveRoot.style.cssText = stagingRoot.style.cssText
         liveRoot.innerHTML = stagingRoot.innerHTML
         logReaderPerf('ebook-layout-commit-live-root', {
             childCount: liveRoot.childElementCount,

@@ -203,8 +203,8 @@ internal func ebookTextProcessor(
     sectionLocation: String,
     content: String,
     isCacheWarmer: Bool,
-    processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
-    processHTML: ((String, Bool) async -> String)?
+    processReadabilityContent: EbookReadabilityContentProcessor?,
+    processHTML: EbookHTMLProcessor?
 ) async throws -> String {
     //    print("# ebookTextProcessor", isCacheWarmer, contentURL, sectionLocation)
     let sectionLocationURL = contentURL.appending(queryItems: [.init(name: "subpath", value: sectionLocation)])

@@ -12,6 +12,7 @@ import FoundationNetworking
 
 @testable import LakeOfFireOPDS
 
+@MainActor
 final class opensearch_test: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -101,7 +102,7 @@ final class opensearch_test: XCTestCase {
 }
 
 private final class MockURLProtocol: URLProtocol {
-    static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    nonisolated(unsafe) static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
         request.url?.host == "catalog.example.com"

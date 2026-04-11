@@ -29,7 +29,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         Task { @RealmBackgroundActor in
             do {
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
-                guard realmSupportsCatalogs(realm) else {
+                guard Self.realmSupportsCatalogs(realm) else {
                     Task { @MainActor [weak self] in
                         self?.catalogs = []
                         self?.errorMessage = nil
@@ -67,7 +67,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         
         do {
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
-            guard realmSupportsCatalogs(realm) else { return }
+            guard Self.realmSupportsCatalogs(realm) else { return }
             await realm.asyncRefresh()
             try await realm.asyncWrite {
                 realm.add(newCatalog, update: .modified)
@@ -83,7 +83,7 @@ class OPDSCatalogsViewModel: ObservableObject {
         let catalogIDsToDelete = offsets.map { catalogs[$0].id }
         Task { @RealmBackgroundActor [weak self] in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: .defaultConfiguration)
-            guard realmSupportsCatalogs(realm) else { return }
+            guard Self.realmSupportsCatalogs(realm) else { return }
             await realm.asyncRefresh()
             try? await realm.asyncWrite {
                 for catalog in Array(realm.objects(OPDSCatalog.self).where { $0.id.in(catalogIDsToDelete) }) {
@@ -94,7 +94,7 @@ class OPDSCatalogsViewModel: ObservableObject {
     }
 
     @RealmBackgroundActor
-    private func realmSupportsCatalogs(_ realm: Realm) -> Bool {
+    private static func realmSupportsCatalogs(_ realm: Realm) -> Bool {
         realm.schema.objectSchema.contains { $0.className == OPDSCatalog.className() }
     }
 }

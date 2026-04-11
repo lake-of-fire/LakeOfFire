@@ -96,7 +96,7 @@ public struct ReadabilityParsedMessage {
 }
 
 public struct ExternalMediaSubtitlesMessage {
-    public struct SubtitleTrack {
+    public struct SubtitleTrack: Sendable {
         public let label: String
         public let languageCode: String
         public let kind: String
@@ -284,7 +284,7 @@ public struct WritingDirectionMessage {
 //    }
 //}
 
-public struct FractionalCompletionMessage {
+public struct FractionalCompletionMessage: Sendable {
     public var fractionalCompletion: Float
     public var cfi: String
     public var reason: String

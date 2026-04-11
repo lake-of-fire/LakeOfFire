@@ -19,7 +19,7 @@ private let readerContentCellWordCountFormatter: NumberFormatter = {
 
 @globalActor
 fileprivate actor ReaderContentCellActor {
-    static var shared = ReaderContentCellActor()
+    static let shared = ReaderContentCellActor()
 }
 
 @MainActor
@@ -54,7 +54,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let realm = try await Realm.open(configuration: config)
             if let item = realm.object(ofType: C.self, forPrimaryKey: pk) {
                 try Task.checkCancellation()
-                let title = item.titleForDisplay
+                let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
+                let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
+                let trimmedTitle = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
                 let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
                 let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
                 let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -119,14 +122,14 @@ private let ebookAbsoluteDateFormatter: DateFormatter = {
 }()
 
 struct ReaderContentBookCoverRenderedWidthPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
 }
 
-public struct ReaderContentCellAppearance {
+public struct ReaderContentCellAppearance: Sendable {
     public var maxCellHeight: CGFloat
     public var alwaysShowThumbnails: Bool
     public var isEbookStyle: Bool
@@ -174,6 +177,7 @@ public extension View {
 
 extension ReaderContentProtocol {
     // Overload that allows injecting custom menu options.
+    @MainActor
     @ViewBuilder public func readerContentCellView(
         appearance: ReaderContentCellAppearance,
         customMenuOptions: ((Self) -> AnyView)?
@@ -185,6 +189,7 @@ extension ReaderContentProtocol {
         )
     }
     
+    @MainActor
     @ViewBuilder public func readerContentCellView(
         appearance: ReaderContentCellAppearance
     ) -> some View {
@@ -195,6 +200,7 @@ extension ReaderContentProtocol {
     }
     
     // Back-compat convenience
+    @MainActor
     @ViewBuilder public func readerContentCellView(
         maxCellHeight: CGFloat,
         alwaysShowThumbnails: Bool = true,
@@ -268,6 +274,7 @@ struct CloudDriveSyncStatusView: View { //, Equatable {
     }
 }
 
+@MainActor
 struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View { //, Equatable {
     @ObservedRealmObject var item: C
     var appearance: ReaderContentCellAppearance
@@ -327,6 +334,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         case image(URL)
         case icon(URL)
         case initial
+        case symbol(String)
     }
 
     private var thumbnailChoice: ThumbnailChoice? {
@@ -336,13 +344,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if let iconURL = resolvedSourceIconURL {
             return .icon(iconURL)
         }
+        if item.needsClipboardIndicator {
+            return .symbol("paperclip")
+        }
         return .initial
     }
 
     private var fallbackTitle: String {
         let primary = viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !primary.isEmpty { return primary }
-        let secondary = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
+        let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
+        let secondary = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !secondary.isEmpty { return secondary }
         if let host = item.url.host {
             let trimmedHost = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
@@ -635,53 +648,50 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ViewBuilder
     private var trailingMenuButton: some View {
         let deletable = (self.item as? (any DeletableReaderContent))
-        let shouldShowMenu = deletable != nil || customMenuOptions != nil
 
-        if shouldShowMenu {
-            Menu {
-                if let item = self.item as? ContentFile {
-                    CloudDriveSyncStatusView(item: item)
-                        .labelStyle(.titleAndIcon)
-                    Divider()
-                }
-
-                AnyView(self.item.bookmarkButtonView())
-
-                if let customMenuOptions {
-                    customMenuOptions(self.item)
-                }
-
-                if let deletable {
-                    Divider()
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.confirmDeletionOf = [deletable]
-                        readerContentListModalsModel.confirmDelete = true
-                        debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
-                    } label: {
-                        Label(deletable.deleteActionTitle, systemImage: "trash")
-                    }
-                    .task { kickOffContentFileLookupIfNeeded() }
-                }
-
-                if let contentFile = resolvedContentFile {
-                    Button(role: .destructive) {
-                        readerContentListModalsModel.confirmDeletionOf = [contentFile]
-                        readerContentListModalsModel.confirmDelete = true
-                    } label: {
-                        Label(contentFile.deleteActionTitle, systemImage: "trash")
-                    }
-                }
-            } label: {
-                Label("More Options", systemImage: "ellipsis")
-                    .labelStyle(.iconOnly)
+        Menu {
+            if let item = self.item as? ContentFile {
+                CloudDriveSyncStatusView(item: item)
+                    .labelStyle(.titleAndIcon)
+                Divider()
             }
-            .modifier {
-                if #available(iOS 16, macOS 13, *) {
-                    $0.menuStyle(.button)
-                } else { $0 }
+
+            AnyView(self.item.bookmarkButtonView())
+
+            if let customMenuOptions {
+                customMenuOptions(self.item)
             }
-            .menuIndicator(.hidden)
+
+            if let deletable {
+                Divider()
+                Button(role: .destructive) {
+                    readerContentListModalsModel.confirmDeletionOf = [deletable]
+                    readerContentListModalsModel.confirmDelete = true
+                    debugPrint("# DELETEMODAL cell tapped ellipsis delete confirmDelete=true host=\(ObjectIdentifier(readerContentListModalsModel))")
+                } label: {
+                    Label(deletable.deleteActionTitle, systemImage: "trash")
+                }
+                .task { kickOffContentFileLookupIfNeeded() }
+            }
+
+            if let contentFile = resolvedContentFile {
+                Button(role: .destructive) {
+                    readerContentListModalsModel.confirmDeletionOf = [contentFile]
+                    readerContentListModalsModel.confirmDelete = true
+                } label: {
+                    Label(contentFile.deleteActionTitle, systemImage: "trash")
+                }
+            }
+        } label: {
+            Label("More Options", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
         }
+        .modifier {
+            if #available(iOS 16, macOS 13, *) {
+                $0.menuStyle(.button)
+            } else { $0 }
+        }
+        .menuIndicator(.hidden)
     }
 
     @ViewBuilder
@@ -771,12 +781,26 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                         cornerRadius: thumbnailCornerRadius
                     )
                 }
+        case .symbol(let systemName):
+            Color.clear
+                .frame(
+                    width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
+                    height: contentColumnHeight
+                )
+                .overlay {
+                    ReaderContentThumbnailTile(
+                        content: .symbol(systemName),
+                        width: appearance.isEbookStyle ? physicalMediaThumbnailTargetWidth : thumbnailEdgeLength,
+                        height: appearance.isEbookStyle ? physicalMediaThumbnailMaxHeight : thumbnailEdgeLength,
+                        cornerRadius: thumbnailCornerRadius
+                    )
+                }
         }
     }
     
     var body: some View {
 //        GroupBox {
-            HStack(alignment: usesPlainLayout ? .center : .top, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 if let thumbnailChoice {
                     thumbnailView(for: thumbnailChoice)
                 }
@@ -800,15 +824,19 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                     topStatusRow
                                 }
                             }
-                            
-                            progressRow
-                            metadataRow
+
+                            Spacer(minLength: 4)
+
+                            VStack(alignment: .leading, spacing: 0) {
+                                progressRow
+                                metadataRow
+                            }
                         }
                         .frame(
                             maxWidth: .infinity,
                             minHeight: contentColumnHeight,
                             maxHeight: contentColumnHeight,
-                            alignment: .center
+                            alignment: .top
                         )
                     } else {
                         VStack(alignment: .leading, spacing: 0) {
@@ -955,15 +983,15 @@ public struct BookCoverImageView: View {
         return min(dimension, dimension * aspectRatio)
     }
 
-    private func imagePixelSize(for url: URL) async -> CGSize? {
+    private nonisolated func imagePixelSize(for url: URL) async -> CGSize? {
         await Task.detached(priority: .utility) {
             if let readerFileImageData = try? await readerImageData(url: url),
-               let pixelSize = imagePixelSize(from: readerFileImageData) {
+               let pixelSize = Self.imagePixelSize(from: readerFileImageData) {
                 return pixelSize
             }
 
             if url.isFileURL, let fileImageData = try? Data(contentsOf: url),
-               let pixelSize = imagePixelSize(from: fileImageData) {
+               let pixelSize = Self.imagePixelSize(from: fileImageData) {
                 return pixelSize
             }
 
@@ -971,7 +999,7 @@ public struct BookCoverImageView: View {
         }.value
     }
 
-    private func imagePixelSize(from data: Data) -> CGSize? {
+    private nonisolated static func imagePixelSize(from data: Data) -> CGSize? {
         guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
               let widthValue = properties[kCGImagePropertyPixelWidth] as? NSNumber,
@@ -990,6 +1018,7 @@ private struct ReaderContentThumbnailTile: View {
     enum Content {
         case icon(URL, placeholder: String)
         case initial(String)
+        case symbol(String)
     }
 
     let content: Content
@@ -1008,6 +1037,11 @@ private struct ReaderContentThumbnailTile: View {
                     maxHeight: height * 0.7
                 )
                 .frame(width: width * 0.7, height: height * 0.7)
+            }
+            if case let .symbol(systemName) = content {
+                Image(systemName: systemName)
+                    .font(.system(size: min(width, height) * 0.34, weight: .semibold))
+                    .foregroundStyle(placeholderForeground.opacity(0.95))
             }
         }
         .frame(width: width, height: height)
@@ -1033,6 +1067,8 @@ private struct ReaderContentThumbnailTile: View {
             return placeholder.isEmpty ? nil : placeholder
         case .initial(let letter):
             return letter.isEmpty ? nil : letter
+        case .symbol:
+            return nil
         }
     }
 

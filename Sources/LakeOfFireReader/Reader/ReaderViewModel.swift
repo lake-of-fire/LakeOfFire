@@ -16,6 +16,9 @@ let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
 public class ReaderViewModel: NSObject, ObservableObject {
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
+    @Published public private(set) var pageTurnBootstrapSerial = 0
+    @Published public private(set) var ebookViewerLoadedProbeSummary: String?
+    private var pageTurnProbeRefreshHandler: ((WKFrameInfo?) async -> Void)?
     
     public var scriptCaller = WebViewScriptCaller()
     @Published var webViewUserScripts: [WebViewUserScript]? = nil
@@ -87,8 +90,12 @@ public class ReaderViewModel: NSObject, ObservableObject {
                         let baseScripts = await { @MainActor [weak self] in
                             self?.baseSystemScripts ?? []
                         }()
-                        let webViewSystemScripts = baseScripts + libraryConfiguration.systemScripts
-                        let webViewUserScripts = libraryConfiguration.getActiveWebViewUserScripts()
+                        let userScriptDescriptors = libraryConfiguration.getActiveWebViewUserScriptDescriptors() ?? []
+                        let librarySystemScripts = await MainActor.run { LibraryConfiguration.sharedSystemScripts }
+                        let webViewUserScripts = await MainActor.run {
+                            userScriptDescriptors.map { $0.makeUserScript() }
+                        }
+                        let webViewSystemScripts = baseScripts + librarySystemScripts
                         try await { @MainActor [weak self] in
                             guard let self else { return }
                             self.logScriptDiagnostics(
@@ -121,14 +128,49 @@ public class ReaderViewModel: NSObject, ObservableObject {
                 .store(in: &self.cancellables)
         }
     }
+
+    @MainActor
+    public func markPageTurnBootstrapReady() {
+        pageTurnBootstrapSerial &+= 1
+    }
+
+    @MainActor
+    public func setPageTurnProbeRefreshHandler(_ handler: ((WKFrameInfo?) async -> Void)?) {
+        pageTurnProbeRefreshHandler = handler
+    }
+
+    @MainActor
+    public func requestImmediatePageTurnProbeRefresh(in frameInfo: WKFrameInfo? = nil) async {
+        if let pageTurnProbeRefreshHandler {
+            await pageTurnProbeRefreshHandler(frameInfo)
+        } else {
+            markPageTurnBootstrapReady()
+        }
+    }
+
+    @MainActor
+    public func schedulePageTurnBootstrapRefresh(delaysNanoseconds: [UInt64]) {
+        for delay in delaysNanoseconds {
+            Task { @MainActor [weak self] in
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: delay)
+                }
+                self?.markPageTurnBootstrapReady()
+            }
+        }
+    }
+
+    @MainActor
+    public func setEbookViewerLoadedProbeSummary(_ summary: String?) {
+        ebookViewerLoadedProbeSummary = summary
+    }
     
     @RealmBackgroundActor
     private func updateScripts() async throws {
         let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-        let ref = ThreadSafeReference(to: libraryConfiguration)
+        let descriptors = libraryConfiguration.getActiveWebViewUserScriptDescriptors() ?? []
         try await { @MainActor [weak self] in
-            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-            guard let scripts = realm.resolve(ref)?.getActiveWebViewUserScripts() else { return }
+            let scripts = descriptors.map { $0.makeUserScript() }
             guard let self = self else { return }
             self.logScriptDiagnostics(
                 context: "userScripts",
@@ -149,7 +191,8 @@ public class ReaderViewModel: NSObject, ObservableObject {
         Task { @RealmBackgroundActor [weak self] in
             guard let self else { return }
             let libraryConfiguration = try await LibraryConfiguration.getConsolidatedOrCreate()
-            let webViewSystemScripts = scripts + libraryConfiguration.systemScripts
+            let librarySystemScripts = await MainActor.run { LibraryConfiguration.sharedSystemScripts }
+            let webViewSystemScripts = scripts + librarySystemScripts
             try await { @MainActor [weak self] in
                 guard let self else { return }
                 self.logScriptDiagnostics(

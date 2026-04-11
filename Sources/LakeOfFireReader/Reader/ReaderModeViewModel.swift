@@ -12,7 +12,7 @@ import WebKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
-import BravePlaylist
+import WebMedia
 
 private extension URL {
     var isAboutBlank: Bool { absoluteString == "about:blank" }
@@ -24,6 +24,35 @@ public actor ReaderViewModelActor {
 }
 
 private let readerPerfStacksEnabled = false
+
+fileprivate struct ReaderModePreprocessMetrics: Sendable {
+    var callCount = 0
+    var totalElapsed: TimeInterval = 0
+    var maxElapsed: TimeInterval = 0
+    var slowCallCount = 0
+
+    var averageElapsed: TimeInterval {
+        guard callCount > 0 else { return 0 }
+        return totalElapsed / Double(callCount)
+    }
+}
+
+fileprivate actor ReaderModePreprocessMetricsAccumulator {
+    private var metrics = ReaderModePreprocessMetrics()
+
+    func record(elapsed: TimeInterval) {
+        metrics.callCount += 1
+        metrics.totalElapsed += elapsed
+        metrics.maxElapsed = max(metrics.maxElapsed, elapsed)
+        if elapsed >= 0.4 {
+            metrics.slowCallCount += 1
+        }
+    }
+
+    func snapshot() -> ReaderModePreprocessMetrics {
+        metrics
+    }
+}
 
 private func readerFontPayloadHash(_ payload: String) -> String {
     let digest = SHA256.hash(data: Data(payload.utf8))
@@ -356,15 +385,15 @@ private func escapeReadabilityHTMLAttribute(_ raw: String) -> String {
 @MainActor
 public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     public var readerFileManager: ReaderFileManager?
-    public var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
-    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
-    public var processHTML: ((String, Bool) async -> String)?
+    public var ebookTextProcessorCacheHits: (@Sendable (URL, String?) async throws -> Bool)?
+    public var processReadabilityContent: (@Sendable (String, URL, URL?, Bool, @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?
+    public var processHTML: (@Sendable (String, Bool) async -> String)?
     public var navigator: WebViewNavigator?
     public var willEnterReaderMode: ((ReaderContent) async -> Void)?
     public var defaultFontSize: Double?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     public var sharedFontCSSBase64: String?
-    public var sharedFontCSSBase64Provider: (() async -> String?)?
+    public var sharedFontCSSBase64Provider: (@Sendable () async -> String?)?
     private var lastFallbackLoaderURL: URL?
     public private(set) var lastReaderModeRouteForTesting: String?
     @Published public private(set) var lastRenderedURL: URL?
@@ -1506,7 +1535,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     @MainActor
     public func handleRenderedReaderDocumentReady(pageURL: URL, hasReaderContent: Bool) {
         let canonicalURL = pageURL.canonicalReaderContentURL()
-        guard canonicalURL.isSnippetURL else { return }
         guard hasReaderContent else { return }
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
@@ -1804,7 +1832,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             return
         }
         let readabilityBytes = readabilityContent.utf8.count
-        let readabilityPreview = snippetPreview(readabilityContent, maxLength: 360)
+        let readabilityPreview = Self.snippetPreview(readabilityContent, maxLength: 360)
         debugPrint(
             "# READER readability.renderHTML",
             "url=\(contentURL.absoluteString)",
@@ -1956,7 +1984,12 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "isSnippet=\(resolvedURL.isSnippetURL)"
                 )
 
-                if let html = htmlResult, shouldProcessReadabilityInSwift(url: resolvedURL) {
+                let isResolvedNativeReaderView = await MainActor.run { resolvedURL.isNativeReaderView }
+
+                if let html = htmlResult, shouldProcessReadabilityInSwift(
+                    url: resolvedURL,
+                    isNativeReaderView: isResolvedNativeReaderView
+                ) {
                     let minChars = max(content.meaningfulContentMinLength, 1)
                     debugPrint(
                         "# READERINJECT showReaderView.swiftProcessing.swiftEligible",
@@ -2049,7 +2082,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     debugPrint(
                         "# READERINJECT showReaderView.swiftProcessing.swiftBypass",
                         "contentURL=\(resolvedURL.absoluteString)",
-                        "eligible=\(shouldProcessReadabilityInSwift(url: resolvedURL))",
+                        "eligible=\(shouldProcessReadabilityInSwift(url: resolvedURL, isNativeReaderView: isResolvedNativeReaderView))",
                         "hasHTML=\(htmlResult != nil)"
                     )
                     cancelReaderModeLoad(for: trackedContentURL, reason: "showReaderView.swiftProcessing.swiftBypass")
@@ -2185,11 +2218,12 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         }
 
         let asyncWriteStartedAt = Date()
+        let isNativeReaderView = await MainActor.run { url.isNativeReaderView }
         logTrace(.contentWriteStart, url: url, details: "marking reader defaults")
         try await content.asyncWrite { [weak self] _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
-            if !url.isEBookURL && !url.isNativeReaderView {
+            if !url.isEBookURL && !isNativeReaderView {
                 let existingHTML = content.html ?? ""
                 let shouldPersistRenderedHTML =
                     existingHTML.isEmpty
@@ -2199,8 +2233,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     content.html = readabilityContent
                 } else if url.isSnippetURL {
                     guard let self else { return }
-                    let oldPreview = snippetPreview(existingHTML)
-                    let newPreview = snippetPreview(readabilityContent)
+                    let oldPreview = Self.snippetPreview(existingHTML)
+                    let newPreview = Self.snippetPreview(readabilityContent)
                     debugPrint(
                         "# READER snippetUpdate.skipContentOverwrite",
                         "url=\(url.absoluteString)",
@@ -2269,6 +2303,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         }
 
         let snippetCanonicalHTMLToPersist: String? = try await { @ReaderViewModelActor [weak self] () -> String? in
+            guard let self else { return nil }
             let parseStartedAt = Date()
             var doc: SwiftSoup.Document?
             let readabilityBytes = readabilityContent.utf8.count
@@ -2296,10 +2331,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let processorStartedAt = Date()
             var processorMethod = processReadabilityContent == nil ? "swiftSoup.parse" : "processReadabilityContent"
             var processorCoreElapsed: TimeInterval = 0
-            var preprocessCallCount = 0
-            var preprocessTotalElapsed: TimeInterval = 0
-            var preprocessMaxElapsed: TimeInterval = 0
-            var preprocessSlowCallCount = 0
+            let preprocessMetrics = ReaderModePreprocessMetricsAccumulator()
             var parseFallbackElapsed: TimeInterval = 0
             var propagateDefaultsElapsed: TimeInterval = 0
             var bylineUpdateElapsed: TimeInterval = 0
@@ -2309,30 +2341,26 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             var processHTMLElapsed: TimeInterval = 0
             var processHTMLInputBytes = 0
             var processHTMLOutputBytes = 0
-            await MainActor.run {
-                let pending = self?.pendingReaderModeURL?.absoluteString ?? "nil"
-                let expected = self?.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil"
-                let loading = self?.isReaderModeLoading ?? false
-                let readerMode = self?.isReaderMode ?? false
-                let isInternalShell = url.scheme == "internal"
-                debugPrint(
-                    "# READERPERF readerMode.readability.input",
-                    "ts=\(parseStartedAt.timeIntervalSince1970)",
-                    "url=\(url.absoluteString)",
-                    "bytes=\(readabilityBytes)",
-                    "chars=\(readabilityChars)",
-                    "isXML=\(isXML)",
-                    "pending=\(pending)",
-                    "expectedLoader=\(expected)",
-                    "isReaderModeLoading=\(loading)",
-                    "isReaderMode=\(readerMode)",
-                    "isInternalShell=\(isInternalShell)"
-                )
-            }
+            let pending = await self.pendingReaderModeURL?.absoluteString ?? "nil"
+            let expected = await self.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil"
+            let loading = await self.isReaderModeLoading
+            let readerMode = await self.isReaderMode
+            let isInternalShell = url.scheme == "internal"
+            debugPrint(
+                "# READERPERF readerMode.readability.input",
+                "ts=\(parseStartedAt.timeIntervalSince1970)",
+                "url=\(url.absoluteString)",
+                "bytes=\(readabilityBytes)",
+                "chars=\(readabilityChars)",
+                "isXML=\(isXML)",
+                "pending=\(pending)",
+                "expectedLoader=\(expected)",
+                "isReaderModeLoading=\(loading)",
+                "isReaderMode=\(readerMode)",
+                "isInternalShell=\(isInternalShell)"
+            )
 
-            await MainActor.run {
-                self?.logTrace(.readabilityProcessorStart, url: url)
-            }
+            await self.logTrace(.readabilityProcessorStart, url: url)
             try Task.checkCancellation()
             if let processReadabilityContent {
                 let processorCoreStartedAt = Date()
@@ -2342,22 +2370,16 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     nil,
                     false, { doc in
                         let preprocessStartedAt = Date()
-                        defer {
-                            let preprocessElapsed = Date().timeIntervalSince(preprocessStartedAt)
-                            preprocessCallCount += 1
-                            preprocessTotalElapsed += preprocessElapsed
-                            preprocessMaxElapsed = max(preprocessMaxElapsed, preprocessElapsed)
-                            if preprocessElapsed >= 0.4 {
-                                preprocessSlowCallCount += 1
-                            }
-                        }
                         do {
-                            return try await preprocessWebContentForReaderMode(
+                            let processedDocument = try await preprocessWebContentForReaderMode(
                                 doc: doc,
                                 url: url,
                                 fallbackTitle: titleForDisplay
                             )
+                            await preprocessMetrics.record(elapsed: Date().timeIntervalSince(preprocessStartedAt))
+                            return processedDocument
                         } catch {
+                            await preprocessMetrics.record(elapsed: Date().timeIntervalSince(preprocessStartedAt))
                             print(error)
                             return doc
                         }
@@ -2379,26 +2401,22 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             }
             try Task.checkCancellation()
             let processorElapsed = Date().timeIntervalSince(processorStartedAt)
-            let preprocessAverageElapsed = preprocessCallCount > 0
-            ? preprocessTotalElapsed / Double(preprocessCallCount)
-            : 0
-            await MainActor.run {
-                self?.logTrace(
-                    .readabilityProcessorFinish,
-                    url: url,
-                    details: [
-                        "duration=\(String(format: "%.3fs", processorElapsed))",
-                        "method=\(processorMethod)",
-                        "core=\(String(format: "%.3fs", processorCoreElapsed))",
-                        "preprocessCalls=\(preprocessCallCount)",
-                        "preprocessTotal=\(String(format: "%.3fs", preprocessTotalElapsed))",
-                        "preprocessAvg=\(String(format: "%.3fs", preprocessAverageElapsed))",
-                        "preprocessMax=\(String(format: "%.3fs", preprocessMaxElapsed))",
-                        "preprocessSlowCalls=\(preprocessSlowCallCount)",
-                        "fallbackParse=\(String(format: "%.3fs", parseFallbackElapsed))"
-                    ].joined(separator: " | ")
-                )
-            }
+            let preprocessSummary = await preprocessMetrics.snapshot()
+            await self.logTrace(
+                .readabilityProcessorFinish,
+                url: url,
+                details: [
+                    "duration=\(String(format: "%.3fs", processorElapsed))",
+                    "method=\(processorMethod)",
+                    "core=\(String(format: "%.3fs", processorCoreElapsed))",
+                    "preprocessCalls=\(preprocessSummary.callCount)",
+                    "preprocessTotal=\(String(format: "%.3fs", preprocessSummary.totalElapsed))",
+                    "preprocessAvg=\(String(format: "%.3fs", preprocessSummary.averageElapsed))",
+                    "preprocessMax=\(String(format: "%.3fs", preprocessSummary.maxElapsed))",
+                    "preprocessSlowCalls=\(preprocessSummary.slowCallCount)",
+                    "fallbackParse=\(String(format: "%.3fs", parseFallbackElapsed))"
+                ].joined(separator: " | ")
+            )
 
             guard let doc else {
                 print("Error: Unexpectedly failed to receive doc")
@@ -2443,20 +2461,16 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let docBytesAfterBylineUpdate = documentByteCount(doc)
             let headBytesAfterBylineUpdate = headByteCount(doc)
             let bodyBytesAfterBylineUpdate = bodyByteCount(doc)
-            await MainActor.run {
-                self?.logTrace(.readabilityProcessingFinish, url: url, details: "duration=\(parseSummary)")
-                debugPrint(
-                    "# READERPERF readerMode.pipeline",
-                    "stage=parseReadability",
-                    "url=\(url.absoluteString)",
-                    "elapsed=\(parseSummary)"
-                )
-            }
+            await self.logTrace(.readabilityProcessingFinish, url: url, details: "duration=\(parseSummary)")
+            debugPrint(
+                "# READERPERF readerMode.pipeline",
+                "stage=parseReadability",
+                "url=\(url.absoluteString)",
+                "elapsed=\(parseSummary)"
+            )
 
             let transformStartedAt = Date()
-            await MainActor.run {
-                self?.logTrace(.processForReaderModeStart, url: url)
-            }
+            await self.logTrace(.processForReaderModeStart, url: url)
             try Task.checkCancellation()
             let processForReaderModeStartedAt = Date()
             try await processForReaderMode(
@@ -2468,7 +2482,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 defaultTitle: titleForDisplay,
                 imageURL: imageURLToDisplay,
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
-                defaultFontSize: defaultFontSize ?? 21
+                defaultFontSize: self.defaultFontSize ?? 21
             )
             processForReaderModeElapsed = Date().timeIntervalSince(processForReaderModeStartedAt)
             let docBytesAfterProcessForReaderMode = documentByteCount(doc)
@@ -2524,15 +2538,13 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             )
             let transformDuration = Date().timeIntervalSince(transformStartedAt)
             let transformSummary = String(format: "%.3fs", transformDuration)
-            await MainActor.run {
-                self?.logTrace(.processForReaderModeFinish, url: url, details: "duration=\(transformSummary)")
-                debugPrint(
-                    "# READERPERF readerMode.pipeline",
-                    "stage=processForReaderMode",
-                    "url=\(url.absoluteString)",
-                    "elapsed=\(transformSummary)"
-                )
-            }
+            await self.logTrace(.processForReaderModeFinish, url: url, details: "duration=\(transformSummary)")
+            debugPrint(
+                "# READERPERF readerMode.pipeline",
+                "stage=processForReaderMode",
+                "url=\(url.absoluteString)",
+                "elapsed=\(transformSummary)"
+            )
 
             let docBytesBeforeSerialization = documentByteCount(doc)
             let headBytesBeforeSerialization = headByteCount(doc)
@@ -2596,19 +2608,17 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "processForReader=\(formatInterval(processForReaderModeElapsed))",
                 "processHTML=\(formatInterval(processHTMLElapsed))",
                 "outerHTML=\(formatInterval(serializeOuterHTMLElapsed))",
-                "preprocessCalls=\(preprocessCallCount)",
-                "preprocessTotal=\(formatInterval(preprocessTotalElapsed))",
-                "preprocessAvg=\(formatInterval(preprocessAverageElapsed))",
-                "preprocessMax=\(formatInterval(preprocessMaxElapsed))",
+                "preprocessCalls=\(preprocessSummary.callCount)",
+                "preprocessTotal=\(formatInterval(preprocessSummary.totalElapsed))",
+                "preprocessAvg=\(formatInterval(preprocessSummary.averageElapsed))",
+                "preprocessMax=\(formatInterval(preprocessSummary.maxElapsed))",
                 "docSegmentsReadability=\(segmentCountAfterReadability)",
                 "docSegmentsProcessed=\(segmentCountAfterProcessing)",
                 "htmlSegments=\(htmlSegmentCount)",
                 "slow=\(isSlowReadabilityProcessing)"
             )
             if isSlowReadabilityProcessing {
-                let pendingReaderModeDescription = await MainActor.run {
-                    self?.pendingReaderModeURL?.absoluteString ?? "nil"
-                }
+                let pendingReaderModeDescription = await self.pendingReaderModeURL?.absoluteString ?? "nil"
                 debugPrint(
                     "# READERLOAD stage=readerMode.readabilityRollupDetails",
                     "url=\(url.absoluteString)",
@@ -2621,7 +2631,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "processHTMLInputBytes=\(processHTMLInputBytes)",
                     "processHTMLOutputBytes=\(processHTMLOutputBytes)",
                     "processHTMLDeltaBytes=\(processHTMLDeltaBytes)",
-                    "preprocessSlowCalls=\(preprocessSlowCallCount)",
+                    "preprocessSlowCalls=\(preprocessSummary.slowCallCount)",
                     "pending=\(pendingReaderModeDescription)"
                 )
                 debugPrint(
@@ -2645,9 +2655,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                 "# READER readability.contentPrepared",
                 "url=\(url.absoluteString)",
                 "bytes=\(transformedBytes)",
-                "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
+                "frameIsMain=\(await MainActor.run { frameInfo?.isMainFrame ?? true })"
             )
-            if let bodySummary = summarizeBodyMarkup(from: transformedContent) {
+            if let bodySummary = Self.summarizeBodyMarkup(from: transformedContent) {
                 debugPrint(
                     "# READER readability.renderBody",
                     "url=\(url.absoluteString)",
@@ -2703,7 +2713,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         return
                     }
                     let transformedBytes = transformedContent.utf8.count
-                    let transformedPreview = snippetPreview(transformedContent, maxLength: 240)
+                    let transformedPreview = Self.snippetPreview(transformedContent, maxLength: 240)
                     debugPrint(
                         "# READER readability.navigatorLoad",
                         "url=\(url.absoluteString)",
@@ -2761,7 +2771,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         "bytes=\(transformedBytes)"
                     )
                     if url.isSnippetURL {
-                        let preview = snippetPreview(transformedContent, maxLength: 240) ?? "<empty>"
+                        let preview = Self.snippetPreview(transformedContent, maxLength: 240) ?? "<empty>"
                         debugPrint(
                             "# READER snippetLoader.navigatorLoad",
                             "contentURL=\(url.absoluteString)",
@@ -2928,7 +2938,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     }
 #endif
 
-    private nonisolated func summarizeBodyMarkup(from html: String, maxLength: Int = 360) -> String? {
+    private nonisolated static func summarizeBodyMarkup(from html: String, maxLength: Int = 360) -> String? {
         guard let bodyRange = html.range(of: "<body", options: [.caseInsensitive]) else {
             return nil
         }
@@ -2954,7 +2964,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         return snippet.isEmpty ? nil : snippet
     }
 
-    private func snippetPreview(_ html: String, maxLength: Int = 360) -> String {
+    private nonisolated static func snippetPreview(_ html: String, maxLength: Int = 360) -> String {
         let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "<empty>" }
         if trimmed.count <= maxLength { return trimmed }
@@ -3301,7 +3311,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         htmlBodyIsEmpty = false
                     } else if isEffectivelyEmpty {
                         htmlBodyIsEmpty = true
-                        let preview = snippetPreview(html, maxLength: 160)
+                        let preview = Self.snippetPreview(html, maxLength: 160)
                         debugPrint(
                             "# READER readability.htmlFetched.emptyBody",
                             "url=\(committedURL.absoluteString)",
@@ -3403,7 +3413,11 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                             "bytes=\(html.utf8.count)"
                         )
                     }
-                    let shouldSwiftReadability = isSnippetURL || shouldProcessReadabilityInSwift(url: committedURL)
+                    let isCommittedNativeReaderView = await MainActor.run { committedURL.isNativeReaderView }
+                    let shouldSwiftReadability = isSnippetURL || shouldProcessReadabilityInSwift(
+                        url: committedURL,
+                        isNativeReaderView: isCommittedNativeReaderView
+                    )
                     let shouldUseReadability = hasCanonicalReadability
                     logHTMLBodyMetrics(
                         event: "beforePrepare",
@@ -3863,7 +3877,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 }
 
 @MainActor
-private extension ReaderModeViewModel {
+extension ReaderModeViewModel {
     func decodeSharedReaderFontCSS(from base64: String?) -> String? {
         guard let base64, !base64.isEmpty else { return nil }
         guard let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]) else {
@@ -4451,8 +4465,11 @@ private struct SwiftReadabilityProcessingResult {
     let sanitizedContentBytes: Int
 }
 
-private func shouldProcessReadabilityInSwift(url: URL) -> Bool {
-    if url.isEBookURL || url.isNativeReaderView {
+private func shouldProcessReadabilityInSwift(
+    url: URL,
+    isNativeReaderView: Bool
+) -> Bool {
+    if url.isEBookURL || isNativeReaderView {
         return false
     }
     let scheme = url.scheme?.lowercased() ?? ""
@@ -4564,7 +4581,7 @@ private func readerPrimaryMediaMarkup(for content: any ReaderContentProtocol) as
 
 private func resolvedReaderPrimaryMediaURL(for content: any ReaderContentProtocol) async -> URL? {
     if let offlineMediaID = content.offlineMediaID,
-       let storedMedia = try? await PlaylistLibrary().storedMedia(id: offlineMediaID)
+       let storedMedia = try? await WebMediaLibrary().storedMedia(id: offlineMediaID)
     {
         return storedMedia.localMediaURL
     }
@@ -4798,6 +4815,7 @@ private func propagateReaderModeDefaults(
 ) async {
     let primaryKey = primaryRecord.compoundKey
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
+    let isNativeReaderView = await MainActor.run { url.isNativeReaderView }
     _ = await Task { @RealmBackgroundActor in
         do {
             let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
@@ -4806,7 +4824,7 @@ private func propagateReaderModeDefaults(
                 try await realm.asyncWrite {
                     record.isReaderModeByDefault = true
                     record.isReaderModeAvailable = false
-                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                    if !url.isEBookURL && !url.isFileURL && !isNativeReaderView {
                         if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
                             record.html = readabilityHTML
                         }

@@ -299,14 +299,15 @@ class LibraryFeedFormSectionsViewModel: ObservableObject {
         }
     }
     
-    func writeFeedAsync(_ block: @escaping (Feed) -> Void) {
+    func writeFeedAsync(_ block: @escaping @Sendable (Feed) -> Void) {
         let feedID = feed.id
+        let writeBlock = block
         Task { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
             await realm.asyncRefresh()
             try await realm.asyncWrite {
-                block(feed)
+                writeBlock(feed)
                 feed.refreshChangeMetadata(explicitlyModified: true)
             }
         }

@@ -1,6 +1,6 @@
 import SwiftUI
 import AVFoundation
-import SwiftCloudDrive
+@preconcurrency import SwiftCloudDrive
 import SwiftUtilities
 import SwiftUIDownloads
 import RealmSwift
@@ -10,11 +10,6 @@ import ZIPFoundation
 import UniformTypeIdentifiers
 import LakeOfFireCore
 import LakeOfFireAdblock
-
-@globalActor
-private actor ReaderFileManagerActor {
-    static let shared = ReaderFileManagerActor()
-}
 
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
@@ -35,13 +30,13 @@ public enum CloudDriveSyncStatus {
     case loadingStatus
 }
 
-public class ReaderFileManager: ObservableObject {
+public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     // TODO: Migrate to a 'plugin registry' architecture instead of all these callbacks
-    public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
-    public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
-    public static var fileProcessors = [@RealmBackgroundActor ([ContentFile]) async throws -> Void]()
+    nonisolated(unsafe) public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
+    nonisolated(unsafe) public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
+    nonisolated(unsafe) public static var fileProcessors = [@RealmBackgroundActor ([ContentFile]) async throws -> Void]()
     
-    public static var shared = ReaderFileManager()
+    nonisolated(unsafe) public static var shared = ReaderFileManager()
     
     // TODO: Pull these from callbacks per above
     public var readerContentMimeTypes: [UTType] = [.plainText, .html, UTType(filenameExtension: "md") ?? UTType(importedAs: "net.daringfireball.markdown"), .zip]
@@ -159,7 +154,7 @@ public class ReaderFileManager: ObservableObject {
         }
         let (drive, relativePath) = try extractCloudDrivePath(fromReaderFileURL: readerFileURL)
         try await drive.removeFile(at: relativePath)
-        Task.detached { [weak self] in
+        Task { @MainActor [weak self] in
             try await self?.refreshAllFilesMetadata()
         }
     }
@@ -328,7 +323,7 @@ public class ReaderFileManager: ObservableObject {
                 debugPrint("Warning: No matching content metadata returned for imported file", importedReaderFileURL)
                 return nil
             }
-            Task.detached { [weak self] in
+            Task { @MainActor [weak self] in
                 try await self?.refreshAllFilesMetadata()
             }
             return content.url
@@ -405,93 +400,86 @@ public class ReaderFileManager: ObservableObject {
     
     @MainActor
     func refreshFilesMetadata(drive: CloudDrive, relativePath: RootRelativePath? = nil) async throws -> [ThreadSafeReference<ContentFile>]? {
-        var files: [ThreadSafeReference<ContentFile>]? = try await { @ReaderFileManagerActor [weak self] in
-            guard let self else { return nil }
-            var files = [ThreadSafeReference<ContentFile>]()
-            var filesToUpdate: [(readerFileURL: URL, relativePath: RootRelativePath, drive: CloudDrive)] = []
-            do {
-                for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
-                    try Task.checkCancellation()
-                    var tryRelativePath = RootRelativePath(path: url.relativePath)
-                    if let relativePath, !relativePath.path.isEmpty {
-                        tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
-                    }
-                    let lastPathComponent = url.lastPathComponent.lowercased()
-                    if lastPathComponent.hasSuffix(".realm") || lastPathComponent.hasSuffix(".realm.lock") || lastPathComponent.hasSuffix(".realm.management") || lastPathComponent.hasSuffix(".realm.note") || lastPathComponent == "manabireaderlogs.zip" {
-                        continue
-                    }
-                    if !url.isFilePackage(), !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }), try await drive.directoryExists(at: tryRelativePath) {
-                        let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
-                        files.append(contentsOf: discoveredFiles ?? [])
-                    } else {
-                        let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
-                        if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
-                            filesToUpdate.append((readerFileURL, tryRelativePath, drive))
-                        }
+        var files = [ThreadSafeReference<ContentFile>]()
+        var filesToUpdate: [(readerFileURL: URL, absoluteFileURL: URL)] = []
+        do {
+            for url in try await drive.contentsOfDirectory(at: relativePath ?? .root, options: [.skipsHiddenFiles, .producesRelativePathURLs]) {
+                try Task.checkCancellation()
+                var tryRelativePath = RootRelativePath(path: url.relativePath)
+                if let relativePath, !relativePath.path.isEmpty {
+                    tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
+                }
+                let lastPathComponent = url.lastPathComponent.lowercased()
+                if lastPathComponent.hasSuffix(".realm") || lastPathComponent.hasSuffix(".realm.lock") || lastPathComponent.hasSuffix(".realm.management") || lastPathComponent.hasSuffix(".realm.note") || lastPathComponent == "manabireaderlogs.zip" {
+                    continue
+                }
+                if !url.isFilePackage(),
+                   !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
+                   try await drive.directoryExists(at: tryRelativePath) {
+                    let discoveredFiles = try await refreshFilesMetadata(drive: drive, relativePath: tryRelativePath)
+                    files.append(contentsOf: discoveredFiles ?? [])
+                } else {
+                    let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
+                    if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
+                        filesToUpdate.append((readerFileURL, absoluteFileURL))
                     }
                 }
-            } catch {
-                if !(error is CancellationError) {
-                    debugPrint("refreshFilesMetadata error:", error)
-                }
-                throw error
             }
-            
-            if !filesToUpdate.isEmpty {
-                let updatedFiles = try await { @RealmBackgroundActor in
-                    var updatedFiles = [ContentFile]()
-                    var allFileRefs = [ThreadSafeReference<ContentFile>]()
-                    var allFiles = [ContentFile]()
-                    let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
-                    
-                    //await realm.asyncRefresh()
-                    try await realm.asyncWrite {
-                        for (readerFileURL, _, drive) in filesToUpdate {
-                            try Task.checkCancellation()
-                            
-                            // TODO: Return pks instead of threadsafereferences (faster)
-                            if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
-                                try Task.checkCancellation()
-                                if self.setMetadata(fileURL: readerFileURL, contentFile: existing, drive: drive) {
-                                    updatedFiles.append(existing)
-                                }
-                                allFileRefs.append(ThreadSafeReference(to: existing))
-                                allFiles.append(existing)
-                            } else {
-                                let contentFile = ContentFile()
-                                contentFile.url = readerFileURL
-                                try Task.checkCancellation()
-                                if self.setMetadata(fileURL: readerFileURL, contentFile: contentFile, drive: drive) {
-                                    contentFile.updateCompoundKey()
-                                    let format = ReaderContentLoader.detectFileFormat(mimeType: contentFile.mimeType, pathExtension: readerFileURL.pathExtension)
-                                    contentFile.isReaderModeByDefault = format == .html || format == .markdown || format == .plainText
-                                    realm.add(contentFile, update: .modified)
-                                    updatedFiles.append(contentFile)
-                                }
-                                allFileRefs.append(ThreadSafeReference(to: contentFile))
-                                allFiles.append(contentFile)
-                            }
-                        }
-                    }
-                    for fileProcessor in Self.fileProcessors {
+        } catch {
+            if !(error is CancellationError) {
+                debugPrint("refreshFilesMetadata error:", error)
+            }
+            throw error
+        }
+
+        if !filesToUpdate.isEmpty {
+            let updatedFiles = try await { @RealmBackgroundActor in
+                var updatedFiles = [ContentFile]()
+                var allFileRefs = [ThreadSafeReference<ContentFile>]()
+                let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
+
+                try await realm.asyncWrite {
+                    for (readerFileURL, absoluteFileURL) in filesToUpdate {
                         try Task.checkCancellation()
-                        try await fileProcessor(updatedFiles)
+
+                        if let existing = realm.objects(ContentFile.self).filter(NSPredicate(format: "url == %@", readerFileURL.absoluteString as CVarArg)).first {
+                            try Task.checkCancellation()
+                            if Self.setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: existing) {
+                                updatedFiles.append(existing)
+                            }
+                            allFileRefs.append(ThreadSafeReference(to: existing))
+                        } else {
+                            let contentFile = ContentFile()
+                            contentFile.url = readerFileURL
+                            try Task.checkCancellation()
+                            if Self.setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
+                                contentFile.updateCompoundKey()
+                                let format = ReaderContentLoader.detectFileFormat(mimeType: contentFile.mimeType, pathExtension: readerFileURL.pathExtension)
+                                contentFile.isReaderModeByDefault = format == .html || format == .markdown || format == .plainText
+                                realm.add(contentFile, update: .modified)
+                                updatedFiles.append(contentFile)
+                            }
+                            allFileRefs.append(ThreadSafeReference(to: contentFile))
+                        }
                     }
-                    return allFileRefs
-                }()
-                files.append(contentsOf: updatedFiles)
-            }
-            return files
-        }()
-        
+                }
+                for fileProcessor in Self.fileProcessors {
+                    try Task.checkCancellation()
+                    try await fileProcessor(updatedFiles)
+                }
+                return allFileRefs
+            }()
+            files.append(contentsOf: updatedFiles)
+        }
+
         return files
     }
     
     /// Note that ReaderContentMetadataSynchronizer keeps associated records in sync
     @RealmBackgroundActor
-    private func setMetadata(fileURL: URL, contentFile: ContentFile, drive: CloudDrive) -> Bool {
+    private static func setMetadata(readerFileURL fileURL: URL, absoluteFileURL: URL, contentFile: ContentFile) -> Bool {
         var metadataUpdated = false
-        let fileModifiedAt = Self.fileModificationDate(url: fileURL, drive: drive)
+        let fileModifiedAt = Self.fileModificationDate(absoluteFileURL: absoluteFileURL)
 
         if !contentFile.isPhysicalMedia, contentFile.publicationDate != fileModifiedAt ?? Date() {
             contentFile.publicationDate = fileModifiedAt ?? Date()
@@ -515,7 +503,7 @@ public class ReaderFileManager: ObservableObject {
             )
             
             // contentFile.url replace with on-disk url (make a new computed var for that?)
-            if fileURL.pathExtension.lowercased() == "zip", let systemFileURL = try? localFileURL(forReaderFileURL: fileURL), let archive = try? Archive(url: systemFileURL, accessMode: .read) {
+            if absoluteFileURL.pathExtension.lowercased() == "zip", let archive = try? Archive(url: absoluteFileURL, accessMode: .read) {
                 let filePaths = RealmSwift.MutableSet<String>()
                 filePaths.insert(objectsIn: archive.map { $0.path })
                 contentFile.packageFilePaths = filePaths
@@ -544,10 +532,9 @@ public class ReaderFileManager: ObservableObject {
         return relativePath
     }
     
-    private static func fileModificationDate(url: URL, drive: CloudDrive) -> Date? {
-        guard let relativePath = try? Self.extractRelativePath(fileURL: url), let localURL = try? relativePath.fileURL(forRoot: drive.rootDirectory) else { return nil }
+    private static func fileModificationDate(absoluteFileURL: URL) -> Date? {
         do {
-            let attr = try FileManager.default.attributesOfItem(atPath: localURL.path)
+            let attr = try FileManager.default.attributesOfItem(atPath: absoluteFileURL.path)
             return attr[FileAttributeKey.modificationDate] as? Date
         } catch {
             print(error)
@@ -596,13 +583,14 @@ public extension ReaderFileManager {
 
 extension ReaderFileManager: CloudDriveObserver {
     nonisolated public func cloudDriveDidChange(_ drive: CloudDrive, rootRelativePaths: [RootRelativePath]) {
-        Task {
-            try await refreshAllFilesMetadata()
+        Task { @MainActor [weak self] in
+            try await self?.refreshAllFilesMetadata()
         }
     }
 }
 
 private extension ReaderFileManager {
+    @MainActor
     static func rootRelativePath(forImportedURL url: URL, drive: CloudDrive) async throws -> RootRelativePath {
         switch url.pathExtension.lowercased() {
         default:

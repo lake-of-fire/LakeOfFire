@@ -15,12 +15,12 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     
     private let categoryFilter: (FeedCategory) -> Bool
     
-    @RealmBackgroundActor
-    private var cancellables = Set<AnyCancellable>()
+    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
     
     init(categoryFilter: @escaping (FeedCategory) -> Bool) {
         self.categoryFilter = categoryFilter
         Task { @RealmBackgroundActor [weak self] in
+            guard let self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration) 
             
             realm.objects(LibraryConfiguration.self)
@@ -34,7 +34,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                         try await refresh()
                     }
                 })
-                .store(in: &cancellables)
+                .store(in: &self.cancellables)
             
             realm.objects(FeedCategory.self)
                 .collectionPublisher
@@ -47,7 +47,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
                         try await refresh()
                     }
                 })
-                .store(in: &cancellables)
+                .store(in: &self.cancellables)
         }
     }
     
@@ -67,7 +67,7 @@ fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
 }
 
 private struct ContentCategoryViewWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }

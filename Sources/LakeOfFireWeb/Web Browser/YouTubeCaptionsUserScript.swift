@@ -5,7 +5,16 @@ import LakeOfFireAdblock
 //import WebKit
 
 public struct YoutubeCaptionsUserScript {
-    public static let userScript = WebViewUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page, allowedDomains: Set(["youtube.com", "m.youtube.com", "www.youtube.com"]))
+    @MainActor
+    public static var userScript: WebViewUserScript {
+        WebViewUserScript(
+            source: script,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: .page,
+            allowedDomains: Set(["youtube.com", "m.youtube.com", "www.youtube.com"])
+        )
+    }
     
     static private let script = #"""
         (function() {

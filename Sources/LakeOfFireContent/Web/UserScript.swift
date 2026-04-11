@@ -6,6 +6,25 @@ import SwiftUIWebView
 import LakeOfFireCore
 import LakeOfFireAdblock
 
+public struct WebViewUserScriptDescriptor: Equatable, Sendable {
+    public let id: UUID
+    public let source: String
+    public let injectAtStart: Bool
+    public let mainFrameOnly: Bool
+    public let allowedDomains: [String]
+
+    @MainActor
+    public func makeUserScript() -> WebViewUserScript {
+        WebViewUserScript(
+            source: source,
+            injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,
+            forMainFrameOnly: mainFrameOnly,
+            in: WKContentWorld.world(name: id.uuidString),
+            allowedDomains: Set(allowedDomains)
+        )
+    }
+}
+
 public class UserScriptAllowedDomain: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable {
     public var needsSyncToAppServer: Bool {
         return false
@@ -47,14 +66,19 @@ public class UserScript: Object, UnownedSyncableObject, ObjectKeyIdentifiable, C
     
     @Persisted public var isDeleted = false
     
+    @MainActor
     public func getWebViewUserScript() -> WebViewUserScript? {
+        getWebViewUserScriptDescriptor()?.makeUserScript()
+    }
+
+    public func getWebViewUserScriptDescriptor() -> WebViewUserScriptDescriptor? {
         guard let allowedDomains = getAllowedDomains() else { return nil }
-        return WebViewUserScript(
+        return WebViewUserScriptDescriptor(
+            id: id,
             source: script,
-            injectionTime: injectAtStart ? .atDocumentStart : .atDocumentEnd,
-            forMainFrameOnly: mainFrameOnly,
-            in: WKContentWorld.world(name: id.uuidString),
-            allowedDomains: Set(allowedDomains.map({ $0.domain }))
+            injectAtStart: injectAtStart,
+            mainFrameOnly: mainFrameOnly,
+            allowedDomains: allowedDomains.map(\.domain)
         )
     }
     

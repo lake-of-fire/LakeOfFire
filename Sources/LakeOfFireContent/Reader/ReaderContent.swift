@@ -27,6 +27,9 @@ public class ReaderContent: ObservableObject {
     public private(set) var contentTitle: String = ""
     private var cancellables = Set<AnyCancellable>()
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
+    private var suppressedTransientAboutBlankTargetURL: URL?
+    private var preloadedResolvedContentURL: URL?
+    private var preloadedContent: (any ReaderContentProtocol)?
     
     public init() {
         $content
@@ -88,6 +91,44 @@ public class ReaderContent: ObservableObject {
             return
         }
     }
+
+    @MainActor
+    public func suppressTransientAboutBlank(untilNextNonBlankLoad targetURL: URL) {
+        let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
+        guard resolvedTargetURL.absoluteString != "about:blank" else { return }
+        suppressedTransientAboutBlankTargetURL = resolvedTargetURL
+        debugPrint(
+            "# READERLOAD stage=readerContent.load.suppressAboutBlank",
+            "targetURL=\(resolvedTargetURL.absoluteString)"
+        )
+    }
+
+    @MainActor
+    public func preloadResolvedContent(_ content: any ReaderContentProtocol, for targetURL: URL) {
+        let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
+        guard content.url.matchesReaderURL(resolvedTargetURL) else { return }
+        preloadedResolvedContentURL = resolvedTargetURL
+        preloadedContent = content
+        debugPrint(
+            "# READERLOAD stage=readerContent.preload",
+            "targetURL=\(resolvedTargetURL.absoluteString)",
+            "contentURL=\(content.url.absoluteString)",
+            "contentType=\(String(describing: type(of: content)))",
+            "key=\(content.compoundKey)"
+        )
+    }
+
+    private func consumePreloadedContentIfMatching(resolvedContentURL: URL) -> (any ReaderContentProtocol)? {
+        guard let preloadedResolvedContentURL,
+              let preloadedContent,
+              preloadedContent.url.matchesReaderURL(resolvedContentURL),
+              preloadedResolvedContentURL.matchesReaderURL(resolvedContentURL) else {
+            return nil
+        }
+        self.preloadedResolvedContentURL = nil
+        self.preloadedContent = nil
+        return preloadedContent
+    }
     
     @MainActor
     public func load(url: URL) async throws {
@@ -113,6 +154,21 @@ public class ReaderContent: ObservableObject {
                 "pageURL=\(url.absoluteString)",
                 "resolved=\(resolvedContentURL.absoluteString)"
             )
+        }
+
+        if resolvedContentURL.absoluteString == "about:blank",
+           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
+           suppressedTargetURL.absoluteString != "about:blank" {
+            debugPrint(
+                "# READERLOAD stage=readerContent.load.skipTransientAboutBlank",
+                "requestURL=\(url.absoluteString)",
+                "targetURL=\(suppressedTargetURL.absoluteString)"
+            )
+            return
+        }
+
+        if resolvedContentURL.absoluteString != "about:blank" {
+            suppressedTransientAboutBlankTargetURL = nil
         }
 
         let shouldMarkProvisional = resolvedContentURL.isSnippetURL
@@ -154,6 +210,20 @@ public class ReaderContent: ObservableObject {
                 "contentURL=\(existingContent.url.absoluteString)",
                 "elapsed=\(String(format: "%.3fs", elapsed))",
                 "slow=\(elapsed >= 0.8)"
+            )
+            return
+        }
+
+        if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+            currentSectionIndex = nil
+            content = preloadedContent
+            pageURL = displayURL
+            debugPrint(
+                "# READERLOAD stage=readerContent.load.usePreloadedContent",
+                "requestURL=\(url.absoluteString)",
+                "resolvedContentURL=\(resolvedContentURL.absoluteString)",
+                "contentURL=\(preloadedContent.url.absoluteString)",
+                "key=\(preloadedContent.compoundKey)"
             )
             return
         }

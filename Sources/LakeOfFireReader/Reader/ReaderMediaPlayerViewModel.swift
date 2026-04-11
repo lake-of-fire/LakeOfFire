@@ -377,10 +377,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsCurrentSentenceText = utterance.text
         updateAITTSProgress()
 
-        if speechSynthesizer.isSpeaking || speechSynthesizer.isPaused {
-            ignoresCancellationCallbacksForQueueSwap = true
-            speechSynthesizer.stopSpeaking(at: .immediate)
-        }
+        stopAITTSSynthesizerForQueueSwap()
 
         if shouldPlay {
             beginSpeakingFromCurrentUtterance()
@@ -398,10 +395,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsCurrentSentenceIdentifier = utterance.sentenceIdentifier
         ttsCurrentSentenceText = utterance.text
         ttsCurrentCharacterRange = NSRange(location: utterance.text.count, length: 0)
-        if speechSynthesizer.isSpeaking || speechSynthesizer.isPaused {
-            ignoresCancellationCallbacksForQueueSwap = true
-            speechSynthesizer.stopSpeaking(at: .immediate)
-        }
+        stopAITTSSynthesizerForQueueSwap()
         isPlaying = false
         updateAITTSProgress(forceEndOfUtterance: true)
     }
@@ -414,10 +408,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsCurrentCharacterRange = nil
         ttsUtteranceObjectIdentifierToIndex.removeAll(keepingCapacity: true)
 
-        if speechSynthesizer.isSpeaking || speechSynthesizer.isPaused {
-            ignoresCancellationCallbacksForQueueSwap = true
-            speechSynthesizer.stopSpeaking(at: .immediate)
-        }
+        stopAITTSSynthesizerForQueueSwap()
 
         guard shouldEnqueueSpeechSynthesizerUtterances else {
             isPlaying = true
@@ -462,10 +453,7 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
 
     @MainActor
     private func stopAITTSPlayback(clearQueue: Bool) {
-        if speechSynthesizer.isSpeaking || speechSynthesizer.isPaused {
-            ignoresCancellationCallbacksForQueueSwap = true
-            speechSynthesizer.stopSpeaking(at: .immediate)
-        }
+        stopAITTSSynthesizerForQueueSwap()
         isPlaying = false
         ttsUtteranceObjectIdentifierToIndex.removeAll(keepingCapacity: false)
 
@@ -510,6 +498,11 @@ public class ReaderMediaPlayerViewModel: NSObject, ObservableObject {
         ttsProgressValue = absoluteProgress
         ttsCurrentSentenceIdentifier = ttsUtterances[boundedIndex].sentenceIdentifier
         ttsCurrentSentenceText = ttsUtterances[boundedIndex].text
+    }
+
+    @MainActor
+    private func stopAITTSSynthesizerForQueueSwap() {
+        ignoresCancellationCallbacksForQueueSwap = speechSynthesizer.stopSpeaking(at: .immediate)
     }
 
     @MainActor

@@ -967,11 +967,13 @@
                     accent-color: #ffffff;
                 }
                 
-                /* Performance optimization */
+                /* Avoid aggressive compositor isolation for the live ebook view.
+                   It has been causing visibly blank pages on Apple platforms even
+                   while the DOM/layout state looks healthy. */
                 foliate-view {
-                    contain: strict;
-                    will-change: transform;
-                    transform: translateZ(0);
+                    contain: none;
+                    will-change: auto;
+                    transform: none;
                 }
                 #reader-stage > foliate-view {
                     position: absolute;
@@ -1124,6 +1126,16 @@
                 <path d="M8 7 L16 27 L8 48" />
             </svg>
         </button>
-        <script src="/load/viewer-assets/foliate-js/ebook-viewer.js" type="module"></script>
+        <script>
+            window.manabiViewerModuleStatus = 'loading-script';
+            window.manabiViewerModuleURL = new URL('/load/viewer-assets/foliate-js/ebook-viewer.bundle.iife.js', window.location.href).href;
+            window.manabiViewerModuleFetchStatus = 'classic-script';
+        </script>
+        <script
+            id="ebook-viewer-module-script"
+            src="/load/viewer-assets/foliate-js/ebook-viewer.bundle.iife.js"
+            onload="window.manabiViewerModuleStatus='loaded-script';"
+            onerror="window.manabiViewerModuleStatus='error:script-load'; window.manabiViewerModuleFetchStatus='error:script-load';"
+        ></script>
     </body>
 </html>

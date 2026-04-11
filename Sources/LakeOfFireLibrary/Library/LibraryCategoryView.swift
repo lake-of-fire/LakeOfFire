@@ -382,16 +382,15 @@ struct LibraryCategoryView: View {
         let button = Button {
             Task { @MainActor in
                 let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
-                try await { @RealmBackgroundActor in
-                    guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref) else { return }
-                    try await { @MainActor in
-                        scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                        let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                        if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                            libraryCategoryViewModel.selectedFeed = feed
-                        }
-                    }()
+                let createdFeedID: UUID? = try await { @RealmBackgroundActor in
+                    try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref)
                 }()
+                guard let feedID = createdFeedID else { return }
+                scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
+                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
+                    libraryCategoryViewModel.selectedFeed = feed
+                }
             }
         } label: {
             Label("Add Feed", systemImage: "plus.circle")

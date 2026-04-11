@@ -29,7 +29,7 @@ struct IsReaderModeLoadPendingKey: EnvironmentKey {
 }
 
 struct ReaderUpdateReadingProgressHandlerKey: EnvironmentKey {
-    static let defaultValue: ((FractionalCompletionMessage) async -> Void)? = nil
+    static let defaultValue: (@Sendable (FractionalCompletionMessage) async -> Void)? = nil
 }
 
 public extension EnvironmentValues {
@@ -57,7 +57,7 @@ public extension EnvironmentValues {
         get { self[IsReaderModeLoadPendingKey.self] }
         set { self[IsReaderModeLoadPendingKey.self] = newValue }
     }
-    var readerUpdateReadingProgressHandler: ((FractionalCompletionMessage) async -> Void)? {
+    var readerUpdateReadingProgressHandler: (@Sendable (FractionalCompletionMessage) async -> Void)? {
         get { self[ReaderUpdateReadingProgressHandlerKey.self] }
         set { self[ReaderUpdateReadingProgressHandlerKey.self] = newValue }
     }

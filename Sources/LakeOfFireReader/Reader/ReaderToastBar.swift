@@ -3,12 +3,12 @@ import LakeKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 
-public enum ReaderToastBarStyle {
+public enum ReaderToastBarStyle: Sendable {
     case bordered
     case borderless
 }
 
-public enum ReaderToastLayoutMode {
+public enum ReaderToastLayoutMode: Sendable {
     case standard
     case inline
 }

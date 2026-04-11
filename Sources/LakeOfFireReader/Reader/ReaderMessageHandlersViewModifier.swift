@@ -188,6 +188,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         countLimit: 10_000
     )
     private let trackingSizeHistoryLimit = 10
+    fileprivate var ebookBootstrapFallbackTask: Task<Void, Never>?
 
     nonisolated private func makeBucketKey(from cacheKey: String) -> String {
         let parts = cacheKey.split(separator: "|").map(String.init)
@@ -283,6 +284,143 @@ fileprivate class ReaderMessageHandlers: Identifiable {
         }
     }
 
+    @MainActor
+    fileprivate func scheduleEbookViewerInitializationFallback(in frameInfo: WKFrameInfo? = nil) {
+        registerEbookViewerFrame(frameInfo)
+        let url = readerViewModel.state.pageURL
+        guard let scheme = url.scheme,
+              (scheme == "ebook" || scheme == "ebook-url"),
+              url.absoluteString.hasPrefix("\(scheme)://"),
+              url.isEBookURL,
+              let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))")
+        else {
+            return
+        }
+
+        ebookBootstrapFallbackTask?.cancel()
+        ebookBootstrapFallbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for attempt in 0..<40 {
+                if Task.isCancelled { return }
+                let delayNs: UInt64
+                switch attempt {
+                case 0:
+                    delayNs = 300_000_000
+                case 1:
+                    delayNs = 700_000_000
+                default:
+                    delayNs = 1_000_000_000
+                }
+                try? await Task.sleep(nanoseconds: delayNs)
+                if Task.isCancelled { return }
+                do {
+                    let result = try await scriptCaller.evaluateJavaScript(
+                        """
+                        return (() => {
+                            const startedAt = Number(globalThis.manabiLoadEBookStartedAt || 0);
+                            const startedAgeMs = startedAt > 0 ? (Date.now() - startedAt) : null;
+                            const hasReader = !!globalThis.reader;
+                            const hasView = !!globalThis.reader?.view;
+                            const hasRenderer = !!globalThis.reader?.view?.renderer;
+                            const hasSectionLayoutController = !!globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController;
+                            const hasGlobalSectionLayoutController = !!globalThis.manabiEbookSectionLayoutController;
+                            const hasLivePageRoot = !!document?.querySelector?.('.manabi-page-root');
+                            const hasLiveChunk = !!document?.querySelector?.('.manabi-page-root .manabi-page-column-chunk');
+                            const hasLiveChunkBody = !!document?.querySelector?.('.manabi-page-root .manabi-page-column-body');
+                            const hasLiveChunkText = (() => {
+                                const node = document?.querySelector?.('.manabi-page-root .manabi-page-column-chunk');
+                                const text = node?.textContent || '';
+                                return text.trim().length > 0;
+                            })();
+                            const isStaleStart = startedAgeMs !== null && startedAgeMs > 2500;
+                            if (
+                                hasRenderer
+                                || hasSectionLayoutController
+                                || hasGlobalSectionLayoutController
+                                || hasLiveChunkBody
+                                || hasLiveChunkText
+                                || (hasLivePageRoot && hasLiveChunk)
+                            ) return "ready";
+                            if (globalThis.manabiLoadEBookStarted && !hasReader && startedAgeMs !== null && startedAgeMs > 1200) {
+                                globalThis.manabiLoadEBookStarted = false;
+                            }
+                            if (
+                                globalThis.manabiLoadEBookStarted
+                                && isStaleStart
+                                && !hasRenderer
+                                && !hasSectionLayoutController
+                                && !hasGlobalSectionLayoutController
+                                && !hasLiveChunkBody
+                                && !hasLiveChunkText
+                                && !(hasLivePageRoot && hasLiveChunk)
+                            ) {
+                                try { globalThis.reader?.close?.(); } catch (_error) {}
+                                try { globalThis.reader?.view?.close?.(); } catch (_error) {}
+                                globalThis.reader = null;
+                                globalThis.manabiLoadEBookStarted = false;
+                                globalThis.manabiLoadEBookReady = false;
+                                globalThis.manabiLoadEBookLastState = "fallback-stale-reset";
+                            }
+                            if (globalThis.manabiLoadEBookStarted && hasView) return "started-pending";
+                            if (globalThis.manabiLoadEBookStarted && hasReader) return "reader-created";
+                            if (globalThis.manabiLoadEBookStarted) return "started-no-reader";
+                            if (typeof window.loadEBook !== "function") return "loadEBook-missing";
+                            window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck();
+                            try {
+                                window.loadEBook({ url, layoutMode });
+                                return "start-requested";
+                            } catch (error) {
+                                globalThis.manabiLoadEBookStarted = false;
+                                return "start-error:" + String(error);
+                            }
+                        })();
+                        """,
+                        arguments: [
+                            "attempt": attempt,
+                            "url": loaderURL.absoluteString,
+                            "layoutMode": "paginated",
+                        ],
+                        in: frameInfo
+                    )
+                    let state = String(describing: result ?? "nil")
+                    debugPrint(
+                        "# READER ebookViewerInitialized.fallback",
+                        "attempt=\(attempt)",
+                        "state=\(state)",
+                        "page=\(url.absoluteString)"
+                    )
+                    LakeKit.Logger.shared.logger.info(
+                        "# READER ebookViewerInitialized.fallback attempt=\(attempt) state=\(state) page=\(url.absoluteString)"
+                    )
+                    if state == "ready" {
+                        return
+                    }
+                } catch {
+                    debugPrint(
+                        "# READER ebookViewerInitialized.fallback.error",
+                        "attempt=\(attempt)",
+                        "error=\(error)",
+                        "page=\(url.absoluteString)"
+                    )
+                    LakeKit.Logger.shared.logger.error(
+                        "# READER ebookViewerInitialized.fallback.error attempt=\(attempt) error=\(error) page=\(url.absoluteString)"
+                    )
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func registerEbookViewerFrame(_ frameInfo: WKFrameInfo?) {
+        guard let frameInfo else { return }
+        let pageURL = readerViewModel.state.pageURL
+        _ = scriptCaller.addMultiTargetFrame(
+            frameInfo,
+            uuid: "ebook-viewer-frame:\(pageURL.absoluteString)",
+            canonicalURL: pageURL
+        )
+    }
+
     lazy var webViewMessageHandlers: WebViewMessageHandlers = {
         let handlers: [(String, @Sendable (WebViewMessage) async -> Void)] = [
             ("readerConsoleLog", { [weak self] message in
@@ -311,6 +449,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("print", { @MainActor [weak self] message in
                 guard let self else { return }
+                if let logMessage = message.body as? String {
+                    if logMessage.contains("\"html:shell-loaded\"") {
+                        scheduleEbookViewerInitializationFallback(in: message.frameInfo)
+                    }
+                    if logMessage.contains("\"reader.open:view-ready\"")
+                        || logMessage.contains("\"loadEBook:posting-loaded\"")
+                        || logMessage.contains("\"loadEBook:delayed-state:1s\"") {
+                        registerEbookViewerFrame(message.frameInfo)
+                        await readerViewModel.requestImmediatePageTurnProbeRefresh(in: message.frameInfo)
+                        readerViewModel.schedulePageTurnBootstrapRefresh(
+                            delaysNanoseconds: [
+                                0,
+                                300_000_000,
+                                1_000_000_000,
+                                2_500_000_000,
+                            ]
+                        )
+                    }
+                    if logMessage.hasPrefix("# EBOOKFIX1")
+                        || logMessage.hasPrefix("# BOOKBUG1")
+                        || logMessage.hasPrefix("# EBOOKHTML") {
+                        LakeKit.Logger.shared.logger.info("\(logMessage)")
+                    }
+                    debugPrint(logMessage)
+                    return
+                }
                 guard let payload = message.body as? [String: Any] else {
                     debugPrint("# READER readabilityInit.swiftLog", "body=\(String(describing: message.body))")
                     return
@@ -1072,7 +1236,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = ImageUpdatedMessage(fromMessage: message) else { return }
-                    guard let url = result.mainDocumentURL, !url.isNativeReaderView else { return }
+                    guard let url = result.mainDocumentURL else { return }
+                    let isNativeReaderView = await MainActor.run { url.isNativeReaderView }
+                    guard !isNativeReaderView else { return }
                     let contents = try await ReaderContentLoader.loadAll(url: url)
                     for content in contents {
                         guard content.imageUrl != result.newImageURL else { continue }
@@ -1088,10 +1254,15 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             }),
             ("ebookViewerInitialized", { @MainActor [weak self] message in
                 guard let self else { return }
+                registerEbookViewerFrame(message.frameInfo)
                 debugPrint(
                     "# READER ebookViewerInitialized",
                     "page=\(readerViewModel.state.pageURL.absoluteString)",
                     "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
+                )
+                _ = try? await scriptCaller.evaluateJavaScript(
+                    "window.manabiMarkEbookViewerInitializedAck && window.manabiMarkEbookViewerInitializedAck()",
+                    in: message.frameInfo
                 )
                 let url = readerViewModel.state.pageURL
                 if let scheme = url.scheme,
@@ -1108,11 +1279,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 //                                "layoutMode": UserDefaults.standard.string(forKey: "ebookViewerLayout") ?? "paginated"
                                 "layoutMode": "paginated",
                             ]
+                            ,
+                            in: message.frameInfo
                         )
                     }
                 }
             }),
-            (ReaderWebMediaBridge.messageHandlerName, { @RealmBackgroundActor [weak self] message in
+            (ReaderWebMediaBridge.messageHandlerName, { @Sendable @RealmBackgroundActor [weak self] message in
                 guard self != nil else { return }
                 guard let decoded = ReaderWebMediaBridge.decode(message: message) else { return }
                 switch decoded {
@@ -1123,9 +1296,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 case .playback(let event):
                     ReaderWebMediaBridge.postPlaybackUpdate(event)
 
-                    guard let pageURL = URL(string: event.snapshot.pageSrc),
-                          !pageURL.isNativeReaderView
-                    else { return }
+                    guard let pageURL = URL(string: event.snapshot.pageSrc) else { return }
+                    let isNativeReaderView = await MainActor.run { pageURL.isNativeReaderView }
+                    guard !isNativeReaderView else { return }
                     guard let sourceURL = URL(string: event.snapshot.effectiveSource),
                           let scheme = sourceURL.scheme?.lowercased(),
                           scheme == "http" || scheme == "https"
@@ -1201,7 +1374,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = ExternalMediaSubtitlesMessage(fromMessage: message) else { return }
-                    guard let pageURL = result.pageURL, !pageURL.isNativeReaderView else { return }
+                    guard let pageURL = result.pageURL else { return }
+                    let isNativeReaderView = await MainActor.run { pageURL.isNativeReaderView }
+                    guard !isNativeReaderView else { return }
                     guard let preferredTrack = result.preferredTrack(for: .autoupdatingCurrent) else { return }
                     try await ReaderContentLoader.updateContent(url: pageURL) { object in
                         if object.audioSubtitlesURL != nil && object.audioSubtitlesRole != .media {
@@ -1523,6 +1698,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                         contentBlockingEnabled: contentBlockingEnabled,
                         contentBlockingStatsModel: contentBlockingStatsModel
                     )
+                    if readerViewModel.state.pageURL.isEBookURL {
+                        readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
+                    }
                 } else if let readerMessageHandlers {
                     readerMessageHandlers.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
                     readerMessageHandlers.scriptCaller = scriptCaller
@@ -1535,6 +1713,9 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
                     readerMessageHandlers.updateReadingProgressHandler = updateReadingProgressHandler
                     readerMessageHandlers.contentBlockingEnabled = contentBlockingEnabled
                     readerMessageHandlers.contentBlockingStatsModel = contentBlockingStatsModel
+                    if readerViewModel.state.pageURL.isEBookURL {
+                        readerMessageHandlers.scheduleEbookViewerInitializationFallback()
+                    }
                 }
             }
             .task(id: webViewMessageHandlers.handlers.keys) {
@@ -1550,6 +1731,12 @@ internal struct ReaderMessageHandlersViewModifier: ViewModifier {
             }
             .task(id: readerViewModel.state.pageURL) { @MainActor in
                 contentBlockingStatsModel?.beginPage(url: readerViewModel.state.pageURL)
+                if readerViewModel.state.pageURL.isEBookURL {
+                    readerMessageHandlers?.scheduleEbookViewerInitializationFallback()
+                } else {
+                    readerMessageHandlers?.ebookBootstrapFallbackTask?.cancel()
+                    readerMessageHandlers?.ebookBootstrapFallbackTask = nil
+                }
             }
             .task(id: readerContent.pageURL) {
                 await pushHideNavigationStateToWebView()

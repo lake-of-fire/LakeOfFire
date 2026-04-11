@@ -9,7 +9,7 @@ import SwiftUIWebView
 import LakeOfFireCore
 import LakeOfFireAdblock
 
-public struct Readability {
+public struct Readability: Sendable {
     public static let shared = Readability()
     
     public let userScriptSource: String
@@ -20,7 +20,6 @@ public struct Readability {
         var readabilityJS: String
         var readabilityInitializationJS: String
         var domPurifyJS: String
-        var readabilityImagesJS: String
         var readabilityOriginalJS: String
         
         var mozillaCSS: String
@@ -53,6 +52,7 @@ public struct Readability {
         userScriptSource = readabilityJS + domPurifyJS + readabilityInitializationJS
     }
     
+    @MainActor
     public var userScript: WebViewUserScript {
         WebViewUserScript(
             source: userScriptSource,

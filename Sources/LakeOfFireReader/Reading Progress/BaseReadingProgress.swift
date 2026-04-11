@@ -6,6 +6,8 @@ import BigSyncKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 
+public let trivialReadingSessionAutoDeleteThreshold: TimeInterval = 2
+
 public protocol ReadingProgressProtocol: Object, ObjectKeyIdentifiable {
     var id: String { get }
     var normalizedDate: Date { get set }

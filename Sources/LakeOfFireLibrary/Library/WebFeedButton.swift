@@ -24,7 +24,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
             }
             
             Task { @RealmBackgroundActor in
-                rssURLsCancellables.forEach { $0.cancel() }
+                self.rssURLsCancellables.forEach { $0.cancel() }
                 let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
                 realm.objects(Feed.self)
                     .where { !$0.isDeleted }
@@ -48,24 +48,23 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                             }
                         }
                     })
-                    .store(in: &rssURLsCancellables)
+                    .store(in: &self.rssURLsCancellables)
             }
         }
     }
     
-    @RealmBackgroundActor private var readerContentObjectNotificationToken: NotificationToken?
+    nonisolated(unsafe) private var readerContentObjectNotificationToken: NotificationToken?
     
     var isDisabled: Bool {
         return rssURLs?.isEmpty ?? true
     }
 
-    @RealmBackgroundActor
-    private var rssURLsCancellables = Set<AnyCancellable>()
-    @RealmBackgroundActor
-    private var cancellables = Set<AnyCancellable>()
+    nonisolated(unsafe) private var rssURLsCancellables = Set<AnyCancellable>()
+    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
 
     init() {
         Task { @RealmBackgroundActor [weak self] in
+            guard let self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
@@ -88,7 +87,7 @@ class WebFeedButtonViewModel<C: ReaderContentProtocol>: ObservableObject {
                         }()
                     }
                 })
-                .store(in: &cancellables)
+                .store(in: &self.cancellables)
         }
     }
     
@@ -247,6 +246,7 @@ public struct WebFeedButton<C: ReaderContentProtocol>: View {
 
 @available(iOS 16, macOS 13.0, *)
 public extension ReaderContentProtocol {
+    @MainActor
     var webFeedButtonView: some View {
         WebFeedButton(readerContent: self)
     }

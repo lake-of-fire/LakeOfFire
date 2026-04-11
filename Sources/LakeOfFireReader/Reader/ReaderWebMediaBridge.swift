@@ -303,11 +303,13 @@ public enum ReaderWebMediaBridge {
     public static let messageHandlerName = "mediaHandler"
 
     public static var userScripts: [WebViewUserScript] {
-        [
-            ReaderYoutubeCaptionsUserScript.userScript,
-            WebViewUserScript(source: swizzlerScript, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page),
-            WebViewUserScript(source: mediaBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page),
-        ]
+        MainActor.assumeIsolated {
+            [
+                ReaderYoutubeCaptionsUserScript.userScript,
+                WebViewUserScript(source: swizzlerScript, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page),
+                WebViewUserScript(source: mediaBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page),
+            ]
+        }
     }
 
     static func decode(message: WebViewMessage) -> ReaderWebMediaBridgeMessage? {
@@ -661,13 +663,16 @@ public enum ReaderWebMediaBridge {
 }
 
 private struct ReaderYoutubeCaptionsUserScript {
-    static let userScript = WebViewUserScript(
-        source: script,
-        injectionTime: .atDocumentStart,
-        forMainFrameOnly: false,
-        in: .page,
-        allowedDomains: Set(["youtube.com", "m.youtube.com", "www.youtube.com"])
-    )
+    @MainActor
+    static var userScript: WebViewUserScript {
+        WebViewUserScript(
+            source: script,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false,
+            in: .page,
+            allowedDomains: Set(["youtube.com", "m.youtube.com", "www.youtube.com"])
+        )
+    }
 
     static let script = #"""
     (function() {

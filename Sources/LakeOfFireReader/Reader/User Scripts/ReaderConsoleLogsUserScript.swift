@@ -11,7 +11,7 @@ import LakeOfFireAdblock
 import LakeOfFireContent
 
 // TODO: the error messages might not be useful anymore with how we do String()
-public struct ReaderConsoleLogsUserScript {
+public struct ReaderConsoleLogsUserScript: Sendable {
     public static let shared = ReaderConsoleLogsUserScript()
     
     private static let errorScript = """

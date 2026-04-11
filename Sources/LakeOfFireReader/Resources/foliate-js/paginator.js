@@ -199,6 +199,15 @@ let trackingSizeCacheRequestCounter = 0
 // General logger disabled for noise reduction
 const logEBook = () => {}
 
+const setSameDocumentHostTurnDiagnostics = detail => {
+    try {
+        globalThis.manabiSameDocumentHostTurnDiagnostics = {
+            ...(globalThis.manabiSameDocumentHostTurnDiagnostics || {}),
+            ...detail,
+        }
+    } catch (_error) {}
+}
+
 // Focused pagination diagnostics for tricky resume/relocate cases.
 // pagination logger disabled for noise reduction
 const logEBookPagination = () => {}
@@ -1673,6 +1682,10 @@ class View {
             justifyContent: 'center',
             alignItems: 'center',
         })
+        if (this.#sameDocumentMode) {
+            this.#element.style.justifyContent = 'flex-start'
+            this.#element.style.alignItems = 'flex-start'
+        }
         // Watch for unexpected inline height mutations on the view wrapper, which can cause page spikes.
         this.#lastElementStyleHeight = this.#element.style.height || null
         this.#elementStyleObserver = new MutationObserver(mutations => {
@@ -1754,6 +1767,66 @@ class View {
     }
     get element() {
         return this.#element
+    }
+    reconcileSameDocumentExpandedWidth() {
+        if (!this.#sameDocumentMode || !this.#column || !Number.isFinite(this.#size) || this.#size <= 0) {
+            return null
+        }
+        try {
+            const liveRoot = document?.getElementById?.('reader-content')?.querySelector?.('.manabi-page-root') || null
+            const livePages = Array.from(liveRoot?.querySelectorAll?.(':scope > .manabi-page') || [])
+            const livePageCount = livePages.length
+            const livePageExtent = livePages.reduce((max, node) => {
+                try {
+                    const left = Number.isFinite(node?.offsetLeft)
+                        ? node.offsetLeft
+                        : (node?.getBoundingClientRect?.().left || 0)
+                    const width = Number.isFinite(node?.offsetWidth) && node.offsetWidth > 0
+                        ? node.offsetWidth
+                        : (node?.getBoundingClientRect?.().width || 0)
+                    return Math.max(max, left + width)
+                } catch (_error) {
+                    return max
+                }
+            }, 0)
+            const layoutController = document?.defaultView?.manabiEbookSectionLayoutController
+            const layoutPageCount = Math.max(
+                1,
+                livePageCount,
+                Number.parseInt(String(layoutController?.pageCount?.() ?? 1), 10) || 1,
+                this.#getSameDocumentResolvedPageCountSync() || 1
+            )
+            const side = this.#vertical ? 'height' : 'width'
+            const otherSide = this.#vertical ? 'width' : 'height'
+            const layoutExpandedSize = Math.max(
+                this.#size,
+                livePageExtent,
+                layoutPageCount * this.#size,
+            )
+            this.#iframe.style[side] = `${layoutExpandedSize}px`
+            this.#element.style[side] = `${layoutExpandedSize + this.#size * 2}px`
+            this.#container.style[side] = `${layoutExpandedSize + this.#size * 2}px`
+            this.#iframe.style[otherSide] = '100%'
+            this.#element.style[otherSide] = '100%'
+            this.#container.style[otherSide] = '100%'
+            logEBookPageNumLimited('expand:same-document-reconcile', {
+                side,
+                size: this.#size,
+                layoutPageCount,
+                livePageCount,
+                livePageExtent,
+                layoutExpandedSize,
+                iframe: this.#iframe?.style?.[side] || null,
+                element: this.#element?.style?.[side] || null,
+                container: this.#container?.style?.[side] || null,
+            })
+            return {
+                layoutPageCount,
+                layoutExpandedSize,
+            }
+        } catch (_error) {
+            return null
+        }
     }
     get document() {
         if (this.#sameDocumentMode) return document
@@ -1878,8 +1951,10 @@ class View {
     async load(src, afterLoad, beforeRender, sectionIndex = null, sectionLocation = null) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
         if (this.#sameDocumentMode) {
+            globalThis.manabiLoadEBookLastState = 'paginator-load-same-document-begin'
             return await this.#loadSameDocument(src, afterLoad, beforeRender, sectionIndex, sectionLocation)
         }
+        globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-begin'
         this.#iframeShownForBake = false
         // Reset direction flags and promise before loading a new section
         this.#vertical = this.#verticalRTL = this.#rtl = null;
@@ -1897,12 +1972,15 @@ class View {
                 resolve()
             } else {
                 this.#iframe.addEventListener('load', async () => {
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-load-event'
                     try { await globalThis.manabiWaitForFontCSS?.() } catch {}
                     const doc = this.document
 
                     try { globalThis.manabiEnsureCustomFonts?.(doc) } catch {}
 
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-before-afterLoad'
                     await afterLoad?.(doc)
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-after-afterLoad'
 
                     //                    this.#iframe.style.display = 'none'
 
@@ -1924,25 +2002,31 @@ class View {
                     const contentRoot = this.#getContentRoot() || doc.body
                     this.#contentRange.selectNodeContents(contentRoot)
 
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-before-beforeRender'
                     const layout = await beforeRender?.({
                         vertical: this.#vertical,
                         rtl: this.#rtl,
                     })
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-after-beforeRender'
 
                     // Allow layout/expand only when we're ready to bake: reveal iframe + document, render without expanding, bake, then expand.
                     this.revealIframeForBake('initial-load')
                     revealDocumentContentForBake(doc)
 
                     // First bake happens before any expand/page sizing.
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-before-initial-bake'
                     await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex, layout)
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-after-initial-bake'
 
                     this.#sameDocumentObservedElement = doc.body
                     this.#resizeObserver.observe(doc.body)
 
+                    globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-resolve'
                     resolve()
                 }, {
                     once: true
                 })
+                globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-set-src'
                 this.#iframe.src = src
             }
         })
@@ -2022,7 +2106,7 @@ class View {
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
         })
-        setStylesImportant(layoutRoot, {
+        const layoutRootStyles = {
             'box-sizing': 'border-box',
             'padding': padding,
             //            border: `${gap}px solid transparent`,
@@ -2047,12 +2131,18 @@ class View {
             'max-width': 'none',
             'min-height': 'none',
             'min-width': 'none',
-            // fix glyph clipping in WebKit
-            '-webkit-line-box-contain': 'block glyphs replaced',
 
             // columnize parity
             '--paginator-margin': `${bottomMarginPx}px`,
-        })
+        }
+        if (globalThis.manabiPageTurnInteractionDiagnostic !== true) {
+            // This improves clipping in some cases, but it can also blank the
+            // snapshot-visible page body on Apple platforms while layout data
+            // still looks healthy. Keep it off in diagnostics until the visual
+            // rendering path is proven stable.
+            layoutRootStyles['-webkit-line-box-contain'] = 'block glyphs replaced'
+        }
+        setStylesImportant(layoutRoot, layoutRootStyles)
         // columnize parity
         setStylesImportant(this.#getContentRoot() || doc.body, {
             [vertical ? 'max-height' : 'max-width']: constrainedSize,
@@ -2093,7 +2183,7 @@ class View {
 
         const doc = this.document
         const layoutRoot = this.#getContentRoot() || doc.documentElement
-        setStylesImportant(layoutRoot, {
+        const columnizeStyles = {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
             '--paginator-column-gap': `${gap}px`,
@@ -2116,9 +2206,11 @@ class View {
             'max-width': 'none',
             'min-height': 'none',
             'min-width': 'none',
-            // fix glyph clipping in WebKit
-            '-webkit-line-box-contain': 'block glyphs replaced',
-        })
+        }
+        if (globalThis.manabiPageTurnInteractionDiagnostic !== true) {
+            columnizeStyles['-webkit-line-box-contain'] = 'block glyphs replaced'
+        }
+        setStylesImportant(layoutRoot, columnizeStyles)
         const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
         layoutRoot.style.setProperty('--paginator-margin', `${bottomMarginPx}px`)
         setStylesImportant(this.#getContentRoot() || doc.body, {
@@ -2372,6 +2464,7 @@ class View {
                         elementOther: this.#element?.style?.[otherSide] || null,
                     })
                 await this.onExpand()
+                    this.reconcileSameDocumentExpandedWidth()
                 logEBookPerf('expand-complete', {
                     column: this.#column,
                     vertical: this.#vertical,
@@ -2712,6 +2805,7 @@ export class Paginator extends HTMLElement {
     #elementMutationObserver = null
     #sameDocumentViewport = null
     #sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED
+    #sameDocumentCurrentPageIndex = 0
 
     constructor() {
         super()
@@ -2739,7 +2833,7 @@ export class Paginator extends HTMLElement {
                 height: 100%;
             }
             #top {
-                contain: strict;
+                contain: none;
         
                 --_gap: ${gapPct}%;
                 --_top-margin: ${topMarginPx}px;
@@ -2797,10 +2891,10 @@ export class Paginator extends HTMLElement {
                 grid-column: 2 / 5;
                 grid-row: 2;
                 overflow: hidden;
-        
-                contain: strict;
-                will-change: transform;
-                transform: translateZ(0);
+
+                contain: none;
+                will-change: auto;
+                transform: none;
             }
             :host([flow="scrolled"]) #container {
                 grid-column: 1 / -1;
@@ -2910,15 +3004,17 @@ export class Paginator extends HTMLElement {
     #ensureSameDocumentViewport() {
         if (!this.#sameDocumentMode || this.#isCacheWarmer) return
         if (this.#sameDocumentViewport) return
+        const viewportHost = document.getElementById('reader-stage') || document.body
         const viewport = document.createElement('div')
         viewport.id = 'manabi-same-document-viewport'
         Object.assign(viewport.style, {
-            position: 'fixed',
+            position: viewportHost?.id === 'reader-stage' ? 'absolute' : 'fixed',
             inset: '0',
             overflow: 'hidden',
-            zIndex: '0',
+            zIndex: '2',
             pointerEvents: 'auto',
             boxSizing: 'border-box',
+            background: 'transparent',
         })
         const container = document.createElement('div')
         container.id = 'manabi-same-document-container'
@@ -2927,9 +3023,15 @@ export class Paginator extends HTMLElement {
             inset: '0',
             overflow: 'hidden',
             boxSizing: 'border-box',
+            background: 'transparent',
         })
+        // Same-document page roots encode progression explicitly. Keep the outer
+        // viewport/container in physical LTR coordinates so WebKit doesn't mirror
+        // the huge mounted strip offscreen for RTL books.
+        viewport.style.direction = 'ltr'
+        container.style.direction = 'ltr'
         viewport.append(container)
-        document.body.append(viewport)
+        viewportHost.append(viewport)
         this.#resizeObserver.unobserve(this.#container)
         this.#sameDocumentViewport = viewport
         this.#container = container
@@ -3842,6 +3944,89 @@ export class Paginator extends HTMLElement {
         return this.#getActiveEbookSectionLayout()?.pageCount() || getLiveChunkPageCount(this.#view?.document)
     }
 
+    #getSameDocumentLiveRoot() {
+        const doc = this.#view?.document
+        if (!(doc instanceof Document)) return null
+        const contentRoot = doc.getElementById?.('reader-content') || doc.body || null
+        return contentRoot?.querySelector?.('.manabi-page-root') || null
+    }
+
+    #getSameDocumentResolvedPageCountSync() {
+        const livePageCount = this.#getLiveChunkPageCount()
+        if (Number.isFinite(livePageCount) && livePageCount > 0) return livePageCount
+        const liveRoot = this.#getSameDocumentLiveRoot()
+        const domPageCount = liveRoot?.querySelectorAll?.(':scope > .manabi-page')?.length ?? 0
+        return Math.max(0, domPageCount)
+    }
+
+    async #getSameDocumentResolvedPageCount() {
+        return this.#getSameDocumentResolvedPageCountSync()
+    }
+
+    #getSameDocumentClampedPageIndexSync(pageIndex = this.#sameDocumentCurrentPageIndex) {
+        const pageCount = this.#getSameDocumentResolvedPageCountSync()
+        if (!(pageCount > 0)) return 0
+        const numericPageIndex = Number.isFinite(pageIndex)
+            ? Math.floor(pageIndex)
+            : this.#sameDocumentCurrentPageIndex
+        return Math.max(0, Math.min(pageCount - 1, numericPageIndex))
+    }
+
+    async #getSameDocumentClampedPageIndex(pageIndex = this.#sameDocumentCurrentPageIndex) {
+        return this.#getSameDocumentClampedPageIndexSync(pageIndex)
+    }
+
+    #applySameDocumentPagePositionSync(pageIndex, { reason = 'same-document', smooth = false } = {}) {
+        const liveRoot = this.#getSameDocumentLiveRoot()
+        if (!(liveRoot instanceof HTMLElement)) return false
+        const resolvedPageIndex = this.#getSameDocumentClampedPageIndexSync(pageIndex)
+        const targetPageNode = liveRoot.querySelector(`:scope > .manabi-page[data-manabi-page-index="${resolvedPageIndex}"]`)
+            || liveRoot.querySelector(`.manabi-page[data-manabi-page-index="${resolvedPageIndex}"]`)
+            || null
+        const fallbackPageWidth = Number.isFinite(targetPageNode?.offsetWidth) && targetPageNode.offsetWidth > 0
+            ? targetPageNode.offsetWidth
+            : (liveRoot.firstElementChild?.getBoundingClientRect?.().width || this.getBoundingClientRect?.().width || 0)
+        const fallbackOffset = resolvedPageIndex * fallbackPageWidth
+        const targetOffset = Number.isFinite(targetPageNode?.offsetLeft) ? targetPageNode.offsetLeft : fallbackOffset
+        const sameDocumentContainer = document.getElementById('manabi-same-document-container')
+        const sameDocumentViewport = document.getElementById('manabi-same-document-viewport')
+        liveRoot.style.willChange = 'transform'
+        liveRoot.style.transition = smooth ? 'transform 220ms ease-out' : 'none'
+        liveRoot.style.transform = `translate3d(${-targetOffset}px, 0, 0)`
+        liveRoot.dataset.manabiCurrentPageIndex = String(resolvedPageIndex)
+        if (sameDocumentContainer instanceof HTMLElement) {
+            sameDocumentContainer.scrollLeft = targetOffset
+        }
+        if (sameDocumentViewport instanceof HTMLElement) {
+            sameDocumentViewport.scrollLeft = targetOffset
+        }
+        if (this.#container instanceof HTMLElement) {
+            this.#container.scrollLeft = targetOffset
+        }
+        this.#sameDocumentCurrentPageIndex = resolvedPageIndex
+        setSameDocumentHostTurnDiagnostics({
+            phase: 'applied-position',
+            reason,
+            targetPageIndex: resolvedPageIndex,
+            targetOffset,
+            appliedTransform: liveRoot.style.transform,
+            datasetCurrentPageIndex: liveRoot.dataset.manabiCurrentPageIndex ?? null,
+        })
+        logEBookPageNumLimited('same-document:set-page-position', {
+            reason,
+            smooth: !!smooth,
+            targetPage: resolvedPageIndex,
+            targetOffset,
+            fallbackOffset,
+            livePageCount: this.#getSameDocumentResolvedPageCountSync(),
+        })
+        return true
+    }
+
+    async #applySameDocumentPagePosition(pageIndex, { reason = 'same-document', smooth = false } = {}) {
+        return this.#applySameDocumentPagePositionSync(pageIndex, { reason, smooth })
+    }
+
     async #captureEbookRebuildLocation() {
         const activeLayout = this.#getActiveEbookSectionLayout()
         if (!activeLayout) return null
@@ -3852,6 +4037,13 @@ export class Paginator extends HTMLElement {
         if (this.#ebookLayoutEventTarget !== this.#view?.document?.defaultView) return
         if (this.scrolled || !this.#view) return
         try {
+            this.#view.reconcileSameDocumentExpandedWidth?.()
+            if (this.#sameDocumentMode && !this.#vertical) {
+                await this.#applySameDocumentPagePosition(this.#sameDocumentCurrentPageIndex, {
+                    reason: 'layout-complete',
+                    smooth: false,
+                })
+            }
             await this.#afterScroll('layout-complete')
         } catch (error) {
             console.error(error)
@@ -4209,6 +4401,13 @@ export class Paginator extends HTMLElement {
         const writingMode = vertical ? (verticalRTL ? 'vertical-rl' : 'vertical-lr') : 'horizontal-tb'
         const resolvedDir = this.bookDir || (rtl ? 'rtl' : 'ltr')
         this.#column = flow !== 'scrolled'
+        if (this.#sameDocumentMode) {
+            this.#view?.element?.style?.setProperty?.('direction', 'ltr')
+            this.#view?.document?.documentElement?.style?.setProperty?.('direction', 'ltr')
+            this.#view?.document?.body?.style?.setProperty?.('direction', 'ltr')
+            this.#sameDocumentViewport?.style?.setProperty?.('direction', 'ltr')
+            this.#container?.style?.setProperty?.('direction', 'ltr')
+        }
 
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
@@ -4400,6 +4599,31 @@ export class Paginator extends HTMLElement {
     }
     async viewSize() {
         if (this.#isCacheWarmer) return 0
+        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+            const [pageCount, size] = await Promise.all([
+                this.#getSameDocumentResolvedPageCount(),
+                this.size(),
+            ])
+            const val = pageCount * size
+            this.#logViewSizeOnce({
+                event: 'viewSize:same-document',
+                sectionIndex: this.#index ?? null,
+                side: await this.sideProp(),
+                clientWidth: this.#container?.clientWidth ?? null,
+                clientHeight: this.#container?.clientHeight ?? null,
+                scrollWidth: this.#container?.scrollWidth ?? null,
+                scrollHeight: this.#container?.scrollHeight ?? null,
+                returned: val,
+                scrolled: this.scrolled,
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+                bakeReady: this.#trackingSizeBakeReady,
+                pendingBakeReason: this.#pendingTrackingSizeBakeReason ?? null,
+                bakeInFlight: !!this.#trackingSizeBakeInFlight,
+                usingCache: false,
+            })
+            return val
+        }
         const view = this.#view
         if (!view || !view.element) return 0
         const element = view.element
@@ -4481,6 +4705,18 @@ export class Paginator extends HTMLElement {
         logEBookPageNumLimited(payload.event, payload)
     }
     async start() {
+        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+            const pageIndex = await this.#getSameDocumentClampedPageIndex()
+            const size = await this.size()
+            const start = pageIndex * size
+            logEBookPageNumLimited('start:same-document', {
+                sectionIndex: this.#index ?? null,
+                start,
+                size,
+                pageIndex,
+            })
+            return start
+        }
         const scrollProp = await this.scrollProp()
         const raw = this.#container[scrollProp]
         const start = Math.abs(raw)
@@ -4500,6 +4736,14 @@ export class Paginator extends HTMLElement {
         return (await this.start()) + (await this.size())
     }
     async page() {
+        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+            const page = await this.#getSameDocumentClampedPageIndex()
+            logEBookPageNumLimited('page:same-document', {
+                sectionIndex: this.#index ?? null,
+                page,
+            })
+            return page
+        }
         const start = await this.start()
         const end = await this.end()
         const size = await this.size()
@@ -4519,6 +4763,17 @@ export class Paginator extends HTMLElement {
         return page
     }
     async pages() {
+        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+            const livePageCount = await this.#getSameDocumentResolvedPageCount()
+            logEBookPageNumLimited('pages:same-document', {
+                sectionIndex: this.#index ?? null,
+                pages: livePageCount,
+                scrolled: this.scrolled,
+                vertical: this.#vertical,
+                rtl: this.#rtl,
+            })
+            return livePageCount
+        }
         const livePageCount = this.#getLiveChunkPageCount()
         if (livePageCount != null && !this.scrolled) {
             logEBookPageNumLimited('pages:live-chunk', {
@@ -5027,8 +5282,25 @@ export class Paginator extends HTMLElement {
                 reason: reason ?? 'scrollToPage',
             })
         }
+        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+            await this.#applySameDocumentPagePosition(page, {
+                reason: reason ?? 'scrollToPage',
+                smooth: !!smooth,
+            })
+            await this.#afterScroll(reason ?? 'scrollToPage')
+            return
+        }
+        this.#view?.reconcileSameDocumentExpandedWidth?.()
         const size = await this.size()
-        const offset = size * (this.#rtl ? -page : page)
+        const shouldUsePositiveRTLPageOffset = this.#sameDocumentMode
+            && !this.scrolled
+            && !this.#vertical
+            && this.#rtl
+        const offset = size * (shouldUsePositiveRTLPageOffset ? page : (this.#rtl ? -page : page))
+        const alternateRTLOffset = this.#rtl ? size * -page : offset
+        const scrollProp = await this.scrollProp()
+        const beforePage = await this.page().catch(() => null)
+        const beforeScrollValue = this.#container?.[scrollProp] ?? null
         logEBookPageNumLimited('scrollToPage', {
             targetPage: page,
             reason,
@@ -5036,10 +5308,44 @@ export class Paginator extends HTMLElement {
             sectionIndex: this.#index ?? null,
             size,
             offset,
+            positiveRTLPageOffset: shouldUsePositiveRTLPageOffset,
             rtl: this.#rtl,
             vertical: this.#vertical,
         })
-        return await this.#scrollTo(offset, reason, smooth)
+        await this.#scrollTo(offset, reason, smooth)
+        if (
+            this.#sameDocumentMode
+            && !this.scrolled
+            && !this.#vertical
+            && this.#rtl
+            && alternateRTLOffset !== offset
+        ) {
+            this.#cachedStart = null
+            const afterPrimaryPage = await this.page().catch(() => null)
+            const afterPrimaryScrollValue = this.#container?.[scrollProp] ?? null
+            const targetDidAdvance = Number.isFinite(afterPrimaryPage) && Number.isFinite(beforePage)
+                ? afterPrimaryPage > beforePage
+                : Number.isFinite(afterPrimaryPage) && afterPrimaryPage > 0
+            const shouldRetryWithAlternateOffset = !targetDidAdvance
+                && afterPrimaryPage !== page
+                && afterPrimaryScrollValue === beforeScrollValue
+            if (shouldRetryWithAlternateOffset) {
+                logEBookPageNumLimited('scrollToPage:rtl-retry', {
+                    targetPage: page,
+                    reason,
+                    smooth: !!smooth,
+                    sectionIndex: this.#index ?? null,
+                    size,
+                    primaryOffset: offset,
+                    alternateOffset: alternateRTLOffset,
+                    beforePage,
+                    afterPrimaryPage,
+                    beforeScrollValue,
+                    afterPrimaryScrollValue,
+                })
+                await this.#scrollTo(alternateRTLOffset, reason, smooth)
+            }
+        }
     }
     async scrollToAnchor(anchor, select, reasonOverride) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
@@ -5962,6 +6268,65 @@ export class Paginator extends HTMLElement {
     async next(distance) {
         return await this.#turnPage(1, distance)
     }
+    hostTurn(direction) {
+        const dir = direction === 'backward' ? -1 : 1
+        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+            const currentPage = this.#getSameDocumentClampedPageIndexSync()
+            const pageCount = this.#getSameDocumentResolvedPageCountSync()
+            const targetPage = currentPage + dir
+            setSameDocumentHostTurnDiagnostics({
+                phase: 'host-turn-begin',
+                direction,
+                currentPageIndex: currentPage,
+                pageCount,
+                targetPageIndex: targetPage,
+            })
+            if (targetPage >= 0 && targetPage < pageCount) {
+                this.#applySameDocumentPagePositionSync(targetPage, {
+                    reason: 'host-turn',
+                    smooth: true,
+                })
+                void Promise.resolve(this.#afterScroll('host-turn')).catch(() => {})
+                setSameDocumentHostTurnDiagnostics({
+                    phase: 'host-turn-complete',
+                    direction,
+                    currentPageIndex: currentPage,
+                    pageCount,
+                    targetPageIndex: targetPage,
+                    result: 'page',
+                })
+                return true
+            }
+            const adjacentIndex = this.#adjacentIndex(dir)
+            if (adjacentIndex != null) {
+                setSameDocumentHostTurnDiagnostics({
+                    phase: 'host-turn-section',
+                    direction,
+                    currentPageIndex: currentPage,
+                    pageCount,
+                    adjacentSectionIndex: adjacentIndex,
+                    result: 'section',
+                })
+                return this.#goTo({
+                    index: adjacentIndex,
+                    anchor: dir < 0 ? () => 1 : () => 0,
+                    reason: 'page',
+                })
+            }
+            setSameDocumentHostTurnDiagnostics({
+                phase: 'host-turn-unavailable',
+                direction,
+                currentPageIndex: currentPage,
+                pageCount,
+                targetPageIndex: targetPage,
+                result: 'unavailable',
+            })
+            return false
+        }
+        return dir < 0
+            ? this.prev()
+            : this.next()
+    }
     async prevSection() {
         const targetIndex = this.#adjacentIndex(-1)
         logBug?.('paginator:prevSection', {
@@ -6057,6 +6422,148 @@ export class Paginator extends HTMLElement {
         const edgeOffset = livePageCount != null ? 1 : 2;
         if ((await this.page()) >= (await this.pages()) - edgeOffset && this.#adjacentIndex(1) == null) return false;
         return true;
+    }
+
+    debugVisualDiagnostics() {
+        const roundRect = rect => rect ? {
+            top: Math.round(rect.top),
+            left: Math.round(rect.left),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+        } : null
+        const styleValue = (node, key) => {
+            try {
+                if (!node) return null
+                return getComputedStyle(node)?.[key] ?? null
+            } catch (_error) {
+                return null
+            }
+        }
+        const infoFor = node => ({
+            tag: node?.tagName?.toLowerCase?.() ?? null,
+            id: node?.id ?? null,
+            className: typeof node?.className === 'string' ? node.className : null,
+        })
+        const doc = this.#view?.document ?? null
+        const stage = document.getElementById('reader-stage')
+        const viewport = document.getElementById('manabi-same-document-viewport')
+        const viewportContainer = document.getElementById('manabi-same-document-container')
+        const contentRoot = this.#view?.document
+            ? (this.#view.document.getElementById?.('reader-content') || this.#view.document.body || null)
+            : null
+        const liveRoot = contentRoot?.querySelector?.('.manabi-page-root') || null
+        const livePages = liveRoot ? Array.from(liveRoot.querySelectorAll(':scope > .manabi-page')) : []
+        const firstLivePage = livePages[0] || null
+        const secondLivePage = livePages[1] || null
+        const lastLivePage = livePages[livePages.length - 1] || null
+        const sumLivePageWidths = livePages.reduce((sum, node) => {
+            try {
+                return sum + (node?.getBoundingClientRect?.().width || 0)
+            } catch (_error) {
+                return sum
+            }
+        }, 0)
+        const elementCenter = node => {
+            if (!node?.getBoundingClientRect) return null
+            try {
+                const rect = node.getBoundingClientRect()
+                const x = Math.round(rect.left + rect.width / 2)
+                const y = Math.round(rect.top + rect.height / 2)
+                return document.elementFromPoint(x, y)
+            } catch (_error) {
+                return null
+            }
+        }
+        return {
+            sameDocumentMode: this.#sameDocumentMode,
+            hostDisplay: styleValue(this, 'display'),
+            hostVisibility: styleValue(this, 'visibility'),
+            hostOpacity: styleValue(this, 'opacity'),
+            hostRect: roundRect(this.getBoundingClientRect?.()),
+            topDisplay: styleValue(this.#top, 'display'),
+            topVisibility: styleValue(this.#top, 'visibility'),
+            topOpacity: styleValue(this.#top, 'opacity'),
+            topRect: roundRect(this.#top?.getBoundingClientRect?.()),
+            containerDisplay: styleValue(this.#container, 'display'),
+            containerVisibility: styleValue(this.#container, 'visibility'),
+            containerOpacity: styleValue(this.#container, 'opacity'),
+            containerRect: roundRect(this.#container?.getBoundingClientRect?.()),
+            containerClientWidth: this.#container?.clientWidth ?? null,
+            containerClientHeight: this.#container?.clientHeight ?? null,
+            containerScrollWidth: this.#container?.scrollWidth ?? null,
+            containerScrollHeight: this.#container?.scrollHeight ?? null,
+            sameDocumentViewportExists: !!viewport,
+            sameDocumentViewportRect: roundRect(viewport?.getBoundingClientRect?.()),
+            sameDocumentViewportDisplay: styleValue(viewport, 'display'),
+            sameDocumentViewportVisibility: styleValue(viewport, 'visibility'),
+            sameDocumentViewportOpacity: styleValue(viewport, 'opacity'),
+            sameDocumentViewportZIndex: styleValue(viewport, 'zIndex'),
+            sameDocumentViewportPointerEvents: styleValue(viewport, 'pointerEvents'),
+            sameDocumentViewportParentTag: viewport?.parentElement?.tagName?.toLowerCase?.() ?? null,
+            sameDocumentViewportParentId: viewport?.parentElement?.id ?? null,
+            sameDocumentContainerExists: !!viewportContainer,
+            sameDocumentContainerRect: roundRect(viewportContainer?.getBoundingClientRect?.()),
+            sameDocumentContainerDisplay: styleValue(viewportContainer, 'display'),
+            sameDocumentContainerVisibility: styleValue(viewportContainer, 'visibility'),
+            sameDocumentContainerOpacity: styleValue(viewportContainer, 'opacity'),
+            mountRect: roundRect(this.#view?.element?.getBoundingClientRect?.()),
+            mountDisplay: styleValue(this.#view?.element, 'display'),
+            mountVisibility: styleValue(this.#view?.element, 'visibility'),
+            mountOpacity: styleValue(this.#view?.element, 'opacity'),
+            mountBackgroundColor: styleValue(this.#view?.element, 'backgroundColor'),
+            stageRect: roundRect(stage?.getBoundingClientRect?.()),
+            stageDisplay: styleValue(stage, 'display'),
+            stageVisibility: styleValue(stage, 'visibility'),
+            stageOpacity: styleValue(stage, 'opacity'),
+            stageZIndex: styleValue(stage, 'zIndex'),
+            stageBackgroundColor: styleValue(stage, 'backgroundColor'),
+            shellCenterElementTag: infoFor(elementCenter(stage || viewport || this.#container)).tag,
+            shellCenterElementId: infoFor(elementCenter(stage || viewport || this.#container)).id,
+            shellCenterElementClassName: infoFor(elementCenter(stage || viewport || this.#container)).className,
+            documentURL: doc?.URL ?? null,
+            documentReadyState: doc?.readyState ?? null,
+            documentBodyTextLength: doc?.body?.innerText?.trim?.().length ?? null,
+            documentBodyColor: styleValue(doc?.body, 'color'),
+            documentBodyBackgroundColor: styleValue(doc?.body, 'backgroundColor'),
+            contentRootRect: roundRect(contentRoot?.getBoundingClientRect?.()),
+            contentRootTextLength: contentRoot?.innerText?.trim?.().length ?? null,
+            contentRootDisplay: styleValue(contentRoot, 'display'),
+            contentRootVisibility: styleValue(contentRoot, 'visibility'),
+            contentRootOpacity: styleValue(contentRoot, 'opacity'),
+            liveRootClientWidth: liveRoot?.clientWidth ?? null,
+            liveRootClientHeight: liveRoot?.clientHeight ?? null,
+            liveRootScrollWidth: liveRoot?.scrollWidth ?? null,
+            liveRootScrollHeight: liveRoot?.scrollHeight ?? null,
+            liveRootTransform: styleValue(liveRoot, 'transform'),
+            liveRootTransition: styleValue(liveRoot, 'transition'),
+            liveRootDatasetCurrentPageIndex: liveRoot?.dataset?.manabiCurrentPageIndex ?? null,
+            sameDocumentHostTurnPhase: globalThis.manabiSameDocumentHostTurnDiagnostics?.phase ?? null,
+            sameDocumentHostTurnDirection: globalThis.manabiSameDocumentHostTurnDiagnostics?.direction ?? null,
+            sameDocumentHostTurnCurrentPageIndex: globalThis.manabiSameDocumentHostTurnDiagnostics?.currentPageIndex ?? null,
+            sameDocumentHostTurnTargetPageIndex: globalThis.manabiSameDocumentHostTurnDiagnostics?.targetPageIndex ?? null,
+            sameDocumentHostTurnPageCount: globalThis.manabiSameDocumentHostTurnDiagnostics?.pageCount ?? null,
+            sameDocumentHostTurnTargetOffset: globalThis.manabiSameDocumentHostTurnDiagnostics?.targetOffset ?? null,
+            sameDocumentHostTurnAppliedTransform: globalThis.manabiSameDocumentHostTurnDiagnostics?.appliedTransform ?? null,
+            sameDocumentHostTurnDatasetCurrentPageIndex: globalThis.manabiSameDocumentHostTurnDiagnostics?.datasetCurrentPageIndex ?? null,
+            sameDocumentHostTurnResult: globalThis.manabiSameDocumentHostTurnDiagnostics?.result ?? null,
+            liveRootComputedWidth: styleValue(liveRoot, 'width'),
+            liveRootComputedMinWidth: styleValue(liveRoot, 'minWidth'),
+            liveRootComputedMaxWidth: styleValue(liveRoot, 'maxWidth'),
+            liveRootComputedInlineSize: styleValue(liveRoot, 'inlineSize'),
+            liveRootComputedMinInlineSize: styleValue(liveRoot, 'minInlineSize'),
+            liveRootComputedMaxInlineSize: styleValue(liveRoot, 'maxInlineSize'),
+            liveRootComputedOverflowX: styleValue(liveRoot, 'overflowX'),
+            livePageCountFromDOM: livePages.length,
+            livePageWidthSum: Math.round(sumLivePageWidths),
+            firstLivePageRect: roundRect(firstLivePage?.getBoundingClientRect?.()),
+            secondLivePageRect: roundRect(secondLivePage?.getBoundingClientRect?.()),
+            lastLivePageRect: roundRect(lastLivePage?.getBoundingClientRect?.()),
+            firstLivePageOffsetLeft: firstLivePage?.offsetLeft ?? null,
+            secondLivePageOffsetLeft: secondLivePage?.offsetLeft ?? null,
+            lastLivePageOffsetLeft: lastLivePage?.offsetLeft ?? null,
+            firstLivePageComputedWidth: styleValue(firstLivePage, 'width'),
+            lastLivePageComputedWidth: styleValue(lastLivePage, 'width'),
+        }
     }
 
     // Public helpers for adjacent sections

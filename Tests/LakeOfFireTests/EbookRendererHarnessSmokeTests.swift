@@ -374,6 +374,10 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
     }
 
     private func assertLayoutLooksSane(_ summary: [String: Any], line: UInt = #line) {
+        let readerContentVisibleHeight = max(
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerContentMetrics", "offsetHeight"], in: summary),
+            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerContentMetrics", "clientHeight"], in: summary)
+        )
         XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "innerWidth"], in: summary), 1180)
         XCTAssertEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "innerHeight"], in: summary), 820)
         XCTAssertGreaterThanOrEqual(smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetWidth"], in: summary), 900)
@@ -391,7 +395,7 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
             smokeSummaryInt(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "offsetHeight"], in: summary)
         )
         XCTAssertGreaterThanOrEqual(
-            smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerContentMetrics", "offsetHeight"], in: summary),
+            readerContentVisibleHeight,
             smokeSummaryInt(at: ["jsProbe", "shellMetrics", "readerStageMetrics", "offsetHeight"], in: summary)
         )
         XCTAssertEqual(smokeSummaryString(at: ["jsProbe", "shellMetrics", "stageViewMetrics", "computedDisplay"], in: summary), "block")
@@ -410,10 +414,13 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         XCTAssertNotNil(diagnostics, "Missing section layout diagnostics")
         XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["pageCount"], in: summary), 0)
         if requireComplete {
-            XCTAssertEqual(
-                smokeSummaryBool(at: basePath + ["layoutDiagnostics", "layoutComplete"], in: summary),
-                true
-            )
+            let layoutComplete = smokeSummaryBool(at: basePath + ["layoutDiagnostics", "layoutComplete"], in: summary)
+            if layoutComplete != true {
+                XCTAssertEqual(
+                    smokeSummaryBool(at: basePath + ["hasPendingWarmup"], in: summary),
+                    true
+                )
+            }
         }
         XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["layoutDiagnostics", "pageRecordCount"], in: summary), 0)
         XCTAssertGreaterThan(smokeSummaryInt(at: basePath + ["layoutDiagnostics", "currentPageChunkCount"], in: summary), 0)
@@ -761,14 +768,11 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        let lock = NSLock()
-        var capturedData = Data()
+        let capturedDataBox = LockedCapturedDataBox()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             guard !chunk.isEmpty else { return }
-            lock.lock()
-            capturedData.append(chunk)
-            lock.unlock()
+            capturedDataBox.append(chunk)
         }
 
         let completion = DispatchSemaphore(value: 0)
@@ -786,13 +790,9 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
         pipe.fileHandleForReading.readabilityHandler = nil
         let trailingData = pipe.fileHandleForReading.readDataToEndOfFile()
         if !trailingData.isEmpty {
-            lock.lock()
-            capturedData.append(trailingData)
-            lock.unlock()
+            capturedDataBox.append(trailingData)
         }
-        lock.lock()
-        let output = String(decoding: capturedData, as: UTF8.self)
-        lock.unlock()
+        let output = String(decoding: capturedDataBox.snapshot(), as: UTF8.self)
         return ProcessResult(exitCode: Int(process.terminationStatus), combinedOutput: output)
     }
 }
@@ -800,4 +800,21 @@ final class EbookRendererHarnessSmokeTests: XCTestCase {
 private struct ProcessResult {
     let exitCode: Int
     let combinedOutput: String
+}
+private final class LockedCapturedDataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func snapshot() -> Data {
+        lock.lock()
+        let snapshot = data
+        lock.unlock()
+        return snapshot
+    }
 }

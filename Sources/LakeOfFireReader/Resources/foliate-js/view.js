@@ -1,4 +1,6 @@
 import * as CFI from './epubcfi.js'
+import './fixed-layout.js'
+import './paginator.js'
 import { TOCProgress, SectionProgress } from './progress.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
@@ -176,19 +178,42 @@ export class View extends HTMLElement {
         
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
         if (this.isFixedLayout) {
-            await import('./fixed-layout.js')
+            globalThis.manabiLoadEBookLastState = 'view-open-fixed-layout-import-ready'
+            globalThis.manabiLoadEBookLastState = 'view-open-fixed-layout-pre-create-renderer'
             this.renderer = document.createElement('foliate-fxl')
         } else {
-            await import('./paginator.js')
+            globalThis.manabiLoadEBookLastState = 'view-open-paginator-import-ready'
+            globalThis.manabiLoadEBookLastState = 'view-open-paginator-pre-create-renderer'
             this.renderer = document.createElement('foliate-paginator')
         }
+        globalThis.manabiLoadEBookLastState = 'view-open-renderer-created'
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
         // Overlayer support removed
         
+        globalThis.manabiLoadEBookLastState = 'view-open-renderer-open-called'
         this.renderer.open(book, isCacheWarmer)
+        globalThis.manabiLoadEBookLastState = 'view-open-renderer-pre-append'
         this.#root.append(this.renderer)
+        globalThis.manabiLoadEBookLastState = 'view-open-renderer-appended'
+        const rendererLoadPromise = new Promise(resolve => {
+            const onLoad = () => {
+                globalThis.manabiLoadEBookLastState = 'view-open-renderer-load-event';
+                resolve('load');
+            };
+            const onRelocate = () => {
+                globalThis.manabiLoadEBookLastState = 'view-open-renderer-relocate-event';
+                resolve('relocate');
+            };
+            this.renderer.addEventListener('load', onLoad, { once: true })
+            this.renderer.addEventListener('relocate', onRelocate, { once: true })
+            setTimeout(() => resolve('timeout'), 15000)
+        });
+        globalThis.manabiLoadEBookLastState = 'view-open-awaiting-renderer-event'
+        rendererLoadPromise.then(rendererReadyEvent => {
+            globalThis.manabiLoadEBookLastState = `view-open-renderer-event:${rendererReadyEvent}`
+        })
     }
     close() {
         this.renderer?.destroy()

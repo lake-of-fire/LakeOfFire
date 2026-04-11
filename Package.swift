@@ -1,11 +1,11 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
     name: "LakeOfFire",
-    platforms: [.macOS(.v14), .iOS(.v15)],
+    platforms: [.macOS(.v15), .iOS(.v15)],
     products: [
         .library(
             name: "LakeOfFireShareSupport",
@@ -63,7 +63,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", branch: "main"),
         .package(url: "https://github.com/lake-of-fire/RealmSwiftGaps.git", branch: "main"),
         .package(path: "../BigSyncKit"),
-        .package(url: "https://github.com/lake-of-fire/SwiftUIDownloads.git", branch: "main"),
+        .package(path: "../SwiftUIDownloads"),
         .package(url: "https://github.com/lake-of-fire/JapaneseLanguageTools.git", branch: "main"),
         .package(path: "../SwiftUtilities"),
         .package(url: "https://github.com/lake-of-fire/LakeImage.git", branch: "main"),
@@ -177,7 +177,7 @@ let package = Package(
             dependencies: [
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
-                .product(name: "BravePlaylist", package: "swift-brave"),
+                .product(name: "WebMedia", package: "swift-brave"),
                 .product(name: "SwiftUIWebView", package: "swiftui-webview"),
             ]
         ),
@@ -215,7 +215,7 @@ let package = Package(
                 "LakeOfFireCore",
                 "LakeOfFireAdblock",
                 .product(name: "BigSyncKit", package: "BigSyncKit"),
-                .product(name: "BravePlaylist", package: "swift-brave"),
+                .product(name: "WebMedia", package: "swift-brave"),
                 .product(name: "ExpandableText", package: "swiftui-expandable-text"),
                 .product(name: "JapaneseLanguageTools", package: "JapaneseLanguageTools"),
                 .product(name: "LRUCache", package: "LRUCache"),
@@ -277,7 +277,7 @@ let package = Package(
         .testTarget(
             name: "LakeOfFireTests",
             dependencies: [
-                .product(name: "BravePlaylist", package: "swift-brave"),
+                .product(name: "WebMedia", package: "swift-brave"),
                 "LakeOfFireContent",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",

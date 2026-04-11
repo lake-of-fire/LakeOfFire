@@ -26,7 +26,7 @@ public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiab
 
 @globalActor
 public actor ReaderContentListActor: CachedRealmsActor {
-    public static var shared = ReaderContentListActor()
+    public static let shared = ReaderContentListActor()
     
     public var cachedRealms = [String: RealmSwift.Realm]()
     
@@ -269,10 +269,11 @@ private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigatin
         guard !isReaderProvisionallyNavigating else { return }
         let currentSelection = entrySelection
         let filteredContentURLs = viewModel.filteredContents.map { $0.url }
+        let readerPageIsNativeReaderView = readerPageURL.isNativeReaderView
         viewModel.refreshSelectionTask = Task.detached {
             try Task.checkCancellation()
             do {
-                if !readerPageURL.isNativeReaderView,
+                if !readerPageIsNativeReaderView,
                    let currentSelection = currentSelection,
                    let idx = await viewModel.filteredContentIDs.firstIndex(of: currentSelection),
                    idx < filteredContentURLs.count,
@@ -284,7 +285,7 @@ private func refreshSelection(readerPageURL: URL, isReaderProvisionallyNavigatin
                     try await task
                 }
 
-                guard !readerPageURL.isNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
+                guard !readerPageIsNativeReaderView, filteredContentURLs.contains(readerPageURL) else {
                     if !readerPageURL.absoluteString.hasPrefix("internal://local/load"), currentSelection != nil {
                         async let task = { @MainActor in
                             try Task.checkCancellation()
@@ -337,7 +338,7 @@ struct ListItemToggleStyle: ToggleStyle {
     }
 }
 
-public enum ReaderContentSortOrder {
+public enum ReaderContentSortOrder: Sendable {
     case publicationDate
     case createdAt
     case lastVisitedAt
@@ -493,10 +494,9 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     
     @ViewBuilder private func cell(item: C) -> some View {
         HStack(spacing: 0) {
-            let shouldReserveThumbnailSpace = appearance.alwaysShowThumbnails && item.imageUrl != nil
             let appearance = ReaderContentCellAppearance(
                 maxCellHeight: maxCellHeight,
-                alwaysShowThumbnails: shouldReserveThumbnailSpace,
+                alwaysShowThumbnails: appearance.alwaysShowThumbnails,
                 isEbookStyle: item.isPhysicalMedia,
                 includeSource: includeSource,
                 thumbnailCornerRadius: 12
@@ -683,11 +683,12 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     }
 }
 
+@MainActor
 public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptyState: View>: View {
     let contents: [C]
-    var contentFilter: ((Int, C) async throws -> Bool)? = nil
+    var contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
-    let postSortTransform: (@ReaderContentListActor ([C]) -> [C])?
+    let postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])?
     let includeSource: Bool
     @Binding var entrySelection: String?
     var contentSortAscending = false
@@ -988,7 +989,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     
     public init(
         contents: [C],
-        contentFilter: ((Int, C) async throws -> Bool)? = nil,
+        contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         includeSource: Bool,
         entrySelection: Binding<String?>,
@@ -1000,7 +1001,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
+        postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -1082,9 +1083,10 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 }
 
 public extension ReaderContentProtocol {
+    @MainActor
     static func readerContentListView<Header: View, EmptyState: View>(
         contents: [Self],
-        contentFilter: ((Int, Self) async throws -> Bool)? = nil,
+        contentFilter: (@Sendable (Int, Self) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,

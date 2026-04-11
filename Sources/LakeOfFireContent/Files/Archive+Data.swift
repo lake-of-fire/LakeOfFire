@@ -222,6 +222,8 @@ public struct ReaderPackageEntrySource: Sendable {
 public actor ReaderPackageEntrySourceCache {
     public static let shared = ReaderPackageEntrySourceCache()
     private static let diagnosticLocalFilePathQueryItemName = "diagnosticLocalFilePath"
+    private static let expandedArchiveCacheRootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .appendingPathComponent("lakeoffire-expanded-archives", isDirectory: true)
 
     public struct CachedSource: Sendable {
         public let source: ReaderPackageEntrySource
@@ -258,7 +260,7 @@ public actor ReaderPackageEntrySourceCache {
             return CachedSource(source: cached.source, entries: cached.entries)
         }
 
-        let source = try ReaderPackageEntrySource(localURL: localURL)
+        let source = try Self.preparedSource(for: localURL, freshnessToken: freshnessToken)
         let entries = try source.enumerateEntries()
         cachedSources[cacheKey] = CacheRecord(
             source: source,
@@ -295,6 +297,87 @@ public actor ReaderPackageEntrySourceCache {
             return nil
         }
         return localURL
+    }
+
+    private static func preparedSource(for localURL: URL, freshnessToken: String) throws -> ReaderPackageEntrySource {
+        var isDirectory = ObjCBool(false)
+        if FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            return try ReaderPackageEntrySource(localURL: localURL)
+        }
+
+        let extractedRootURL = try expandedArchiveDirectory(for: localURL, freshnessToken: freshnessToken)
+        return try ReaderPackageEntrySource(localURL: extractedRootURL)
+    }
+
+    private static func expandedArchiveDirectory(for localURL: URL, freshnessToken: String) throws -> URL {
+        let cacheDirectoryURL = expandedArchiveCacheRootURL
+            .appendingPathComponent(cacheDirectoryName(for: localURL, freshnessToken: freshnessToken), isDirectory: true)
+
+        if FileManager.default.fileExists(atPath: cacheDirectoryURL.path) {
+            return cacheDirectoryURL
+        }
+
+        try FileManager.default.createDirectory(at: expandedArchiveCacheRootURL, withIntermediateDirectories: true)
+
+        let workingDirectoryURL = expandedArchiveCacheRootURL
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
+
+        do {
+            try extractArchive(at: localURL, to: workingDirectoryURL)
+            try FileManager.default.moveItem(at: workingDirectoryURL, to: cacheDirectoryURL)
+            return cacheDirectoryURL
+        } catch {
+            try? FileManager.default.removeItem(at: workingDirectoryURL)
+            throw error
+        }
+    }
+
+    private static func cacheDirectoryName(for localURL: URL, freshnessToken: String) -> String {
+        let raw = "\(localURL.standardizedFileURL.path)|\(freshnessToken)"
+        let hash = String(raw.hashValue.magnitude, radix: 16)
+        let basename = localURL.deletingPathExtension().lastPathComponent
+        let sanitizedBasename = basename
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        return "\(sanitizedBasename)-\(hash)"
+    }
+
+    private static func extractArchive(at archiveURL: URL, to rootURL: URL) throws {
+        guard let archive = Archive(url: archiveURL, accessMode: .read) else {
+            throw ReaderPackageEntrySourceError.unsupportedSource
+        }
+
+        for entry in archive {
+            switch entry.type {
+            case .directory:
+                let destinationURL = try directoryDestinationURL(rootURL: rootURL, entryPath: entry.path)
+                try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            case .file:
+                let destinationURL = try fileDestinationURL(rootURL: rootURL, entryPath: entry.path)
+                try FileManager.default.createDirectory(
+                    at: destinationURL.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try archive.extract(entry, to: destinationURL)
+            default:
+                continue
+            }
+        }
+    }
+
+    private static func directoryDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
+        let trimmed = rawEntryPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else {
+            return rootURL
+        }
+        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: trimmed)
+    }
+
+    private static func fileDestinationURL(rootURL: URL, entryPath rawEntryPath: String) throws -> URL {
+        let subpath = try ReaderPackageEntrySource.sanitizeSubpath(rawEntryPath)
+        return try ReaderPackageEntrySource.resolveDirectoryURL(rootURL: rootURL, subpath: subpath)
     }
 
     private static func freshnessToken(for localURL: URL) throws -> String {

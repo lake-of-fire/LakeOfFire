@@ -6,7 +6,16 @@ import LakeOfFireAdblock
 import LakeOfFireContent
 
 public struct YoutubeAdSkipUserScript {
-    public static let userScript = WebViewUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: false, in: .page, allowedDomains: Set(["youtube.com"]))
+    @MainActor
+    public static var userScript: WebViewUserScript {
+        WebViewUserScript(
+            source: script,
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: false,
+            in: .page,
+            allowedDomains: Set(["youtube.com"])
+        )
+    }
     
     // From: https://github.com/harshita214/Chrome-Extension/blob/ca42dabc9137e30ad9dede7c1a368771d0e3a74d/YoutubeAdSkip/skipad.js#L4
     static private let script = #"""

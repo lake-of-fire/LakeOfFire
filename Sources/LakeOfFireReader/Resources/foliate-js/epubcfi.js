@@ -231,13 +231,14 @@ const partsToNode = (node, parts) => {
         if (el) return { node: el, offset: 0 }
     }
     for (const { index } of parts) {
-        let newNode = getNodeByIndex(node, index)
+        let currentIndex = index
+        let newNode = getNodeByIndex(node, currentIndex)
         // skip over 'reader-sentinel' elements
         while (Array.isArray(newNode) ? false :
                newNode?.nodeType === 1 && newNode.localName?.toLowerCase() === 'reader-sentinel') {
             // increment index and get the next node
-            index++
-            newNode = getNodeByIndex(node, index)
+            currentIndex++
+            newNode = getNodeByIndex(node, currentIndex)
         }
         // handle non-existent nodes
         if (newNode === 'first') return { node: node.firstChild ?? node }

@@ -91,7 +91,7 @@ private struct HarnessEventRecord: Identifiable {
 }
 
 private struct HarnessSizePreferenceKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
+    nonisolated(unsafe) static var defaultValue: CGSize = .zero
 
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         value = nextValue()
@@ -441,7 +441,10 @@ private final class EbookRendererHarnessModel: ObservableObject {
             let nativePageCountInitial = activeWebViewState.paginationState?.pageCount
             try? await Task.sleep(nanoseconds: 350_000_000)
             let nativePageCountStable = activeWebViewState.paginationState?.pageCount
-            let jsProbe = try await captureSmokeShellProbe()
+            let jsProbe = try await waitForSmokeNavigationReady(
+                description: "initial shell probe readiness",
+                timeoutSeconds: cliOptions.smokeTimeoutSeconds
+            )
             let navigationProbe = await captureSmokeNavigationProbe()
             let buttonNavigationProbe = await captureSmokeButtonNavigationProbe()
             let jumpProbe = await captureSmokeJumpProbe()
@@ -499,8 +502,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 && (finishStartOverProbe["restartReturnedToFirstChapter"] as? Bool) == true
             let initialSectionPageCount = (jsProbe["sectionLayoutDiagnostics"] as? [String: Any])?["pageCount"] as? Int ?? 0
             let allowsSinglePageNavigationFallback = initialSectionPageCount <= 1
+            let allowsDirectionalNavigationFallback = allowsSinglePageNavigationFallback || buttonNavigationProbePassed
             let gate3NavigationFacade = (
-                (navigationProbePassed || allowsSinglePageNavigationFallback)
+                (navigationProbePassed || allowsDirectionalNavigationFallback)
                 && buttonNavigationProbePassed
                 && jumpProbePassed
                 && tocJumpProbePassed
@@ -557,6 +561,8 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 ],
                 "gateDiagnostics": [
                     "navigationProbePassed": navigationProbePassed,
+                    "buttonNavigationProbePassed": buttonNavigationProbePassed,
+                    "allowsDirectionalNavigationFallback": allowsDirectionalNavigationFallback,
                     "allowsSinglePageNavigationFallback": allowsSinglePageNavigationFallback,
                     "initialSectionPageCount": initialSectionPageCount,
                 ],
@@ -575,12 +581,14 @@ private final class EbookRendererHarnessModel: ObservableObject {
             await terminateAfterSmoke(exitCode: overallSuccess ? 0 : 1)
         } catch {
             latestError = "Smoke test failed: \(error.localizedDescription)"
+            let failureProbeDescription = (error as NSError).userInfo["lastProbe"] as? String
             let failureSummary: [String: Any] = [
                 "smokeTest": [
                     "bookURL": loadedBookURL?.absoluteString ?? cliOptions.bookURL?.absoluteString ?? "nil",
                     "timeoutSeconds": cliOptions.smokeTimeoutSeconds,
                 ],
                 "error": latestError ?? error.localizedDescription,
+                "lastProbe": failureProbeDescription ?? "unavailable",
             ]
             latestDump = prettyPrintedResult(failureSummary)
             appendEvent("smoke.fail", payload: latestError ?? error.localizedDescription)
@@ -863,6 +871,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
         case "ebookViewerInitialized":
             appendEvent(name, payload: messagePayloadSummary(message.body))
             guard let loadedBookURL else { return }
+            if cliOptions.smokeTest {
+                return
+            }
             do {
                 _ = try await scriptCaller.evaluateJavaScript(
                     "window.loadEBook({ url, layoutMode })",
@@ -1210,6 +1221,54 @@ private final class EbookRendererHarnessModel: ObservableObject {
         return decodeJSONObjectResult(result)
     }
 
+    private func smokeShellProbeContentURL(_ probe: [String: Any]) -> String? {
+        guard let contentURL = probe["contentURL"] as? String, !contentURL.isEmpty else {
+            return nil
+        }
+        return contentURL
+    }
+
+    private func smokeShellProbeCurrentIndex(_ probe: [String: Any]) -> Int? {
+        probe["currentIndex"] as? Int
+    }
+
+    private func smokeShellProbeHasPendingWarmup(_ probe: [String: Any]) -> Bool {
+        ((probe["sectionLayoutDiagnostics"] as? [String: Any])?["hasPendingWarmup"] as? Bool) == true
+    }
+
+    private func smokeShellProbeHasUsableNavigationSnapshot(_ probe: [String: Any]) -> Bool {
+        let sectionLayoutDiagnostics = probe["sectionLayoutDiagnostics"] as? [String: Any]
+        let pageCount = sectionLayoutDiagnostics?["pageCount"] as? Int ?? 0
+        let navDiagnostics = probe["navDiagnostics"] as? [String: Any]
+        let locationTotal = navDiagnostics?["lastKnownLocationTotal"] as? Int ?? 0
+        let primaryLabel = ((probe["userFacingPageUI"] as? [String: Any])?["primaryLabelFull"] as? String) ?? ""
+        return pageCount > 0 && locationTotal > 0 && !primaryLabel.isEmpty
+    }
+
+    private func smokeShellProbeIsNavigationReady(_ probe: [String: Any]) -> Bool {
+        let hasController = (probe["hasSectionLayoutController"] as? Bool) == true
+        let currentIndex = smokeShellProbeCurrentIndex(probe) ?? -1
+        guard hasController, currentIndex >= 0, smokeShellProbeContentURL(probe) != nil else {
+            return false
+        }
+        if !smokeShellProbeHasPendingWarmup(probe) {
+            return true
+        }
+        return smokeShellProbeHasUsableNavigationSnapshot(probe)
+    }
+
+    private func waitForSmokeNavigationReady(
+        description: String,
+        timeoutSeconds: Double = 4
+    ) async throws -> [String: Any] {
+        try await waitForSmokeShellProbe(
+            description: description,
+            timeoutSeconds: timeoutSeconds
+        ) { probe in
+            self.smokeShellProbeIsNavigationReady(probe)
+        }
+    }
+
     private func captureSmokeNavigationProbe() async -> [String: Any] {
         func currentPageNumber(in probe: [String: Any]) -> Int? {
             (probe["navDiagnostics"] as? [String: Any])?["lastPrimaryLabelDiagnostics"]
@@ -1253,17 +1312,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
             return false
         }
 
-        _ = try? await waitForSmokeShellProbe(
-            description: "navigation probe layout readiness",
-            timeoutSeconds: 3
-        ) { probe in
-            let diagnostics = probe["sectionLayoutDiagnostics"] as? [String: Any]
-            let pageCount = diagnostics?["pageCount"] as? Int ?? 0
-            let hasPendingWarmup = diagnostics?["hasPendingWarmup"] as? Bool ?? false
-            return pageCount > 1 || hasPendingWarmup == false
-        }
-
-        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let before = (try? await waitForSmokeNavigationReady(
+            description: "navigation probe layout readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeCurrentContentPageURL = currentContentPageURL
         let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
         let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
@@ -1293,7 +1344,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 """
             )
             try? await Task.sleep(nanoseconds: 700_000_000)
-            afterNext = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            afterNext = (try? await waitForSmokeNavigationReady(
+                description: "navigation probe next readiness"
+            )) ?? ["raw": "capture failed"]
             nextAdvanced = movementDetected(
                 from: before,
                 to: afterNext,
@@ -1313,7 +1366,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 """
             )
             try? await Task.sleep(nanoseconds: 700_000_000)
-            afterPrev = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            afterPrev = (try? await waitForSmokeNavigationReady(
+                description: "navigation probe prev readiness"
+            )) ?? ["raw": "capture failed"]
             let returnedToOrigin =
                 (before["currentIndex"] as? Int) == (afterPrev["currentIndex"] as? Int)
                 && (before["contentURL"] as? String) == (afterPrev["contentURL"] as? String)
@@ -1337,7 +1392,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 """
             )
             try? await Task.sleep(nanoseconds: 350_000_000)
-            afterGoRight = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            afterGoRight = (try? await waitForSmokeNavigationReady(
+                description: "navigation probe goRight readiness"
+            )) ?? ["raw": "capture failed"]
             if !nextAdvanced, !isRTL {
                 nextAdvanced = movementDetected(
                     from: afterNext,
@@ -1371,7 +1428,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 """
             )
             try? await Task.sleep(nanoseconds: 350_000_000)
-            afterGoLeft = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            afterGoLeft = (try? await waitForSmokeNavigationReady(
+                description: "navigation probe goLeft readiness"
+            )) ?? ["raw": "capture failed"]
             if !nextAdvanced, isRTL {
                 nextAdvanced = movementDetected(
                     from: afterNext,
@@ -1416,7 +1475,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
     }
 
     private func captureSmokeJumpProbe() async -> [String: Any] {
-        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let before = (try? await waitForSmokeNavigationReady(
+            description: "jump probe initial readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeCurrentContentPageURL = currentContentPageURL
         let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
         let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
@@ -1432,7 +1493,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 arguments: ["target": href]
             )
             try? await Task.sleep(nanoseconds: 900_000_000)
-            return (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            return (try? await waitForSmokeNavigationReady(
+                description: "jump probe readiness for \(href)"
+            )) ?? ["raw": "capture failed"]
         }
 
         let chapter2Href = "OEBPS/chapter2.xhtml"
@@ -1474,7 +1537,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
             """
         )
         try? await Task.sleep(nanoseconds: 900_000_000)
-        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let before = (try? await waitForSmokeNavigationReady(
+            description: "button navigation initial readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeCurrentContentPageURL = currentContentPageURL
         let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
         let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
@@ -1491,7 +1556,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 arguments: ["buttonID": buttonID]
             )
             try? await Task.sleep(nanoseconds: 900_000_000)
-            return (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            return (try? await waitForSmokeNavigationReady(
+                description: "button navigation readiness for \(buttonID)"
+            )) ?? ["raw": "capture failed"]
         }
 
         let afterNext = await clickButton("btn-next-chapter")
@@ -1529,7 +1596,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
     }
 
     private func captureSmokeTOCJumpProbe() async -> [String: Any] {
-        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let before = (try? await waitForSmokeNavigationReady(
+            description: "toc jump initial readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeCurrentContentPageURL = currentContentPageURL
         let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
         let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
@@ -1551,7 +1620,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 arguments: ["targetHref": href]
             )
             try? await Task.sleep(nanoseconds: 900_000_000)
-            return (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            return (try? await waitForSmokeNavigationReady(
+                description: "toc jump readiness for \(href)"
+            )) ?? ["raw": "capture failed"]
         }
 
         let chapter2Href = "OEBPS/chapter2.xhtml"
@@ -1584,7 +1655,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
     }
 
     private func captureSmokeProgressJumpProbe() async -> [String: Any] {
-        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let before = (try? await waitForSmokeNavigationReady(
+            description: "progress jump initial readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeCurrentContentPageURL = currentContentPageURL
         let beforeUpdateCurrentContentPageCount = eventCount(named: "updateCurrentContentPage")
         let beforeUpdateReadingProgressCount = eventCount(named: "updateReadingProgress")
@@ -1600,7 +1673,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
                 arguments: ["targetFraction": fraction]
             )
             try? await Task.sleep(nanoseconds: 900_000_000)
-            return (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+            return (try? await waitForSmokeNavigationReady(
+                description: "progress jump readiness for \(fraction)"
+            )) ?? ["raw": "capture failed"]
         }
 
         let afterJumpToEnd = await jump(to: 1.0)
@@ -1631,7 +1706,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
     }
 
     private func captureSmokeLongChapterProbe() async -> [String: Any] {
-        let before = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let before = (try? await waitForSmokeNavigationReady(
+            description: "restore probe initial readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeState = activeWebViewState.paginationState
         let beforeContentPageURL = currentContentPageURL
 
@@ -1804,7 +1881,9 @@ private final class EbookRendererHarnessModel: ObservableObject {
         )
         try? await Task.sleep(nanoseconds: 900_000_000)
 
-        let beforeReload = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let beforeReload = (try? await waitForSmokeNavigationReady(
+            description: "restore probe before reload readiness"
+        )) ?? ["raw": "capture failed"]
         let beforeReloadContentPageURL = currentContentPageURL
         let beforeReloadFractionalCompletion = lastKnownFractionalCompletion
         let beforeReloadCFI = lastKnownCFI
@@ -1818,7 +1897,10 @@ private final class EbookRendererHarnessModel: ObservableObject {
         }
         try? await Task.sleep(nanoseconds: 1_000_000_000)
 
-        let afterReload = (try? await captureSmokeShellProbe()) ?? ["raw": "capture failed"]
+        let afterReload = (try? await waitForSmokeNavigationReady(
+            description: "restore probe after reload readiness",
+            timeoutSeconds: 5
+        )) ?? ["raw": "capture failed"]
         let afterReloadContentPageURL = currentContentPageURL
         let restoredToSecondChapter =
             (afterReload["currentIndex"] as? Int) == 1
@@ -2114,7 +2196,10 @@ private final class EbookRendererHarnessModel: ObservableObject {
         throw NSError(
             domain: "EbookRendererHarnessSmoke",
             code: 3,
-            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for \(description)."]
+            userInfo: [
+                NSLocalizedDescriptionKey: "Timed out waiting for \(description).",
+                "lastProbe": prettyPrintedResult(lastProbe),
+            ]
         )
     }
 

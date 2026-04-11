@@ -16,13 +16,13 @@ class LibraryCategoriesViewModel: ObservableObject {
     @Published var editorsPicksLibraryCategories: [FeedCategory]? = nil
     @Published var archivedCategories: [FeedCategory]? = nil
     
-    @RealmBackgroundActor
-    private var cancellables = Set<AnyCancellable>()
+    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
     
     @Published var libraryConfiguration: LibraryConfiguration?
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
+            guard let self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
@@ -35,7 +35,7 @@ class LibraryCategoriesViewModel: ObservableObject {
                         self?.refreshData()
                     }
                 })
-                .store(in: &cancellables)
+                .store(in: &self.cancellables)
             
             realm.objects(FeedCategory.self)
                 .collectionPublisher
@@ -47,7 +47,7 @@ class LibraryCategoriesViewModel: ObservableObject {
                         self?.refreshData()
                     }
                 })
-                .store(in: &cancellables)
+                .store(in: &self.cancellables)
         }
     }
     

@@ -1,13 +1,12 @@
 import XCTest
-import BravePlaylist
 @testable import LakeOfFireWeb
 
-final class BraveMediaWebSupportTests: XCTestCase {
+final class WebMediaWebSupportTests: XCTestCase {
     func testScriptFactoryBuildsExpectedScripts() throws {
-        let scriptSet = try BraveMediaWebScripts.make(
+        let scriptSet = try WebMediaWebScripts.make(
             messageHandlerName: "mediaHandler",
             allowedDomains: ["youtube.com"],
-            configuration: PlaylistScriptConfiguration(
+            configuration: WebMediaScriptConfiguration(
                 messageHandlerName: "mediaHandler",
                 securityToken: "security-token",
                 namespaceToken: "namespace"
@@ -25,9 +24,9 @@ final class BraveMediaWebSupportTests: XCTestCase {
     }
 
     func testMessageDecoderUsesScriptSecurityToken() throws {
-        let scriptSet = try BraveMediaWebScripts.make(
+        let scriptSet = try WebMediaWebScripts.make(
             messageHandlerName: "mediaHandler",
-            configuration: PlaylistScriptConfiguration(
+            configuration: WebMediaScriptConfiguration(
                 messageHandlerName: "mediaHandler",
                 securityToken: "expected-token",
                 namespaceToken: "namespace"
@@ -39,39 +38,39 @@ final class BraveMediaWebSupportTests: XCTestCase {
             "state": "interactive",
         ]
 
-        let decoded = BraveMediaWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
+        let decoded = WebMediaWebMessageDecoder.decode(body: body, scriptSet: scriptSet)
         XCTAssertEqual(decoded, .readyState(.init(state: "interactive")))
     }
 
     func testCandidateSelectorPrefersVisibleDirectAudio() {
-        let invisibleVideo = PlaylistInfo(
+        let invisibleVideo = WebMediaCandidate(
             name: "Video",
-            src: "https://example.com/video.mp4",
-            pageSrc: "https://example.com/watch",
+            sourceURL: URL(string: "https://example.com/video.mp4"),
+            pageURL: URL(string: "https://example.com/watch"),
             pageTitle: "Watch",
             mimeType: "video/mp4",
             duration: 100,
             detected: true,
-            tagId: "video",
+            tagID: "video",
             isInvisible: true
         )
-        let visibleAudio = PlaylistInfo(
+        let visibleAudio = WebMediaCandidate(
             name: "Audio",
-            src: "https://example.com/audio.m4a",
-            pageSrc: "https://example.com/watch",
+            sourceURL: URL(string: "https://example.com/audio.m4a"),
+            pageURL: URL(string: "https://example.com/watch"),
             pageTitle: "Watch",
             mimeType: "audio/mp4",
             duration: 30,
             detected: true,
-            tagId: "audio",
+            tagID: "audio",
             isInvisible: false
         )
 
-        let preferred = BraveMediaCandidateSelector.preferredCandidate(
+        let preferred = WebMediaCandidateSelector.preferredCandidate(
             from: [invisibleVideo, visibleAudio]
         )
 
-        XCTAssertEqual(preferred?.tagId, "audio")
+        XCTAssertEqual(preferred?.tagID, "audio")
     }
 
     func testRequestContextIncludesCookieRefererAndUserAgent() {
@@ -84,7 +83,7 @@ final class BraveMediaWebSupportTests: XCTestCase {
             .expires: Date().addingTimeInterval(60),
         ])!
 
-        let context = BraveMediaRequestContextBuilder.make(
+        let context = WebMediaRequestContextBuilder.make(
             userAgent: "Manabi",
             referer: URL(string: "https://example.com/watch")!,
             cookies: [cookie]
@@ -107,25 +106,25 @@ final class BraveMediaWebSupportTests: XCTestCase {
             return (response, Data("abc".utf8))
         }
 
-        let media = PlaylistResolvedMedia(
-            playlistInfo: PlaylistInfo(
+        let media = WebMediaResolvedMedia(
+            candidate: WebMediaCandidate(
                 name: "Audio",
-                src: "https://cdn.example.com/audio.m4a",
-                pageSrc: "https://example.com/watch",
+                sourceURL: URL(string: "https://cdn.example.com/audio.m4a"),
+                pageURL: URL(string: "https://example.com/watch"),
                 pageTitle: "Audio",
                 mimeType: "audio/mp4",
                 duration: 1,
                 detected: true,
-                tagId: "audio",
+                tagID: "audio",
                 isInvisible: false
             ),
             url: URL(string: "https://cdn.example.com/audio.m4a")!,
             mimeType: "audio/mp4",
             requestHeaders: ["Cookie": "session=abc123"],
-            resolutionMethod: .direct
+            resolutionMethod: WebMediaResolutionMethod.direct
         )
 
-        let download = try await BraveMediaDownloader.download(
+        let download = try await WebMediaDownloader.download(
             media,
             using: makeSession()
         )
@@ -143,7 +142,7 @@ final class BraveMediaWebSupportTests: XCTestCase {
 }
 
 private final class URLProtocolStub: URLProtocol {
-    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool {
         true

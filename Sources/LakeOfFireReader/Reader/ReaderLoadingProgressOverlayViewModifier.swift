@@ -260,11 +260,6 @@ private struct ReaderLoadingOverlay: View {
         // Avoid flashing the status message during short loading pulses by only
         // showing status while the overlay is actually visible (debounced).
         guard isVisible else {
-            cancelHideWork()
-            if displayedMessage != nil || isShowingStatus {
-                displayedMessage = nil
-                isShowingStatus = false
-            }
             return
         }
 
@@ -302,22 +297,9 @@ private struct ReaderLoadingOverlay: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: workItem)
         } else {
             if displayedMessage != nil {
-                debugPrint(
-                    "# READER overlay.status",
-                    "context=\(context)",
-                    "action=hide",
-                    "message=\(displayedMessage ?? "")",
-                    "isLoading=\(isLoading)"
-                )
-                debugPrint(
-                    "# FLASH overlay.status",
-                    "context=\(context)",
-                    "action=hide",
-                    "message=\(displayedMessage ?? "")",
-                    "isLoading=\(isLoading)"
-                )
+                cancelHideWork()
+                return
             }
-            scheduleHide()
         }
     }
 

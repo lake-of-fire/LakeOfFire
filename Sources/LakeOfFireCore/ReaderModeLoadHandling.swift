@@ -7,7 +7,7 @@ public protocol ReaderModeLoadHandling: AnyObject {
 }
 
 public struct ReaderModeLoadHandlerKey: EnvironmentKey {
-    public static var defaultValue: (any ReaderModeLoadHandling)? = nil
+    nonisolated(unsafe) public static var defaultValue: (any ReaderModeLoadHandling)? = nil
 }
 
 public extension EnvironmentValues {

@@ -180,19 +180,18 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 .debounceLeadingTrailing(for: .seconds(0.3), scheduler: RunLoop.main)
                 .sink(receiveCompletion: { _ in }, receiveValue: { [weak self] _ in
                     Task { @MainActor [weak self] in
-                        let currentConfigurationID = libraryConfiguration?.id
-                        try await { @RealmBackgroundActor in
-                            let newLibraryConfigurationID = try await LibraryConfiguration.getConsolidatedOrCreate().id
-                            try await { @MainActor [weak self] in
-                                if newLibraryConfigurationID != currentConfigurationID {
-                                    let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                                    guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
-                                    self?.libraryConfiguration = libraryConfiguration
-                                } else {
-                                    self?.objectWillChange.send()
-                                }
-                            }()
+                        guard let self else { return }
+                        let currentConfigurationID = self.libraryConfiguration?.id
+                        let newLibraryConfigurationID = try await { @RealmBackgroundActor in
+                            try await LibraryConfiguration.getConsolidatedOrCreate().id
                         }()
+                        if newLibraryConfigurationID != currentConfigurationID {
+                            let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                            guard let libraryConfiguration = realm.object(ofType: LibraryConfiguration.self, forPrimaryKey: newLibraryConfigurationID) else { return }
+                            self.libraryConfiguration = libraryConfiguration
+                        } else {
+                            self.objectWillChange.send()
+                        }
                     }
                 })
                 .store(in: &cancellables)

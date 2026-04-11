@@ -1,5 +1,5 @@
 import SwiftUI
-import WebKit
+@preconcurrency import WebKit
 import UniformTypeIdentifiers
 import SwiftSoup
 import SwiftUtilities
@@ -38,6 +38,32 @@ fileprivate func logEbookHTML(
 
 fileprivate func logEbookAsset(_ line: String) {
     Logger.shared.logger.info("\(line)")
+}
+
+fileprivate func ebookRequestBodyData(_ request: URLRequest) -> Data? {
+    if let body = request.httpBody, !body.isEmpty {
+        return body
+    }
+    guard let stream = request.httpBodyStream else {
+        return nil
+    }
+    stream.open()
+    defer { stream.close() }
+    let chunkSize = 64 * 1024
+    let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunkSize)
+    defer { buffer.deallocate() }
+    var result = Data()
+    while stream.hasBytesAvailable {
+        let readCount = stream.read(buffer, maxLength: chunkSize)
+        if readCount < 0 {
+            return nil
+        }
+        if readCount == 0 {
+            break
+        }
+        result.append(buffer, count: readCount)
+    }
+    return result.isEmpty ? nil : result
 }
 
 struct EBookProcessTextRequestKey: Hashable {
@@ -94,7 +120,7 @@ actor EBookProcessTextRequestDeduper {
 
     func process(
         key: EBookProcessTextRequestKey,
-        operation: () async throws -> String
+        operation: @Sendable () async throws -> String
     ) async throws -> (responseText: String, didCoalesce: Bool) {
         if inFlightWaitersByKey[key] != nil {
             let response = await withCheckedContinuation { continuation in
@@ -121,16 +147,16 @@ actor EBookProcessTextRequestDeduper {
 }
 
 fileprivate actor EBookProcessingActor {
-    let ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
-    let ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
-    let processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
-    let processHTML: ((String, Bool) async -> String)?
+    let ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    let ebookTextProcessor: EbookTextProcessor?
+    let processReadabilityContent: EbookReadabilityContentProcessor?
+    let processHTML: EbookHTMLProcessor?
 
     init(
-        ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?,
-        ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?,
-        processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?,
-        processHTML: ((String, Bool) async -> String)?
+        ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?,
+        ebookTextProcessor: EbookTextProcessor?,
+        processReadabilityContent: EbookReadabilityContentProcessor?,
+        processHTML: EbookHTMLProcessor?
     ) {
         self.ebookTextProcessorCacheHits = ebookTextProcessorCacheHits
         self.ebookTextProcessor = ebookTextProcessor
@@ -178,15 +204,37 @@ fileprivate actor EBookLoadingActor {
         at viewerHtmlPath: String,
         originalURL: URL,
         sharedFontCSSBase64: String?,
-        sharedFontCSSBase64Provider: (() async -> String?)?
+        sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
     ) async throws -> (HTTPURLResponse, Data) {
         // Load HTML content from bundle path
         var html = try String(contentsOfFile: viewerHtmlPath)
+
+        let shouldEnablePageTurnInteractionDiagnostic =
+            ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
 
         // Inject shared font CSS payload as a single blob URL for all sections.
         var base64 = sharedFontCSSBase64
         if (base64 == nil || base64?.isEmpty == true), let provider = sharedFontCSSBase64Provider {
             base64 = await provider()
+        }
+
+        if shouldEnablePageTurnInteractionDiagnostic {
+            let diagnosticPayload = """
+            <script>
+            (function() {
+                try {
+                    globalThis.manabiPageTurnInteractionDiagnostic = true;
+                } catch (err) {
+                    console.error('Failed to enable page-turn interaction diagnostic flag', err);
+                }
+            })();
+            </script>
+            """
+            if let range = html.range(of: "</body>", options: .caseInsensitive) {
+                html.replaceSubrange(range, with: diagnosticPayload + "</body>")
+            } else {
+                html.append(diagnosticPayload)
+            }
         }
 
         if let base64, !base64.isEmpty {
@@ -235,21 +283,28 @@ fileprivate struct EBookEntriesResponse: Codable, Sendable {
 
 @globalActor
 public actor EbookURLSchemeActor {
-    public static var shared = EbookURLSchemeActor()
+    public static let shared = EbookURLSchemeActor()
 
     public init() { }
 }
 
+typealias EbookDocumentTransform = @Sendable (SwiftSoup.Document) async -> SwiftSoup.Document
+typealias EbookReadabilityContentProcessor = @Sendable (String, URL, URL?, Bool, EbookDocumentTransform) async throws -> SwiftSoup.Document
+typealias EbookHTMLProcessor = @Sendable (String, Bool) async -> String
+typealias EbookTextProcessor = @Sendable (URL, String, String, Bool, EbookReadabilityContentProcessor?, EbookHTMLProcessor?) async throws -> String
+typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String?) async throws -> Bool
+typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
+
 public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
-    public var ebookTextProcessorCacheHits: ((URL, String?) async throws -> Bool)?
-    public var ebookTextProcessor: ((URL, String, String, Bool, ((String, URL, URL?, Bool, (SwiftSoup.Document) async -> SwiftSoup.Document) async throws -> SwiftSoup.Document)?, ((String, Bool) async -> String)?) async throws -> String)?
+    nonisolated(unsafe) var ebookTextProcessorCacheHits: EbookTextProcessorCacheHitsHandler?
+    nonisolated(unsafe) var ebookTextProcessor: EbookTextProcessor?
     public var readerFileManager: ReaderFileManager?
-    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)?
-    public var processHTML: ((String, Bool) async -> String)?
+    nonisolated(unsafe) var processReadabilityContent: EbookReadabilityContentProcessor?
+    nonisolated(unsafe) var processHTML: EbookHTMLProcessor?
     /// Optional base64-encoded shared font CSS supplied by the host app to avoid adding a dependency here.
-    public var sharedFontCSSBase64: String?
+    nonisolated(unsafe) public var sharedFontCSSBase64: String?
     /// Optional provider to lazily supply the base64 CSS when not yet set.
-    public var sharedFontCSSBase64Provider: (() async -> String?)?
+    nonisolated(unsafe) var sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
@@ -273,21 +328,32 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         guard let url = urlSchemeTask.request.url else { return }
         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
             let mainDocumentURL = urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil"
-            logEbookAsset(
-                "# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)"
-            )
+            print("# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)")
         }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
             return
         }
+        let ebookTextProcessorCacheHits = self.ebookTextProcessorCacheHits
+        let ebookTextProcessor = self.ebookTextProcessor
+        let processReadabilityContent = self.processReadabilityContent
+        let processHTML = self.processHTML
+        let sharedFontCSSBase64 = self.sharedFontCSSBase64
+        let sharedFontCSSBase64Provider = self.sharedFontCSSBase64Provider
 
         Task.detached(priority: .utility) { @EbookURLSchemeActor [weak self] in
             guard let self else { return }
             let taskHash = urlSchemeTask.hash
             if url.path == "/process-text" {
-                if urlSchemeTask.request.httpMethod == "POST", let payload = urlSchemeTask.request.httpBody, let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
+                print("# EBOOKPERF process-text.enter task=\(taskHash) url=\(url.absoluteString)")
+                let request = urlSchemeTask.request
+                if request.httpMethod == "POST",
+                   let payload = ebookRequestBodyData(request),
+                   let text = String(data: payload, encoding: .utf8),
+                   let replacedTextLocation = request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"),
+                   let contentURLRaw = request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"),
+                   let contentURL = URL(string: contentURLRaw) {
                     if let ebookTextProcessor, let processReadabilityContent, let processHTML {
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                         let shouldLogRequest = shouldLogEbookHTMLPayload(text, location: replacedTextLocation)
@@ -435,6 +501,28 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                         }()
                     }
+                } else {
+                    print(
+                        "# EBOOKPERF process-text.invalid-request",
+                        "task:",
+                        taskHash,
+                        "method:",
+                        request.httpMethod ?? "nil",
+                        "hasHTTPBody:",
+                        request.httpBody != nil,
+                        "hasHTTPBodyStream:",
+                        request.httpBodyStream != nil,
+                        "replacedTextLocation:",
+                        request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION") ?? "nil",
+                        "contentLocation:",
+                        request.value(forHTTPHeaderField: "X-CONTENT-LOCATION") ?? "nil"
+                    )
+                    await { @MainActor in
+                        if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
+                            self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                        }
+                    }()
                 }
             } else if url.path == "/entries" {
                 guard let mainDocumentURL = self.validatedMainDocumentURL(for: urlSchemeTask.request, route: "/entries") else {
@@ -498,13 +586,43 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
 
                 do {
+                    let entryStart = Date()
+                    print(
+                        "# EBOOKPERF entry.begin",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "subpath:",
+                        subpath
+                    )
                     let cachedSource = try await ReaderPackageEntrySourceCache.shared.cachedSource(
                         forPackageURL: mainDocumentURL,
                         readerFileManager: readerFileManager
                     )
+                    print(
+                        "# EBOOKPERF entry.cachedSource",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "subpath:",
+                        subpath,
+                        "elapsedMs:",
+                        Int(Date().timeIntervalSince(entryStart) * 1000)
+                    )
+                    let readStart = Date()
                     let data = try cachedSource.source.readEntry(subpath: subpath)
+                    print(
+                        "# EBOOKPERF entry.read",
+                        "sourceURL:",
+                        mainDocumentURL.absoluteString,
+                        "subpath:",
+                        subpath,
+                        "bytes:",
+                        data.count,
+                        "elapsedMs:",
+                        Int(Date().timeIntervalSince(readStart) * 1000)
+                    )
+                    let metadataStart = Date()
                     let metadata = try cachedSource.source.mimeType(subpath: subpath)
-                    debugPrint(
+                    print(
                         "# EBOOKPERF entry.success",
                         "sourceURL:",
                         mainDocumentURL.absoluteString,
@@ -513,7 +631,11 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         "bytes:",
                         data.count,
                         "mimeType:",
-                        metadata.mimeType
+                        metadata.mimeType,
+                        "metadataElapsedMs:",
+                        Int(Date().timeIntervalSince(metadataStart) * 1000),
+                        "totalElapsedMs:",
+                        Int(Date().timeIntervalSince(entryStart) * 1000)
                     )
                     let response = HTTPURLResponse(
                         url: url,
@@ -523,6 +645,15 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                     )
                     await { @MainActor in
                         if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                            print(
+                                "# EBOOKPERF entry.respond",
+                                "sourceURL:",
+                                mainDocumentURL.absoluteString,
+                                "subpath:",
+                                subpath,
+                                "bytes:",
+                                data.count
+                            )
                             urlSchemeTask.didReceive(response)
                             urlSchemeTask.didReceive(data)
                             urlSchemeTask.didFinish()
@@ -538,7 +669,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                             httpVersion: nil,
                             headerFields: nil
                         )!
-                        debugPrint(
+                        print(
                             "# EBOOKPERF entry.missing",
                             "sourceURL:",
                             mainDocumentURL.absoluteString,
@@ -554,7 +685,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         }()
                         return
                     }
-                    debugPrint(
+                    print(
                         "# EBOOKPERF entry.error",
                         "sourceURL:",
                         mainDocumentURL.absoluteString,
@@ -570,8 +701,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 }
             } else if url.pathComponents.starts(with: ["/", "load"]) {
                 // Bundle file.
-                if let fileUrl = bundleURLFromWebURL(url),
-                   let mimeType = mimeType(ofFileAtUrl: fileUrl),
+                if let fileUrl = Self.bundleURLFromWebURL(url),
+                   let mimeType = Self.mimeType(ofFileAtUrl: fileUrl),
                    let data = try? Data(contentsOf: fileUrl) {
                     if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
                         logEbookAsset("# EBOOKASSET hit url=\(url.absoluteString) fileURL=\(fileUrl.absoluteString) mime=\(mimeType) bytes=\(data.count)")
@@ -597,8 +728,8 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
                         let (response, data) = try await EBookLoadingActor().loadViewerFile(
                             at: viewerHtmlPath,
                             originalURL: url,
-                            sharedFontCSSBase64: self.sharedFontCSSBase64,
-                            sharedFontCSSBase64Provider: self.sharedFontCSSBase64Provider
+                            sharedFontCSSBase64: sharedFontCSSBase64,
+                            sharedFontCSSBase64Provider: sharedFontCSSBase64Provider
                         )
                         await { @MainActor in
                             if self.schemeHandlers[urlSchemeTask.hash] != nil {
@@ -627,7 +758,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
-    private func bundleURLFromWebURL(_ url: URL) -> URL? {
+    nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {
         guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
         let assetName = url.deletingPathExtension().lastPathComponent
         let assetExtension = url.pathExtension
@@ -642,32 +773,92 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     @EbookURLSchemeActor
     private func validatedMainDocumentURL(for request: URLRequest, route: String) -> URL? {
         let requestedSourceURL = request.value(forHTTPHeaderField: "X-Ebook-Source-URL")
-        guard let mainDocumentURL = request.mainDocumentURL else {
-            debugPrint("# EBOOKPERF entry-source.invalid route:", route, "reason:", "missingMainDocumentURL", "requestURL:", request.url?.absoluteString ?? "nil", "requestedSourceURL:", requestedSourceURL ?? "nil")
-            assertionFailure("Missing mainDocumentURL for ebook entry request")
+        let requestSourceURL = URLComponents(url: request.url ?? URL(fileURLWithPath: "/"), resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name == "sourceURL" })?
+            .value
+
+        let candidateStrings = [
+            requestedSourceURL,
+            requestSourceURL,
+            request.mainDocumentURL?.absoluteString,
+        ].compactMap { $0 }
+
+        guard let resolvedSourceURLString = candidateStrings.first,
+              let mainDocumentURL = URL(string: resolvedSourceURLString) else {
+            debugPrint(
+                "# EBOOKPERF entry-source.invalid route:",
+                route,
+                "reason:",
+                "missingSourceURL",
+                "requestURL:",
+                request.url?.absoluteString ?? "nil",
+                "requestedSourceURL:",
+                requestedSourceURL ?? "nil",
+                "querySourceURL:",
+                requestSourceURL ?? "nil"
+            )
+            assertionFailure("Missing source URL for ebook entry request")
             return nil
         }
         guard mainDocumentURL.scheme == "ebook",
               mainDocumentURL.host == "ebook",
               mainDocumentURL.pathComponents.starts(with: ["/", "load"]) else {
-            debugPrint("# EBOOKPERF entry-source.invalid route:", route, "reason:", "unexpectedMainDocumentURL", "mainDocumentURL:", mainDocumentURL.absoluteString, "requestedSourceURL:", requestedSourceURL ?? "nil")
-            assertionFailure("Unexpected mainDocumentURL for ebook entry request: \(mainDocumentURL.absoluteString)")
+            debugPrint(
+                "# EBOOKPERF entry-source.invalid route:",
+                route,
+                "reason:",
+                "unexpectedSourceURL",
+                "mainDocumentURL:",
+                mainDocumentURL.absoluteString,
+                "requestedSourceURL:",
+                requestedSourceURL ?? "nil",
+                "querySourceURL:",
+                requestSourceURL ?? "nil"
+            )
+            assertionFailure("Unexpected source URL for ebook entry request: \(mainDocumentURL.absoluteString)")
             return nil
         }
         if let requestedSourceURL,
            requestedSourceURL != mainDocumentURL.absoluteString {
             debugPrint("# EBOOKPERF entry-source.mismatch route:", route, "mainDocumentURL:", mainDocumentURL.absoluteString, "requestedSourceURL:", requestedSourceURL)
+        }
+        if let requestSourceURL,
+           requestSourceURL != mainDocumentURL.absoluteString {
+            debugPrint("# EBOOKPERF entry-source.query-mismatch route:", route, "mainDocumentURL:", mainDocumentURL.absoluteString, "querySourceURL:", requestSourceURL)
             assertionFailure("Mismatched ebook source URL and mainDocumentURL")
         }
         if !hasLoggedValidatedMainDocumentURL {
             hasLoggedValidatedMainDocumentURL = true
-            debugPrint("# EBOOKPERF entry-source.mainDocumentURL route:", route, "mainDocumentURL:", mainDocumentURL.absoluteString, "requestedSourceURL:", requestedSourceURL ?? "nil")
+            debugPrint(
+                "# EBOOKPERF entry-source.mainDocumentURL route:",
+                route,
+                "mainDocumentURL:",
+                mainDocumentURL.absoluteString,
+                "requestedSourceURL:",
+                requestedSourceURL ?? "nil",
+                "querySourceURL:",
+                requestSourceURL ?? "nil"
+            )
         }
         return mainDocumentURL
     }
 
-    private func mimeType(ofFileAtUrl url: URL) -> String? {
-        return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+    nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {
+        switch url.pathExtension.lowercased() {
+        case "js", "mjs":
+            return "text/javascript"
+        case "css":
+            return "text/css"
+        case "html", "htm":
+            return "text/html"
+        case "json":
+            return "application/json"
+        case "svg":
+            return "image/svg+xml"
+        default:
+            return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        }
     }
 }
 

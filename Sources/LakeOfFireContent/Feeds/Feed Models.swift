@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 import SwiftSoup
 import BigSyncKit
-import FeedKit
+@preconcurrency import FeedKit
 import RealmSwiftGaps
 import LakeOfFireCore
 import LakeOfFireAdblock
@@ -166,7 +166,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
 
 @globalActor
 fileprivate actor FeedEntryActor {
-    static var shared = FeedEntryActor()
+    static let shared = FeedEntryActor()
 }
 
 public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, ChangeMetadataRecordable {
@@ -466,6 +466,70 @@ public extension Feed {
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         let iconUrl = iconUrl
+        var incomingIDs = [String]()
+        let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
+            guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+                  let url = URL(string: link)
+            else { return nil }
+            var imageUrl: URL? = nil
+            if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
+                if let imageUrlRaw = enclosureAttribs.url {
+                    imageUrl = URL(string: imageUrlRaw)
+                }
+            } else if let rawImageURL = item.media?.mediaContents?
+                .lazy.compactMap({ $0.attributes?.url })
+                .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
+            {
+                imageUrl = URL(string: rawImageURL)
+            }
+            let content = item.content?.contentEncoded ?? item.description
+
+            let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            let audioSubtitlesURL: URL? = {
+                guard let rawValue = rawSubtitleHref, !rawValue.isEmpty else { return nil }
+                if let direct = URL(string: rawValue) {
+                    return direct
+                }
+                return rawValue
+                    .addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                    .flatMap { URL(string: $0) }
+            }()
+            debugPrint(
+                "# AUDIO-VTT rss.subtitle.parse",
+                "url=\(url)",
+                "raw=\(rawSubtitleHref ?? "nil")",
+                "normalized=\(audioSubtitlesURL?.absoluteString ?? "nil")",
+                "hasMediaSubTitle=\(item.media?.mediaSubTitle != nil)"
+            )
+
+            var title = item.title
+            do {
+                if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
+                    if let doc = try? SwiftSoup.parse(feedItemTitle) {
+                        doc.outputSettings().prettyPrint(pretty: false)
+                        try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
+                        title = try doc.text()
+                    }
+                }
+            } catch { }
+            title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let feedEntry = FeedEntry()
+            feedEntry.feedID = feedID
+            feedEntry.html = content
+            feedEntry.url = url
+            feedEntry.title = title ?? ""
+            feedEntry.author = item.author ?? ""
+            feedEntry.imageUrl = imageUrl
+            feedEntry.sourceIconURL = iconUrl
+            feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
+            feedEntry.audioSubtitlesURL = audioSubtitlesURL
+            feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
+            feedEntry.updateCompoundKey()
+            incomingIDs.append(feedEntry.compoundKey)
+            return feedEntry
+        }
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
@@ -476,89 +540,6 @@ public extension Feed {
                     .map { $0.compoundKey }
             )
             
-            var incomingIDs = [String]()
-            let feedEntries: [FeedEntry] = rssItems.reversed().compactMap { item -> FeedEntry? in
-                guard let link = item.link?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
-                      let url = URL(string: link)
-                else { return nil }
-                var imageUrl: URL? = nil
-                if let enclosureAttribs = item.enclosure?.attributes, enclosureAttribs.type?.hasPrefix("image/") ?? false {
-                    if let imageUrlRaw = enclosureAttribs.url {
-                        imageUrl = URL(string: imageUrlRaw)
-                    }
-//                } else if let rawImageURL = item.media?.contents?
-//                    .lazy.compactMap({ $0.attributes?.url })
-//                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                } else if let rawImageURL = item.media?.mediaContents?
-                    .lazy.compactMap({ $0.attributes?.url })
-                    .first(where: { entryImageExtensions.contains(($0 as NSString).pathExtension.lowercased()) })
-                {
-                    imageUrl = URL(string: rawImageURL)
-                }
-                let content = item.content?.contentEncoded ?? item.description
-
-                let rawSubtitleHref = item.media?.mediaSubTitle?.attributes?.href?
-                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                let audioSubtitlesURL: URL? = {
-                    guard let rawValue = rawSubtitleHref, !rawValue.isEmpty else { return nil }
-                    if let direct = URL(string: rawValue) {
-                        return direct
-                    }
-                    return rawValue
-                        .addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
-                        .flatMap { URL(string: $0) }
-                }()
-                debugPrint(
-                    "# AUDIO-VTT rss.subtitle.parse",
-                    "url=\(url)",
-                    "raw=\(rawSubtitleHref ?? "nil")",
-                    "normalized=\(audioSubtitlesURL?.absoluteString ?? "nil")",
-                    "hasMediaSubTitle=\(item.media?.mediaSubTitle != nil)"
-                )
-                
-                var title = item.title
-                do {
-                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
-                        if let doc = try? SwiftSoup.parse(feedItemTitle) {
-                            doc.outputSettings().prettyPrint(pretty: false)
-                            try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                            title = try doc.text()
-                        }
-                    }
-                } catch { }
-                title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-//                
-//                if let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url)) {
-//                    if existingEntry.feedID == feedID && existingEntry.html == content && existingEntry.url == url && existingEntry.title == title ?? "" && existingEntry.author == item.author ?? "" && existingEntry.imageUrl == imageUrl && existingEntry.publicationDate == item.pubDate ?? item.dublinCore?.dcDate {
-//                        return exi
-//                    }
-//                }
-                
-                let feedEntry = FeedEntry()
-                feedEntry.feedID = feedID
-                feedEntry.html = content
-                feedEntry.url = url
-                feedEntry.title = title ?? ""
-                feedEntry.author = item.author ?? ""
-                feedEntry.imageUrl = imageUrl
-                feedEntry.sourceIconURL = iconUrl
-                feedEntry.publicationDate = item.pubDate ?? item.dublinCore?.dcDate
-                let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
-                let existingSubtitle = existingEntry?.audioSubtitlesURL
-                feedEntry.audioSubtitlesURL = audioSubtitlesURL
-                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
-                feedEntry.updateCompoundKey()
-                debugPrint(
-                    "# AUDIO-VTT feedEntry.persist.rss",
-                    "url=\(url)",
-                    "rssSubtitle=\(audioSubtitlesURL?.absoluteString ?? "nil")",
-                    "existingSubtitle=\(existingSubtitle?.absoluteString ?? "nil")",
-                    "existingFeedID=\(existingEntry?.feedID?.uuidString ?? "nil")",
-                    "feedID=\(feedID.uuidString)"
-                )
-                incomingIDs.append(feedEntry.compoundKey)
-                return feedEntry
-            }
             let payloads = try await upsertFeedEntries(
                 realm: realm,
                 entries: feedEntries,
@@ -576,6 +557,93 @@ public extension Feed {
     private func persist(atomItems: [AtomFeedEntry], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
         let sourceIconURL = iconUrl
+        var incomingIDs = [String]()
+        let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
+            var url: URL?
+            var imageUrl: URL?
+            item.links?.forEach { (link: AtomFeedEntryLink) in
+                guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
+                else { return }
+
+                if (link.attributes?.rel ?? "alternate") == "alternate" {
+                    url = URL(string: linkHref)
+                } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
+                    imageUrl = URL(string: linkHref)
+                }
+            }
+            guard let url = url else { return nil }
+
+            var voiceFrameUrl: URL? = nil
+            if let rawVoiceFrameUrl = item.links?
+                .filter({ (link) -> Bool in
+                    return (link.attributes?.rel ?? "") == "voice-frame"
+                })
+                    .first?.attributes?.href
+            {
+                voiceFrameUrl = URL(string: rawVoiceFrameUrl)
+            }
+
+            let voiceAudioURLs: [URL] = (item.links ?? [])
+                .filter { $0.attributes?.rel == "voice-audio" }
+                .compactMap { $0.attributes?.href }
+                .compactMap { URL(string: $0) }
+            let rawAtomSubtitleHref = (item.links ?? [])
+                .first { $0.attributes?.rel == "voice-audio-subtitles" }
+                .flatMap { $0.attributes?.href }
+            let audioSubtitlesURL: URL? = rawAtomSubtitleHref
+                .flatMap { URL(string: $0) }
+            debugPrint(
+                "# AUDIO-VTT atom.subtitle.parse",
+                "url=\(url)",
+                "raw=\(rawAtomSubtitleHref ?? "nil")",
+                "normalized=\(audioSubtitlesURL?.absoluteString ?? "nil")"
+            )
+
+            var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
+            if let redditTranslationsAttrs = item.links?
+                .filter({ (link) -> Bool in
+                    return (link.attributes?.rel ?? "") == "reddit-translations"
+                })
+                    .first?.attributes,
+               let rawRedditTranslationsUrl = redditTranslationsAttrs.href?
+                .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+            {
+                redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
+                redditTranslationsTitle = redditTranslationsAttrs.title
+            }
+
+            var title = item.title
+            do {
+                if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
+                    if let doc = try? SwiftSoup.parse(feedItemTitle) {
+                        doc.outputSettings().prettyPrint(pretty: false)
+                        try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
+                        title = try doc.text()
+                    }
+                }
+            } catch { }
+            title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let feedEntry = FeedEntry()
+            feedEntry.feedID = feedID
+            feedEntry.url = url
+            feedEntry.title = title ?? ""
+            feedEntry.author = item.authors?.compactMap { $0.name }
+                .joined(separator: ", ") ?? ""
+            feedEntry.imageUrl = imageUrl
+            feedEntry.sourceIconURL = sourceIconURL
+            feedEntry.publicationDate = item.published ?? item.updated
+            feedEntry.html = item.content?.value
+            feedEntry.voiceFrameUrl = voiceFrameUrl
+            feedEntry.voiceAudioURL = voiceAudioURLs.first ?? feedEntry.voiceAudioURL
+            feedEntry.audioSubtitlesURL = audioSubtitlesURL
+            feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
+            feedEntry.redditTranslationsUrl = redditTranslationsUrl
+            feedEntry.redditTranslationsTitle = redditTranslationsTitle
+            feedEntry.updateCompoundKey()
+            incomingIDs.append(feedEntry.compoundKey)
+            return feedEntry
+        }
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             
@@ -586,106 +654,6 @@ public extension Feed {
                     .map { $0.compoundKey }
             )
             
-            var incomingIDs = [String]()
-            let feedEntries: [FeedEntry] = atomItems.reversed().compactMap { (item) -> FeedEntry? in
-                var url: URL?
-                var imageUrl: URL?
-                item.links?.forEach { (link: AtomFeedEntryLink) in
-                    guard let linkHref = link.attributes?.href?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
-                    else { return }
-                    
-                    if (link.attributes?.rel ?? "alternate") == "alternate" {
-                        url = URL(string: linkHref)
-                    } else if let rel = link.attributes?.rel, let type = link.attributes?.type, rel == "enclosure" && type.hasPrefix("image/") {
-                        imageUrl = URL(string: linkHref)
-                    }
-                }
-                guard let url = url else { return nil }
-                
-                var voiceFrameUrl: URL? = nil
-                if let rawVoiceFrameUrl = item.links?
-                    .filter({ (link) -> Bool in
-                        return (link.attributes?.rel ?? "") == "voice-frame"
-                    })
-                        .first?.attributes?.href
-                {
-                    voiceFrameUrl = URL(string: rawVoiceFrameUrl)
-                }
-                
-                let voiceAudioURLs: [URL] = (item.links ?? [])
-                    .filter { $0.attributes?.rel == "voice-audio" }
-                    .compactMap { $0.attributes?.href }
-                    .compactMap { URL(string: $0) }
-                let rawAtomSubtitleHref = (item.links ?? [])
-                    .first { $0.attributes?.rel == "voice-audio-subtitles" }
-                    .flatMap { $0.attributes?.href }
-                let audioSubtitlesURL: URL? = rawAtomSubtitleHref
-                    .flatMap { URL(string: $0) }
-                debugPrint(
-                    "# AUDIO-VTT atom.subtitle.parse",
-                    "url=\(url)",
-                    "raw=\(rawAtomSubtitleHref ?? "nil")",
-                    "normalized=\(audioSubtitlesURL?.absoluteString ?? "nil")"
-                )
-                
-                // TODO: Refactor into community commentary links
-                var redditTranslationsUrl: URL? = nil, redditTranslationsTitle: String? = nil
-                if let redditTranslationsAttrs = item.links?
-                    .filter({ (link) -> Bool in
-                        return (link.attributes?.rel ?? "") == "reddit-translations"
-                    })
-                        .first?.attributes,
-                   let rawRedditTranslationsUrl = redditTranslationsAttrs.href?
-                    .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-                {
-                    redditTranslationsUrl = URL(string: rawRedditTranslationsUrl)
-                    redditTranslationsTitle = redditTranslationsAttrs.title
-                }
-                
-                var title = item.title
-                do {
-                    if let feedItemTitle = item.title?.unescapeHTML(), feedItemTitle.contains("<") {
-                        if let doc = try? SwiftSoup.parse(feedItemTitle) {
-                            doc.outputSettings().prettyPrint(pretty: false)
-                            try collapseRubyTags(doc: doc, restrictToReaderContentElement: false)
-                            title = try doc.text()
-                        }
-                    }
-                } catch { }
-                title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                let feedEntry = FeedEntry()
-                feedEntry.feedID = feedID
-                feedEntry.url = url
-                feedEntry.title = title ?? ""
-                feedEntry.author = item.authors?.compactMap { $0.name }
-                    .joined(separator: ", ") ?? ""
-                feedEntry.imageUrl = imageUrl
-                feedEntry.sourceIconURL = sourceIconURL
-                feedEntry.publicationDate = item.published ?? item.updated
-                feedEntry.html = item.content?.value
-                feedEntry.voiceFrameUrl = voiceFrameUrl
-                feedEntry.voiceAudioURL = voiceAudioURLs.first ?? feedEntry.voiceAudioURL
-                let existingEntry = realm.object(ofType: FeedEntry.self, forPrimaryKey: FeedEntry.makePrimaryKey(url: url))
-                let existingSubtitle = existingEntry?.audioSubtitlesURL
-                feedEntry.audioSubtitlesURL = audioSubtitlesURL
-                feedEntry.audioSubtitlesRoleRawValue = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
-                feedEntry.redditTranslationsUrl = redditTranslationsUrl
-                feedEntry.redditTranslationsTitle = redditTranslationsTitle
-                feedEntry.updateCompoundKey()
-                let subtitlesDescription = audioSubtitlesURL?.absoluteString ?? "nil"
-                let voiceCount = voiceAudioURLs.count
-                debugPrint(
-                    "# AUDIO-VTT feedEntry.persist.atom",
-                    "url=\(url)",
-                    "rssSubtitle=\(subtitlesDescription)",
-                    "existingSubtitle=\(existingSubtitle?.absoluteString ?? "nil")",
-                    "existingFeedID=\(existingEntry?.feedID?.uuidString ?? "nil")",
-                    "voiceCount=\(voiceCount)"
-                )
-                incomingIDs.append(feedEntry.compoundKey)
-                return feedEntry
-            }
             let payloads = try await upsertFeedEntries(
                 realm: realm,
                 entries: feedEntries,

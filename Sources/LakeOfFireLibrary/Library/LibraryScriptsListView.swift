@@ -12,11 +12,11 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration?
     @Published var userScripts: [UserScript]? = nil
     
-    @RealmBackgroundActor
-    private var cancellables = Set<AnyCancellable>()
+    nonisolated(unsafe) private var cancellables = Set<AnyCancellable>()
     
     init() {
         Task { @RealmBackgroundActor [weak self] in
+            guard let self else { return }
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: LibraryDataManager.realmConfiguration)
             
             realm.objects(LibraryConfiguration.self)
@@ -38,7 +38,7 @@ fileprivate class LibraryScriptsListViewModel: ObservableObject {
                         }()
                     }
                 })
-                .store(in: &cancellables)
+                .store(in: &self.cancellables)
         }
     }
     
@@ -211,11 +211,11 @@ struct LibraryScriptsListView: View {
     @ViewBuilder
     func addScriptButton(scrollProxy: ScrollViewProxy) -> some View {
         let button = Button {
-            Task { @RealmBackgroundActor in
-                let scriptID = try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
-                await Task { @MainActor in
-                    scrollProxy.scrollTo("library-sidebar-\(scriptID.uuidString)")
-                }.value
+            Task { @MainActor in
+                let scriptID = try await { @RealmBackgroundActor in
+                    try await LibraryDataManager.shared.createEmptyScript(addToLibrary: true)
+                }()
+                scrollProxy.scrollTo("library-sidebar-\(scriptID.uuidString)")
             }
         } label: {
             Label("Add Script", systemImage: "plus.circle")

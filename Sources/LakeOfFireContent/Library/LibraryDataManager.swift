@@ -35,9 +35,9 @@ public let libraryDataQueue = DispatchQueue(label: "LibraryDataQueue")
 //}
 
 public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadataRecordable {
-    public static var securityApplicationGroupIdentifier = ""
-    public static var downloadstDirectoryName = "library-configuration"
-    public static var opmlURLs = [URL]()
+    nonisolated(unsafe) public static var securityApplicationGroupIdentifier = ""
+    nonisolated(unsafe) public static var downloadstDirectoryName = "library-configuration"
+    nonisolated(unsafe) public static var opmlURLs = [URL]()
 
     @Persisted(primaryKey: true) public var id = UUID()
     @Persisted public var opmlLastImportedAt: Date?
@@ -50,8 +50,14 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     @Persisted public var modifiedAt = Date()
     @Persisted public var isDeleted = false
     
-    public lazy var systemScripts: [WebViewUserScript] = {
-        return [
+    @MainActor
+    public var systemScripts: [WebViewUserScript] {
+        Self.sharedSystemScripts
+    }
+
+    @MainActor
+    public static var sharedSystemScripts: [WebViewUserScript] {
+        [
             Readability.shared.userScript,
             ReadabilityImagesUserScript.shared.userScript,
 //            ReaderConsoleLogsUserScript.shared.userScript,
@@ -60,7 +66,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //            YoutubeAdSkipUserScript.userScript,
 //            YoutubeCaptionsUserScript.userScript,
         ]
-    }()
+    }
     
     public var needsSyncToAppServer: Bool {
         return false
@@ -77,8 +83,9 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
     @MainActor
     public var downloadables: Set<Downloadable> {
         guard !Self.securityApplicationGroupIdentifier.isEmpty else { fatalError("securityApplicationGroupIdentifier unset") }
+        let controller = DownloadController.shared
         return Set(Self.opmlURLs.compactMap { url in
-            if let downloadable = DownloadController.shared.assuredDownloads.first(where: { $0.url == url }) {
+            if let downloadable = controller.assuredDownloads.first(where: { $0.url == url }) {
                 return downloadable
             } else {
                 return Downloadable(
@@ -119,12 +126,17 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
 //        return Set(downloadables.compactMap({ $0.backgroundAssetDownload(applicationGroupIdentifier: Self.securityApplicationGroupIdentifier)}))
 //    }
     
+    @MainActor
     public func getActiveWebViewUserScripts() -> [WebViewUserScript]? {
+        getActiveWebViewUserScriptDescriptors()?.map { $0.makeUserScript() }
+    }
+
+    public func getActiveWebViewUserScriptDescriptors() -> [WebViewUserScriptDescriptor]? {
         guard let realm else {
             print("Warning: Unexpectedly unmanaged object")
             return nil
         }
-        return Array(getUserScripts()?.filter { !$0.isArchived }.compactMap { $0.getWebViewUserScript() } ?? [])
+        return Array(getUserScripts()?.filter { !$0.isArchived }.compactMap { $0.getWebViewUserScriptDescriptor() } ?? [])
     }
 //    
 //    public static func get() throws -> LibraryConfiguration? {
@@ -288,11 +300,11 @@ extension OPMLEntry {
     }
 }
 
-public class LibraryDataManager: NSObject {
-    public static let shared = LibraryDataManager()
+public class LibraryDataManager: NSObject, @unchecked Sendable {
+    nonisolated(unsafe) public static let shared = LibraryDataManager()
     
-    public static var realmConfiguration: Realm.Configuration = DefaultRealmConfiguration.configuration
-    public static var currentUsername: String? = nil
+    nonisolated(unsafe) public static var realmConfiguration: Realm.Configuration = DefaultRealmConfiguration.configuration
+    nonisolated(unsafe) public static var currentUsername: String? = nil
 
     private var importOPMLTask: Task<(), Error>?
     
@@ -302,13 +314,18 @@ public class LibraryDataManager: NSObject {
     var cancellables = Set<AnyCancellable>()
 
     private static let attributeCharacterSet: CharacterSet = .alphanumerics.union(.punctuationCharacters.union(.symbols.union(.whitespaces)))
+
+    @MainActor
+    private static var downloadController: DownloadController {
+        DownloadController.shared
+    }
     
     public override init() {
         super.init()
         
         // TODO: Optimize a lil by only importing changed downloads, not reapplying all downloads on any one changing. Tho it's nice to ensure DLs continuously correctly placed.
         Task { @MainActor in
-            DownloadController.shared.$finishedDownloads
+            Self.downloadController.$finishedDownloads
                 .debounceLeadingTrailing(for: .seconds(0.25), scheduler: RunLoop.main)
                 .sink(receiveValue: { [weak self] feedDownloads in
                     guard let self = self else { return }
@@ -544,9 +561,9 @@ public class LibraryDataManager: NSObject {
     
     @RealmBackgroundActor
     public func syncFromServers(isWaiting: Bool) async throws {
-        Task.detached { @MainActor in
+        Task { @MainActor in
             let downloadables = try await LibraryConfiguration.getConsolidatedOrCreate().downloadables
-            await DownloadController.shared.ensureDownloaded(downloadables)
+            await Self.downloadController.ensureDownloaded(downloadables)
         }
     }
     

@@ -301,7 +301,7 @@ public extension Array where Element == Link {
     }
 }
 
-public struct LinkRelation: Hashable, ExpressibleByStringLiteral {
+public struct LinkRelation: Hashable, ExpressibleByStringLiteral, Sendable {
     public let string: String
 
     public init(_ string: String) {

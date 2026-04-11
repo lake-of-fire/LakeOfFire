@@ -22,16 +22,16 @@ public extension String {
 
 @globalActor
 public actor ReaderContentReadingProgressLoader {
-    public static var shared = ReaderContentReadingProgressLoader()
+    public static let shared = ReaderContentReadingProgressLoader()
     
     public init() { }
     
     /// Float is progress, Bool is whether article is "finished".
-    public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
-    public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
+    nonisolated(unsafe) public static var readingProgressLoader: (@Sendable (URL) async throws -> (Float, Bool)?)?
+    nonisolated(unsafe) public static var readingProgressMetadataLoader: (@Sendable (URL) async throws -> ReaderContentProgressMetadata?)?
 }
 
-public struct ReaderContentProgressMetadata {
+public struct ReaderContentProgressMetadata: Sendable {
     public let totalWordCount: Int?
     public let remainingTime: TimeInterval?
     
@@ -221,6 +221,7 @@ public extension ReaderContentProtocol {
         return nil
     }
     
+    @MainActor
     var canBookmark: Bool {
         guard !url.isNativeReaderView else {
             return false
@@ -229,16 +230,17 @@ public extension ReaderContentProtocol {
     }
     
     @MainActor
-    func asyncWrite(_ block: @escaping ((Realm, any ReaderContentProtocol) -> Void)) async throws {
+    func asyncWrite(_ block: @escaping @Sendable ((Realm, any ReaderContentProtocol) -> Void)) async throws {
         let config = realm?.configuration ?? .defaultConfiguration
         let compoundKey = compoundKey
         let cls = type(of: self)// objectSchema.objectClass
+        nonisolated(unsafe) let writeBlock = block
         try await { @RealmBackgroundActor in
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: config)
             guard let content = realm.object(ofType: cls, forPrimaryKey: compoundKey) else { return }
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
-                block(realm, content)
+                writeBlock(realm, content)
             }
         }()
         await realm?.asyncRefresh()

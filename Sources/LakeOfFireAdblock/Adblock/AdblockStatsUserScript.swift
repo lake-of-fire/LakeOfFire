@@ -2,7 +2,7 @@ import Foundation
 import SwiftUIWebView
 import WebKit
 
-public struct AdblockStatsUserScript {
+public struct AdblockStatsUserScript: Sendable {
     public static let shared = AdblockStatsUserScript()
     public static let handlerName = "adblockStats"
     public static let securityToken = UUID().uuidString

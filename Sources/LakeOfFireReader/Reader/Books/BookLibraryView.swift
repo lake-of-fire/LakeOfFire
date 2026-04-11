@@ -303,7 +303,7 @@ public class BookLibraryViewModel: ObservableObject {
     public let mediaFileTypeTitle: String
     let opdsURL: URL
     let fileTypes: [UTType]
-    let fileFilter: ((ContentFile) throws -> Bool)?
+    let fileFilter: (@Sendable (ContentFile) throws -> Bool)?
     /// Loaded in RealmBackgroundActor
     let loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)?
 
@@ -312,7 +312,7 @@ public class BookLibraryViewModel: ObservableObject {
         mediaFileTypeTitle: String = "EPUB",
         opdsURL: URL = BookLibraryViewModel.defaultOPDSURL,
         fileTypes: [UTType] = [.epub, .epubZip],
-        fileFilter: ((ContentFile) throws -> Bool)? = nil,
+        fileFilter: (@Sendable (ContentFile) throws -> Bool)? = nil,
         loadedFiles: (@RealmBackgroundActor ([ContentFile]) async throws -> Void)? = nil,
         onNavigateToReader: (() -> Void)? = nil
     ) {
@@ -377,17 +377,19 @@ public class BookLibraryViewModel: ObservableObject {
                 let downloadURL = publication.downloadURL,
                 let content = localFiles.first(where: { $0.url == downloadURL || $0.sourceDownloadURL == downloadURL })
             else { continue }
+            let voiceAudioURL = publication.voiceAudioURL
+            let audioSubtitlesURL = publication.audioSubtitlesURL
+            let subtitleRole = audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
             try? await ReaderContentLoader.updateContent(url: content.url) { object in
                 var changed = false
-                if object.voiceAudioURL != publication.voiceAudioURL {
-                    object.voiceAudioURL = publication.voiceAudioURL
+                if object.voiceAudioURL != voiceAudioURL {
+                    object.voiceAudioURL = voiceAudioURL
                     changed = true
                 }
-                if object.audioSubtitlesURL != publication.audioSubtitlesURL {
-                    object.audioSubtitlesURL = publication.audioSubtitlesURL
+                if object.audioSubtitlesURL != audioSubtitlesURL {
+                    object.audioSubtitlesURL = audioSubtitlesURL
                     changed = true
                 }
-                let subtitleRole = publication.audioSubtitlesURL != nil ? AudioSubtitlesRole.content.rawValue : nil
                 if object.audioSubtitlesRoleRawValue != subtitleRole {
                     object.audioSubtitlesRoleRawValue = subtitleRole
                     changed = true
@@ -456,7 +458,7 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
     
-    @RealmBackgroundActor
+    @MainActor
     func open(
         publication: Publication,
         readerFileManager: ReaderFileManager = .shared,
@@ -479,15 +481,13 @@ public class BookLibraryViewModel: ObservableObject {
         }
         
         guard let toLoad = importedURL else { return }
-        try await Task { @MainActor in
-            guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
-            try await navigator.load(
-                content: content,
-                readerFileManager: readerFileManager,
-                readerModeViewModel: readerModeViewModel
-            )
-            onNavigateToReader?()
-        }.value
+        guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
+        try await navigator.load(
+            content: content,
+            readerFileManager: readerFileManager,
+            readerModeViewModel: readerModeViewModel
+        )
+        onNavigateToReader?()
     }
 
     @MainActor
@@ -517,7 +517,7 @@ public class BookLibraryViewModel: ObservableObject {
     }
 }
 
-public struct Publication: Identifiable, Hashable {
+public struct Publication: Identifiable, Hashable, Sendable {
     public let id = UUID()
     public var title: String
     public var author: String?

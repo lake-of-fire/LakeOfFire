@@ -401,6 +401,7 @@ fileprivate struct ReaderContentInnerHorizontalList<C: ReaderContentProtocol>: V
     }
 }
 
+@MainActor
 public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: View>: View {
     let contents: [C]
     let includeSource: Bool
@@ -409,12 +410,12 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     let customMenuOptions: ((C) -> AnyView)?
     let onContentSelected: ((C) -> Void)?
     let resetScrollOnAppear: Bool
-    let postSortTransform: (@ReaderContentListActor ([C]) -> [C])?
+    let postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])?
     
     @StateObject var viewModel = ReaderContentListViewModel<C>()
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 130
     let contentSortAscending = false
-    var contentFilter: (@ReaderContentListActor (Int, C) async throws -> Bool) = { @ReaderContentListActor _, _ in return true }
+    var contentFilter: (@ReaderContentListActor @Sendable (Int, C) async throws -> Bool) = { @ReaderContentListActor _, _ in return true }
     //    @State var sortOrder = [KeyPathComparator(\ReaderContentType.publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     //    var sortOrder = [KeyPathComparator(\(any ReaderContentProtocol).publicationDate, order: .reverse)] //KeyPathComparator(\TrackedWord.lastReadAtOrEpoch, order: .reverse)]
     var sortOrder = ReaderContentSortOrder.publicationDate
@@ -485,13 +486,13 @@ public struct ReaderContentHorizontalList<C: ReaderContentProtocol, EmptyState: 
     /// Initializer with a view builder for the empty state (required).
     public init(
         contents: [C],
-        contentFilter: ((Int, C) async throws -> Bool)? = nil,
+        contentFilter: (@Sendable (Int, C) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder? = nil,
         includeSource: Bool,
         contentSelection: Binding<String?>,
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
-        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
+        postSortTransform: (@ReaderContentListActor @Sendable ([C]) -> [C])? = nil,
         resetScrollOnAppear: Bool = false,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
