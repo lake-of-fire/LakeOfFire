@@ -360,11 +360,74 @@ fileprivate struct ReaderMediaPlayerViewModifier: ViewModifier {
 }
 
 fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
+    @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
+    @EnvironmentObject var readerViewModel: ReaderViewModel
+    @State private var lastOverlayDiagnosticKey: String?
     
     func body(content: Content) -> some View {
+        let currentCanonicalURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
+        let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?.canonicalReaderContentURLForHotfix()
+        let webViewPageURL = readerViewModel.state.pageURL
+        let webViewShowingNonLoaderPage = !webViewPageURL.isNativeReaderView && !webViewPageURL.isReaderURLLoaderURL
+        let hasRenderedCurrentPage = renderedCanonicalURL == currentCanonicalURL
+            && renderedCanonicalURL != nil
+            && webViewShowingNonLoaderPage
+        let hasVisibleContent =
+            hasRenderedCurrentPage
+            || (
+                readerContent.content != nil
+                && webViewShowingNonLoaderPage
+                && !readerContent.isReaderProvisionallyNavigating
+                && !readerContent.isRenderingReaderHTML
+            )
+        let shouldShowOverlay = readerModeViewModel.isReaderModeLoading && !hasVisibleContent
+        let diagnosticKey = [
+            shouldShowOverlay ? "show" : "hide",
+            readerModeViewModel.isReaderModeLoading ? "readerModeLoading" : "readerModeIdle",
+            hasVisibleContent ? "visibleContent" : "noVisibleContent",
+            readerContent.pageURL.absoluteString,
+            readerViewModel.state.pageURL.absoluteString,
+            readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "pending:nil",
+            readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "expected:nil",
+            readerModeViewModel.lastRenderedURL?.absoluteString ?? "rendered:nil",
+        ].joined(separator: "|")
         content
-            .modifier(ReaderLoadingProgressOverlayViewModifier(isLoading: readerModeViewModel.isReaderModeLoading))
+            .modifier(
+                ReaderLoadingProgressOverlayViewModifier(
+                    isLoading: shouldShowOverlay,
+                    context: "ReaderOverlay"
+                )
+            )
+            .task(id: diagnosticKey) { @MainActor in
+                guard lastOverlayDiagnosticKey != diagnosticKey else { return }
+                lastOverlayDiagnosticKey = diagnosticKey
+                debugPrint(
+                    "# READERLOAD stage=readerOverlay.state",
+                    "result=\(shouldShowOverlay)",
+                    "readerModeLoading=\(readerModeViewModel.isReaderModeLoading)",
+                    "hasVisibleContent=\(hasVisibleContent)",
+                    "hasRenderedCurrentPage=\(hasRenderedCurrentPage)",
+                    "pageURL=\(readerContent.pageURL.absoluteString)",
+                    "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
+                    "readerProvisionallyNavigating=\(readerContent.isReaderProvisionallyNavigating)",
+                    "isRenderingReaderHTML=\(readerContent.isRenderingReaderHTML)",
+                    "pendingReaderModeURL=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                    "expectedSyntheticReaderLoaderURL=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                    "lastRenderedURL=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")"
+                )
+                if readerModeViewModel.isReaderModeLoading && hasVisibleContent {
+                    debugPrint(
+                        "# READERLOAD stage=readerOverlay.suppressedVisibleContent",
+                        "pageURL=\(readerContent.pageURL.absoluteString)",
+                        "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
+                        "hasRenderedCurrentPage=\(hasRenderedCurrentPage)",
+                        "pendingReaderModeURL=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "expectedSyntheticReaderLoaderURL=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+                        "lastRenderedURL=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")"
+                    )
+                }
+            }
 //            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }
 //            .overlay {
 //                Text(readerModeViewModel.isReaderModeLoading.description)

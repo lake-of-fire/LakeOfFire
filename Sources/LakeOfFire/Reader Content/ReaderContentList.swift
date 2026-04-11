@@ -278,6 +278,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
         isReaderProvisionallyNavigating: Bool,
         oldPageURL: URL? = nil
     ) {
+        let refreshStartedAt = Date()
         viewModel.refreshSelectionTask?.cancel()
         guard !isReaderProvisionallyNavigating else {
             logReaderLoad(
@@ -288,9 +289,6 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
 
         let currentSelection = entrySelection
         let filteredContentURLs = viewModel.filteredContents.map(\.url)
-        logReaderLoad(
-            "stage=contentList.refreshSelection.begin readerPageURL=\(readerPageURL.absoluteString) oldPageURL=\(oldPageURL?.absoluteString ?? "nil") currentSelection=\(currentSelection ?? "nil") filteredCount=\(filteredContentURLs.count)"
-        )
 
         viewModel.refreshSelectionTask = Task.detached {
             try Task.checkCancellation()
@@ -302,12 +300,12 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                    !filteredContentURLs[idx].matchesReaderURL(readerPageURL) {
                     async let clearTask = { @MainActor in
                         try Task.checkCancellation()
-                        logReaderLoad(
-                            "stage=contentList.refreshSelection.clear reason=selectionDoesNotMatchReader selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString)"
-                        )
-                        self.entrySelection = nil
-                    }()
-                    try await clearTask
+                            logReaderLoad(
+                                "stage=contentList.refreshSelection.clear reason=selectionDoesNotMatchReader selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(refreshStartedAt)))"
+                            )
+                            self.entrySelection = nil
+                        }()
+                        try await clearTask
                 }
 
                 guard !readerPageURL.isNativeReaderView,
@@ -318,7 +316,7 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                         async let clearTask = { @MainActor in
                             try Task.checkCancellation()
                             logReaderLoad(
-                                "stage=contentList.refreshSelection.clear reason=readerPageMissingFromList selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString)"
+                                "stage=contentList.refreshSelection.clear reason=readerPageMissingFromList selection=\(currentSelection ?? "nil") readerPageURL=\(readerPageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(refreshStartedAt)))"
                             )
                             self.entrySelection = nil
                         }()
@@ -533,10 +531,9 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
     @ViewBuilder
     private func cell(item: C) -> some View {
         HStack(spacing: 0) {
-            let shouldReserveThumbnailSpace = appearance.alwaysShowThumbnails && item.imageUrl != nil
             let cellAppearance = ReaderContentCellAppearance(
                 maxCellHeight: maxCellHeight,
-                alwaysShowThumbnails: shouldReserveThumbnailSpace,
+                alwaysShowThumbnails: appearance.alwaysShowThumbnails,
                 isEbookStyle: item.isPhysicalMedia,
                 includeSource: includeSource,
                 thumbnailCornerRadius: 12

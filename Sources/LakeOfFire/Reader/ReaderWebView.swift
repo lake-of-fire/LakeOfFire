@@ -237,11 +237,6 @@ public struct ReaderWebView: View {
                 handler.readerMediaPlayerViewModel = readerMediaPlayerViewModel
                 handler.scriptCaller = scriptCaller
             }
-            let scriptDescriptions = readerViewModel.allScripts.enumerated().map { idx, script in
-                let prefix = script.source.prefix(48).replacingOccurrences(of: "\n", with: " ")
-                return "#\(idx):time=\(script.injectionTime.rawValue) mainFrameOnly=\(script.isForMainFrameOnly) domains=\(script.allowedDomains.sorted()) prefix=\(prefix)"
-            }
-            print("# LOOKUPSMAR15 ReaderWebView.task allScripts.count=\(readerViewModel.allScripts.count) scripts=\(scriptDescriptions)")
             ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent

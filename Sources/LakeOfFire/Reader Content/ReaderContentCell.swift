@@ -39,7 +39,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             guard let item = realm.object(ofType: C.self, forPrimaryKey: pk) else { return }
             try Task.checkCancellation()
 
-            let title = item.titleForDisplay
+            let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
+            let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
+            let trimmedTitle = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
             let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
             let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
@@ -314,8 +317,28 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return fallback.isEmpty ? nil : fallback
     }
 
+    private var fallbackTitle: String {
+        let primary = viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !primary.isEmpty {
+            return primary
+        }
+
+        let rawTitle = item.title.removingClipboardIndicatorIfNeeded(item.needsClipboardIndicator)
+        let sanitizedTitle = rawTitle.removingHTMLTags() ?? rawTitle
+        let fallback = sanitizedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallback.isEmpty {
+            return fallback
+        }
+
+        if let host = item.url.host, !host.isEmpty {
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        }
+
+        return item.url.absoluteString
+    }
+
     private var comparisonTitles: [String] {
-        [viewModel.title, item.titleForDisplay]
+        [viewModel.title, fallbackTitle]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
     }
@@ -331,15 +354,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var displayTitle: String {
-        let title = viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty {
-            return title
-        }
-        let fallback = item.titleForDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !fallback.isEmpty {
-            return fallback
-        }
-        return item.url.absoluteString
+        fallbackTitle
     }
 
     private var isProgressVisible: Bool {
@@ -384,7 +399,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var contentColumnHeight: CGFloat? {
-        if appearance.thumbnailDimension != nil || displayImageURL != nil {
+        if appearance.thumbnailDimension != nil || hasVisibleThumbnail {
             return appearance.maxCellHeight
         }
         return nil
@@ -394,6 +409,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         case image(URL)
         case icon(URL)
         case initial(String)
+        case symbol(String)
     }
 
     private var fallbackInitial: String {
@@ -408,7 +424,11 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         if let iconURL = resolvedSourceIconURL {
             return .icon(iconURL)
         }
-        return appearance.alwaysShowThumbnails ? .initial(fallbackInitial) : nil
+        guard appearance.alwaysShowThumbnails else { return nil }
+        if item.needsClipboardIndicator {
+            return .symbol("paperclip")
+        }
+        return .initial(fallbackInitial)
     }
 
     private var hasVisibleThumbnail: Bool {
@@ -588,6 +608,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 height: thumbnailEdgeLength,
                 cornerRadius: thumbnailCornerRadius
             )
+        case .symbol(let systemName):
+            ReaderContentThumbnailTile(
+                content: .symbol(systemName),
+                width: thumbnailEdgeLength,
+                height: thumbnailEdgeLength,
+                cornerRadius: thumbnailCornerRadius
+            )
         }
     }
 
@@ -680,6 +707,7 @@ private struct ReaderContentThumbnailTile: View {
     enum Content {
         case icon(URL, placeholder: String)
         case initial(String)
+        case symbol(String)
     }
 
     let content: Content
@@ -702,6 +730,12 @@ private struct ReaderContentThumbnailTile: View {
                 ReaderContentSourceIconImage(sourceIconURL: iconURL, iconSize: min(width, height) * 0.52)
             }
 
+            if case let .symbol(systemName) = content {
+                Image(systemName: systemName)
+                    .font(.system(size: min(width, height) * 0.34, weight: .semibold))
+                    .foregroundStyle(Color.secondary.opacity(0.85))
+            }
+
             if let placeholderLetter {
                 Text(placeholderLetter)
                     .font(.system(size: min(width, height) * 0.42, weight: .semibold, design: .rounded))
@@ -718,6 +752,8 @@ private struct ReaderContentThumbnailTile: View {
             return placeholder.isEmpty ? nil : placeholder
         case .initial(let letter):
             return letter.isEmpty ? nil : letter
+        case .symbol:
+            return nil
         }
     }
 }

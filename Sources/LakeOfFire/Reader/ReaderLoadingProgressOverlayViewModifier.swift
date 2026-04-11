@@ -94,19 +94,10 @@ private struct ReaderLoadingOverlay: View {
         .onChange(of: isLoading) { newValue in
             latestIsLoading = newValue
             latestStatusMessage = statusMessage
-            let emission = OverlayEmission(
+            lastLoggedEmission = OverlayEmission(
                 isLoading: newValue,
                 statusMessage: newValue ? statusMessage : nil
             )
-            if lastLoggedEmission != emission {
-                lastLoggedEmission = emission
-                debugPrint(
-                    "# READERLOAD stage=overlay.loading",
-                    "context=\(context)",
-                    "isLoading=\(newValue)",
-                    "status=\((newValue ? statusMessage : nil) ?? "nil")"
-                )
-            }
             if newValue {
                 startHeartbeat()
             } else {
@@ -120,23 +111,11 @@ private struct ReaderLoadingOverlay: View {
             syncStatusDisplay()
         }
         .onChange(of: isVisible) { _ in
-            debugPrint(
-                "# READERLOAD stage=overlay.visibility",
-                "context=\(context)",
-                "isVisible=\(isVisible)",
-                "latestIsLoading=\(latestIsLoading)"
-            )
             syncStatusDisplay()
         }
         .onAppear {
             latestIsLoading = isLoading
             latestStatusMessage = statusMessage
-            debugPrint(
-                "# READERLOAD stage=overlay.appear",
-                "context=\(context)",
-                "isLoading=\(isLoading)",
-                "status=\(statusMessage ?? "nil")"
-            )
             syncVisibility()
             syncStatusDisplay()
         }

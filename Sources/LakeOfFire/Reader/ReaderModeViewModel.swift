@@ -29,7 +29,7 @@ private func sanitizeReadabilityFragment(_ html: String) -> String {
     stripTemplateTagsForSanitize(html)
 }
 
-private extension URL {
+extension URL {
     func canonicalReaderContentURLForHotfix() -> URL {
         ReaderContentLoader.getContentURL(fromLoaderURL: self) ?? self
     }
@@ -200,70 +200,11 @@ internal func buildCanonicalReadabilityHTML(
             <div id="reader-content">
                 \(content)
             </div>
-            \(lookupSmAR15InlineProbeHTML(context: "canonical-readability", url: contentURL))
             <script>
                 \(Readability.shared.scripts)
             </script>
         </body>
     </html>
-    """
-}
-
-fileprivate func lookupSmAR15InlineProbeHTML(context: String, url: URL?) -> String {
-    let urlString = escapeReadabilityText(url?.absoluteString ?? "nil")
-    let escapedContext = escapeReadabilityText(context)
-    return """
-    <script>
-    (function () {
-        function post(prefix) {
-            try {
-                window.webkit?.messageHandlers?.print?.postMessage({
-                    message: '# LOOKUPSMAR15 ' + prefix
-                });
-            } catch {}
-        }
-        function collect(label) {
-            try {
-                post(
-                    label
-                    + ' context=\(escapedContext)'
-                    + ' url=\(urlString)'
-                    + ' ready=' + document.readyState
-                    + ' body=' + !!document.body
-                    + ' inlineHTML=' + (document.documentElement?.getAttribute('data-lookupsmar15-inline-probe') ?? 'nil')
-                    + ' inlineBody=' + (document.body?.getAttribute('data-lookupsmar15-inline-probe') ?? 'nil')
-                    + ' scriptLoaded=' + (document.documentElement?.getAttribute('data-lookupsmar15-script-loaded') ?? 'nil')
-                    + ' hasLookupNext=' + typeof window.manabi_lookupNextSegmentMatch
-                    + ' hasLookupPrev=' + typeof window.manabi_lookupPreviousSegmentMatch
-                    + ' hasReprocess=' + typeof window.manabi_reprocessJapanese
-                    + ' hasInit=' + typeof window.manabiReaderInitialized
-                    + ' hasButtonsStore=' + typeof document.manabi_markAsReadButtonsWired
-                    + ' segmentCount=' + document.getElementsByTagName('manabi-segment').length
-                    + ' buttonCount=' + document.querySelectorAll('button.manabi-tracking-button').length
-                );
-            } catch (error) {
-                post('inline-collect-error context=\(escapedContext) error=' + String(error));
-            }
-        }
-        try {
-            document.documentElement?.setAttribute('data-lookupsmar15-inline-probe', '\(escapedContext)');
-            document.body?.setAttribute('data-lookupsmar15-inline-probe', '\(escapedContext)');
-            collect('inline-probe');
-            setTimeout(function () { collect('inline-probe-timeout-0'); }, 0);
-            setTimeout(function () { collect('inline-probe-timeout-100'); }, 100);
-            document.addEventListener('DOMContentLoaded', function handleDOMContentLoaded() {
-                document.removeEventListener('DOMContentLoaded', handleDOMContentLoaded);
-                collect('inline-probe-domcontentloaded');
-            });
-            window.addEventListener('load', function handleLoad() {
-                window.removeEventListener('load', handleLoad);
-                collect('inline-probe-load');
-            });
-        } catch (error) {
-            post('inline-probe-error context=\(escapedContext) error=' + String(error));
-        }
-    })();
-    </script>
     """
 }
 
@@ -1259,6 +1200,12 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let route = await resolveReaderModeRoute(readerContent: readerContent)
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReaderView.route",
+                "contentURL=\(contentURL.absoluteString)",
+                "route=\(route.rawValue)",
+                "readabilityBytes=\(self.readabilityContent?.utf8.count ?? 0)"
+            )
             switch route {
             case .localHTML:
                 await showReaderViewUsingSwiftProcessing(
@@ -1344,6 +1291,16 @@ public class ReaderModeViewModel: ObservableObject {
 
             readabilityContent = nil
             let directHTML = prepareHTMLForDirectLoad(html)
+            let directHTMLHasBody = directHTML.contains("<body")
+            let directHTMLHasArticle = directHTML.contains("<article")
+            debugPrint(
+                "# READERLOAD stage=readerMode.swiftProcessing.directHTML",
+                "contentURL=\(content.url.absoluteString)",
+                "sourceHTMLBytes=\(html.utf8.count)",
+                "directHTMLBytes=\(directHTML.utf8.count)",
+                "hasBody=\(directHTMLHasBody)",
+                "hasArticle=\(directHTMLHasArticle)"
+            )
             if let htmlData = directHTML.data(using: .utf8) {
                 navigator?.load(
                     htmlData,
@@ -1514,6 +1471,14 @@ public class ReaderModeViewModel: ObservableObject {
             }
 
             let transformedContent = html
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.transformed",
+                "contentURL=\(url.absoluteString)",
+                "renderBaseURL=\(renderBaseURL.absoluteString)",
+                "bytes=\(transformedContent.utf8.count)",
+                "segmentCount=\(processedSegmentCount)",
+                "hasBody=\(processedBodyExists)"
+            )
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
                     debugPrint(
@@ -1528,7 +1493,6 @@ public class ReaderModeViewModel: ObservableObject {
                     cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
                     return
                 }
-                self?.lastRenderedURL = url.canonicalReaderContentURLForHotfix()
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     try await scriptCaller.evaluateJavaScript(
                         """
@@ -1568,6 +1532,12 @@ public class ReaderModeViewModel: ObservableObject {
                 } else if let htmlData = transformedContent.data(using: .utf8) {
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(htmlData.count)")
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.syntheticLoad.data",
+                        "contentURL=\(url.absoluteString)",
+                        "renderBaseURL=\(renderBaseURL.absoluteString)",
+                        "bytes=\(htmlData.count)"
+                    )
                     navigator?.load(
                         htmlData,
                         mimeType: "text/html",
@@ -1577,6 +1547,12 @@ public class ReaderModeViewModel: ObservableObject {
                 } else {
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedContent.utf8.count)")
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.syntheticLoad.html",
+                        "contentURL=\(url.absoluteString)",
+                        "renderBaseURL=\(renderBaseURL.absoluteString)",
+                        "bytes=\(transformedContent.utf8.count)"
+                    )
                     navigator?.loadHTML(transformedContent, baseURL: renderBaseURL)
                 }
 //                try await { @MainActor in

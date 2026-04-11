@@ -99,15 +99,9 @@ public struct ReaderContentLoader {
            let readerURLItem = components.queryItems?.first(where: { $0.name == "reader-url" }),
            let readerURLValue = readerURLItem.value,
            let contentURL = URL(string: readerURLValue) {
-            logReaderLoad(
-                "stage=loaderURL.resolve source=components pageURL=\(pageURL.absoluteString) contentURL=\(contentURL.absoluteString)"
-            )
             return contentURL
         }
         if pageURL.absoluteString.hasPrefix("internal://local/load/reader?reader-url="), let range = pageURL.absoluteString.range(of: "?reader-url=", options: []), let rawURL = String(pageURL.absoluteString[range.upperBound...]).removingPercentEncoding, let contentURL = URL(string: rawURL) {
-            logReaderLoad(
-                "stage=loaderURL.resolve source=stringPrefix pageURL=\(pageURL.absoluteString) contentURL=\(contentURL.absoluteString)"
-            )
             return contentURL
         }
         return nil
@@ -136,19 +130,14 @@ public struct ReaderContentLoader {
         let taskKey = loadAllTaskKey(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
         if let cached = recentLoadAllCache[taskKey],
            Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
-            logReaderLoad(
-                "stage=contentLoader.loadAll.cacheHit url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries) count=\(cached.references.count)"
-            )
             return try await resolveContentReferences(cached.references)
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {
-            logReaderLoad(
-                "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
-            )
             return try await resolveContentReferences(existingTask.value)
         }
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
+        let startedAt = Date()
         logReaderLoad(
             "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
         )
@@ -158,13 +147,26 @@ public struct ReaderContentLoader {
  
         var contentFile: ContentFile?
         if !skipContentFiles {
+            let contentFileStartedAt = Date()
             contentFile = try await ContentFile.get(forURL: url)
+            logReaderLoad(
+                "stage=contentLoader.loadAll.contentFile elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(contentFileStartedAt))) found=\(contentFile != nil) url=\(url.absoluteString)"
+            )
         }
+        let historyStartedAt = Date()
         let history = try await HistoryRecord.get(forURL: url)
+        logReaderLoad(
+            "stage=contentLoader.loadAll.history elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(historyStartedAt))) found=\(history != nil) url=\(url.absoluteString)"
+        )
+        let bookmarkStartedAt = Date()
         let bookmark = try await Bookmark.get(forURL: url)
+        logReaderLoad(
+            "stage=contentLoader.loadAll.bookmark elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(bookmarkStartedAt))) found=\(bookmark != nil) url=\(url.absoluteString)"
+        )
         
         var feed: FeedEntry?
         if !skipFeedEntries {
+            let feedStartedAt = Date()
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
             let feeds = feedRealm.objects(FeedEntry.self)
                 .where { !$0.isDeleted }
@@ -176,11 +178,14 @@ public struct ReaderContentLoader {
             } else if !url.isReaderFileURL {
                 feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
             }
+            logReaderLoad(
+                "stage=contentLoader.loadAll.feed elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(feedStartedAt))) found=\(feed != nil) url=\(url.absoluteString)"
+            )
         }
         
         let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
         logReaderLoad(
-            "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count)"
+            "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
         )
             return candidates.compactMap(ContentReference.init(content:))
         }
@@ -571,11 +576,7 @@ public struct ReaderContentLoader {
             logReaderLoad("stage=contentLoader.readerLoaderURL.failed contentURL=\(contentURL.absoluteString)")
             return nil
         }
-        let loaderURL = URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
-        logReaderLoad(
-            "stage=contentLoader.readerLoaderURL contentURL=\(contentURL.absoluteString) loaderURL=\(loaderURL?.absoluteString ?? "nil")"
-        )
-        return loaderURL
+        return URL(string: "internal://local/load/reader?reader-url=\(encodedURL)")
     }
     
     @MainActor

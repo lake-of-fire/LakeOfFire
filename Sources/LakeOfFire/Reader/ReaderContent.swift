@@ -22,6 +22,7 @@ public class ReaderContent: ObservableObject {
     public private(set) var contentTitle: String = ""
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
+    private var suppressedTransientAboutBlankTargetURL: URL?
 
     public init() {
     }
@@ -52,6 +53,16 @@ public class ReaderContent: ObservableObject {
         contentURL.absoluteString == resolvedContentURL.absoluteString
             || contentURL.matchesReaderURL(resolvedContentURL)
     }
+
+    @MainActor
+    public func suppressTransientAboutBlank(untilNextNonBlankLoad targetURL: URL) {
+        let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
+        guard resolvedTargetURL.absoluteString != "about:blank" else { return }
+        suppressedTransientAboutBlankTargetURL = resolvedTargetURL
+        logReaderLoad(
+            "stage=readerContent.load.suppressAboutBlank targetURL=\(resolvedTargetURL.absoluteString)"
+        )
+    }
     
     @MainActor
     internal func load(url: URL) async throws {
@@ -61,10 +72,20 @@ public class ReaderContent: ObservableObject {
             "stage=readerContent.load.begin requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil") hasLoadingTask=\(loadingTask != nil)"
         )
 
-        if let loadingTask, pageURL.matchesReaderURL(url) {
+        if resolvedContentURL.absoluteString == "about:blank",
+           let suppressedTargetURL = suppressedTransientAboutBlankTargetURL,
+           suppressedTargetURL.absoluteString != "about:blank" {
             logReaderLoad(
-                "stage=readerContent.load.reuseLoadingTask requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString)"
+                "stage=readerContent.load.skipTransientAboutBlank requestURL=\(url.absoluteString) targetURL=\(suppressedTargetURL.absoluteString)"
             )
+            return
+        }
+
+        if resolvedContentURL.absoluteString != "about:blank" {
+            suppressedTransientAboutBlankTargetURL = nil
+        }
+
+        if let loadingTask, pageURL.matchesReaderURL(url) {
             _ = try await loadingTask.value
             return
         }
@@ -74,9 +95,6 @@ public class ReaderContent: ObservableObject {
             let pageAlreadyMatchesDisplay = pageURL.absoluteString == displayURL.absoluteString
                 || pageURL.matchesReaderURL(displayURL)
             if pageAlreadyMatchesDisplay {
-                logReaderLoad(
-                    "stage=readerContent.load.reuseCanonicalContent requestURL=\(url.absoluteString) existingContentURL=\(existingContent.url.absoluteString) pageURL=\(pageURL.absoluteString)"
-                )
                 return
             }
             if !pageURL.matchesReaderURL(url) {
@@ -123,14 +141,8 @@ public class ReaderContent: ObservableObject {
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
         if let content {
-            logReaderLoad(
-                "stage=readerContent.getContent.cached pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) key=\(content.compoundKey)"
-            )
             return content
         }
-        logReaderLoad(
-            "stage=readerContent.getContent.awaitLoadingTask pageURL=\(pageURL.absoluteString) hasLoadingTask=\(loadingTask != nil)"
-        )
         return try await loadingTask?.value
     }
 
