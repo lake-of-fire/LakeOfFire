@@ -1912,16 +1912,41 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     private func resolvedSnapshotChromeContent(for request: PageTurnSnapshotRequest) async -> PageTurnSnapshotChromeContent? {
         guard request.includeChrome else { return nil }
         let titlePrimary = lastKnownState.pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let titleSecondary = currentSectionHref?
-            .split(separator: "/")
-            .last
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let titleSecondary = await resolvedSnapshotSectionTitle()
         return PageTurnSnapshotChromeContent(
             headerLabels: await resolvedSnapshotHeaderLabels(for: request),
             titlePrimary: (titlePrimary?.isEmpty == false) ? titlePrimary : nil,
             titleSecondary: (titleSecondary?.isEmpty == false) ? titleSecondary : nil
         )
+    }
+
+    private func resolvedSnapshotSectionTitle() async -> String? {
+        if let scriptCaller, scriptCaller.hasAsyncCaller {
+            let script = """
+            (() => {
+              const tocItem = globalThis.reader?.view?.renderer?.tocItem ?? null;
+              const label = typeof tocItem?.label === 'string' ? tocItem.label.trim() : '';
+              if (label) {
+                return label;
+              }
+              const href = typeof tocItem?.href === 'string' ? tocItem.href.trim() : '';
+              if (href) {
+                return href.split('/').filter(Boolean).pop() ?? href;
+              }
+              return null;
+            })()
+            """
+            if let title = try? await scriptCaller.evaluateJavaScript(script) as? String,
+               let title,
+               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return title.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return currentSectionHref?
+            .split(separator: "/")
+            .last
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func resolvedSnapshotHeaderLabels(for request: PageTurnSnapshotRequest) async -> [String] {
