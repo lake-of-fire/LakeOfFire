@@ -665,7 +665,7 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func handleRenderedReaderDocumentReady(pageURL: URL, hasReaderContent: Bool) {
         let canonicalURL = pageURL.canonicalReaderContentURLForHotfix()
-        guard canonicalURL.isSnippetURL, hasReaderContent else { return }
+        guard hasReaderContent else { return }
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false

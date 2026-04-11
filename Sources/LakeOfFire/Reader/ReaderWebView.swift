@@ -107,6 +107,13 @@ fileprivate class ReaderWebViewHandler {
                 newState: state,
                 scriptCaller: scriptCaller
             )
+            let hasReaderContent = (try? await scriptCaller.evaluateJavaScript(
+                "return !!document.getElementById('reader-content')"
+            ) as? Bool) ?? false
+            self.readerModeViewModel.handleRenderedReaderDocumentReady(
+                pageURL: state.pageURL,
+                hasReaderContent: hasReaderContent
+            )
             guard let content = self.readerContent.content else { return }
             self.readerViewModel.onNavigationFinished(content: content, newState: state) { newState in
                 // no external callback here

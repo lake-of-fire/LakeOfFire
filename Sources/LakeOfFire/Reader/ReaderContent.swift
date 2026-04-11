@@ -23,6 +23,8 @@ public class ReaderContent: ObservableObject {
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var suppressedTransientAboutBlankTargetURL: URL?
+    private var preloadedResolvedContentURL: URL?
+    private var preloadedContent: (any ReaderContentProtocol)?
 
     public init() {
     }
@@ -62,6 +64,34 @@ public class ReaderContent: ObservableObject {
         logReaderLoad(
             "stage=readerContent.load.suppressAboutBlank targetURL=\(resolvedTargetURL.absoluteString)"
         )
+    }
+
+    @MainActor
+    public func preloadResolvedContent(_ content: any ReaderContentProtocol, for targetURL: URL) {
+        let resolvedTargetURL = ReaderContentLoader.getContentURL(fromLoaderURL: targetURL) ?? targetURL
+        guard content.url.matchesReaderURL(resolvedTargetURL) else {
+            logReaderLoad(
+                "stage=readerContent.preload.skip targetURL=\(resolvedTargetURL.absoluteString) contentURL=\(content.url.absoluteString) reason=mismatch"
+            )
+            return
+        }
+        preloadedResolvedContentURL = resolvedTargetURL
+        preloadedContent = content
+        logReaderLoad(
+            "stage=readerContent.preload targetURL=\(resolvedTargetURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey)"
+        )
+    }
+
+    private func consumePreloadedContentIfMatching(resolvedContentURL: URL) -> (any ReaderContentProtocol)? {
+        guard let preloadedResolvedContentURL,
+              let preloadedContent,
+              preloadedContent.url.matchesReaderURL(resolvedContentURL),
+              preloadedResolvedContentURL.matchesReaderURL(resolvedContentURL) else {
+            return nil
+        }
+        self.preloadedResolvedContentURL = nil
+        self.preloadedContent = nil
+        return preloadedContent
     }
     
     @MainActor
@@ -103,6 +133,19 @@ public class ReaderContent: ObservableObject {
                 )
                 pageURL = displayURL
             }
+            return
+        }
+
+        if let preloadedContent = consumePreloadedContentIfMatching(resolvedContentURL: resolvedContentURL) {
+            logReaderLoad(
+                "stage=readerContent.load.usePreloadedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString) key=\(preloadedContent.compoundKey)"
+            )
+            currentSectionIndex = nil
+            content = preloadedContent
+            pageURL = displayURL
+            logReaderLoad(
+                "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(preloadedContent.url.absoluteString)"
+            )
             return
         }
 
