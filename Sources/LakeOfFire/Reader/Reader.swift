@@ -510,6 +510,7 @@ public struct Reader: View {
     var forceReaderModeWhenAvailable = false
 //    var obscuredInsets: EdgeInsets? = nil
     var bounces = true
+    var additionalTopSafeAreaInset: CGFloat? = nil
     var additionalBottomSafeAreaInset: CGFloat? = nil
     var onAdditionalSafeAreaBarTap: (() -> Void)?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
@@ -531,6 +532,7 @@ public struct Reader: View {
         forceReaderModeWhenAvailable: Bool = false,
 //        obscuredInsets: EdgeInsets? = nil,
         bounces: Bool = true,
+        additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         onAdditionalSafeAreaBarTap: (() -> Void)? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
@@ -546,6 +548,7 @@ public struct Reader: View {
         self.forceReaderModeWhenAvailable = forceReaderModeWhenAvailable
 //        self.obscuredInsets = obscuredInsets
         self.bounces = bounces
+        self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.onAdditionalSafeAreaBarTap = onAdditionalSafeAreaBarTap
         self.schemeHandlers = schemeHandlers
@@ -564,6 +567,7 @@ public struct Reader: View {
             persistentWebViewID: persistentWebViewID,
             obscuredInsets: obscuredInsets,
             bounces: bounces,
+            additionalTopSafeAreaInset: additionalTopSafeAreaInset,
             additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
             schemeHandlers: schemeHandlers,
             onNavigationCommitted: onNavigationCommitted,
@@ -582,6 +586,15 @@ public struct Reader: View {
         .modifier {
             if #available(iOS 26, *) {
                 $0
+                    .safeAreaBar(edge: .top, spacing: 0) {
+                        if let additionalTopSafeAreaInset, additionalTopSafeAreaInset > 0 {
+                            Color.white.opacity(0.0000000001)
+                                .frame(height: additionalTopSafeAreaInset)
+                                .onTapGesture {
+                                    onAdditionalSafeAreaBarTap?()
+                                }
+                        }
+                    }
                     .safeAreaBar(edge: .bottom, spacing: 0) {
                         if let additionalBottomSafeAreaInset, additionalBottomSafeAreaInset > 0 {
                             Color.white.opacity(0.0000000001)

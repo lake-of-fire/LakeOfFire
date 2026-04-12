@@ -138,6 +138,7 @@ public struct ReaderWebView: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var bounces = true
+    var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     let onNavigationCommitted: ((WebViewState) async throws -> Void)?
@@ -164,6 +165,7 @@ public struct ReaderWebView: View {
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
         bounces: Bool = true,
+        additionalTopSafeAreaInset: CGFloat? = nil,
         additionalBottomSafeAreaInset: CGFloat? = nil,
         schemeHandlers: [(WKURLSchemeHandler, String)] = [],
         onNavigationCommitted: ((WebViewState) async throws -> Void)? = nil,
@@ -177,6 +179,7 @@ public struct ReaderWebView: View {
         self.persistentWebViewID = persistentWebViewID
         self.obscuredInsets = obscuredInsets
         self.bounces = bounces
+        self.additionalTopSafeAreaInset = additionalTopSafeAreaInset
         self.additionalBottomSafeAreaInset = additionalBottomSafeAreaInset
         self.schemeHandlers = schemeHandlers
         self.onNavigationCommitted = onNavigationCommitted
@@ -196,6 +199,7 @@ public struct ReaderWebView: View {
                     persistentWebViewID: persistentWebViewID,
                     obscuredInsets: obscuredInsets,
                     bounces: bounces,
+                    additionalTopSafeAreaInset: additionalTopSafeAreaInset,
                     additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
                     schemeHandlers: schemeHandlers,
                     hideNavigationDueToScroll: $hideNavigationDueToScroll,
@@ -257,6 +261,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var persistentWebViewID: String? = nil
     let obscuredInsets: EdgeInsets?
     var bounces = true
+    var additionalTopSafeAreaInset: CGFloat?
     var additionalBottomSafeAreaInset: CGFloat?
     let schemeHandlers: [(WKURLSchemeHandler, String)]
     @Binding var hideNavigationDueToScroll: Bool
@@ -291,6 +296,7 @@ fileprivate struct ReaderWebViewInternal: View {
         WebView(
             config: WebViewConfig(
                 dataDetectorsEnabled: false,
+                backgroundColor: .systemBackground,
                 userScripts: userScripts),
             navigator: navigator,
             state: $state,
@@ -298,7 +304,7 @@ fileprivate struct ReaderWebViewInternal: View {
             blockedHosts: blockedHosts,
             obscuredInsets: totalObscuredInsets(
                 additionalInsets: EdgeInsets(
-                    top: 0,
+                    top: max(0, additionalTopSafeAreaInset ?? 0),
                     leading: 0,
                     bottom: max(0, additionalBottomSafeAreaInset ?? 0),
                     trailing: 0
