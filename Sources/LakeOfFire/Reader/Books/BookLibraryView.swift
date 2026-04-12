@@ -133,12 +133,19 @@ public struct BookLibraryView: View {
         Button {
             bookLibraryModalsModel.isImportingBookFile.toggle()
         } label: {
-            Label("Add \(viewModel.mediaFileTypeTitle)", systemImage: "plus.circle")
+            Text("Add EPUB Ebook")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .font(.footnote)
         .fontWeight(.semibold)
+        .modifier {
+            if #available(iOS 16, macOS 15, *) {
+                $0.backgroundStyle(.secondary)
+            } else {
+                $0
+            }
+        }
     }
 
     @ViewBuilder

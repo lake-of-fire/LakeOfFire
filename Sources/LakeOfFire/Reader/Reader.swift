@@ -370,11 +370,22 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
         let renderedCanonicalURL = readerModeViewModel.lastRenderedURL?.canonicalReaderContentURLForHotfix()
         let webViewPageURL = readerViewModel.state.pageURL
         let webViewShowingNonLoaderPage = !webViewPageURL.isNativeReaderView && !webViewPageURL.isReaderURLLoaderURL
+        let expectsReaderModeCompletion = (readerContent.content?.isReaderModeByDefault ?? false)
+            || readerModeViewModel.pendingReaderModeURL != nil
+            || readerModeViewModel.expectedSyntheticReaderLoaderURL != nil
+            || readerModeViewModel.isReaderModeLoading
+            || readerContent.isRenderingReaderHTML
+        let webViewHasReaderRenderReady = readerViewModel.state.hasReaderRenderReady
         let hasRenderedCurrentPage = renderedCanonicalURL == currentCanonicalURL
             && renderedCanonicalURL != nil
             && webViewShowingNonLoaderPage
         let hasVisibleContent =
             hasRenderedCurrentPage
+            || (
+                webViewShowingNonLoaderPage
+                && expectsReaderModeCompletion
+                && webViewHasReaderRenderReady
+            )
             || (
                 readerContent.content != nil
                 && webViewShowingNonLoaderPage
@@ -408,6 +419,7 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                     "readerModeLoading=\(readerModeViewModel.isReaderModeLoading)",
                     "hasVisibleContent=\(hasVisibleContent)",
                     "hasRenderedCurrentPage=\(hasRenderedCurrentPage)",
+                    "webViewHasReaderRenderReady=\(webViewHasReaderRenderReady)",
                     "pageURL=\(readerContent.pageURL.absoluteString)",
                     "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
                     "readerProvisionallyNavigating=\(readerContent.isReaderProvisionallyNavigating)",

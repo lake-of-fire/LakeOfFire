@@ -179,7 +179,7 @@ internal func buildCanonicalReadabilityHTML(
     let metaLine = """
     <div id="reader-meta-line" class="byline-meta-line"><span id="reader-publication-date">\(publicationDateText)</span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>
     """
-    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\""
+    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
     return """
     <!DOCTYPE html>
     <html>
@@ -225,6 +225,11 @@ internal func hasReaderContentNodeMarkup(in html: String) -> Bool {
 
 internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
     hasReadabilityModeBodyClassMarkup(in: html) && hasReaderContentNodeMarkup(in: html)
+}
+
+internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
+    try? doc.select("html").first()?.attr("data-manabi-reader-render-ready", "1")
+    try? doc.body()?.attr("data-manabi-reader-render-ready", "1")
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
@@ -595,7 +600,13 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func markReaderModeLoadComplete(for url: URL) {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
-        guard pendingKeysMatch(pendingReaderModeURL, canonicalURL) || pendingKeysMatch(lastRenderedURL, canonicalURL) else {
+        let matchesPending = pendingKeysMatch(pendingReaderModeURL, canonicalURL)
+        let matchesLastRendered = pendingKeysMatch(lastRenderedURL, canonicalURL)
+        let matchesExpected = expectedSyntheticReaderLoaderURL.map {
+            urlsMatchWithoutHashForHotfix($0, canonicalURL)
+        } ?? false
+        let syntheticCompletionInFlight = isReaderModeLoading && !canonicalURL.isReaderURLLoaderURL
+        guard matchesPending || matchesLastRendered || matchesExpected || syntheticCompletionInFlight else {
             return
         }
         if let pendingReaderModeURL, (readabilityContent?.utf8.count ?? 0) == 0 {
@@ -665,18 +676,20 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     public func handleRenderedReaderDocumentReady(pageURL: URL, hasReaderContent: Bool) {
         let canonicalURL = pageURL.canonicalReaderContentURLForHotfix()
-        guard hasReaderContent else { return }
+        guard hasReaderContent, !pageURL.isReaderURLLoaderURL else { return }
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
-        guard pendingMatches || expectedMatches else { return }
+        let syntheticCompletionInFlight = isReaderModeLoading && !pageURL.isReaderURLLoaderURL
+        guard pendingMatches || expectedMatches || syntheticCompletionInFlight else { return }
 
         debugPrint(
             "# READER snippet.readerDocumentReady",
             "pageURL=\(pageURL.absoluteString)",
             "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
             "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-            "hasReaderContent=\(hasReaderContent)"
+            "hasReaderContent=\(hasReaderContent)",
+            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
         )
 
         lastRenderedURL = canonicalURL
@@ -684,9 +697,7 @@ public class ReaderModeViewModel: ObservableObject {
         if expectedMatches {
             expectedSyntheticReaderLoaderURL = nil
         }
-        if pendingMatches {
-            markReaderModeLoadComplete(for: canonicalURL)
-        }
+        markReaderModeLoadComplete(for: canonicalURL)
     }
 
     private func handleEmptyReadabilityCompletion(url: URL, pendingReaderModeURL: URL) -> Bool {
@@ -1246,6 +1257,7 @@ public class ReaderModeViewModel: ObservableObject {
         renderGeneration: UUID? = nil
     ) async {
         do {
+            let swiftProcessingStart = CFAbsoluteTimeGetCurrent()
             guard let content = try await readerContent.getContent() else {
                 cancelReaderModeLoad(for: readerContent.pageURL, reason: "swiftProcessing.missingContent")
                 return
@@ -1263,10 +1275,16 @@ public class ReaderModeViewModel: ObservableObject {
             if hasCanonicalReadabilityMarkup(in: html) {
                 resolvedReadabilityHTML = html
             } else {
+                let readabilityProcessingStart = CFAbsoluteTimeGetCurrent()
                 let swiftReadability = await processReadabilityHTMLInSwift(
                     html: html,
                     url: content.url,
                     meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
+                )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolved",
+                    "contentURL=\(content.url.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - readabilityProcessingStart))s"
                 )
                 switch swiftReadability {
                 case .success(let result):
@@ -1285,6 +1303,12 @@ public class ReaderModeViewModel: ObservableObject {
                     in: nil,
                     scriptCaller: scriptCaller,
                     renderGeneration: renderGeneration
+                )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.swiftProcessing.complete",
+                    "contentURL=\(content.url.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - swiftProcessingStart))s",
+                    "mode=readability"
                 )
                 return
             }
@@ -1311,6 +1335,12 @@ public class ReaderModeViewModel: ObservableObject {
             } else {
                 navigator?.loadHTML(directHTML, baseURL: content.url)
             }
+            debugPrint(
+                "# READERLOAD stage=readerMode.swiftProcessing.complete",
+                "contentURL=\(content.url.absoluteString)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - swiftProcessingStart))s",
+                "mode=directHTML"
+            )
         } catch {
             print(error)
             cancelReaderModeLoad(for: readerContent.pageURL, reason: "swiftProcessing.error")
@@ -1386,9 +1416,11 @@ public class ReaderModeViewModel: ObservableObject {
         let processHTML = processHTML
         
         try await { @ReaderViewModelActor [weak self] in
+            let transformStart = CFAbsoluteTimeGetCurrent()
             var doc: SwiftSoup.Document?
             
             if let processReadabilityContent {
+                let parseStart = CFAbsoluteTimeGetCurrent()
                 doc = try await processReadabilityContent(
                     readabilityContent,
                     url,
@@ -1407,7 +1439,14 @@ public class ReaderModeViewModel: ObservableObject {
                         }
                     }
                 )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.parse",
+                    "contentURL=\(url.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
+                    "path=customProcessor"
+                )
             } else {
+                let parseStart = CFAbsoluteTimeGetCurrent()
                 let isXML = readabilityContent.hasPrefix("<?xml") || readabilityContent.hasPrefix("<?XML") // TODO: Case insensitive
                 let parser = isXML ? SwiftSoup.Parser.xmlParser() : SwiftSoup.Parser.htmlParser()
                 doc = try SwiftSoup.parse(readabilityContent, url.absoluteString, parser)
@@ -1416,6 +1455,12 @@ public class ReaderModeViewModel: ObservableObject {
                 if isXML {
                     doc?.outputSettings().escapeMode(.xhtml)
                 }
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.parse",
+                    "contentURL=\(url.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
+                    "path=swiftSoup"
+                )
             }
 
             guard let doc else {
@@ -1423,6 +1468,7 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
+            let propagateStart = CFAbsoluteTimeGetCurrent()
             await propagateReaderModeDefaults(
                 for: url,
                 primaryRecord: content,
@@ -1430,7 +1476,13 @@ public class ReaderModeViewModel: ObservableObject {
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle
             )
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.propagateDefaults",
+                "contentURL=\(url.absoluteString)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - propagateStart))s"
+            )
 
+            let processForReaderModeStart = CFAbsoluteTimeGetCurrent()
             try await processForReaderMode(
                 doc: doc,
                 url: url,
@@ -1441,6 +1493,11 @@ public class ReaderModeViewModel: ObservableObject {
                 imageURL: imageURLToDisplay,
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
+            )
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.processForReaderMode",
+                "contentURL=\(url.absoluteString)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - processForReaderModeStart))s"
             )
 
             let processedSegmentCount = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
@@ -1461,12 +1518,28 @@ public class ReaderModeViewModel: ObservableObject {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
 
+            markReaderRenderReady(in: doc)
+
+            let serializeStart = CFAbsoluteTimeGetCurrent()
             var html = try doc.outerHtml()
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.serialize",
+                "contentURL=\(url.absoluteString)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - serializeStart))s",
+                "bytes=\(html.utf8.count)"
+            )
             
             if let processHTML {
+                let processHTMLStart = CFAbsoluteTimeGetCurrent()
                 html = await processHTML(
                     html,
                     false
+                )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.processHTML",
+                    "contentURL=\(url.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - processHTMLStart))s",
+                    "bytes=\(html.utf8.count)"
                 )
             }
 
@@ -1477,7 +1550,8 @@ public class ReaderModeViewModel: ObservableObject {
                 "renderBaseURL=\(renderBaseURL.absoluteString)",
                 "bytes=\(transformedContent.utf8.count)",
                 "segmentCount=\(processedSegmentCount)",
-                "hasBody=\(processedBodyExists)"
+                "hasBody=\(processedBodyExists)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
             )
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
