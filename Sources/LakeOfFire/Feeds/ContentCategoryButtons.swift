@@ -212,11 +212,11 @@ fileprivate struct CategoryCardDecoration: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: 12)
                     .stroke(.secondary.opacity(0.2))
                     .shadow(radius: 5)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .scaleEffect(isPressed ? 0.994 : 1.0)
             .brightness(isPressed ? -0.06 : 0)
             .animation(.easeOut(duration: 0.05), value: isPressed)
@@ -260,9 +260,9 @@ public struct FeedCategoryButtonLabel: View {
     var showEditingDisabled: Bool = false
     
 #if os(iOS)
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 40
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 46
 #else
-    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 30
+    @ScaledMetric(relativeTo: .largeTitle) private var scaledCategoryHeight: CGFloat = 32
 #endif
     
 #if os(iOS)

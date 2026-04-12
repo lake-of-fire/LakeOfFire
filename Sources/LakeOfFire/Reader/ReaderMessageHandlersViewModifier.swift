@@ -322,16 +322,14 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let readyState = body["readyState"] as? String ?? "unknown"
                 let reason = body["reason"] as? String ?? "unknown"
 
+                guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 debugPrint(
-                    "# READERLOAD stage=readerDocState",
+                    "# READERLOAD stage=readerDocState.ready",
                     "pageURL=\(pageURL.absoluteString)",
                     "readyState=\(readyState)",
-                    "hasReaderRenderReady=\(hasReaderRenderReady)",
                     "hasReaderContent=\(hasReaderContent)",
                     "reason=\(reason)"
                 )
-
-                guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
                     readerContent.isRenderingReaderHTML = false
                 }

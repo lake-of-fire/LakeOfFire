@@ -9,11 +9,6 @@ import RealmSwiftGaps
 import LakeKit
 import WebKit
 
-@globalActor
-fileprivate actor ReaderViewModelActor {
-    static let shared = ReaderViewModelActor()
-}
-
 private func stripTemplateTagsForSanitize(_ html: String) -> String {
     guard html.range(of: "<template", options: .caseInsensitive) != nil else {
         return html
@@ -423,11 +418,20 @@ private func propagateReaderModeDefaults(
     fallbackTitle: String?,
     derivedTitle: String? = nil
 ) async {
+    let startedAt = Date()
     let primaryKey = primaryRecord.compoundKey
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
     _ = await Task { @RealmBackgroundActor in
         do {
+            let loadAllStartedAt = Date()
             let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
+            debugPrint(
+                "# READERLOAD stage=readerMode.propagateDefaults.loadAll",
+                "count=\(relatedRecords.count)",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadAllStartedAt)))s"
+            )
+            var updatedCount = 0
+            let writesStartedAt = Date()
             for record in relatedRecords {
                 guard record.compoundKey != primaryKey, let realm = record.realm else { continue }
                 try await realm.asyncWrite {
@@ -445,7 +449,13 @@ private func propagateReaderModeDefaults(
                     }
                     record.refreshChangeMetadata(explicitlyModified: true)
                 }
+                updatedCount += 1
             }
+            debugPrint(
+                "# READERLOAD stage=readerMode.propagateDefaults.writes",
+                "updatedCount=\(updatedCount)",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(writesStartedAt)))s"
+            )
         } catch {
             debugPrint(
                 "# READER readerMode.propagateDefaults.error",
@@ -454,6 +464,10 @@ private func propagateReaderModeDefaults(
             )
         }
     }.value
+    debugPrint(
+        "# READERLOAD stage=readerMode.propagateDefaults.complete",
+        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
+    )
 }
 
 @MainActor
@@ -487,6 +501,7 @@ public class ReaderModeViewModel: ObservableObject {
     private var lastFallbackLoaderURL: URL?
     private var loadTraceRecords: [String: ReaderModeLoadTraceRecord] = [:]
     private var loadStartTimes: [String: Date] = [:]
+    private var syntheticLoadIssuedAtByURL: [String: Date] = [:]
     private var activeRenderTaskByURL: [String: Task<Void, Never>] = [:]
     private var activeRenderGenerationByURL: [String: UUID] = [:]
     private var metadataRefreshTaskByURL: [String: Task<Void, Never>] = [:]
@@ -634,6 +649,7 @@ public class ReaderModeViewModel: ObservableObject {
         logStateSnapshot("completeLoad", url: canonicalURL)
         logTrace(.complete, url: canonicalURL, details: "markReaderModeLoadComplete")
         loadStartTimes.removeValue(forKey: canonicalURL.absoluteString)
+        clearSyntheticLoadIssued(for: canonicalURL)
     }
 
     @MainActor
@@ -691,6 +707,13 @@ public class ReaderModeViewModel: ObservableObject {
             "hasReaderContent=\(hasReaderContent)",
             "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
         )
+        if let issuedAt = syntheticLoadIssuedAtByURL[canonicalRenderKey(canonicalURL)] {
+            debugPrint(
+                "# READERLOAD stage=readerMode.syntheticLoad.renderReady",
+                "contentURL=\(canonicalURL.absoluteString)",
+                "elapsedSinceSyntheticLoad=\(formattedInterval(Date().timeIntervalSince(issuedAt)))"
+            )
+        }
 
         lastRenderedURL = canonicalURL
 
@@ -1000,6 +1023,14 @@ public class ReaderModeViewModel: ObservableObject {
     private func canonicalRenderKey(_ url: URL) -> String {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         return normalizedPendingMatchKey(for: canonicalURL) ?? canonicalURL.absoluteString
+    }
+
+    private func markSyntheticLoadIssued(for url: URL) {
+        syntheticLoadIssuedAtByURL[canonicalRenderKey(url)] = Date()
+    }
+
+    private func clearSyntheticLoadIssued(for url: URL) {
+        syntheticLoadIssuedAtByURL.removeValue(forKey: canonicalRenderKey(url))
     }
 
     private func activeRenderGenerationDescription(for key: String) -> String {
@@ -1441,7 +1472,6 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.parse",
-                    "contentURL=\(url.absoluteString)",
                     "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
                     "path=customProcessor"
                 )
@@ -1457,7 +1487,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.parse",
-                    "contentURL=\(url.absoluteString)",
                     "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
                     "path=swiftSoup"
                 )
@@ -1478,7 +1507,6 @@ public class ReaderModeViewModel: ObservableObject {
             )
             debugPrint(
                 "# READERLOAD stage=readerMode.showReadabilityContent.propagateDefaults",
-                "contentURL=\(url.absoluteString)",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - propagateStart))s"
             )
 
@@ -1496,7 +1524,6 @@ public class ReaderModeViewModel: ObservableObject {
             )
             debugPrint(
                 "# READERLOAD stage=readerMode.showReadabilityContent.processForReaderMode",
-                "contentURL=\(url.absoluteString)",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - processForReaderModeStart))s"
             )
 
@@ -1521,34 +1548,35 @@ public class ReaderModeViewModel: ObservableObject {
             markReaderRenderReady(in: doc)
 
             let serializeStart = CFAbsoluteTimeGetCurrent()
-            var html = try doc.outerHtml()
+            let serializedHTMLBytes = try doc.outerHtmlUTF8()
             debugPrint(
                 "# READERLOAD stage=readerMode.showReadabilityContent.serialize",
-                "contentURL=\(url.absoluteString)",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - serializeStart))s",
-                "bytes=\(html.utf8.count)"
+                "bytes=\(serializedHTMLBytes.count)"
             )
-            
+
+            var transformedHTMLBytes = serializedHTMLBytes
+            var transformedHTMLString: String?
             if let processHTML {
                 let processHTMLStart = CFAbsoluteTimeGetCurrent()
-                html = await processHTML(
-                    html,
+                let serializedHTML = String(decoding: serializedHTMLBytes, as: UTF8.self)
+                let processedHTML = await processHTML(
+                    serializedHTML,
                     false
                 )
+                transformedHTMLString = processedHTML
+                transformedHTMLBytes = Array(processedHTML.utf8)
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.processHTML",
-                    "contentURL=\(url.absoluteString)",
                     "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - processHTMLStart))s",
-                    "bytes=\(html.utf8.count)"
+                    "bytes=\(transformedHTMLBytes.count)"
                 )
             }
 
-            let transformedContent = html
             debugPrint(
                 "# READERLOAD stage=readerMode.showReadabilityContent.transformed",
-                "contentURL=\(url.absoluteString)",
                 "renderBaseURL=\(renderBaseURL.absoluteString)",
-                "bytes=\(transformedContent.utf8.count)",
+                "bytes=\(transformedHTMLBytes.count)",
                 "segmentCount=\(processedSegmentCount)",
                 "hasBody=\(processedBodyExists)",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
@@ -1568,6 +1596,7 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
+                    let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
                     try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
@@ -1603,7 +1632,9 @@ public class ReaderModeViewModel: ObservableObject {
                             "css": Readability.shared.css,
                         ], in: frameInfo)
                     self?.markReaderModeLoadComplete(for: url)
-                } else if let htmlData = transformedContent.data(using: .utf8) {
+                } else {
+                    let htmlData = Data(transformedHTMLBytes)
+                    self?.markSyntheticLoadIssued(for: renderBaseURL)
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
                     self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(htmlData.count)")
                     debugPrint(
@@ -1618,16 +1649,6 @@ public class ReaderModeViewModel: ObservableObject {
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
                     )
-                } else {
-                    self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
-                    self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedContent.utf8.count)")
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.syntheticLoad.html",
-                        "contentURL=\(url.absoluteString)",
-                        "renderBaseURL=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedContent.utf8.count)"
-                    )
-                    navigator?.loadHTML(transformedContent, baseURL: renderBaseURL)
                 }
 //                try await { @MainActor in
 //                    readerModeLoading(false)
@@ -2102,6 +2123,7 @@ public func processForReaderMode(
     injectEntryImageIntoHeader: Bool,
     defaultFontSize: CGFloat
 ) throws {
+    let processStartedAt = Date()
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
     if let oldElement = try doc.getElementsByClass("reader-content").first(), try doc.getElementById("reader-content") == nil {
@@ -2115,6 +2137,7 @@ public func processForReaderMode(
     
     if !isCacheWarmer {
         if let bodyTag = doc.body() {
+            let bodyAttributesStartedAt = Date()
             // TODO: font size and theme set elsewhere already..?
             let readerFontSize = (UserDefaults.standard.object(forKey: "readerFontSize") as? Double) ?? defaultFontSize
             let lightModeTheme = (UserDefaults.standard.object(forKey: "lightModeTheme") as? LightModeTheme) ?? .white
@@ -2127,25 +2150,48 @@ public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
+            debugPrint(
+                "# READERLOAD stage=readerMode.processForReaderMode.bodyAttributes",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(bodyAttributesStartedAt)))s"
+            )
         }
         
         if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
+            let titleFallbackStartedAt = Date()
             let escapedTitle = Entities.escape(defaultTitle, OutputSettings().charset(String.Encoding.utf8).escapeMode(Entities.EscapeMode.extended))
             do {
                 try existing.html(escapedTitle)
             } catch { }
+            debugPrint(
+                "# READERLOAD stage=readerMode.processForReaderMode.titleFallback",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(titleFallbackStartedAt)))s"
+            )
         }
         
         if !isEBook {
+            let fixTitlesStartedAt = Date()
             do {
                 try fixAnnoyingTitlesWithPipes(doc: doc)
             } catch { }
+            debugPrint(
+                "# READERLOAD stage=readerMode.processForReaderMode.fixTitles",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(fixTitlesStartedAt)))s"
+            )
         }
         
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
+            let headerImageStartedAt = Date()
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
             } catch { }
+            debugPrint(
+                "# READERLOAD stage=readerMode.processForReaderMode.headerImage",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(headerImageStartedAt)))s"
+            )
         }
     }
+    debugPrint(
+        "# READERLOAD stage=readerMode.processForReaderMode.complete",
+        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(processStartedAt)))s"
+    )
 }
