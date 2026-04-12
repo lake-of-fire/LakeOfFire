@@ -214,6 +214,7 @@ public struct ReaderWebView: View {
             }
         }
         .task { @MainActor in
+            navigator.shouldLoadFallbackOnAttach = false
             navigator.attachFallbackDelayNanoseconds = 700_000_000
             if handler == nil {
                 handler = ReaderWebViewHandler(
