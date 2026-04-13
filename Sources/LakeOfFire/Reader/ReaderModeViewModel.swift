@@ -419,54 +419,90 @@ private func propagateReaderModeDefaults(
     derivedTitle: String? = nil
 ) async {
     let startedAt = Date()
+    if url.isSnippetURL {
+        debugPrint(
+            "# READERLOAD stage=readerMode.propagateDefaults.skipped",
+            "reason=snippetURL"
+        )
+        debugPrint(
+            "# READERLOAD stage=readerMode.propagateDefaults.complete",
+            "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
+        )
+        return
+    }
     let primaryKey = primaryRecord.compoundKey
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
-    _ = await Task { @RealmBackgroundActor in
-        do {
-            let loadAllStartedAt = Date()
-            let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
-            debugPrint(
-                "# READERLOAD stage=readerMode.propagateDefaults.loadAll",
-                "count=\(relatedRecords.count)",
-                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadAllStartedAt)))s"
-            )
-            var updatedCount = 0
-            let writesStartedAt = Date()
-            for record in relatedRecords {
-                guard record.compoundKey != primaryKey, let realm = record.realm else { continue }
-                try await realm.asyncWrite {
-                    record.isReaderModeByDefault = true
-                    record.isReaderModeAvailable = false
-                    if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                        if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
-                            record.html = readabilityHTML
-                        }
-                        if let resolvedTitle,
-                           record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            record.title = resolvedTitle
-                        }
-                        record.rssContainsFullContent = true
-                    }
-                    record.refreshChangeMetadata(explicitlyModified: true)
-                }
-                updatedCount += 1
-            }
-            debugPrint(
-                "# READERLOAD stage=readerMode.propagateDefaults.writes",
-                "updatedCount=\(updatedCount)",
-                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(writesStartedAt)))s"
-            )
-        } catch {
-            debugPrint(
-                "# READER readerMode.propagateDefaults.error",
-                url.absoluteString,
-                error.localizedDescription
-            )
-        }
-    }.value
+    do {
+        try await propagateReaderModeDefaultsOnBackgroundActor(
+            for: url,
+            primaryKey: primaryKey,
+            readabilityHTML: readabilityHTML,
+            resolvedTitle: resolvedTitle
+        )
+    } catch {
+        debugPrint(
+            "# READER readerMode.propagateDefaults.error",
+            url.absoluteString,
+            error.localizedDescription
+        )
+    }
     debugPrint(
         "# READERLOAD stage=readerMode.propagateDefaults.complete",
         "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(startedAt)))s"
+    )
+}
+
+@RealmBackgroundActor
+private func propagateReaderModeDefaultsOnBackgroundActor(
+    for url: URL,
+    primaryKey: String,
+    readabilityHTML: String,
+    resolvedTitle: String?
+) async throws {
+    let loadAllStartedAt = Date()
+    let relatedRecords = try await ReaderContentLoader.loadAll(url: url)
+    debugPrint(
+        "# READERLOAD stage=readerMode.propagateDefaults.loadAll",
+        "count=\(relatedRecords.count)",
+        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadAllStartedAt)))s"
+    )
+
+    let writableRecords = relatedRecords.filter { $0.compoundKey != primaryKey && $0.realm != nil }
+    guard !writableRecords.isEmpty else {
+        debugPrint(
+            "# READERLOAD stage=readerMode.propagateDefaults.writes",
+            "updatedCount=0",
+            "elapsed=0.000s",
+            "reason=noSecondaryRecords"
+        )
+        return
+    }
+
+    var updatedCount = 0
+    let writesStartedAt = Date()
+    for record in writableRecords {
+        guard let realm = record.realm else { continue }
+        try await realm.asyncWrite {
+            record.isReaderModeByDefault = true
+            record.isReaderModeAvailable = false
+            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                if !url.isReaderFileURL && (record.content?.isEmpty ?? true) {
+                    record.html = readabilityHTML
+                }
+                if let resolvedTitle,
+                   record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    record.title = resolvedTitle
+                }
+                record.rssContainsFullContent = true
+            }
+            record.refreshChangeMetadata(explicitlyModified: true)
+        }
+        updatedCount += 1
+    }
+    debugPrint(
+        "# READERLOAD stage=readerMode.propagateDefaults.writes",
+        "updatedCount=\(updatedCount)",
+        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(writesStartedAt)))s"
     )
 }
 
@@ -714,6 +750,17 @@ public class ReaderModeViewModel: ObservableObject {
                 "elapsedSinceSyntheticLoad=\(formattedInterval(Date().timeIntervalSince(issuedAt)))"
             )
         }
+        debugPrint(
+            "# READERLOAD stage=readerMode.syntheticLoad.forceClearLoadingIndicators",
+            "contentURL=\(canonicalURL.absoluteString)",
+            "pageURL=\(pageURL.absoluteString)",
+            "pendingReaderModeURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedSyntheticReaderLoaderURL=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
+        )
+        navigator?.forceClearLoadingIndicators(
+            reason: "readerMode.syntheticLoad.renderReady",
+            pageURL: canonicalURL
+        )
 
         lastRenderedURL = canonicalURL
 
@@ -1279,6 +1326,24 @@ public class ReaderModeViewModel: ObservableObject {
                 cancelReaderModeLoad(for: contentURL, reason: "showReaderView.unavailable")
             }
         }
+    }
+
+    @MainActor
+    public func beginSyntheticLoadForCurrentContentIfPossible(
+        readerContent: ReaderContent,
+        scriptCaller: WebViewScriptCaller
+    ) async -> Bool {
+        guard let content = try? await readerContent.getContent() else {
+            return false
+        }
+        guard content.url.isSnippetURL else {
+            return false
+        }
+        guard readerContent.pageURL.matchesReaderURL(content.url) else {
+            return false
+        }
+        showReaderView(readerContent: readerContent, scriptCaller: scriptCaller)
+        return true
     }
 
     @MainActor
