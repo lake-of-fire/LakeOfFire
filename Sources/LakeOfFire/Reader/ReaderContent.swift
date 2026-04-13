@@ -20,6 +20,7 @@ public class ReaderContent: ObservableObject {
     @Published public var isRenderingReaderHTML = false
     public let contentTitleSubject = PassthroughSubject<String, Never>()
     public private(set) var contentTitle: String = ""
+    public private(set) var snippetTitleIsGeneratedFromPrefix = false
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
     private var suppressedTransientAboutBlankTargetURL: URL?
@@ -31,16 +32,47 @@ public class ReaderContent: ObservableObject {
 
     private func syncLocationBarTitle() {
         guard pageURL.absoluteString != "about:blank" else {
+            snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
             return
         }
         guard let content,
               content.url.matchesReaderURL(pageURL) else {
+            snippetTitleIsGeneratedFromPrefix = false
             locationBarTitle = nil
             return
         }
-        let trimmedTitle = content.locationBarTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTitle = resolvedLocationBarTitle(for: content)?.trimmingCharacters(in: .whitespacesAndNewlines)
         locationBarTitle = (trimmedTitle?.isEmpty == false) ? trimmedTitle : nil
+    }
+
+    private func resolvedLocationBarTitle(for content: any ReaderContentProtocol) -> String? {
+        guard content.url.isSnippetURL else {
+            snippetTitleIsGeneratedFromPrefix = false
+            return content.locationBarTitle
+        }
+
+        let titleMatchesGeneratedPrefix = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+            content.title,
+            sourceHTML: content.html
+        )
+        snippetTitleIsGeneratedFromPrefix = titleMatchesGeneratedPrefix
+        if titleMatchesGeneratedPrefix {
+            return content.defaultSnippetChromeTitle
+        }
+
+        let cleanedTitle = resolvedDisplayTitle(for: content)
+        return cleanedTitle.isEmpty ? content.defaultSnippetChromeTitle : cleanedTitle
+    }
+
+    private func resolvedDisplayTitle(for content: any ReaderContentProtocol) -> String {
+        let needsClipboardIndicator = content.needsClipboardIndicator
+        var displayTitle = content.title.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
+        displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+        if displayTitle.isEmpty {
+            displayTitle = "Untitled"
+        }
+        return displayTitle
     }
 
     private func syncContentTitle() {
@@ -180,6 +212,11 @@ public class ReaderContent: ObservableObject {
             "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"
         )
     }
+
+    @MainActor
+    public func prepareForDisplay(url: URL) async throws {
+        try await load(url: url)
+    }
     
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
@@ -196,8 +233,9 @@ public class ReaderContent: ObservableObject {
         guard let content else { return }
         guard trimmed != content.title else { return }
 
-        contentTitle = trimmed
-        contentTitleSubject.send(trimmed)
+        content.title = trimmed
+        syncLocationBarTitle()
+        syncContentTitle()
 
         do {
             let contentURL = content.url

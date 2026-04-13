@@ -130,9 +130,15 @@ public struct ReaderContentLoader {
         let taskKey = loadAllTaskKey(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
         if let cached = recentLoadAllCache[taskKey],
            Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
+            logReaderLoad(
+                "stage=contentLoader.loadAll.cacheHit url=\(url.absoluteString) age=\(String(format: \"%.3fs\", Date().timeIntervalSince(cached.timestamp))) count=\(cached.references.count)"
+            )
             return try await resolveContentReferences(cached.references)
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {
+            logReaderLoad(
+                "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) taskKey=\(taskKey)"
+            )
             return try await resolveContentReferences(existingTask.value)
         }
 
@@ -259,26 +265,27 @@ public struct ReaderContentLoader {
         }
 
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
+            let startedAt = Date()
             logReaderLoad(
-                "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+                "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) isLoaderURL=\(pageURL.isReaderURLLoaderURL)"
             )
             if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
                let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
                 try Task.checkCancellation()
                 logReaderLoad(
-                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
+                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
                 )
                 return content
             } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
                 try Task.checkCancellation()
                 logReaderLoad(
-                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content)))"
+                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
                 )
                 return content
             }
             try Task.checkCancellation()
             logReaderLoad(
-                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString)"
+                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
             )
             return nil
         }
@@ -309,6 +316,7 @@ public struct ReaderContentLoader {
     
     @MainActor
     public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+        let startedAt = Date()
         logReaderLoad(
             "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit)"
         )
@@ -384,10 +392,10 @@ public struct ReaderContentLoader {
         let content = try await contentRef?.resolveOnMainActor()
         if let content {
             logReaderLoad(
-                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML)"
+                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
             )
         } else {
-            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil")
+            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))")
         }
         return content
     }
@@ -454,24 +462,29 @@ public struct ReaderContentLoader {
         content: any ReaderContentProtocol,
         readerFileManager: ReaderFileManager
     ) async throws -> URL? {
+        let startedAt = Date()
         let contentURL = content.url
         logReaderLoad(
             "stage=contentLoader.loadContent.begin contentURL=\(contentURL.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault) readerAvailable=\(content.isReaderModeAvailable) hasHTML=\(content.hasHTML)"
         )
+        let htmlProbeStartedAt = Date()
         let contentHasLocallyRetrievableHTML = try await hasLocallyRetrievableHTML(
             for: content,
             readerFileManager: readerFileManager
+        )
+        logReaderLoad(
+            "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(htmlProbeStartedAt)))"
         )
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=snippetLoader"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=snippetLoader elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
                 )
                 return loaderURL
             }
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
             )
             return content.url
         }
@@ -481,7 +494,7 @@ public struct ReaderContentLoader {
                contentHasLocallyRetrievableHTML,
                let loaderURL = readerLoaderURL(for: contentURL) {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
                 )
                 return loaderURL
             }
@@ -494,12 +507,12 @@ public struct ReaderContentLoader {
                )) == true,
                let matchingURL = readerLoaderURL(for: matchingContent.url) {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString)"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
                 )
                 return matchingURL
             }
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
             )
             return content.url
         }
@@ -508,13 +521,13 @@ public struct ReaderContentLoader {
            contentHasLocallyRetrievableHTML,
            let loaderURL = readerLoaderURL(for: contentURL) {
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
             )
             return loaderURL
         }
         
         logReaderLoad(
-            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback"
+            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
         )
         return content.url
     }
@@ -648,6 +661,59 @@ public struct ReaderContentLoader {
         normalizeSnippetSourceHTML(html)
     }
 
+    public static let snippetReaderTitleSuppressionBodyClass = "manabi-hide-redundant-snippet-reader-title"
+
+    private static func canonicalSnippetAutoTitleComparisonValue(_ raw: String?) -> String? {
+        normalizedSnippetAutoTitle(raw)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "…").union(.whitespacesAndNewlines))
+    }
+
+    public static func normalizedSnippetAutoTitle(_ raw: String?) -> String? {
+        let rawValue = raw ?? ""
+        let sanitized = rawValue.removingHTMLTags() ?? rawValue
+        let trimmed = sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.truncate(36)
+    }
+
+    public static func generatedSnippetTitle(fromSourceHTML html: String) -> String? {
+        titleFromReadabilityHTML(normalizeSnippetSourceHTML(html))
+            .flatMap { normalizedSnippetAutoTitle($0) }
+    }
+
+    public static func snippetTitleMatchesGeneratedPrefix(
+        _ title: String,
+        sourceHTML: String?
+    ) -> Bool {
+        let normalizedTitle = normalizedSnippetAutoTitle(title)
+        let generatedTitle = sourceHTML.flatMap { generatedSnippetTitle(fromSourceHTML: $0) }
+        let canonicalTitle = canonicalSnippetAutoTitleComparisonValue(title)
+        let canonicalGeneratedTitle = canonicalSnippetAutoTitleComparisonValue(generatedTitle)
+        let matches = {
+            guard let canonicalTitle, let canonicalGeneratedTitle else { return false }
+            return canonicalTitle == canonicalGeneratedTitle
+                || canonicalGeneratedTitle.hasPrefix(canonicalTitle)
+                || canonicalTitle.hasPrefix(canonicalGeneratedTitle)
+        }()
+        debugPrint(
+            "# SNIPPETTITLE matchCheck",
+            "title=\(title)",
+            "normalizedTitle=\(normalizedTitle ?? "<nil>")",
+            "generatedTitle=\(generatedTitle ?? "<nil>")",
+            "canonicalTitle=\(canonicalTitle ?? "<nil>")",
+            "canonicalGeneratedTitle=\(canonicalGeneratedTitle ?? "<nil>")",
+            "hasSourceHTML=\(sourceHTML != nil)",
+            "matches=\(matches)"
+        )
+        guard let canonicalTitle,
+              let canonicalGeneratedTitle else {
+            return false
+        }
+        return canonicalTitle == canonicalGeneratedTitle
+            || canonicalGeneratedTitle.hasPrefix(canonicalTitle)
+            || canonicalTitle.hasPrefix(canonicalGeneratedTitle)
+    }
+
     @MainActor
     public static func snippetEditorHTML(
         for content: any ReaderContentProtocol,
@@ -684,6 +750,18 @@ public struct ReaderContentLoader {
         let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
         return normalizeSnippetSourceHTML(normalized.html)
     }
+
+#if DEBUG
+    public static let debugSnippetFallbackRawText = """
+# Updated via Snippet Helper
+
+This snippet loads when the pasteboard is empty in a debug build.
+
+- First line borrowed from snippet loader tests.
+- Second line is plain Markdown for quick UI checks.
+- Third line makes the preview a little less bare.
+"""
+#endif
 
     @MainActor
     public static func appendSnippetHTML(

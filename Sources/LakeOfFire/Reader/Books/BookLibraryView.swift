@@ -231,28 +231,19 @@ public struct BookLibraryView: View {
         .scrollContentBackgroundIfAvailable(.hidden)
         .task { @MainActor in
             await viewModel.fetchAllData()
+            await reloadMyBooks()
         }
         .refreshable {
             await viewModel.fetchAllData()
+            await reloadMyBooks()
         }
         .task { @MainActor in
-            let fileFilter = viewModel.fileFilter
-            if let files = readerFileManager.files(ofTypes: viewModel.fileTypes) {
-                try? await readerContentListViewModel.load(
-                    contents: files,
-                    sortOrder: .createdAt,
-                    contentFilter: { contentFile in
-                        guard let fileFilter else { return true }
-                        return try fileFilter(contentFile)
-                    }
-                )
-            }
+            await reloadMyBooks()
         }
         .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
             Task { @MainActor in
-                if let ebookFiles {
-                    try? await readerContentListViewModel.load(contents: ebookFiles, sortOrder: .createdAt)
-                }
+                guard ebookFiles != nil else { return }
+                await reloadMyBooks()
             }
         }
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
@@ -268,6 +259,20 @@ public struct BookLibraryView: View {
 
     public var body: some View {
         list
+    }
+
+    @MainActor
+    private func reloadMyBooks() async {
+        let fileFilter = viewModel.fileFilter
+        let files = readerFileManager.files(ofTypes: viewModel.fileTypes) ?? []
+        try? await readerContentListViewModel.load(
+            contents: files,
+            sortOrder: .createdAt,
+            contentFilter: { contentFile in
+                guard let fileFilter else { return true }
+                return try fileFilter(contentFile)
+            }
+        )
     }
 }
 

@@ -646,19 +646,67 @@ public struct Reader: View {
         .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
             Task { @MainActor in
                 guard scriptCaller.hasAsyncCaller else { return }
-                let displayTitle = readerContent.content?.titleForDisplay ?? readerContent.contentTitle
-                guard !displayTitle.isEmpty else { return }
+                let rawTitle = readerContent.contentTitle
+                let needsClipboardIndicator = readerContent.content?.needsClipboardIndicator ?? false
+                var displayTitle = rawTitle.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
+                displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+                if displayTitle.isEmpty {
+                    displayTitle = "Untitled"
+                }
+                let hideRedundantSnippetTitle =
+                    readerContent.content?.url.isSnippetURL == true &&
+                    ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+                        rawTitle,
+                        sourceHTML: readerContent.content?.html
+                    )
+                debugPrint(
+                    "# SNIPPETTITLE liveSync",
+                    "url=\(readerContent.content?.url.absoluteString ?? readerContent.pageURL.absoluteString)",
+                    "rawTitle=\(rawTitle)",
+                    "displayTitle=\(displayTitle)",
+                    "hideReaderTitle=\(hideRedundantSnippetTitle)"
+                )
                 do {
                     try await scriptCaller.evaluateJavaScript(
                         """
                         (function() {
+                          const postSnippetTitleLog = (payload) => {
+                            try {
+                              const message = '# SNIPPETTITLE ' + JSON.stringify(payload);
+                              const webkitPrint = window.webkit?.messageHandlers?.print;
+                              if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
+                                webkitPrint.postMessage(message);
+                                return;
+                              }
+                              if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
+                                print.postMessage(message);
+                              }
+                            } catch (_) {}
+                          };
                           const el = document.getElementById('reader-title');
+                          const body = document.body;
                           if (el && el.textContent !== title) {
                             el.textContent = title;
                           }
+                          if (body) {
+                            body.classList.toggle(bodyClassName, !!hideReaderTitle);
+                          }
+                          postSnippetTitleLog({
+                            source: 'liveSync.js',
+                            hideReaderTitle: !!hideReaderTitle,
+                            bodyClassName,
+                            bodyClasses: body ? body.className : null,
+                            hasTitleElement: !!el,
+                            titleText: el ? el.textContent : null,
+                            computedDisplay: el ? window.getComputedStyle(el).display : null,
+                          });
                         })();
                         """,
-                        arguments: ["title": displayTitle],
+                        arguments: [
+                            "title": displayTitle,
+                            "bodyClassName": ReaderContentLoader.snippetReaderTitleSuppressionBodyClass,
+                            "hideReaderTitle": hideRedundantSnippetTitle,
+                        ],
                         duplicateInMultiTargetFrames: true
                     )
                 } catch {

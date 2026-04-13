@@ -33,6 +33,21 @@ public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
     case media
 }
 
+private enum ReaderContentFormatters {
+    static let snippetChromeDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "M/d/yy"
+        return formatter
+    }()
+}
+
+public extension Date {
+    var readerSnippetChromeDateString: String {
+        ReaderContentFormatters.snippetChromeDate.string(from: self)
+    }
+}
+
 public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable, Equatable, ThreadConfined, ChangeMetadataRecordable {
     var realm: Realm? { get }
     
@@ -91,6 +106,10 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
 }
 
 public extension ReaderContentProtocol {
+    var defaultSnippetChromeTitle: String {
+        "Snippet — \(createdAt.readerSnippetChromeDateString)"
+    }
+
     var resolvedVoiceAudioURLs: [URL] {
         var urls = Array(voiceAudioURLs)
         if let voiceAudioURL, !urls.contains(voiceAudioURL) {

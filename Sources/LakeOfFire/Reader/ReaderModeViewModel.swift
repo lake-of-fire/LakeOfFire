@@ -162,7 +162,8 @@ internal func buildCanonicalReadabilityHTML(
     byline: String,
     publishedTime: String?,
     content: String,
-    contentURL: URL
+    contentURL: URL,
+    hideReaderTitle: Bool = false
 ) -> String {
     let resolvedTitle = escapeReadabilityText(title)
     let resolvedByline = escapeReadabilityText(normalizeReadabilityBylineText(byline))
@@ -175,16 +176,26 @@ internal func buildCanonicalReadabilityHTML(
     <div id="reader-meta-line" class="byline-meta-line"><span id="reader-publication-date">\(publicationDateText)</span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>
     """
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
+    let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
+    let titleSuppressionCSS = """
+    body.\(suppressionBodyClass) #reader-title {
+        display: none !important;
+    }
+    """
+    let bodyClass = hideReaderTitle
+        ? "readability-mode \(suppressionBodyClass)"
+        : "readability-mode"
     return """
     <!DOCTYPE html>
     <html>
         <head>
             <meta charset="utf-8">
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
-            <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)</style>
+            <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)
+            \(titleSuppressionCSS)</style>
             <title>\(resolvedTitle)</title>
         </head>
-        <body class="readability-mode" \(availabilityAttributes)>
+        <body class="\(bodyClass)" \(availabilityAttributes)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(resolvedTitle)</h1>
                 <div id="reader-byline-container">
@@ -197,6 +208,37 @@ internal func buildCanonicalReadabilityHTML(
             </div>
             <script>
                 \(Readability.shared.scripts)
+                (function() {
+                    const postSnippetTitleLog = (payload) => {
+                        try {
+                            const message = '# SNIPPETTITLE ' + JSON.stringify(payload);
+                            const webkitPrint = window.webkit?.messageHandlers?.print;
+                            if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
+                                webkitPrint.postMessage(message);
+                                return;
+                            }
+                            if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
+                                print.postMessage(message);
+                            }
+                        } catch (_) {}
+                    };
+                    const emit = () => {
+                        const el = document.getElementById('reader-title');
+                        const body = document.body;
+                        postSnippetTitleLog({
+                            source: 'canonicalHTML',
+                            bodyClasses: body ? body.className : null,
+                            hasTitleElement: !!el,
+                            titleText: el ? el.textContent : null,
+                            computedDisplay: el ? window.getComputedStyle(el).display : null,
+                        });
+                    };
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', emit, { once: true });
+                    } else {
+                        emit();
+                    }
+                })();
             </script>
         </body>
     </html>
@@ -329,25 +371,46 @@ private func stripTemplateTagsForReadability(_ html: String) -> String {
     )
 }
 
+private func trimmedNonEmptyReadabilityText(_ raw: String?) -> String? {
+    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+}
+
 func buildSnippetCanonicalReadabilityHTML(
     html: String,
     contentURL: URL,
-    fallbackTitle: String?
+    fallbackTitle: String?,
+    preferredTitle: String? = nil
 ) -> String? {
     let normalizedHTML = ensureReadabilityBodyExists(html)
     if hasCanonicalReadabilityMarkup(in: normalizedHTML) {
         return rebuildCanonicalSnippetReadabilityHTML(
             html: normalizedHTML,
             contentURL: contentURL,
-            fallbackTitle: fallbackTitle
+            fallbackTitle: fallbackTitle,
+            preferredTitle: preferredTitle
         )
     }
     guard let rawContent = bodyInnerHTML(from: normalizedHTML)?.trimmingCharacters(in: .whitespacesAndNewlines),
           !rawContent.isEmpty else {
         return nil
     }
-    let sanitizedTitle = sanitizeReadabilityFragment(fallbackTitle ?? "")
+    let resolvedTitle = trimmedNonEmptyReadabilityText(preferredTitle)
+        ?? trimmedNonEmptyReadabilityText(fallbackTitle)
+        ?? ""
+    let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
     let sanitizedContent = sanitizeReadabilityFragment(rawContent)
+    let shouldHideReaderTitle = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+        resolvedTitle,
+        sourceHTML: normalizedHTML
+    )
+    debugPrint(
+        "# SNIPPETTITLE buildSnippetCanonical",
+        "url=\(contentURL.absoluteString)",
+        "title=\(resolvedTitle)",
+        "hideReaderTitle=\(shouldHideReaderTitle)",
+        "contentBytes=\(rawContent.utf8.count)"
+    )
     guard !sanitizedContent.isEmpty else {
         return nil
     }
@@ -356,14 +419,16 @@ func buildSnippetCanonicalReadabilityHTML(
         byline: "",
         publishedTime: nil,
         content: sanitizedContent,
-        contentURL: contentURL.canonicalReaderContentURLForHotfix()
+        contentURL: contentURL.canonicalReaderContentURLForHotfix(),
+        hideReaderTitle: shouldHideReaderTitle
     )
 }
 
 private func rebuildCanonicalSnippetReadabilityHTML(
     html: String,
     contentURL: URL,
-    fallbackTitle: String?
+    fallbackTitle: String?,
+    preferredTitle: String? = nil
 ) -> String? {
     guard let document = try? SwiftSoup.parse(html) else {
         return nil
@@ -378,9 +443,24 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         return nil
     }
 
-    let sanitizedTitle = sanitizeReadabilityFragment(extractedTitle ?? fallbackTitle ?? "")
+    let resolvedTitle = trimmedNonEmptyReadabilityText(preferredTitle)
+        ?? trimmedNonEmptyReadabilityText(extractedTitle)
+        ?? trimmedNonEmptyReadabilityText(fallbackTitle)
+        ?? ""
+    let sanitizedTitle = sanitizeReadabilityFragment(resolvedTitle)
     let sanitizedByline = sanitizeReadabilityFragment(extractedByline ?? "")
     let sanitizedContent = sanitizeReadabilityFragment(extractedContent)
+    let shouldHideReaderTitle = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+        resolvedTitle,
+        sourceHTML: extractedContent
+    )
+    debugPrint(
+        "# SNIPPETTITLE rebuildSnippetCanonical",
+        "url=\(contentURL.absoluteString)",
+        "title=\(resolvedTitle)",
+        "hideReaderTitle=\(shouldHideReaderTitle)",
+        "contentBytes=\(extractedContent.utf8.count)"
+    )
     guard !sanitizedContent.isEmpty else {
         return nil
     }
@@ -390,7 +470,8 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         byline: sanitizedByline,
         publishedTime: nil,
         content: sanitizedContent,
-        contentURL: contentURL.canonicalReaderContentURLForHotfix()
+        contentURL: contentURL.canonicalReaderContentURLForHotfix(),
+        hideReaderTitle: shouldHideReaderTitle
     )
 }
 
@@ -1510,12 +1591,13 @@ public class ReaderModeViewModel: ObservableObject {
         let imageURLToDisplay = try await content.imageURLToDisplay()
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
+        let prefersDirectSnippetReadabilityParse = url.isSnippetURL && hasCanonicalReadabilityMarkup(in: readabilityContent)
         
         try await { @ReaderViewModelActor [weak self] in
             let transformStart = CFAbsoluteTimeGetCurrent()
             var doc: SwiftSoup.Document?
             
-            if let processReadabilityContent {
+            if let processReadabilityContent, !prefersDirectSnippetReadabilityParse {
                 let parseStart = CFAbsoluteTimeGetCurrent()
                 doc = try await processReadabilityContent(
                     readabilityContent,
@@ -1553,7 +1635,7 @@ public class ReaderModeViewModel: ObservableObject {
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.parse",
                     "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - parseStart))s",
-                    "path=swiftSoup"
+                    "path=\(prefersDirectSnippetReadabilityParse ? "snippetCanonical" : "swiftSoup")"
                 )
             }
 
@@ -1594,6 +1676,8 @@ public class ReaderModeViewModel: ObservableObject {
 
             let processedSegmentCount = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
             let processedBodyExists = doc.body() != nil
+            let processedBodyClasses = (try? doc.body()?.className()) ?? ""
+            let processedTitleDisplayStyle = (try? doc.getElementById("reader-title")?.attr("style")) ?? ""
             debugPrint(
                 "# READERTRACE",
                 "readerMode.showReadabilityContent.processed",
@@ -1602,7 +1686,9 @@ public class ReaderModeViewModel: ObservableObject {
                     "renderBaseURL": renderBaseURL.absoluteString,
                     "segmentCount": processedSegmentCount,
                     "hasBody": processedBodyExists,
-                    "baseUri": doc.getBaseUri()
+                    "baseUri": doc.getBaseUri(),
+                    "bodyClasses": processedBodyClasses,
+                    "titleStyle": processedTitleDisplayStyle
                 ] as [String: Any]
             )
 
@@ -1662,6 +1748,27 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
                     let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
+                    let transformedBodyClasses = {
+                        guard let document = try? SwiftSoup.parse(transformedContent),
+                              let bodyClassNames = try? document.body()?.className() else {
+                            return "readability-mode"
+                        }
+                        let trimmed = bodyClassNames.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return trimmed.isEmpty ? "readability-mode" : trimmed
+                    }()
+                    let transformedStyleText = {
+                        guard let document = try? SwiftSoup.parse(transformedContent),
+                              let styleHTML = try? document.getElementById("swiftuiwebview-readability-styles")?.html() else {
+                            return Readability.shared.css
+                        }
+                        return styleHTML.isEmpty ? Readability.shared.css : styleHTML
+                    }()
+                    debugPrint(
+                        "# SNIPPETTITLE frameInjection",
+                        "url=\(url.absoluteString)",
+                        "bodyClasses=\(transformedBodyClasses)",
+                        "styleBytes=\(transformedStyleText.utf8.count)"
+                    )
                     try await scriptCaller.evaluateJavaScript(
                         """
                         var root = document.body
@@ -1686,15 +1793,24 @@ public class ReaderModeViewModel: ObservableObject {
                             root.outerHTML = serialized
                         }
                         
-                        let style = document.createElement('style')
-                        style.textContent = css
-                        document.head.appendChild(style)
-                        document.body?.classList.add('readability-mode')
+                        let existingStyle = document.getElementById('swiftuiwebview-readability-styles')
+                        if (existingStyle) {
+                            existingStyle.textContent = css
+                        } else {
+                            let style = document.createElement('style')
+                            style.id = 'swiftuiwebview-readability-styles'
+                            style.textContent = css
+                            document.head.appendChild(style)
+                        }
+                        if (document.body) {
+                            document.body.className = bodyClassNames || 'readability-mode'
+                        }
                         """,
                         arguments: [
                             "renderToSelector": renderToSelector ?? "",
                             "html": transformedContent,
-                            "css": Readability.shared.css,
+                            "css": transformedStyleText,
+                            "bodyClassNames": transformedBodyClasses,
                         ], in: frameInfo)
                     self?.markReaderModeLoadComplete(for: url)
                 } else {
@@ -1915,33 +2031,90 @@ public class ReaderModeViewModel: ObservableObject {
         }
         
         if newState.pageURL.isReaderURLLoaderURL {
-            if let readerFileManager, let html = try await content.htmlToDisplay(readerFileManager: readerFileManager) {
-                try Task.checkCancellation()
-                
-                let currentURL = readerContent.pageURL
-                guard committedURL.matchesReaderURL(currentURL) else {
-                    print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
-                    cancelReaderModeLoad(for: committedURL, reason: "navCommit.currentURLMismatch")
-                    return
-                }
-                if committedURL.isSnippetURL,
-                   let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+            let loaderStartedAt = Date()
+            debugPrint(
+                "# READERLOAD stage=readerMode.navCommit.loaderBegin",
+                "loaderURL=\(newState.pageURL.absoluteString)",
+                "contentURL=\(committedURL.absoluteString)",
+                "currentPageURL=\(readerContent.pageURL.absoluteString)",
+                "hasReaderFileManager=\(readerFileManager != nil)",
+                "hasExistingReadability=\(readabilityContent != nil)"
+            )
+            if let readerFileManager {
+                let htmlResolutionStartedAt = Date()
+                let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
+                debugPrint(
+                    "# READERLOAD stage=readerMode.navCommit.loaderHTMLResolved",
+                    "contentURL=\(committedURL.absoluteString)",
+                    "hasHTML=\(html != nil)",
+                    "htmlBytes=\(html?.utf8.count ?? 0)",
+                    "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlResolutionStartedAt)))"
+                )
+                if let html {
+                    try Task.checkCancellation()
+
+                    let currentURL = readerContent.pageURL
+                    guard committedURL.matchesReaderURL(currentURL) else {
+                        print("URL mismatch in ReaderModeViewModel onNavigationCommitted", currentURL, committedURL)
+                        cancelReaderModeLoad(for: committedURL, reason: "navCommit.currentURLMismatch")
+                        return
+                    }
+                    let usedSnippetCanonical: Bool
+                    let usedCanonicalMarkup: Bool
+                    if committedURL.isSnippetURL,
+                       let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                         html: html,
                         contentURL: committedURL,
-                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.titleForDisplay
-                   ) {
-                    readabilityContent = snippetHTML
-                } else if hasCanonicalReadabilityMarkup(in: html) {
-                    readabilityContent = html
+                        fallbackTitle: titleFromReadabilityHTML(html) ?? content.title,
+                        preferredTitle: content.title
+                       ) {
+                        readabilityContent = snippetHTML
+                        usedSnippetCanonical = true
+                        usedCanonicalMarkup = false
+                    } else if hasCanonicalReadabilityMarkup(in: html) {
+                        readabilityContent = html
+                        usedSnippetCanonical = false
+                        usedCanonicalMarkup = true
+                    } else {
+                        readabilityContent = nil
+                        usedSnippetCanonical = false
+                        usedCanonicalMarkup = false
+                    }
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.navCommit.loaderReadabilityPrepared",
+                        "contentURL=\(committedURL.absoluteString)",
+                        "readabilityBytes=\(readabilityContent?.utf8.count ?? 0)",
+                        "usedSnippetCanonical=\(usedSnippetCanonical)",
+                        "usedCanonicalMarkup=\(usedCanonicalMarkup)"
+                    )
+                    readerContent.isRenderingReaderHTML = true
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.navCommit.loaderShowReaderView",
+                        "contentURL=\(committedURL.absoluteString)",
+                        "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
+                    )
+                    showReaderView(
+                        readerContent: readerContent,
+                        scriptCaller: scriptCaller
+                    )
                 } else {
-                    readabilityContent = nil
+                    debugPrint(
+                        "# READERLOAD stage=readerMode.navCommit.loaderHTMLMissing",
+                        "contentURL=\(committedURL.absoluteString)",
+                        "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
+                    )
+                    guard let navigator else {
+                        print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
+                        return
+                    }
+                    navigator.load(URLRequest(url: committedURL))
                 }
-                readerContent.isRenderingReaderHTML = true
-                showReaderView(
-                    readerContent: readerContent,
-                    scriptCaller: scriptCaller
-                )
             } else {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.navCommit.loaderNoReaderFileManager",
+                    "contentURL=\(committedURL.absoluteString)",
+                    "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
+                )
                 guard let navigator else {
                     print("Error: No navigator set in ReaderModeViewModel onNavigationCommitted")
                     return
