@@ -22,6 +22,7 @@ public actor ReaderFileURLSchemeActor {
 
 final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
     @ReaderFileURLSchemeActor var readerFileManager: ReaderFileManager? = nil
+    var sharedReaderFontAsset: SharedReaderFontAsset?
     
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     
@@ -41,8 +42,23 @@ final class ReaderFileURLSchemeHandler: NSObject, WKURLSchemeHandler {
         schemeHandlers[urlSchemeTask.hash] = urlSchemeTask
         
         guard let url = urlSchemeTask.request.url else { return }
+        let sharedReaderFontAsset = self.sharedReaderFontAsset
         
         Task { @ReaderFileURLSchemeActor in
+            if let fontResponse = sharedReaderFontResponse(
+                for: url,
+                asset: sharedReaderFontAsset
+            ) {
+                await { @MainActor in
+                    if self.schemeHandlers[urlSchemeTask.hash] != nil {
+                        urlSchemeTask.didReceive(fontResponse.response)
+                        urlSchemeTask.didReceive(fontResponse.data)
+                        urlSchemeTask.didFinish()
+                        self.schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+                    }
+                }()
+                return
+            }
             guard let readerFileManager else {
                 urlSchemeTask.didFailWithError(CustomSchemeHandlerError.fileNotFound)
                 return

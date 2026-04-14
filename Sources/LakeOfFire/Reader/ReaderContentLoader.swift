@@ -73,6 +73,16 @@ public struct ReaderContentLoader {
     public static var historyRealmConfiguration: Realm.Configuration = .defaultConfiguration
     public static var feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration
 
+    public static func resetTransientCachesForTesting() async {
+        await MainActor.run {
+            inFlightGetContentTasks.removeAll()
+        }
+        await { @RealmBackgroundActor in
+            inFlightLoadAllTasks.removeAll()
+            recentLoadAllCache.removeAll()
+        }()
+    }
+
     @MainActor
     public static func hasLocallyRetrievableHTML(
         for content: any ReaderContentProtocol,

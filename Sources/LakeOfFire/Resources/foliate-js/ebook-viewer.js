@@ -130,37 +130,17 @@ const logEBookPageNum = (event, detail = {}) => {
     }
 };
 
-// Shared font blob support: the native viewer injects base64 CSS into the shell once.
-const getSharedFontCSSText = () => {
-    if (globalThis.manabiFontCSSText) return globalThis.manabiFontCSSText;
-    const base64 =
-        globalThis.manabiFontCSSBase64 ||
-        globalThis.parent?.manabiFontCSSBase64 ||
-        globalThis.top?.manabiFontCSSBase64 ||
-        document.getElementById('manabi-font-css-base64')?.textContent ||
-        '';
-    if (!base64) return null;
+const resolveSharedFontStylesheetURL = (doc, familyName) => {
+    const targetFamily = familyName || 'YuKyokasho';
+    const referenceURL = doc?.location?.href || doc?.baseURI || globalThis.location?.href || '';
+    if (!referenceURL) return null;
     try {
-        const css = atob(base64);
-        globalThis.manabiFontCSSText = css;
-        return css;
-    } catch (_err) {
-        logEBookPerf('font-css-decode-error', {});
+        const parsed = new URL(referenceURL);
+        if (parsed.protocol !== 'ebook:') return null;
+        return `${parsed.protocol}//${parsed.host}/load/manabi-fonts.css?family=${encodeURIComponent(targetFamily)}`;
+    } catch (_error) {
         return null;
     }
-};
-
-const waitForFontCSSReady = async (timeoutMs = 2000) => {
-    const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    let css = getSharedFontCSSText();
-    while (!css) {
-        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        if (now - start >= timeoutMs) break;
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        css = getSharedFontCSSText();
-    }
-    if (!css) logEBookPerf('font-css-timeout', { waitedMs: ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - start });
-    return css;
 };
 
 const ensureCustomFontsForDoc = async (doc) => {
@@ -173,14 +153,15 @@ const ensureCustomFontsForDoc = async (doc) => {
             }
             return false;
         }
-        const css = await waitForFontCSSReady(4000);
-        if (!css || !doc?.head) return false;
+        if (!doc?.head) return false;
         const horizontalFamily = globalThis.manabiHorizontalFontFamilyName || 'YuKyokasho Yoko';
         const verticalFamily = globalThis.manabiVerticalFontFamilyName || 'YuKyokasho';
         const writingDirection = globalThis.manabiEbookWritingDirection || 'original';
         const shouldUseVertical = writingDirection === 'vertical'
             || (writingDirection === 'original' && globalThis.manabiTrackingVertical === true);
         const targetFamily = shouldUseVertical ? verticalFamily : horizontalFamily;
+        const stylesheetURL = resolveSharedFontStylesheetURL(doc, targetFamily);
+        if (!stylesheetURL) return false;
         if (root) {
             root.dataset.manabiFontPending = '1';
             root.dataset.manabiFontReady = '0';
@@ -191,23 +172,12 @@ const ensureCustomFontsForDoc = async (doc) => {
             style.id = 'manabi-custom-fonts-inline';
             style.rel = 'stylesheet';
             doc.head.appendChild(style);
-            logEBookPerf('font-inline-insert', { bytes: css.length, mode: 'blob-link' });
+            logEBookPerf('font-inline-insert', { family: targetFamily, mode: 'same-scheme-link' });
         }
-        if (style.dataset.manabiInjectedFontFamily !== targetFamily || !style.href) {
-            const sourceCSS = globalThis.manabiFontCSSText || css;
-            const nextCSS = sourceCSS.replace(
-                /font-family:\s*['"][^'"]+['"]\s*;/g,
-                "font-family: '" + targetFamily + "';"
-            );
-            const blob = new Blob([nextCSS], { type: 'text/css' });
-            const nextBlobURL = URL.createObjectURL(blob);
-            const previousBlobURL = style.dataset.manabiBlobURL || '';
-            style.href = nextBlobURL;
-            style.dataset.manabiBlobURL = nextBlobURL;
+        if (style.dataset.manabiInjectedFontFamily !== targetFamily || style.href !== stylesheetURL) {
+            style.href = stylesheetURL;
             style.dataset.manabiInjectedFontFamily = targetFamily;
-            if (previousBlobURL && previousBlobURL !== nextBlobURL) {
-                try { URL.revokeObjectURL(previousBlobURL); } catch (_error) {}
-            }
+            delete style.dataset.manabiBlobURL;
         }
 
         const fontSet = doc.fonts;
@@ -246,7 +216,8 @@ const ensureCustomFontsForDoc = async (doc) => {
     }
 };
 
-globalThis.manabiWaitForFontCSS = waitForFontCSSReady;
+globalThis.manabiWaitForFontCSS = async () => true;
+globalThis.manabiResolveSharedFontStylesheetURL = resolveSharedFontStylesheetURL;
 globalThis.manabiEnsureCustomFonts = ensureCustomFontsForDoc;
 
 const MAX_ERROR_LENGTH = 4000;

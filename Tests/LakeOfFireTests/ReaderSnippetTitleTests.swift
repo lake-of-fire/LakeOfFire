@@ -4,13 +4,24 @@ import RealmSwiftGaps
 @testable import LakeOfFire
 
 final class ReaderSnippetTitleTests: XCTestCase {
-    private func makeInMemoryConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
-        var configuration = Realm.Configuration(inMemoryIdentifier: name)
-        configuration.objectTypes = [Bookmark.self, HistoryRecord.self, FeedEntry.self]
+    private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
+        let realmURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(name)
+            .appendingPathExtension("realm")
+        addTeardownBlock {
+            let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
+            for ext in sidecarExtensions {
+                try? FileManager.default.removeItem(
+                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
+                )
+            }
+        }
+        var configuration = Realm.Configuration(fileURL: realmURL)
+        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
         return configuration
     }
 
-    private var snippetHTML: String {
+    private func snippetHTML(token: String = "") -> String {
         ReaderContentLoader.snippetHTML(fromRawText: """
         Updated via Snippet Helper
 
@@ -18,10 +29,11 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
         - First bullet.
         - Second bullet.
+        \(token)
         """)
     }
 
-    private var updatedSnippetHTML: String {
+    private func updatedSnippetHTML(token: String = "") -> String {
         ReaderContentLoader.snippetHTML(fromRawText: """
         Updated after editing the snippet content
 
@@ -29,13 +41,14 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
         - Replacement bullet.
         - Another replacement bullet.
+        \(token)
         """)
     }
 
     private func withSnippetRealm<T>(
         _ body: @escaping (Realm.Configuration) async throws -> T
     ) async throws -> T {
-        let configuration = makeInMemoryConfiguration()
+        let configuration = makeRealmConfiguration()
         let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         let previousFeedConfiguration = ReaderContentLoader.feedEntryRealmConfiguration
@@ -44,16 +57,21 @@ final class ReaderSnippetTitleTests: XCTestCase {
             ReaderContentLoader.historyRealmConfiguration = previousHistoryConfiguration
             ReaderContentLoader.feedEntryRealmConfiguration = previousFeedConfiguration
         }
+        await ReaderContentLoader.resetTransientCachesForTesting()
         ReaderContentLoader.bookmarkRealmConfiguration = configuration
         ReaderContentLoader.historyRealmConfiguration = configuration
         ReaderContentLoader.feedEntryRealmConfiguration = configuration
-        return try await body(configuration)
+        let result = try await body(configuration)
+        await ReaderContentLoader.resetTransientCachesForTesting()
+        return result
     }
 
     @MainActor
     func testLoadHTMLCreatesSnippetWithGeneratedTitleAndPrefixFlag() async throws {
+        let snippetHTML = self.snippetHTML(token: "load-html")
         try await withSnippetRealm { _ in
-            let content = try XCTUnwrap(try await ReaderContentLoader.load(html: snippetHTML))
+            let loadedContent = try await ReaderContentLoader.load(html: snippetHTML)
+            let content = try XCTUnwrap(loadedContent)
             XCTAssertTrue(content.url.isSnippetURL)
             XCTAssertEqual(
                 content.title,
@@ -65,25 +83,26 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
     @MainActor
     func testUpdateSnippetContentAutoRetitlesGeneratedTitles() async throws {
+        let snippetHTML = self.snippetHTML(token: "auto-retitle")
+        let updatedSnippetHTML = self.updatedSnippetHTML(token: "auto-retitle")
         try await withSnippetRealm { _ in
-            let content = try XCTUnwrap(try await ReaderContentLoader.load(html: snippetHTML))
+            let loadedContent = try await ReaderContentLoader.load(html: snippetHTML)
+            let content = try XCTUnwrap(loadedContent)
             let originalURL = content.url
 
-            XCTAssertTrue(
-                try await ReaderContentLoader.updateSnippetContent(
-                    contentURL: originalURL,
-                    title: content.title,
-                    html: updatedSnippetHTML
-                )
+            let didUpdate = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: originalURL,
+                title: content.title,
+                html: updatedSnippetHTML
             )
+            XCTAssertTrue(didUpdate)
 
-            let reloadedContent = try XCTUnwrap(
-                try await ReaderContentLoader.load(
-                    url: originalURL,
-                    persist: false,
-                    countsAsHistoryVisit: false
-                )
+            let reloaded = try await ReaderContentLoader.load(
+                url: originalURL,
+                persist: false,
+                countsAsHistoryVisit: false
             )
+            let reloadedContent = try XCTUnwrap(reloaded)
             XCTAssertEqual(
                 reloadedContent.title,
                 ReaderContentLoader.generatedSnippetTitle(fromSourceHTML: updatedSnippetHTML)
@@ -94,25 +113,26 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
     @MainActor
     func testUpdateSnippetContentPreservesManualTitlesAndClearsPrefixFlag() async throws {
+        let snippetHTML = self.snippetHTML(token: "manual-title")
+        let updatedSnippetHTML = self.updatedSnippetHTML(token: "manual-title")
         try await withSnippetRealm { _ in
-            let content = try XCTUnwrap(try await ReaderContentLoader.load(html: snippetHTML))
+            let loadedContent = try await ReaderContentLoader.load(html: snippetHTML)
+            let content = try XCTUnwrap(loadedContent)
             let originalURL = content.url
 
-            XCTAssertTrue(
-                try await ReaderContentLoader.updateSnippetContent(
-                    contentURL: originalURL,
-                    title: "Manual Snippet Title",
-                    html: updatedSnippetHTML
-                )
+            let didUpdate = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: originalURL,
+                title: "Manual Snippet Title",
+                html: updatedSnippetHTML
             )
+            XCTAssertTrue(didUpdate)
 
-            let reloadedContent = try XCTUnwrap(
-                try await ReaderContentLoader.load(
-                    url: originalURL,
-                    persist: false,
-                    countsAsHistoryVisit: false
-                )
+            let reloaded = try await ReaderContentLoader.load(
+                url: originalURL,
+                persist: false,
+                countsAsHistoryVisit: false
             )
+            let reloadedContent = try XCTUnwrap(reloaded)
             XCTAssertEqual(reloadedContent.title, "Manual Snippet Title")
             XCTAssertFalse(reloadedContent.isTitlePrefixOfContent)
         }
@@ -120,8 +140,10 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
     @MainActor
     func testReaderContentUsesSnippetChromeTitleOnlyForPrefixTitles() async throws {
+        let snippetHTML = self.snippetHTML(token: "chrome-title")
         try await withSnippetRealm { _ in
-            let autoTitledContent = try XCTUnwrap(try await ReaderContentLoader.load(html: snippetHTML))
+            let loadedContent = try await ReaderContentLoader.load(html: snippetHTML)
+            let autoTitledContent = try XCTUnwrap(loadedContent)
 
             let readerContent = ReaderContent()
             readerContent.content = autoTitledContent
@@ -130,20 +152,18 @@ final class ReaderSnippetTitleTests: XCTestCase {
             XCTAssertEqual(readerContent.locationBarTitle, autoTitledContent.defaultSnippetChromeTitle)
             XCTAssertTrue(readerContent.snippetTitleIsGeneratedFromPrefix)
 
-            XCTAssertTrue(
-                try await ReaderContentLoader.updateSnippetContent(
-                    contentURL: autoTitledContent.url,
-                    title: "Manual Snippet Title",
-                    html: snippetHTML
-                )
+            let didUpdate = try await ReaderContentLoader.updateSnippetContent(
+                contentURL: autoTitledContent.url,
+                title: "Manual Snippet Title",
+                html: snippetHTML
             )
-            let manualContent = try XCTUnwrap(
-                try await ReaderContentLoader.load(
-                    url: autoTitledContent.url,
-                    persist: false,
-                    countsAsHistoryVisit: false
-                )
+            XCTAssertTrue(didUpdate)
+            let reloaded = try await ReaderContentLoader.load(
+                url: autoTitledContent.url,
+                persist: false,
+                countsAsHistoryVisit: false
             )
+            let manualContent = try XCTUnwrap(reloaded)
 
             readerContent.content = manualContent
             readerContent.pageURL = manualContent.url
@@ -155,12 +175,15 @@ final class ReaderSnippetTitleTests: XCTestCase {
 
     @MainActor
     func testAddBookmarkCopiesSnippetPrefixFlag() async throws {
+        let snippetHTML = self.snippetHTML(token: "bookmark-copy")
         try await withSnippetRealm { configuration in
-            let content = try XCTUnwrap(try await ReaderContentLoader.load(html: snippetHTML))
+            let loadedContent = try await ReaderContentLoader.load(html: snippetHTML)
+            let content = try XCTUnwrap(loadedContent)
 
             try await content.addBookmark(realmConfiguration: configuration)
 
             let realm = try await Realm(configuration: configuration)
+            try await realm.asyncRefresh()
             let bookmark = try XCTUnwrap(
                 realm.objects(Bookmark.self)
                     .filter(NSPredicate(format: "url == %@", content.url.absoluteString))

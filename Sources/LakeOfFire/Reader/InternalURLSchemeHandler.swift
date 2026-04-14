@@ -15,6 +15,8 @@ private func readerLoadSchemeLog(_ stage: String, _ metadata: [String: String] =
 }
 
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
+    public var sharedReaderFontAsset: SharedReaderFontAsset?
+
     enum CustomSchemeHandlerError: Error {
         case notFound
     }
@@ -40,6 +42,24 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 "webViewURL": webView.url?.absoluteString ?? "nil"
             ]
         )
+        if let fontResponse = sharedReaderFontResponse(
+            for: url,
+            asset: sharedReaderFontAsset
+        ) {
+            urlSchemeTask.didReceive(fontResponse.response)
+            urlSchemeTask.didReceive(fontResponse.data)
+            urlSchemeTask.didFinish()
+            readerLoadSchemeLog(
+                "internalScheme.sharedReaderFont.finish",
+                [
+                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                    "url": url.absoluteString,
+                    "bytes": String(fontResponse.data.count),
+                    "status": String(fontResponse.response.statusCode)
+                ]
+            )
+            return
+        }
         let response = URLResponse(
             url: url,
             mimeType: "text/html",

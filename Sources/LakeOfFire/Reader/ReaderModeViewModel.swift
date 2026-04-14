@@ -653,6 +653,7 @@ public class ReaderModeViewModel: ObservableObject {
     public var defaultFontSize: Double?
     public var sharedFontCSSBase64: String?
     public var sharedFontCSSBase64Provider: (() async -> String?)?
+    @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     
     @Published public var isReaderMode = false
@@ -1024,11 +1025,106 @@ public class ReaderModeViewModel: ObservableObject {
         return nil
     }
 
-    func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
-        guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
-        guard #available(iOS 16.4, macOS 14, *) else { return }
-        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
+    private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
+        if sharedReaderFontUsesLocalScheme(for: pageURL) {
+            return true
+        }
+        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return false }
+        return !base64.isEmpty
+    }
 
+    func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
+        guard pageURL.absoluteString != "about:blank" else { return }
+        guard #available(iOS 16.4, macOS 14, *) else { return }
+        if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
+            let js = """
+            (function() {
+                const setFontPendingState = (pending) => {
+                    const root = document.documentElement;
+                    if (!root) return;
+                    if (pending) {
+                        root.dataset.manabiFontPending = '1';
+                        root.dataset.manabiFontReady = '0';
+                    } else {
+                        delete root.dataset.manabiFontPending;
+                        root.dataset.manabiFontReady = '1';
+                    }
+                };
+                const resolveStylesheetURL = (desiredFamily) => {
+                    const family = desiredFamily || 'YuKyokasho';
+                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
+                };
+                const ensureReaderFontStyle = (desiredFamily) => {
+                    const root = document.documentElement;
+                    if (!root) return null;
+                    const family = desiredFamily
+                        || root?.dataset?.manabiHorizontalFontFamily
+                        || globalThis.manabiHorizontalFontFamilyName
+                        || 'YuKyokasho';
+                    const stylesheetURL = resolveStylesheetURL(family);
+                    let style = document.getElementById('manabi-custom-fonts-inline');
+                    if (!style) {
+                        style = document.createElement('link');
+                        style.id = 'manabi-custom-fonts-inline';
+                        style.rel = 'stylesheet';
+                        (document.head || document.documentElement).appendChild(style);
+                    }
+                    style.href = stylesheetURL;
+                    style.dataset.manabiInjectedFontFamily = family;
+                    style.dataset.manabiFontSource = 'local-scheme';
+                    root.dataset.manabiInjectedFontFamily = family;
+                    root.dataset.manabiFontInjected = '1';
+                    return style;
+                };
+                globalThis.manabiReaderFontInjectionMode = 'local-scheme';
+                globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
+                globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+                const waitForFontReady = async (desiredFamily) => {
+                    const fontSet = document.fonts;
+                    if (!fontSet) return;
+                    if (desiredFamily && typeof fontSet.load === 'function') {
+                        try {
+                            await fontSet.load("1em '" + desiredFamily + "'");
+                        } catch (_) {}
+                    }
+                    if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
+                        try {
+                            await fontSet.ready;
+                        } catch (_) {}
+                    }
+                };
+                return (async () => {
+                    const root = document.documentElement;
+                    const desiredFamily =
+                        root?.dataset?.manabiHorizontalFontFamily
+                        || globalThis.manabiHorizontalFontFamilyName
+                        || 'YuKyokasho';
+                    setFontPendingState(true);
+                    ensureReaderFontStyle(desiredFamily);
+                    if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
+                        window.manabiApplyDirectionalInjectedFont();
+                    }
+                    const resolvedFamily =
+                        document.documentElement?.dataset?.manabiInjectedFontFamily
+                        || desiredFamily
+                        || null;
+                    await waitForFontReady(resolvedFamily);
+                    setFontPendingState(false);
+                })().catch((e) => {
+                    setFontPendingState(false);
+                    try { console.log('manabi font inject error', e); } catch (_) {}
+                });
+            })();
+            """
+            try? await scriptCaller.evaluateJavaScript(
+                js,
+                arguments: ["stylesheetURLTemplate": stylesheetURLTemplate],
+                duplicateInMultiTargetFrames: true
+            )
+            return
+        }
+
+        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
         let fontHash = readerFontPayloadHash(base64)
         let js = """
         (function() {
@@ -1053,6 +1149,7 @@ public class ReaderModeViewModel: ObservableObject {
                 const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
                 globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
                 globalThis.manabiReaderFontCSSHash = fontHash;
+                globalThis.manabiReaderFontInjectionMode = 'blob';
                 if (previousBlobURL && previousBlobURL !== nextBlobURL) {
                     try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
                 }
@@ -1115,7 +1212,6 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     (document.head || document.documentElement).appendChild(style);
                     root.dataset.manabiFontInjected = '1';
-                } else {
                 }
                 if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
                     window.manabiApplyDirectionalInjectedFont();
@@ -1944,7 +2040,7 @@ public class ReaderModeViewModel: ObservableObject {
                 ] as [String: Any]
             )
 
-            if let sharedFontCSSBase64 = await resolveSharedReaderFontCSSBase64(), !sharedFontCSSBase64.isEmpty {
+            if await shouldUseDeferredSharedReaderFontGate(for: url) {
                 try? upsertDeferredSharedReaderFontGate(in: doc)
             }
 

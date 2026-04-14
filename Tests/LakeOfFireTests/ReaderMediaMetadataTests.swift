@@ -4,9 +4,20 @@ import RealmSwiftGaps
 @testable import LakeOfFire
 
 final class ReaderMediaMetadataTests: XCTestCase {
-    private func makeInMemoryConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
-        var configuration = Realm.Configuration(inMemoryIdentifier: name)
-        configuration.objectTypes = [Bookmark.self, HistoryRecord.self, FeedEntry.self]
+    private func makeRealmConfiguration(name: String = UUID().uuidString) -> Realm.Configuration {
+        let realmURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(name)
+            .appendingPathExtension("realm")
+        addTeardownBlock {
+            let sidecarExtensions = ["realm", "realm.lock", "realm.management", "realm.note"]
+            for ext in sidecarExtensions {
+                try? FileManager.default.removeItem(
+                    at: realmURL.deletingPathExtension().appendingPathExtension(ext)
+                )
+            }
+        }
+        var configuration = Realm.Configuration(fileURL: realmURL)
+        configuration.objectTypes = [Bookmark.self, ContentFile.self, HistoryRecord.self, FeedEntry.self]
         return configuration
     }
 
@@ -131,7 +142,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
 
     @MainActor
     func testAddBookmarkCopiesMediaMetadataForUnmanagedContent() async throws {
-        let configuration = makeInMemoryConfiguration()
+        let configuration = makeRealmConfiguration()
         let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         defer {
@@ -168,7 +179,7 @@ final class ReaderMediaMetadataTests: XCTestCase {
 
     @RealmBackgroundActor
     func testAddHistoryRecordReplacesStaleVoiceAudioURLLists() async throws {
-        let configuration = makeInMemoryConfiguration()
+        let configuration = makeRealmConfiguration()
         let previousBookmarkConfiguration = ReaderContentLoader.bookmarkRealmConfiguration
         let previousHistoryConfiguration = ReaderContentLoader.historyRealmConfiguration
         defer {

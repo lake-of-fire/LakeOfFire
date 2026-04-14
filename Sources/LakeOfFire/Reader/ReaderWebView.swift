@@ -210,6 +210,7 @@ public struct ReaderWebView: View {
                     state: $readerViewModel.state,
                     ebookURLSchemeHandler: ebookURLSchemeHandler,
                     readerFileURLSchemeHandler: readerFileURLSchemeHandler,
+                    sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
                     handler: handler
                 )
             } else {
@@ -249,6 +250,8 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
             ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
+            ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
+            readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -272,6 +275,7 @@ fileprivate struct ReaderWebViewInternal: View {
     @Binding var state: WebViewState
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
+    let sharedReaderFontAsset: SharedReaderFontAsset?
     var handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
@@ -333,5 +337,8 @@ fileprivate struct ReaderWebViewInternal: View {
             },
             hideNavigationDueToScroll: $hideNavigationDueToScroll
         )
+        .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
+            internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
+        }
     }
 }
