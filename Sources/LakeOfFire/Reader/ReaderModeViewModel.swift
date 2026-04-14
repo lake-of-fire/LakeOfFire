@@ -8,6 +8,7 @@ import Combine
 import RealmSwiftGaps
 import LakeKit
 import WebKit
+import SwiftUtilities
 
 private func stripTemplateTagsForSanitize(_ html: String) -> String {
     guard html.range(of: "<template", options: .caseInsensitive) != nil else {
@@ -177,9 +178,40 @@ internal func buildCanonicalReadabilityHTML(
     """
     let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
     let suppressionBodyClass = ReaderContentLoader.snippetReaderTitleSuppressionBodyClass
+    let bodyStyle = ManabiSystemUIFontCSS.cssDeclarations(from: ManabiSystemUIFontCSS.fallbackSizeMap())
     let titleSuppressionCSS = """
     body.\(suppressionBodyClass) #reader-title {
         display: none !important;
+    }
+    """
+    let systemUICSS = """
+    body.readability-mode #reader-byline-container {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: var(--manabi-system-font-size-footnote, 13px);
+        line-height: 20px;
+    }
+    body.readability-mode #reader-byline-line,
+    body.readability-mode #reader-byline,
+    body.readability-mode #reader-byline-container .reader-view-original,
+    body.readability-mode #reader-byline-container .byline-label {
+        font-size: inherit;
+        line-height: inherit;
+    }
+    body.readability-mode #reader-meta-line {
+        font-size: inherit;
+        line-height: inherit;
+    }
+    body.readability-mode #manabi-tracking-footer button,
+    body.readability-mode .manabi-start-over-book-button,
+    body.readability-mode .manabi-start-over-button {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: var(--manabi-system-font-size-footnote, 13px);
+        font-weight: 600;
+        height: 40px !important;
+    }
+    body.readability-mode .manabi-finished-reading-button-subtitle {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: var(--manabi-system-font-size-footnote, 13px);
     }
     """
     let bodyClass = hideReaderTitle
@@ -192,10 +224,11 @@ internal func buildCanonicalReadabilityHTML(
             <meta charset="utf-8">
             <meta name="viewport" content="\(readabilityViewportMetaContent)">
             <style type="text/css" id="swiftuiwebview-readability-styles">\(Readability.shared.css)
+            \(systemUICSS)
             \(titleSuppressionCSS)</style>
             <title>\(resolvedTitle)</title>
         </head>
-        <body class="\(bodyClass)" \(availabilityAttributes)>
+        <body class="\(bodyClass)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(resolvedTitle)</h1>
                 <div id="reader-byline-container">
@@ -2173,6 +2206,22 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         let normalizedHTML = ensureReadabilityBodyExists(html)
+        if url.isSnippetURL,
+           let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+                html: normalizedHTML,
+                contentURL: url,
+                fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
+                publishedTime: snippetPublishedTime
+           ) {
+            debugPrint(
+                "# SNIPPETS",
+                "processReadabilityHTMLInSwift",
+                "snippetBypassReadability=true",
+                "url=\(url.absoluteString)",
+                "contentBytes=\(normalizedHTML.utf8.count)"
+            )
+            return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
+        }
         let options = SwiftReadability.ReadabilityOptions(
             charThreshold: max(meaningfulContentMinChars, 1),
             classesToPreserve: readabilityClassesToPreserve
@@ -2199,17 +2248,6 @@ public class ReaderModeViewModel: ObservableObject {
         let rawContent = stripTemplateTagsForReadability(result.content)
         guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .failed
-        }
-
-        if url.isSnippetURL,
-           let snippetHTML = buildSnippetCanonicalReadabilityHTML(
-                html: rawContent,
-                contentURL: url,
-                fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
-                publishedTime: snippetPublishedTime,
-                preferredTitle: stripTemplateTagsForReadability(result.title ?? "")
-           ) {
-            return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
         }
 
         let outputHTML = buildCanonicalReadabilityHTML(

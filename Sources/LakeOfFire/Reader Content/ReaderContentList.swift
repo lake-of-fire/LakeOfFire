@@ -727,6 +727,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     var contentSortAscending = false
     var alwaysShowThumbnails = true
     let contentSectionTitle: String?
+    let rendersHeaderViewInSectionHeader: Bool
     let allowEditing: Bool
     let onDelete: (@MainActor ([C]) async throws -> Void)?
     let customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])?
@@ -903,11 +904,29 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     }
 
     @ViewBuilder
+    private var contentSectionHeader: some View {
+        if rendersHeaderViewInSectionHeader {
+            VStack(alignment: .leading, spacing: 8) {
+                headerView()
+                if let contentSectionTitle {
+                    Text(contentSectionTitle)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else if let contentSectionTitle {
+            Text(contentSectionTitle)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
     private var listContent: some View {
-        Section {
-            headerView()
-                .listRowInsets(.init())
-                .listRowBackground(Color.clear)
+        if !rendersHeaderViewInSectionHeader {
+            Section {
+                headerView()
+                    .listRowInsets(.init())
+                    .listRowBackground(Color.clear)
+            }
         }
 
         if customGrouping == nil {
@@ -926,9 +945,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                         .readerContentListRowStyle()
                 }
             } header: {
-                if !showEmptyState, let contentSectionTitle {
-                    Text(contentSectionTitle)
-                        .foregroundStyle(.secondary)
+                if !showEmptyState || rendersHeaderViewInSectionHeader {
+                    contentSectionHeader
                 }
             }
             .headerProminence(.increased)
@@ -1012,6 +1030,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
         contentSectionTitle: String? = nil,
+        rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
         customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
@@ -1029,6 +1048,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         self.contentSortAscending = contentSortAscending
         self.alwaysShowThumbnails = alwaysShowThumbnails
         self.contentSectionTitle = contentSectionTitle
+        self.rendersHeaderViewInSectionHeader = rendersHeaderViewInSectionHeader
         self.allowEditing = allowEditing
         self.onDelete = onDelete
         self.customGrouping = customGrouping

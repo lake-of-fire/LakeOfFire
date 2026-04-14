@@ -14,6 +14,10 @@ private func logReaderLoad(_ message: String) {
     debugPrint("# READERLOAD \(message)")
 }
 
+private func logSnippetEvent(_ stage: String, _ parts: String...) {
+    debugPrint("# SNIPPETS", stage, parts.joined(separator: " "))
+}
+
 fileprivate extension URL {
     func settingScheme(_ value: String) -> URL {
         let components = NSURLComponents.init(url: self, resolvingAgainstBaseURL: true)
@@ -622,10 +626,31 @@ public struct ReaderContentLoader {
 #endif
         
         if let text, let url = URL(string: text), url.absoluteString == text, url.scheme != nil, url.host != nil {
+            logSnippetEvent(
+                "loadPasteboard.url",
+                "url=\(url.absoluteString)"
+            )
             match = try await load(url: url, countsAsHistoryVisit: true)
         } else if let payload = preferredPasteboardPayload(html: html, text: text) {
             let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
+            logSnippetEvent(
+                "loadPasteboard.payload",
+                "explicitHTML=\(payload.explicitHTML)",
+                "format=\(normalized.format)",
+                "textPreview=\(payload.text.truncate(80))"
+            )
             match = try await load(html: normalized.html)
+        }
+
+        if let match {
+            logSnippetEvent(
+                "loadPasteboard.result",
+                "url=\(match.url.absoluteString)",
+                "isSnippetURL=\(match.url.isSnippetURL)",
+                "title=\(match.title.truncate(80))"
+            )
+        } else {
+            logSnippetEvent("loadPasteboard.result", "match=<nil>")
         }
         
         if let match, let realmConfiguration = match.realm?.configuration {
@@ -657,6 +682,11 @@ public struct ReaderContentLoader {
 
     public static func snippetHTML(fromRawText text: String) -> String {
         normalizeSnippetSourceHTML(textToHTML(text, forceRaw: true))
+    }
+
+    public static func snippetHTMLFromPasteText(_ text: String) -> String {
+        let normalized = normalizeIngestedText(text, explicitHTML: false, source: .paste)
+        return normalizeSnippetSourceHTML(normalized.html)
     }
 
     public static func snippetHTML(fromHTML html: String) -> String {
@@ -823,9 +853,16 @@ public struct ReaderContentLoader {
 #endif
 
         guard let payload = preferredPasteboardPayload(html: html, text: text) else {
+            logSnippetEvent("loadPasteboardSnippetHTML", "payload=<nil>")
             return nil
         }
         let normalized = normalizeIngestedText(payload.text, explicitHTML: payload.explicitHTML, source: .paste)
+        logSnippetEvent(
+            "loadPasteboardSnippetHTML",
+            "explicitHTML=\(payload.explicitHTML)",
+            "format=\(normalized.format)",
+            "textPreview=\(payload.text.truncate(80))"
+        )
         return normalizeSnippetSourceHTML(normalized.html)
     }
 
@@ -852,6 +889,11 @@ This snippet loads when the pasteboard is empty in a debug build.
 
         let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
         let contentURL = content.url
+        logSnippetEvent(
+            "appendSnippetHTML.begin",
+            "contentURL=\(contentURL.absoluteString)",
+            "incomingBytes=\(normalizedAppendedHTML.utf8.count)"
+        )
 
         try await { @RealmBackgroundActor in
             try await updateContent(url: contentURL) { object in
@@ -893,6 +935,15 @@ This snippet loads when the pasteboard is empty in a debug build.
                     object.isReaderModeByDefault = true
                     objectDidChange = true
                 }
+
+                logSnippetEvent(
+                    "appendSnippetHTML.merge",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "currentBytes=\((currentHTML ?? "").utf8.count)",
+                    "mergedBytes=\(mergedHTML.utf8.count)",
+                    "didChange=\(objectDidChange)",
+                    "title=\(object.title.truncate(80))"
+                )
 
                 return objectDidChange
             }
@@ -985,12 +1036,59 @@ This snippet loads when the pasteboard is empty in a debug build.
     }
 
     static func preferredPasteboardPayload(html: String?, text: String?) -> (text: String, explicitHTML: Bool)? {
+        func normalizedClipboardText(_ raw: String?) -> String? {
+            guard let raw else { return nil }
+            let stripped = (raw.removingHTMLTags() ?? raw)
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stripped.isEmpty else { return nil }
+            return stripped
+        }
+
+        let normalizedHTMLText = normalizedClipboardText(html)
+        let normalizedPlainText = normalizedClipboardText(text)
+
+        if let normalizedHTMLText, let normalizedPlainText, normalizedHTMLText == normalizedPlainText {
+            logSnippetEvent(
+                "preferredPasteboardPayload",
+                "selected=plainText",
+                "reason=htmlMatchesPlainText",
+                "plainPreview=\(normalizedPlainText.truncate(80))"
+            )
+            return (normalizedPlainText, false)
+        }
+
         if let html {
-            return (html, true)
+            if normalizeIngestedText(html, explicitHTML: false, source: .paste).format == .html {
+                logSnippetEvent(
+                    "preferredPasteboardPayload",
+                    "selected=html",
+                    "reason=looksLikeHTML",
+                    "htmlPreview=\(html.truncate(80))"
+                )
+                return (html, true)
+            }
         }
         if let text {
+            logSnippetEvent(
+                "preferredPasteboardPayload",
+                "selected=plainText",
+                "reason=textFallback",
+                "plainPreview=\(text.truncate(80))"
+            )
             return (text, false)
         }
+        if let html {
+            logSnippetEvent(
+                "preferredPasteboardPayload",
+                "selected=htmlAsText",
+                "reason=htmlOnlyNonExplicit",
+                "htmlPreview=\(html.truncate(80))"
+            )
+            return (html, false)
+        }
+        logSnippetEvent("preferredPasteboardPayload", "selected=<nil>")
         return nil
     }
     
