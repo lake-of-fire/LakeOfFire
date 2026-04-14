@@ -131,7 +131,7 @@ public struct ReaderContentLoader {
         if let cached = recentLoadAllCache[taskKey],
            Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
             logReaderLoad(
-                "stage=contentLoader.loadAll.cacheHit url=\(url.absoluteString) age=\(String(format: \"%.3fs\", Date().timeIntervalSince(cached.timestamp))) count=\(cached.references.count)"
+                "stage=contentLoader.loadAll.cacheHit url=\(url.absoluteString) age=\(String(format: "%.3fs", Date().timeIntervalSince(cached.timestamp))) count=\(cached.references.count)"
             )
             return try await resolveContentReferences(cached.references)
         }
@@ -273,19 +273,19 @@ public struct ReaderContentLoader {
                let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
                 try Task.checkCancellation()
                 logReaderLoad(
-                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
                 return content
             } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
                 try Task.checkCancellation()
                 logReaderLoad(
-                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
                 return content
             }
             try Task.checkCancellation()
             logReaderLoad(
-                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
             return nil
         }
@@ -342,7 +342,6 @@ public struct ReaderContentLoader {
             match = candidates.max(by: {
                 ($0 as? HistoryRecord)?.lastVisitedAt ?? $0.createdAt < ($1 as? HistoryRecord)?.lastVisitedAt ?? $1.createdAt
             })
-            
             if let nonHistoryMatch = match, countsAsHistoryVisit && persist, nonHistoryMatch.objectSchema.objectClass != HistoryRecord.self {
                 logReaderLoad(
                     "stage=contentLoader.load.addHistoryVisit url=\(url.absoluteString) contentType=\(String(describing: type(of: nonHistoryMatch))) key=\(nonHistoryMatch.compoundKey)"
@@ -392,10 +391,10 @@ public struct ReaderContentLoader {
         let content = try await contentRef?.resolveOnMainActor()
         if let content {
             logReaderLoad(
-                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
         } else {
-            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))")
+            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))")
         }
         return content
     }
@@ -436,8 +435,11 @@ public struct ReaderContentLoader {
             }
             
             let historyRecord = HistoryRecord()
+            let generatedTitle = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
             historyRecord.publicationDate = Date()
             historyRecord.content = data
+            historyRecord.title = generatedTitle
+            historyRecord.isTitlePrefixOfContent = !generatedTitle.isEmpty
             // isReaderModeByDefault used to be commented out... why?
             historyRecord.isReaderModeByDefault = true
             historyRecord.isDemoted = false
@@ -473,18 +475,18 @@ public struct ReaderContentLoader {
             readerFileManager: readerFileManager
         )
         logReaderLoad(
-            "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(htmlProbeStartedAt)))"
+            "stage=contentLoader.loadContent.htmlProbe contentURL=\(contentURL.absoluteString) hasLocallyRetrievableHTML=\(contentHasLocallyRetrievableHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlProbeStartedAt)))"
         )
 
         if contentURL.isSnippetURL {
             if contentHasLocallyRetrievableHTML, let loaderURL = readerLoaderURL(for: contentURL) {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=snippetLoader elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=snippetLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
                 return loaderURL
             }
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=snippetDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
             return content.url
         }
@@ -494,7 +496,7 @@ public struct ReaderContentLoader {
                contentHasLocallyRetrievableHTML,
                let loaderURL = readerLoaderURL(for: contentURL) {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=contentReaderDefault elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
                 return loaderURL
             }
@@ -507,12 +509,12 @@ public struct ReaderContentLoader {
                )) == true,
                let matchingURL = readerLoaderURL(for: matchingContent.url) {
                 logReaderLoad(
-                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString) elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(matchingURL.absoluteString) reason=matchingContentReaderDefault matchingContentURL=\(matchingContent.url.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
                 )
                 return matchingURL
             }
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=httpDirect elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
             return content.url
         }
@@ -521,13 +523,13 @@ public struct ReaderContentLoader {
            contentHasLocallyRetrievableHTML,
            let loaderURL = readerLoaderURL(for: contentURL) {
             logReaderLoad(
-                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(loaderURL.absoluteString) reason=fileLoader elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
             )
             return loaderURL
         }
         
         logReaderLoad(
-            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback elapsed=\(String(format: \"%.3fs\", Date().timeIntervalSince(startedAt)))"
+            "stage=contentLoader.loadContent.finish contentURL=\(contentURL.absoluteString) targetURL=\(content.url.absoluteString) reason=directFallback elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
         )
         return content.url
     }
@@ -663,6 +665,44 @@ public struct ReaderContentLoader {
 
     public static let snippetReaderTitleSuppressionBodyClass = "manabi-hide-redundant-snippet-reader-title"
 
+    public static func resolvedDisplayTitle(
+        _ rawTitle: String,
+        needsClipboardIndicator: Bool,
+        addClipboardIndicator: Bool = false
+    ) -> String {
+        var displayTitle = rawTitle.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
+        displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
+        if displayTitle.isEmpty {
+            displayTitle = "Untitled"
+        }
+        if addClipboardIndicator {
+            return "📎 " + displayTitle
+        }
+        return displayTitle
+    }
+
+    public static func resolvedSnippetLocationBarTitle(
+        title: String,
+        createdAt: Date,
+        needsClipboardIndicator: Bool,
+        isTitlePrefixOfContent: Bool
+    ) -> String {
+        let fallbackTitle = "Snippet — \(createdAt.readerSnippetChromeDateString)"
+        if isTitlePrefixOfContent {
+            return fallbackTitle
+        }
+        let cleanedTitle = resolvedDisplayTitle(
+            title,
+            needsClipboardIndicator: needsClipboardIndicator
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleanedTitle.isEmpty ? fallbackTitle : cleanedTitle
+    }
+
+    private static func snippetAutoTitleCompactComparisonValue(_ raw: String?) -> String? {
+        canonicalSnippetAutoTitleComparisonValue(raw)?
+            .replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+    }
+
     private static func canonicalSnippetAutoTitleComparisonValue(_ raw: String?) -> String? {
         normalizedSnippetAutoTitle(raw)?
             .trimmingCharacters(in: CharacterSet(charactersIn: "…").union(.whitespacesAndNewlines))
@@ -689,11 +729,22 @@ public struct ReaderContentLoader {
         let generatedTitle = sourceHTML.flatMap { generatedSnippetTitle(fromSourceHTML: $0) }
         let canonicalTitle = canonicalSnippetAutoTitleComparisonValue(title)
         let canonicalGeneratedTitle = canonicalSnippetAutoTitleComparisonValue(generatedTitle)
+        let compactTitle = snippetAutoTitleCompactComparisonValue(title)
+        let compactGeneratedTitle = snippetAutoTitleCompactComparisonValue(generatedTitle)
         let matches = {
-            guard let canonicalTitle, let canonicalGeneratedTitle else { return false }
-            return canonicalTitle == canonicalGeneratedTitle
+            let canonicalMatch = {
+                guard let canonicalTitle, let canonicalGeneratedTitle else { return false }
+                return canonicalTitle == canonicalGeneratedTitle
                 || canonicalGeneratedTitle.hasPrefix(canonicalTitle)
                 || canonicalTitle.hasPrefix(canonicalGeneratedTitle)
+            }()
+            let compactMatch = {
+                guard let compactTitle, let compactGeneratedTitle else { return false }
+                return compactTitle == compactGeneratedTitle
+                    || compactGeneratedTitle.hasPrefix(compactTitle)
+                    || compactTitle.hasPrefix(compactGeneratedTitle)
+            }()
+            return canonicalMatch || compactMatch
         }()
         debugPrint(
             "# SNIPPETTITLE matchCheck",
@@ -702,16 +753,43 @@ public struct ReaderContentLoader {
             "generatedTitle=\(generatedTitle ?? "<nil>")",
             "canonicalTitle=\(canonicalTitle ?? "<nil>")",
             "canonicalGeneratedTitle=\(canonicalGeneratedTitle ?? "<nil>")",
+            "compactTitle=\(compactTitle ?? "<nil>")",
+            "compactGeneratedTitle=\(compactGeneratedTitle ?? "<nil>")",
             "hasSourceHTML=\(sourceHTML != nil)",
             "matches=\(matches)"
         )
-        guard let canonicalTitle,
-              let canonicalGeneratedTitle else {
-            return false
+        return matches
+    }
+
+    private static func resolvedSnippetTitleAfterHTMLUpdate(
+        currentTitle: String,
+        currentHTML: String?,
+        updatedHTML: String,
+        requestedTitle: String? = nil,
+        currentIsTitlePrefixOfContent: Bool? = nil
+    ) -> (title: String, isTitlePrefixOfContent: Bool) {
+        let desiredTitle = requestedTitle ?? currentTitle
+        let shouldAutoRetitle =
+            desiredTitle == currentTitle &&
+            (currentIsTitlePrefixOfContent
+                ?? snippetTitleMatchesGeneratedPrefix(currentTitle, sourceHTML: currentHTML))
+        let resolvedTitle: String
+        if shouldAutoRetitle,
+           let generatedTitle = generatedSnippetTitle(fromSourceHTML: updatedHTML) {
+            resolvedTitle = generatedTitle
+            debugPrint(
+                "# SNIPPETTITLE autoRetitle",
+                "currentTitle=\(currentTitle)",
+                "requestedTitle=\(requestedTitle ?? "<nil>")",
+                "resolvedTitle=\(generatedTitle)"
+            )
+        } else {
+            resolvedTitle = desiredTitle
         }
-        return canonicalTitle == canonicalGeneratedTitle
-            || canonicalGeneratedTitle.hasPrefix(canonicalTitle)
-            || canonicalTitle.hasPrefix(canonicalGeneratedTitle)
+        return (
+            resolvedTitle,
+            snippetTitleMatchesGeneratedPrefix(resolvedTitle, sourceHTML: updatedHTML)
+        )
     }
 
     @MainActor
@@ -768,32 +846,59 @@ This snippet loads when the pasteboard is empty in a debug build.
         _ appendedHTML: String,
         to content: any ReaderContentProtocol
     ) async throws -> (any ReaderContentProtocol)? {
-        guard content.url.isSnippetURL, let contentRef = ContentReference(content: content) else {
+        guard content.url.isSnippetURL else {
             return nil
         }
 
         let normalizedAppendedHTML = normalizeSnippetSourceHTML(appendedHTML)
+        let contentURL = content.url
 
         try await { @RealmBackgroundActor in
-            guard let backgroundContent = try await contentRef.resolveOnBackgroundActor(),
-                  let realm = backgroundContent.realm else {
-                return
-            }
+            try await updateContent(url: contentURL) { object in
+                let currentHTML = object.html
+                guard let mergedHTML = try? appendSnippetHTML(
+                    normalizedAppendedHTML,
+                    toExistingHTML: currentHTML
+                ) else {
+                    return false
+                }
 
-            let mergedHTML = try appendSnippetHTML(
-                normalizedAppendedHTML,
-                toExistingHTML: backgroundContent.html
-            )
+                let normalizedCurrentHTML = snippetHTML(fromHTML: currentHTML ?? "<html><body></body></html>")
+                let normalizedMergedHTML = snippetHTML(fromHTML: mergedHTML)
+                let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
+                    currentTitle: object.title,
+                    currentHTML: currentHTML,
+                    updatedHTML: mergedHTML,
+                    currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
+                )
+                var objectDidChange = false
 
-            try await realm.asyncWrite {
-                backgroundContent.html = mergedHTML
-                backgroundContent.rssContainsFullContent = true
-                backgroundContent.isReaderModeByDefault = true
-                backgroundContent.refreshChangeMetadata(explicitlyModified: true)
+                if normalizedCurrentHTML != normalizedMergedHTML {
+                    object.html = mergedHTML
+                    objectDidChange = true
+                }
+                if object.title != resolvedTitleUpdate.title {
+                    object.title = resolvedTitleUpdate.title
+                    objectDidChange = true
+                }
+                if object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent {
+                    object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
+                    objectDidChange = true
+                }
+                if object.rssContainsFullContent == false {
+                    object.rssContainsFullContent = true
+                    objectDidChange = true
+                }
+                if object.isReaderModeByDefault == false {
+                    object.isReaderModeByDefault = true
+                    objectDidChange = true
+                }
+
+                return objectDidChange
             }
         }()
 
-        return try await contentRef.resolveOnMainActor()
+        return try await load(url: contentURL, persist: false, countsAsHistoryVisit: false)
     }
 
     @MainActor
@@ -806,10 +911,31 @@ This snippet loads when the pasteboard is empty in a debug build.
             var didChange = false
             try await updateContent(url: contentURL) { object in
                 let existingHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
-                guard existingHTML != normalizedHTML else { return false }
-                object.html = normalizedHTML
-                didChange = true
-                return true
+                let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
+                    currentTitle: object.title,
+                    currentHTML: object.html,
+                    updatedHTML: normalizedHTML,
+                    currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
+                )
+                var objectDidChange = false
+
+                if existingHTML != normalizedHTML {
+                    object.html = normalizedHTML
+                    objectDidChange = true
+                }
+                if object.title != resolvedTitleUpdate.title {
+                    object.title = resolvedTitleUpdate.title
+                    objectDidChange = true
+                }
+                if object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent {
+                    object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
+                    objectDidChange = true
+                }
+
+                if objectDidChange {
+                    didChange = true
+                }
+                return objectDidChange
             }
             return didChange
         }()
@@ -827,10 +953,21 @@ This snippet loads when the pasteboard is empty in a debug build.
             try await updateContent(url: contentURL) { object in
                 let currentHTML = snippetHTML(fromHTML: object.html ?? "<html><body></body></html>")
                 let currentTitle = object.title
+                let resolvedTitleUpdate = resolvedSnippetTitleAfterHTMLUpdate(
+                    currentTitle: currentTitle,
+                    currentHTML: object.html,
+                    updatedHTML: normalizedHTML,
+                    requestedTitle: title,
+                    currentIsTitlePrefixOfContent: object.isTitlePrefixOfContent
+                )
                 var objectDidChange = false
 
-                if currentTitle != title {
-                    object.title = title
+                if currentTitle != resolvedTitleUpdate.title {
+                    object.title = resolvedTitleUpdate.title
+                    objectDidChange = true
+                }
+                if object.isTitlePrefixOfContent != resolvedTitleUpdate.isTitlePrefixOfContent {
+                    object.isTitlePrefixOfContent = resolvedTitleUpdate.isTitlePrefixOfContent
                     objectDidChange = true
                 }
                 if currentHTML != normalizedHTML {

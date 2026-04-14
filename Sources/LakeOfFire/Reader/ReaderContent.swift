@@ -52,27 +52,13 @@ public class ReaderContent: ObservableObject {
             return content.locationBarTitle
         }
 
-        let titleMatchesGeneratedPrefix = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
-            content.title,
-            sourceHTML: content.html
+        snippetTitleIsGeneratedFromPrefix = content.isTitlePrefixOfContent
+        return ReaderContentLoader.resolvedSnippetLocationBarTitle(
+            title: content.title,
+            createdAt: content.createdAt,
+            needsClipboardIndicator: content.needsClipboardIndicator,
+            isTitlePrefixOfContent: content.isTitlePrefixOfContent
         )
-        snippetTitleIsGeneratedFromPrefix = titleMatchesGeneratedPrefix
-        if titleMatchesGeneratedPrefix {
-            return content.defaultSnippetChromeTitle
-        }
-
-        let cleanedTitle = resolvedDisplayTitle(for: content)
-        return cleanedTitle.isEmpty ? content.defaultSnippetChromeTitle : cleanedTitle
-    }
-
-    private func resolvedDisplayTitle(for content: any ReaderContentProtocol) -> String {
-        let needsClipboardIndicator = content.needsClipboardIndicator
-        var displayTitle = content.title.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
-        displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
-        if displayTitle.isEmpty {
-            displayTitle = "Untitled"
-        }
-        return displayTitle
     }
 
     private func syncContentTitle() {
@@ -148,7 +134,11 @@ public class ReaderContent: ObservableObject {
         }
 
         if let loadingTask, pageURL.matchesReaderURL(url) {
+            let startedAt = CFAbsoluteTimeGetCurrent()
             _ = try await loadingTask.value
+            logReaderLoad(
+                "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
+            )
             return
         }
 
@@ -220,10 +210,19 @@ public class ReaderContent: ObservableObject {
     
     @MainActor
     public func getContent() async throws -> (any ReaderContentProtocol)? {
+        let startedAt = CFAbsoluteTimeGetCurrent()
         if let content {
+            logReaderLoad(
+                "stage=readerContent.getContent source=cached contentURL=\(content.url.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
+            )
             return content
         }
-        return try await loadingTask?.value
+        let content = try await loadingTask?.value
+        let contentURL = content?.url.absoluteString ?? "nil"
+        logReaderLoad(
+            "stage=readerContent.getContent source=loadingTask contentURL=\(contentURL) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
+        )
+        return content
     }
 
     @MainActor
@@ -232,16 +231,26 @@ public class ReaderContent: ObservableObject {
         guard !trimmed.isEmpty else { return }
         guard let content else { return }
         guard trimmed != content.title else { return }
+        let isTitlePrefixOfContent =
+            content.url.isSnippetURL &&
+            ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+                trimmed,
+                sourceHTML: content.html
+            )
 
         content.title = trimmed
+        content.isTitlePrefixOfContent = isTitlePrefixOfContent
         syncLocationBarTitle()
         syncContentTitle()
 
         do {
             let contentURL = content.url
             try await ReaderContentLoader.updateContent(url: contentURL) { object in
-                guard object.title != trimmed else { return false }
+                guard object.title != trimmed || object.isTitlePrefixOfContent != isTitlePrefixOfContent else {
+                    return false
+                }
                 object.title = trimmed
+                object.isTitlePrefixOfContent = isTitlePrefixOfContent
                 return true
             }
         } catch {

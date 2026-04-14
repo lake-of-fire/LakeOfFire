@@ -177,6 +177,7 @@ public class FeedEntry: Object, ObjectKeyIdentifiable, ReaderContentProtocol, Ch
     
     @Persisted public var url: URL
     @Persisted public var title = ""
+    @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?

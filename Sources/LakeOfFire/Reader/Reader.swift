@@ -648,17 +648,13 @@ public struct Reader: View {
                 guard scriptCaller.hasAsyncCaller else { return }
                 let rawTitle = readerContent.contentTitle
                 let needsClipboardIndicator = readerContent.content?.needsClipboardIndicator ?? false
-                var displayTitle = rawTitle.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
-                displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
-                if displayTitle.isEmpty {
-                    displayTitle = "Untitled"
-                }
+                let displayTitle = ReaderContentLoader.resolvedDisplayTitle(
+                    rawTitle,
+                    needsClipboardIndicator: needsClipboardIndicator
+                )
                 let hideRedundantSnippetTitle =
                     readerContent.content?.url.isSnippetURL == true &&
-                    ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
-                        rawTitle,
-                        sourceHTML: readerContent.content?.html
-                    )
+                    readerContent.snippetTitleIsGeneratedFromPrefix
                 debugPrint(
                     "# SNIPPETTITLE liveSync",
                     "url=\(readerContent.content?.url.absoluteString ?? readerContent.pageURL.absoluteString)",

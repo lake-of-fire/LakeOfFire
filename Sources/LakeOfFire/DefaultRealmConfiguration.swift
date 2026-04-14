@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 53
+    public static let schemaVersion: UInt64 = 54
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -49,6 +49,32 @@ public enum DefaultRealmConfiguration {
                     if newObject["audioSubtitlesURL"] != nil, newObject["audioSubtitlesRoleRawValue"] == nil {
                         newObject["audioSubtitlesRoleRawValue"] = AudioSubtitlesRole.content.rawValue
                     }
+                }
+            }
+            if oldSchemaVersion < 54 {
+                migration.enumerateObjects(ofType: FeedEntry.className()) { oldObject, newObject in
+                    guard let newObject,
+                          let url = oldObject?["url"] as? URL,
+                          let title = oldObject?["title"] as? String else {
+                        return
+                    }
+                    guard url.isSnippetURL else {
+                        newObject["isTitlePrefixOfContent"] = false
+                        return
+                    }
+                    let html: String? = {
+                        if let content = oldObject?["content"] as? Data {
+                            let nsContent: NSData = content as NSData
+                            if let data = try? nsContent.decompressed(using: .lzfse) as Data? {
+                                return String(decoding: data, as: UTF8.self)
+                            }
+                        }
+                        return nil
+                    }()
+                    newObject["isTitlePrefixOfContent"] = ReaderContentLoader.snippetTitleMatchesGeneratedPrefix(
+                        title,
+                        sourceHTML: html
+                    )
                 }
             }
         }

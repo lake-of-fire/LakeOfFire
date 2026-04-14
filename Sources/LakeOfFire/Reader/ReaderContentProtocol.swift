@@ -56,6 +56,7 @@ public protocol ReaderContentProtocol: RealmSwift.Object, ObjectKeyIdentifiable,
     
     var url: URL { get set }
     var title: String { get set }
+    var isTitlePrefixOfContent: Bool { get set }
     var author: String { get set }
     var imageUrl: URL? { get set }
     var sourceIconURL: URL? { get set }
@@ -369,15 +370,11 @@ public extension ReaderContentProtocol {
     
     var titleForDisplay: String {
         get {
-            var displayTitle = title.removingClipboardIndicatorIfNeeded(needsClipboardIndicator)
-            displayTitle = displayTitle.removingHTMLTags() ?? displayTitle
-            if displayTitle.isEmpty {
-                displayTitle = "Untitled"
-            }
-            if needsClipboardIndicator {
-                return "📎 " + displayTitle
-            }
-            return displayTitle
+            ReaderContentLoader.resolvedDisplayTitle(
+                title,
+                needsClipboardIndicator: needsClipboardIndicator,
+                addClipboardIndicator: needsClipboardIndicator
+            )
         }
     }
     
@@ -434,6 +431,7 @@ public extension ReaderContentProtocol {
         let imageURL = imageUrl
         let sourceIconURL = sourceIconURL
         let isFromClipboard = isFromClipboard
+        let isTitlePrefixOfContent = isTitlePrefixOfContent
         let isReaderModeByDefault = isReaderModeByDefault
         let rssContainsFullContent = rssContainsFullContent
         let isReaderModeAvailable = isReaderModeAvailable
@@ -456,6 +454,7 @@ public extension ReaderContentProtocol {
                 content: content,
                 publicationDate: publicationDate,
                 isFromClipboard: isFromClipboard,
+                isTitlePrefixOfContent: isTitlePrefixOfContent,
                 rssContainsFullContent: rssContainsFullContent,
                 isReaderModeByDefault: isReaderModeByDefault,
                 isReaderModeAvailable: isReaderModeAvailable,
@@ -536,6 +535,7 @@ public extension ReaderContentProtocol {
 //            await realm.asyncRefresh()
             try await realm.asyncWrite {
                 record.title = title
+                record.isTitlePrefixOfContent = isTitlePrefixOfContent
                 record.imageUrl = imageURL
                 record.sourceIconURL = sourceIconURL
                 record.isFromClipboard = isFromClipboard
@@ -566,6 +566,7 @@ public extension ReaderContentProtocol {
             let record = HistoryRecord()
             record.url = pageURL
             record.title = title
+            record.isTitlePrefixOfContent = isTitlePrefixOfContent
             record.imageUrl = imageURL
             record.sourceIconURL = sourceIconURL
             record.rssContainsFullContent = rssContainsFullContent

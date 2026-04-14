@@ -9,6 +9,7 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     
     @Persisted(indexed: true) public var url = URL(string: "about:blank")!
     @Persisted public var title = ""
+    @Persisted public var isTitlePrefixOfContent = false
     @Persisted public var author = ""
     @Persisted public var imageUrl: URL?
     @Persisted public var sourceIconURL: URL?
@@ -54,7 +55,12 @@ public class Bookmark: Object, ReaderContentProtocol, PhysicalMediaCapableProtoc
     public var locationBarTitle: String? {
         let url = url
         if url.isSnippetURL {
-            return defaultSnippetChromeTitle
+            return ReaderContentLoader.resolvedSnippetLocationBarTitle(
+                title: title,
+                createdAt: createdAt,
+                needsClipboardIndicator: needsClipboardIndicator,
+                isTitlePrefixOfContent: isTitlePrefixOfContent
+            )
         }
         if url.isEBookURL {
             return title
@@ -121,6 +127,7 @@ public extension Bookmark {
         content: Data? = nil,
         publicationDate: Date? = nil,
         isFromClipboard: Bool,
+        isTitlePrefixOfContent: Bool = false,
         rssContainsFullContent: Bool,
         isReaderModeByDefault: Bool,
         isReaderModeAvailable: Bool,
@@ -142,6 +149,7 @@ public extension Bookmark {
                 }
                 bookmark.publicationDate = publicationDate
                 bookmark.isFromClipboard = isFromClipboard
+                bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
                 bookmark.isReaderModeByDefault = isReaderModeByDefault
                 bookmark.isReaderModeAvailable = isReaderModeAvailable
                 bookmark.rssContainsFullContent = rssContainsFullContent
@@ -169,6 +177,7 @@ public extension Bookmark {
             bookmark.sourceIconURL = sourceIconURL
             bookmark.publicationDate = publicationDate
             bookmark.isFromClipboard = isFromClipboard
+            bookmark.isTitlePrefixOfContent = isTitlePrefixOfContent
             bookmark.isReaderModeByDefault = isReaderModeByDefault
             bookmark.rssContainsFullContent = rssContainsFullContent
             bookmark.isReaderModeAvailable = isReaderModeAvailable
