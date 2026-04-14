@@ -25,6 +25,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
     @Published var imageURL: URL?
     @Published var sourceIconURL: URL?
     @Published var sourceTitle: String?
+    @Published var totalWordCount: Int?
+    @Published var remainingTime: TimeInterval?
 
     init() { }
 
@@ -47,6 +49,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
+            let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
 
             var sourceIconURL: URL?
             var sourceTitle: String?
@@ -77,6 +80,8 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.readingProgress = nil
                     self.isFullArticleFinished = nil
                 }
+                self.totalWordCount = metadataResult?.totalWordCount
+                self.remainingTime = metadataResult?.remainingTime
             }()
         }()
     }
@@ -364,6 +369,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         return false
     }
 
+    private var remainingDurationText: String? {
+        Self.formatMetadata(remainingTime: viewModel.remainingTime)
+    }
+
+    private static func formatMetadata(remainingTime: TimeInterval?) -> String? {
+        guard let remainingTime, remainingTime > 1,
+              let formatted = ReaderDateFormatter.shortDurationString(from: remainingTime) else {
+            return nil
+        }
+        return "\(formatted) remaining"
+    }
+
     private var publicationDateText: String? {
         if let formatted = viewModel.humanReadablePublicationDate, !formatted.isEmpty {
             return formatted
@@ -534,8 +551,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     @ViewBuilder
     private var progressRow: some View {
         if let readingProgressFloat = viewModel.readingProgress, isProgressVisible {
-            ProgressView(value: min(1, readingProgressFloat))
-                .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+            HStack(spacing: 8) {
+                ProgressView(value: min(1, readingProgressFloat))
+                    .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+
+                if let remainingDurationText {
+                    Text(remainingDurationText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .allowsTightening(true)
+                }
+            }
         }
     }
 

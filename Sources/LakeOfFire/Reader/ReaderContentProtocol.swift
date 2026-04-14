@@ -26,6 +26,17 @@ public actor ReaderContentReadingProgressLoader {
     
     /// Float is progress, Bool is whether article is "finished".
     public static var readingProgressLoader: ((URL) async throws -> (Float, Bool)?)?
+    public static var readingProgressMetadataLoader: ((URL) async throws -> ReaderContentProgressMetadata?)?
+}
+
+public struct ReaderContentProgressMetadata: Sendable {
+    public let totalWordCount: Int?
+    public let remainingTime: TimeInterval?
+
+    public init(totalWordCount: Int?, remainingTime: TimeInterval?) {
+        self.totalWordCount = totalWordCount
+        self.remainingTime = remainingTime
+    }
 }
 
 public enum AudioSubtitlesRole: String, CaseIterable, Sendable {
