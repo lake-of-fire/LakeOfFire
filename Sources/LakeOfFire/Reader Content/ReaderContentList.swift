@@ -196,20 +196,19 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
 
     func body(content: Content) -> some View {
         let shouldSyncToReader = enabled && onSelection == nil
-        let shouldSkipWhenAlreadyLoaded = onSelection == nil
 
         return content
             .onChange(of: entrySelection) { [oldValue = entrySelection] itemSelection in
                 guard enabled else { return }
                 guard oldValue != itemSelection,
                       let itemSelection,
-                      let selectedContent = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection }),
-                      (!shouldSkipWhenAlreadyLoaded || !selectedContent.url.matchesReaderURL(readerContent.pageURL))
+                      let selectedContent = viewModel.filteredContents.first(where: { $0.compoundKey == itemSelection })
                 else {
                     return
                 }
+                let isAlreadyLoaded = selectedContent.url.matchesReaderURL(readerContent.pageURL)
                 logReaderLoad(
-                    "stage=contentList.selectionChanged selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil)"
+                    "stage=contentList.selectionChanged selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
                 )
 
                 Task { @MainActor in
@@ -226,9 +225,15 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
 
                     guard shouldSyncToReader else { return }
                     logReaderLoad(
-                        "stage=contentList.selectionDispatch mode=navigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                        "stage=contentList.selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                     )
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
+                    guard !isAlreadyLoaded else {
+                        if entrySelection == itemSelection {
+                            entrySelection = nil
+                        }
+                        return
+                    }
                     do {
                         try await navigator.load(
                             content: selectedContent,
@@ -581,6 +586,15 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 rowContent(item: content)
                     .tag(content.compoundKey)
                     .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            guard entrySelection == content.compoundKey else { return }
+                            entrySelection = nil
+                            Task { @MainActor in
+                                entrySelection = content.compoundKey
+                            }
+                        }
+                    )
                     .accessibilityIdentifier("ReaderContentRow.\(content.compoundKey)")
                     .accessibilityLabel(content.title)
                     .accessibilityAddTraits(.isButton)

@@ -73,6 +73,7 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 }
                 return
             }
+            contentSelectionNavigationHint?(content.url, selection)
             guard !content.url.matchesReaderURL(readerContent.pageURL) else {
                 Task { @MainActor in
                     if contentSelection.wrappedValue == selection {
@@ -81,7 +82,6 @@ fileprivate struct ReaderContentInnerHorizontalListItem<C: ReaderContentProtocol
                 }
                 return
             }
-            contentSelectionNavigationHint?(content.url, selection)
             Task { @MainActor in
                 do {
                     try await navigator.load(
