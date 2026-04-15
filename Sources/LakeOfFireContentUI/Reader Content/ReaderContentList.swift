@@ -365,6 +365,23 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     public var showLoadingIndicator: Bool {
         return !hasLoadedBefore || isLoading
     }
+
+    @MainActor
+    private func applyFilteredContents(_ contents: [C], ids: [String]) {
+        let updateState = {
+            self.filteredContentIDs = ids
+            self.filteredContents = contents
+            self.hasLoadedBefore = true
+        }
+
+        if self.hasLoadedBefore {
+            withAnimation(.default) {
+                updateState()
+            }
+        } else {
+            updateState()
+        }
+    }
     
     @MainActor
     public func load(
@@ -374,8 +391,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil
     ) async throws {
         if sortOrder == nil && contentFilter == nil {
-            filteredContentIDs = contents.map { $0.compoundKey }
-            filteredContents = contents
+            applyFilteredContents(contents, ids: contents.map { $0.compoundKey })
             return
         }
         
@@ -390,9 +406,7 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             //            })
             guard let realmConfig else {
                 await { @MainActor [weak self] in
-                    self?.filteredContentIDs.removeAll()
-                    self?.filteredContents.removeAll()
-                    self?.hasLoadedBefore = true
+                    self?.applyFilteredContents([], ids: [])
                 }()
                 return
             }
@@ -463,12 +477,10 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
                 guard let self = self else { return }
                 let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
                 let contents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0) }
-                filteredContentIDs = ids
-                filteredContents = (contents as [any ReaderContentProtocol]) as? [C] ?? filteredContents
-            }()
-            
-            await { @MainActor [weak self] in
-                self?.hasLoadedBefore = true
+                self.applyFilteredContents(
+                    (contents as [any ReaderContentProtocol]) as? [C] ?? self.filteredContents,
+                    ids: ids
+                )
             }()
         }
         try? await loadContentsTask?.value
@@ -567,7 +579,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .deleteDisabled((content as? any DeletableReaderContent) == nil)
         .swipeActions {
             if let content = content as? any DeletableReaderContent {
-                Button(role: .destructive) {
+                Button {
                     if let onRequestDelete {
                         Task { @MainActor in
                             do {
@@ -586,6 +598,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+                .tint(.red)
             }
         }
 #endif

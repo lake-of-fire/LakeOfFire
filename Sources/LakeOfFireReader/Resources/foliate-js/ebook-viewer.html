@@ -1128,12 +1128,13 @@
         </button>
         <script>
             window.manabiViewerModuleStatus = 'loading-script';
-            window.manabiViewerModuleURL = new URL('/load/viewer-assets/foliate-js/ebook-viewer.bundle.iife.js', window.location.href).href;
-            window.manabiViewerModuleFetchStatus = 'classic-script';
+            window.manabiViewerModuleURL = new URL('/load/viewer-assets/foliate-js/ebook-viewer.js', window.location.href).href;
+            window.manabiViewerModuleFetchStatus = 'module-script';
         </script>
         <script
             id="ebook-viewer-module-script"
-            src="/load/viewer-assets/foliate-js/ebook-viewer.bundle.iife.js"
+            type="module"
+            src="/load/viewer-assets/foliate-js/ebook-viewer.js"
             onload="window.manabiViewerModuleStatus='loaded-script';"
             onerror="window.manabiViewerModuleStatus='error:script-load'; window.manabiViewerModuleFetchStatus='error:script-load';"
         ></script>

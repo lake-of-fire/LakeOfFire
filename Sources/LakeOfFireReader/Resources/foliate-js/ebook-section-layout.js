@@ -1578,10 +1578,21 @@ export class EbookSectionLayout {
         })
     }
 
-    #syncChunkSourceMetadata() {
+    #syncChunkSourceMetadata(root = null) {
+        const liveRoot = root instanceof HTMLElement ? root : null
         for (const pageRecord of this.#pageRecords) {
             for (const chunkRecord of pageRecord.chunkRecords || []) {
-                const chunkNode = chunkRecord?.chunkNode
+                let chunkNode = chunkRecord?.chunkNode
+                const chunkId = chunkNode?.dataset?.manabiChunkId
+                if (liveRoot instanceof HTMLElement && chunkId) {
+                    const liveChunkNode = liveRoot.querySelector(
+                        `.manabi-page-column-chunk[data-manabi-chunk-id="${chunkId}"]`
+                    )
+                    if (liveChunkNode instanceof HTMLElement) {
+                        chunkNode = liveChunkNode
+                        chunkRecord.chunkNode = liveChunkNode
+                    }
+                }
                 if (!(chunkNode instanceof HTMLElement)) continue
                 const startUnitIndex = chunkRecord.startUnitIndex
                 const endUnitIndex = chunkRecord.endUnitIndex
@@ -1673,7 +1684,16 @@ export class EbookSectionLayout {
     }
 
     #refreshLiveRoot({ runtime, root, complete }) {
-        this.#syncChunkSourceMetadata()
+        this.#syncChunkSourceMetadata(root)
+        const chunkSections = Array.from(root?.querySelectorAll?.('.manabi-page-column-chunk') || [])
+        chunkSections.forEach((sectionNode, sectionIndex) => {
+            if (!(sectionNode instanceof HTMLElement)) return
+            sectionNode.classList.add('manabi-tracking-section')
+            runtime?.manabiCreateTrackingSectionChrome?.(sectionNode, sectionIndex, {
+                includePreviewUI: false,
+            })
+            runtime?.manabiEnsureTrackingMarker?.(sectionNode)
+        })
         runtime?.manabiEnsureTrackingFooter?.()
         runtime?.manabiEnsureTrackingMarkers?.(root)
 
