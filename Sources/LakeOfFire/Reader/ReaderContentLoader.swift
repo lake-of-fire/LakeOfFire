@@ -158,8 +158,6 @@ public struct ReaderContentLoader {
         logReaderLoad(
             "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
         )
-        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
-        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
         try Task.checkCancellation()
  
         var contentFile: ContentFile?
@@ -190,7 +188,6 @@ public struct ReaderContentLoader {
                 .sorted(by: \.createdAt, ascending: false)
             
             if url.scheme == "https" {
-                feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
                 feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
             } else if !url.isReaderFileURL {
                 feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first

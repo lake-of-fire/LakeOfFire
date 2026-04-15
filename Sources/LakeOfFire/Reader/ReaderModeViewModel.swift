@@ -2341,6 +2341,38 @@ public class ReaderModeViewModel: ObservableObject {
                 "hasBody=\(processedBodyExists)",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
             )
+            let transformedContentForFrameInjection: String?
+            let transformedBodyClassesForFrameInjection: String?
+            let transformedStyleTextForFrameInjection: String?
+            if let frameInfo, !frameInfo.isMainFrame {
+                let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
+                transformedContentForFrameInjection = transformedContent
+                let transformedDocument = try? SwiftSoup.parse(transformedContent)
+                let transformedBodyClasses = {
+                    guard let transformedDocument,
+                          let bodyElement = transformedDocument.body(),
+                          let bodyClassNames = try? bodyElement.className() else {
+                        return "readability-mode"
+                    }
+                    let trimmed = bodyClassNames.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? "readability-mode" : trimmed
+                }()
+                let transformedStyleText = {
+                    guard let transformedDocument,
+                          let styleElement = try? transformedDocument.getElementById("swiftuiwebview-readability-styles"),
+                          let styleHTML = try? styleElement.html() else {
+                        return Readability.shared.css
+                    }
+                    return styleHTML.isEmpty ? Readability.shared.css : styleHTML
+                }()
+                transformedBodyClassesForFrameInjection = transformedBodyClasses
+                transformedStyleTextForFrameInjection = transformedStyleText
+            } else {
+                transformedContentForFrameInjection = nil
+                transformedBodyClassesForFrameInjection = nil
+                transformedStyleTextForFrameInjection = nil
+            }
+            let transformedHTMLData = Data(transformedHTMLBytes)
             let mainActorHandoffStart = CFAbsoluteTimeGetCurrent()
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
@@ -2357,22 +2389,9 @@ public class ReaderModeViewModel: ObservableObject {
                     return
                 }
                 if let frameInfo = frameInfo, !frameInfo.isMainFrame {
-                    let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
-                    let transformedBodyClasses = {
-                        guard let document = try? SwiftSoup.parse(transformedContent),
-                              let bodyClassNames = try? document.body()?.className() else {
-                            return "readability-mode"
-                        }
-                        let trimmed = bodyClassNames.trimmingCharacters(in: .whitespacesAndNewlines)
-                        return trimmed.isEmpty ? "readability-mode" : trimmed
-                    }()
-                    let transformedStyleText = {
-                        guard let document = try? SwiftSoup.parse(transformedContent),
-                              let styleHTML = try? document.getElementById("swiftuiwebview-readability-styles")?.html() else {
-                            return Readability.shared.css
-                        }
-                        return styleHTML.isEmpty ? Readability.shared.css : styleHTML
-                    }()
+                    let transformedContent = transformedContentForFrameInjection ?? ""
+                    let transformedBodyClasses = transformedBodyClassesForFrameInjection ?? "readability-mode"
+                    let transformedStyleText = transformedStyleTextForFrameInjection ?? Readability.shared.css
                     debugPrint(
                         "# SNIPPETTITLE frameInjection",
                         "url=\(url.absoluteString)",
@@ -2424,18 +2443,17 @@ public class ReaderModeViewModel: ObservableObject {
                         ], in: frameInfo)
                     self?.markReaderModeLoadComplete(for: url)
                 } else {
-                    let htmlData = Data(transformedHTMLBytes)
                     self?.markSyntheticLoadIssued(for: renderBaseURL)
                     self?.expectSyntheticReaderLoaderCommit(for: renderBaseURL)
-                    self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(htmlData.count)")
+                    self?.logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedHTMLData.count)")
                     debugPrint(
                         "# READERLOAD stage=readerMode.syntheticLoad.data",
                         "contentURL=\(url.absoluteString)",
                         "renderBaseURL=\(renderBaseURL.absoluteString)",
-                        "bytes=\(htmlData.count)"
+                        "bytes=\(transformedHTMLData.count)"
                     )
                     navigator?.load(
-                        htmlData,
+                        transformedHTMLData,
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
