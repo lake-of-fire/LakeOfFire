@@ -257,6 +257,11 @@ fileprivate struct ReaderWebViewInternal: View {
     let handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+    @StateObject private var webViewPrewarmer = WebViewPrewarmer(
+        warmUpCount: 1,
+        keepAliveCount: 1,
+        defaultResetURL: URL(string: "about:blank")
+    )
     
     @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
     
@@ -313,7 +318,9 @@ fileprivate struct ReaderWebViewInternal: View {
             buildMenu: { builder in
                 buildMenu?(builder)
             },
-            hideNavigationDueToScroll: $hideNavigationDueToScroll
+            hideNavigationDueToScroll: $hideNavigationDueToScroll,
+            textSelection: $textSelection,
+            webViewPrewarmer: webViewPrewarmer
         )
         .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
             internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
