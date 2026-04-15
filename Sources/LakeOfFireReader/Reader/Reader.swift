@@ -5215,6 +5215,7 @@ struct ReaderPageTurnSnapshotChrome {
         horizontalInset: CGFloat,
         hudWidth: CGFloat
     ) -> PageTurnSnapshotChromeContent {
+        let usesExplicitScrubberVisibilityOverride = progressScrubberVisible == true
         let scrubberIsVisible = ReaderPageTurnChromePolicy.scrubberVisibility(
             override: progressScrubberVisible,
             pageRange: pageRange,
@@ -5223,7 +5224,7 @@ struct ReaderPageTurnSnapshotChrome {
         )
         let scrubberFollowsThumb = progressScrubberActive ?? false
         let suppressesStandalonePageNumberHUD = ReaderPageTurnChromePolicy.suppressesStandalonePageNumberHUD(
-            scrubberVisible: scrubberIsVisible,
+            scrubberVisible: usesExplicitScrubberVisibilityOverride && scrubberIsVisible,
             scrubberFollowsThumb: scrubberFollowsThumb
         )
         let leadingLabel = currentPageNumber.map { "Page \($0)" }

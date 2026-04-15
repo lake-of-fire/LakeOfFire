@@ -1066,6 +1066,11 @@ private struct ReaderWebViewInternal: View {
     var handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
+    @StateObject private var webViewPrewarmer = WebViewPrewarmer(
+        warmUpCount: 1,
+        keepAliveCount: 1,
+        defaultResetURL: URL(string: "about:blank")
+    )
 
     @AppStorage("ebookViewerLayout") private var ebookViewerLayout = "paginated"
     @AppStorage("bookWritingDirectionSetting") private var bookWritingDirection = "original"
@@ -1175,7 +1180,9 @@ private struct ReaderWebViewInternal: View {
             buildMenu: { builder in
                 buildMenu?(builder)
             },
-            hideNavigationDueToScroll: $hideNavigationDueToScroll
+            hideNavigationDueToScroll: $hideNavigationDueToScroll,
+            textSelection: $textSelection,
+            webViewPrewarmer: webViewPrewarmer
         )
         .onAppear {
             debugPrint(

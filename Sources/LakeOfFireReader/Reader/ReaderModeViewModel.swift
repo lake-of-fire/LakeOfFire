@@ -1650,6 +1650,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             updatePendingReaderModeURL(nil, reason: "complete.emptyReadability.snippet")
             expectedSyntheticReaderLoaderURL = nil
             lastFallbackLoaderURL = canonicalURL
+            lastRenderedURL = canonicalURL
             readerModeLoading(false, frameIsMain: true)
             readerModeLoadCompletionHandler?(canonicalURL)
             return true
@@ -1771,9 +1772,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
     @MainActor
     private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
-        if readabilityContent?.isEmpty == false {
-            return .capturedReadability
-        }
         if let content = try? await readerContent.getContent() {
             let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
             if let html = try? await locallyRetrievableReaderHTML(
@@ -1782,6 +1780,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             ), html.isEmpty == false {
                 return .localHTML
             }
+        }
+        if readabilityContent?.isEmpty == false {
+            return .capturedReadability
         }
         return .unavailable
     }
