@@ -1946,28 +1946,66 @@ public class ReaderModeViewModel: ObservableObject {
             "contentURL=\(url.absoluteString)",
             "elapsed=\(String(format: "%.3f", getContentElapsed))s"
         )
-        
-        let asyncWriteStart = CFAbsoluteTimeGetCurrent()
-        try await content.asyncWrite { _, content in
-            content.isReaderModeByDefault = true
-            content.isReaderModeAvailable = false
-            content.isReaderModeOfferHidden = false
-            if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
-                if !url.isReaderFileURL && (content.content?.isEmpty ?? true) {
-                    content.html = readabilityContent
+
+        let shouldStoreReaderHTML = !url.isEBookURL
+            && !url.isFileURL
+            && !url.isNativeReaderView
+            && !url.isReaderFileURL
+            && (content.content?.isEmpty ?? true)
+        let resolvedStoredHTML = shouldStoreReaderHTML ? readabilityContent : nil
+        let resolvedTitleIfNeeded: String? = {
+            guard content.title.isEmpty else { return nil }
+            return (resolvedStoredHTML ?? content.html)?
+                .strippingHTML()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: "\n")
+                .first?
+                .truncate(36) ?? ""
+        }()
+        let needsAsyncWrite =
+            content.isReaderModeByDefault == false
+            || content.isReaderModeAvailable == true
+            || content.isReaderModeOfferHidden == true
+            || (
+                !url.isEBookURL
+                && !url.isFileURL
+                && !url.isNativeReaderView
+                && content.rssContainsFullContent == false
+            )
+            || (resolvedStoredHTML != nil && content.html != resolvedStoredHTML)
+            || (resolvedTitleIfNeeded != nil && content.title != resolvedTitleIfNeeded)
+
+        if needsAsyncWrite {
+            let asyncWriteStart = CFAbsoluteTimeGetCurrent()
+            try await content.asyncWrite { _, content in
+                content.isReaderModeByDefault = true
+                content.isReaderModeAvailable = false
+                content.isReaderModeOfferHidden = false
+                if !url.isEBookURL && !url.isFileURL && !url.isNativeReaderView {
+                    if let resolvedStoredHTML {
+                        content.html = resolvedStoredHTML
+                    }
+                    if let resolvedTitleIfNeeded {
+                        content.title = resolvedTitleIfNeeded
+                    }
+                    content.rssContainsFullContent = true
                 }
-                if content.title.isEmpty {
-                    content.title = content.html?.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first?.truncate(36) ?? ""
-                }
-                content.rssContainsFullContent = true
+                content.refreshChangeMetadata(explicitlyModified: true)
             }
-            content.refreshChangeMetadata(explicitlyModified: true)
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.asyncWrite",
+                "contentURL=\(url.absoluteString)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - asyncWriteStart))s",
+                "skipped=false"
+            )
+        } else {
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.asyncWrite",
+                "contentURL=\(url.absoluteString)",
+                "elapsed=0.000s",
+                "skipped=true"
+            )
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReadabilityContent.asyncWrite",
-            "contentURL=\(url.absoluteString)",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - asyncWriteStart))s"
-        )
         
         if !isReaderMode {
             isReaderMode = true

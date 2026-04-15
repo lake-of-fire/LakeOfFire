@@ -159,8 +159,6 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
     
-    @State private var handler: ReaderWebViewHandler? = nil
-    
     public init(
         persistentWebViewID: String? = nil,
         obscuredInsets: EdgeInsets?,
@@ -192,58 +190,38 @@ public struct ReaderWebView: View {
     }
     
     public var body: some View {
-        // Initialize handler if nil, and update dependencies
-        return Group {
-            if let handler = handler {
-                ReaderWebViewInternal(
-                    persistentWebViewID: persistentWebViewID,
-                    obscuredInsets: obscuredInsets,
-                    bounces: bounces,
-                    additionalTopSafeAreaInset: additionalTopSafeAreaInset,
-                    additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
-                    schemeHandlers: schemeHandlers,
-                    hideNavigationDueToScroll: $hideNavigationDueToScroll,
-                    textSelection: $textSelection,
-                    buildMenu: buildMenu,
-                    scriptCaller: scriptCaller,
-                    userScripts: readerViewModel.allScripts,
-                    state: $readerViewModel.state,
-                    ebookURLSchemeHandler: ebookURLSchemeHandler,
-                    readerFileURLSchemeHandler: readerFileURLSchemeHandler,
-                    sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
-                    handler: handler
-                )
-            } else {
-                // Show empty view or placeholder while handler is initializing
-                Color.clear
-            }
-        }
+        let handler = ReaderWebViewHandler(
+            onNavigationCommitted: onNavigationCommitted,
+            onNavigationFinished: onNavigationFinished,
+            onNavigationFailed: onNavigationFailed,
+            onURLChanged: onURLChanged,
+            readerContent: readerContent,
+            readerViewModel: readerViewModel,
+            readerModeViewModel: readerModeViewModel,
+            readerMediaPlayerViewModel: readerMediaPlayerViewModel,
+            scriptCaller: scriptCaller
+        )
+        ReaderWebViewInternal(
+            persistentWebViewID: persistentWebViewID,
+            obscuredInsets: obscuredInsets,
+            bounces: bounces,
+            additionalTopSafeAreaInset: additionalTopSafeAreaInset,
+            additionalBottomSafeAreaInset: additionalBottomSafeAreaInset,
+            schemeHandlers: schemeHandlers,
+            hideNavigationDueToScroll: $hideNavigationDueToScroll,
+            textSelection: $textSelection,
+            buildMenu: buildMenu,
+            scriptCaller: scriptCaller,
+            userScripts: readerViewModel.allScripts,
+            state: $readerViewModel.state,
+            ebookURLSchemeHandler: ebookURLSchemeHandler,
+            readerFileURLSchemeHandler: readerFileURLSchemeHandler,
+            sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
+            handler: handler
+        )
         .task { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
             navigator.attachFallbackDelayNanoseconds = 700_000_000
-            if handler == nil {
-                handler = ReaderWebViewHandler(
-                    onNavigationCommitted: onNavigationCommitted,
-                    onNavigationFinished: onNavigationFinished,
-                    onNavigationFailed: onNavigationFailed,
-                    onURLChanged: onURLChanged,
-                    readerContent: readerContent,
-                    readerViewModel: readerViewModel,
-                    readerModeViewModel: readerModeViewModel,
-                    readerMediaPlayerViewModel: readerMediaPlayerViewModel,
-                    scriptCaller: scriptCaller
-                )
-            } else if let handler {
-                handler.onNavigationCommitted = onNavigationCommitted
-                handler.onNavigationFinished = onNavigationFinished
-                handler.onNavigationFailed = onNavigationFailed
-                handler.onURLChanged = onURLChanged
-                handler.readerContent = readerContent
-                handler.readerViewModel = readerViewModel
-                handler.readerModeViewModel = readerModeViewModel
-                handler.readerMediaPlayerViewModel = readerMediaPlayerViewModel
-                handler.scriptCaller = scriptCaller
-            }
             ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
             ebookURLSchemeHandler.ebookTextProcessor = ebookTextProcessor
             ebookURLSchemeHandler.processReadabilityContent = readerModeViewModel.processReadabilityContent
@@ -276,7 +254,7 @@ fileprivate struct ReaderWebViewInternal: View {
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
     let sharedReaderFontAsset: SharedReaderFontAsset?
-    var handler: ReaderWebViewHandler
+    let handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
     
