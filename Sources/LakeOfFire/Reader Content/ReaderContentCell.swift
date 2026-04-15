@@ -580,7 +580,16 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         .buttonStyle(.clearBordered)
         .controlSize(.small)
         .onPreferenceChange(ClearBorderedButtonHeightKey.self) { height in
-            guard height > 0, abs(height - clearBorderedLabelHeight) > 0.5 else { return }
+            guard height >= buttonSize else {
+                if readerContentCellStyle == .card {
+                    logContentCell(
+                        "metadataRow.clearBorderedHeight.ignored",
+                        result: "height=\(height); buttonSize=\(buttonSize); currentHeight=\(clearBorderedLabelHeight); title=\(displayTitle.prefix(48))"
+                    )
+                }
+                return
+            }
+            guard abs(height - clearBorderedLabelHeight) > 0.5 else { return }
             clearBorderedLabelHeight = height
             guard readerContentCellStyle == .card else { return }
             logContentCell(
@@ -596,6 +605,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             HStack(spacing: 8) {
                 ProgressView(value: min(1, readingProgressFloat))
                     .tint((viewModel.isFullArticleFinished ?? false) ? Color("Green") : .secondary)
+                    .frame(width: 48)
 
                 if let remainingDurationText {
                     Text(remainingDurationText)
