@@ -859,10 +859,10 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
         }
-        lastRenderedURL = canonicalURL
         updatePendingReaderModeURL(nil, reason: "markReaderModeLoadComplete")
         expectedSyntheticReaderLoaderURL = nil
         readerModeLoading(false)
+        lastRenderedURL = canonicalURL
         readerModeLoadCompletionHandler?(canonicalURL)
         debugPrint(
             "# READERRELOAD completeLoad",
@@ -937,6 +937,17 @@ public class ReaderModeViewModel: ObservableObject {
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
         let syntheticCompletionInFlight = isReaderModeLoading && !pageURL.isReaderURLLoaderURL
+        debugPrint(
+            "# READERLOAD stage=readerMode.syntheticLoad.readyHandler",
+            "pageURL=\(pageURL.absoluteString)",
+            "elapsedSinceSyntheticLoad=\(syntheticLoadElapsedString(for: canonicalURL))",
+            "pendingMatches=\(pendingMatches)",
+            "expectedMatches=\(expectedMatches)",
+            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)",
+            "pendingReaderModeURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedSyntheticReaderLoaderURL=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "lastRenderedURL=\(lastRenderedURL?.absoluteString ?? "nil")"
+        )
         guard pendingMatches || expectedMatches || syntheticCompletionInFlight else { return }
 
         debugPrint(
@@ -965,8 +976,6 @@ public class ReaderModeViewModel: ObservableObject {
             reason: "readerMode.syntheticLoad.renderReady",
             pageURL: canonicalURL
         )
-
-        lastRenderedURL = canonicalURL
 
         if expectedMatches {
             expectedSyntheticReaderLoaderURL = nil
@@ -1417,6 +1426,37 @@ public class ReaderModeViewModel: ObservableObject {
         syntheticLoadIssuedAtByURL.removeValue(forKey: canonicalRenderKey(url))
     }
 
+    @MainActor
+    func syntheticLoadElapsedString(for url: URL) -> String {
+        guard let issuedAt = syntheticLoadIssuedAtByURL[canonicalRenderKey(url)] else {
+            return "nil"
+        }
+        return formattedInterval(Date().timeIntervalSince(issuedAt))
+    }
+
+    @MainActor
+    func logSyntheticDocumentState(
+        pageURL: URL,
+        readyState: String,
+        hasReaderContent: Bool,
+        hasReaderRenderReady: Bool,
+        reason: String
+    ) {
+        let canonicalURL = pageURL.canonicalReaderContentURLForHotfix()
+        debugPrint(
+            "# READERLOAD stage=readerMode.syntheticLoad.docState",
+            "pageURL=\(pageURL.absoluteString)",
+            "readyState=\(readyState)",
+            "hasReaderContent=\(hasReaderContent)",
+            "hasReaderRenderReady=\(hasReaderRenderReady)",
+            "reason=\(reason)",
+            "elapsedSinceSyntheticLoad=\(syntheticLoadElapsedString(for: canonicalURL))",
+            "pendingReaderModeURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "expectedSyntheticReaderLoaderURL=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
+            "lastRenderedURL=\(lastRenderedURL?.absoluteString ?? "nil")"
+        )
+    }
+
     private func activeRenderGenerationDescription(for key: String) -> String {
         activeRenderGenerationByURL[key]?.uuidString ?? "nil"
     }
@@ -1441,6 +1481,21 @@ public class ReaderModeViewModel: ObservableObject {
             return false
         }
         return true
+    }
+
+    @MainActor
+    private func shouldSkipDuplicateLoaderRender(for url: URL) -> (skip: Bool, reason: String) {
+        let canonicalURL = url.canonicalReaderContentURLForHotfix()
+        if hasActiveRender(for: canonicalURL) {
+            return (true, "activeRender")
+        }
+        if pendingKeysMatch(pendingReaderModeURL, canonicalURL), readabilityContent != nil {
+            return (true, "pendingWithReadability")
+        }
+        if pendingKeysMatch(lastRenderedURL, canonicalURL), readabilityContent != nil {
+            return (true, "alreadyRenderedWithReadability")
+        }
+        return (false, "none")
     }
 
     private func finishRenderTask(for url: URL, generation: UUID, reason: String) {
@@ -1616,6 +1671,17 @@ public class ReaderModeViewModel: ObservableObject {
     @MainActor
     private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
         let startedAt = CFAbsoluteTimeGetCurrent()
+        if let readabilityContent, !readabilityContent.isEmpty {
+            debugPrint(
+                "# READERLOAD stage=readerMode.route.resolve",
+                "pageURL=\(readerContent.pageURL.absoluteString)",
+                "route=\(ReaderModeRoute.capturedReadability.rawValue)",
+                "reason=cachedReadabilityContent",
+                "readabilityHasCanonicalMarkup=\(hasCanonicalReadabilityMarkup(in: readabilityContent))",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
+            )
+            return .capturedReadability
+        }
         let activeReaderFileManager = readerFileManager ?? .shared
         if let content = try? await readerContent.getContent(),
            let html = try? await locallyRetrievableReaderHTML(
@@ -1627,23 +1693,16 @@ public class ReaderModeViewModel: ObservableObject {
                 "# READERLOAD stage=readerMode.route.resolve",
                 "pageURL=\(readerContent.pageURL.absoluteString)",
                 "route=\(ReaderModeRoute.localHTML.rawValue)",
+                "reason=localHTMLAvailable",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
             )
             return .localHTML
-        }
-        if readabilityContent != nil {
-            debugPrint(
-                "# READERLOAD stage=readerMode.route.resolve",
-                "pageURL=\(readerContent.pageURL.absoluteString)",
-                "route=\(ReaderModeRoute.capturedReadability.rawValue)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
-            return .capturedReadability
         }
         debugPrint(
             "# READERLOAD stage=readerMode.route.resolve",
             "pageURL=\(readerContent.pageURL.absoluteString)",
             "route=\(ReaderModeRoute.unavailable.rawValue)",
+            "reason=noReadabilityOrLocalHTML",
             "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
         )
         return .unavailable
@@ -1660,7 +1719,7 @@ public class ReaderModeViewModel: ObservableObject {
         let scheduledAt = CFAbsoluteTimeGetCurrent()
         beginReaderModeLoad(for: contentURL, reason: "showReaderView")
         logTrace(.readabilityTaskScheduled, url: contentURL, details: "readabilityBytes=\(readabilityContent?.utf8.count ?? 0)")
-        _ = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
+        let startedRenderTask = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
             guard let self else { return }
             debugPrint(
                 "# READERLOAD stage=readerMode.showReaderView.renderStart",
@@ -1709,6 +1768,15 @@ public class ReaderModeViewModel: ObservableObject {
             case .unavailable:
                 cancelReaderModeLoad(for: contentURL, reason: "showReaderView.unavailable")
             }
+        }
+        if !startedRenderTask {
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReaderView.skipSingleFlight",
+                "contentURL=\(contentURL.absoluteString)",
+                "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRenderedURL=\(lastRenderedURL?.absoluteString ?? "nil")",
+                "hasReadability=\(readabilityContent != nil)"
+            )
         }
     }
 
@@ -2542,14 +2610,26 @@ public class ReaderModeViewModel: ObservableObject {
         
         if newState.pageURL.isReaderURLLoaderURL {
             let loaderStartedAt = Date()
+            let duplicateLoaderRender = shouldSkipDuplicateLoaderRender(for: committedURL)
             debugPrint(
                 "# READERLOAD stage=readerMode.navCommit.loaderBegin",
                 "loaderURL=\(newState.pageURL.absoluteString)",
                 "contentURL=\(committedURL.absoluteString)",
                 "currentPageURL=\(readerContent.pageURL.absoluteString)",
                 "hasReaderFileManager=\(readerFileManager != nil)",
-                "hasExistingReadability=\(readabilityContent != nil)"
+                "hasExistingReadability=\(readabilityContent != nil)",
+                "skipDuplicateLoaderRender=\(duplicateLoaderRender.skip)",
+                "skipReason=\(duplicateLoaderRender.reason)"
             )
+            if duplicateLoaderRender.skip {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.navCommit.loaderSkipDuplicate",
+                    "contentURL=\(committedURL.absoluteString)",
+                    "reason=\(duplicateLoaderRender.reason)",
+                    "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
+                )
+                return
+            }
             if let readerFileManager {
                 let htmlResolutionStartedAt = Date()
                 let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)

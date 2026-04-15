@@ -181,7 +181,11 @@ public class ReaderContent: ObservableObject {
         loadingTask?.cancel()
         loadingTask = Task { @MainActor [weak self] in
             try Task.checkCancellation()
-            let content = try await ReaderViewModel.getContent(forURL: url, countsAsHistoryVisit: true) ?? ReaderContentLoader.unsavedHome
+            let content = try await ReaderViewModel.getContent(
+                forURL: url,
+                countsAsHistoryVisit: true,
+                source: "ReaderContent.load"
+            ) ?? ReaderContentLoader.unsavedHome
             guard content.url.matchesReaderURL(resolvedContentURL) else {
                 logReaderLoad(
                     "stage=readerContent.load.mismatchedContent requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) returnedContentURL=\(content.url.absoluteString)"

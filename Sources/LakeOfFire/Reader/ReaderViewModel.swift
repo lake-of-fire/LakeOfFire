@@ -125,8 +125,16 @@ public class ReaderViewModel: NSObject, ObservableObject {
     
     // TODO: Move to Loader probably
     @MainActor
-    public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
-        try await ReaderContentLoader.getContent(forURL: pageURL, countsAsHistoryVisit: countsAsHistoryVisit)
+    public static func getContent(
+        forURL pageURL: URL,
+        countsAsHistoryVisit: Bool = false,
+        source: String = "ReaderViewModel.getContent"
+    ) async throws -> (any ReaderContentProtocol)? {
+        try await ReaderContentLoader.getContent(
+            forURL: pageURL,
+            countsAsHistoryVisit: countsAsHistoryVisit,
+            source: source
+        )
     }
     
     @MainActor

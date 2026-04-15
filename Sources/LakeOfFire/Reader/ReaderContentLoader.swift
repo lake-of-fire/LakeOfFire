@@ -245,12 +245,16 @@ public struct ReaderContentLoader {
     }
 
     @MainActor
-    public static func getContent(forURL pageURL: URL, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+    public static func getContent(
+        forURL pageURL: URL,
+        countsAsHistoryVisit: Bool = false,
+        source: String = "ReaderContentLoader.getContent"
+    ) async throws -> (any ReaderContentProtocol)? {
         let resolvedURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL) ?? pageURL
         let taskKey = "\(resolvedURL.absoluteString)|history:\(countsAsHistoryVisit)"
         if let existingTask = inFlightGetContentTasks[taskKey] {
             logReaderLoad(
-                "stage=contentLoader.getContent.coalesced pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+                "stage=contentLoader.getContent.coalesced pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
             )
             return try await existingTask.value
         }
@@ -258,7 +262,7 @@ public struct ReaderContentLoader {
             let nonHistoryTaskKey = "\(resolvedURL.absoluteString)|history:false"
             if let existingTask = inFlightGetContentTasks[nonHistoryTaskKey] {
                 logReaderLoad(
-                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
                 )
                 let existingContent = try await existingTask.value
                 if existingContent == nil || existingContent is HistoryRecord {
@@ -269,7 +273,7 @@ public struct ReaderContentLoader {
             let historyTaskKey = "\(resolvedURL.absoluteString)|history:true"
             if let existingTask = inFlightGetContentTasks[historyTaskKey] {
                 logReaderLoad(
-                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString)"
+                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString) source=\(source)"
                 )
                 return try await existingTask.value
             }
@@ -278,25 +282,25 @@ public struct ReaderContentLoader {
         let task = Task<(any ReaderContentProtocol)?, Error> { @MainActor in
             let startedAt = Date()
             logReaderLoad(
-                "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) isLoaderURL=\(pageURL.isReaderURLLoaderURL)"
+                "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) isLoaderURL=\(pageURL.isReaderURLLoaderURL) source=\(source)"
             )
             if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
                let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
                 try Task.checkCancellation()
                 logReaderLoad(
-                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
                 )
                 return content
             } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
                 try Task.checkCancellation()
                 logReaderLoad(
-                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                    "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
                 )
                 return content
             }
             try Task.checkCancellation()
             logReaderLoad(
-                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.getContent.missing pageURL=\(pageURL.absoluteString) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
             )
             return nil
         }

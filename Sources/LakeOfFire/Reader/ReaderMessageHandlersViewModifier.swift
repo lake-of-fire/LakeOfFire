@@ -240,6 +240,32 @@ fileprivate class ReaderMessageHandlers: Identifiable {
             canonicalURL: pageURL
         )
     }
+
+    @MainActor
+    private func contentForWindowURL(
+        _ windowURL: URL,
+        source: String
+    ) async throws -> (any ReaderContentProtocol)? {
+        if let currentContent = readerContent.content,
+           currentContent.url.matchesReaderURL(windowURL) {
+            debugPrint(
+                "# READERLOAD stage=readerMessageHandlers.contentReuseCurrent",
+                "source=\(source)",
+                "windowURL=\(windowURL.absoluteString)",
+                "contentURL=\(currentContent.url.absoluteString)",
+                "readerPageURL=\(readerContent.pageURL.absoluteString)"
+            )
+            return currentContent
+        }
+        debugPrint(
+            "# READERLOAD stage=readerMessageHandlers.contentFallbackLoad",
+            "source=\(source)",
+            "windowURL=\(windowURL.absoluteString)",
+            "readerPageURL=\(readerContent.pageURL.absoluteString)",
+            "currentContentURL=\(readerContent.content?.url.absoluteString ?? "nil")"
+        )
+        return try await ReaderViewModel.getContent(forURL: windowURL, source: source)
+    }
     
     lazy var webViewMessageHandlers = {
         WebViewMessageHandlers([
@@ -323,6 +349,13 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let reason = body["reason"] as? String ?? "unknown"
 
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
+                readerModeViewModel.logSyntheticDocumentState(
+                    pageURL: pageURL,
+                    readyState: readyState,
+                    hasReaderContent: hasReaderContent,
+                    hasReaderRenderReady: hasReaderRenderReady,
+                    reason: reason
+                )
                 debugPrint(
                     "# READERLOAD stage=readerDocState.ready",
                     "pageURL=\(pageURL.absoluteString)",
@@ -469,7 +502,8 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     debugPrint("Unexpectedly received readableFramePing message without valid parameters", message.body as? [String: String])
                     return
                 }
-                guard !windowURL.isNativeReaderView, let content = try? await ReaderViewModel.getContent(forURL: windowURL) else { return }
+                guard !windowURL.isNativeReaderView,
+                      let content = try? await contentForWindowURL(windowURL, source: "readabilityFramePing") else { return }
                 if await readerViewModel.scriptCaller.addMultiTargetFrame(message.frameInfo, uuid: uuid) {
                     readerViewModel.refreshSettingsInWebView(content: content)
                 }
@@ -480,7 +514,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 // TODO: Reuse guard code across this and readabilityParsed
-                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                guard let url = result.windowURL,
+                      url == readerViewModel.state.pageURL,
+                      let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
@@ -520,7 +556,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let result = ReadabilityParsedMessage(fromMessage: message) else {
                     return
                 }
-                guard let url = result.windowURL, url == readerViewModel.state.pageURL, let content = try? await ReaderViewModel.getContent(forURL: url) else {
+                guard let url = result.windowURL,
+                      url == readerViewModel.state.pageURL,
+                      let content = try? await contentForWindowURL(url, source: "readabilityParsed") else {
                     return
                 }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
@@ -594,7 +632,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard let self else { return }
                 do {
                     guard let result = RSSURLsMessage(fromMessage: message) else { return }
-                    guard let windowURL = result.windowURL, !windowURL.isNativeReaderView, let _ = try await ReaderViewModel.getContent(forURL: windowURL) else { return }
+                    guard let windowURL = result.windowURL,
+                          !windowURL.isNativeReaderView,
+                          let _ = try await contentForWindowURL(windowURL, source: "rssURLs") else { return }
                     let pairs = result.rssURLs.prefix(10)
                     let urls = pairs.compactMap { $0.first }.compactMap { URL(string: $0) }
                     let titles = pairs.map { $0.last ?? $0.first ?? "" }

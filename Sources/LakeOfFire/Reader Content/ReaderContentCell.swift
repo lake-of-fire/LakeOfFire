@@ -9,6 +9,17 @@ private let ebookAbsoluteDateFormatter: DateFormatter = {
     ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
 }()
 
+@inline(__always)
+private func logContentCell(_ stage: String, result: String) {
+    debugPrint(
+        "# CONTENTCELL",
+        [
+            "stage": stage,
+            "result": result
+        ] as [String: Any]
+    )
+}
+
 @globalActor
 fileprivate actor ReaderContentCellActor {
     static var shared = ReaderContentCellActor()
@@ -249,6 +260,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ScaledMetric(relativeTo: .caption) private var sourceIconSize = 14
     @StateObject private var viewModel = ReaderContentCellViewModel<C>()
+    @State private var clearBorderedLabelHeight: CGFloat = 0
 
     init(item: C, appearance: ReaderContentCellAppearance, customMenuOptions: ((C) -> AnyView)? = nil) {
         self._item = ObservedRealmObject(wrappedValue: item)
@@ -473,7 +485,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var clearBorderedVerticalInset: CGFloat {
-        max(0, (clearBorderedSmallMinHeight - buttonSize) / 2)
+        let measuredHeight = clearBorderedLabelHeight > 0 ? clearBorderedLabelHeight : buttonSize
+        return max(0, (clearBorderedSmallMinHeight - measuredHeight) / 2)
     }
 
     private var cardBottomRowOffset: CGFloat {
@@ -566,6 +579,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         .foregroundStyle(.secondary)
         .buttonStyle(.clearBordered)
         .controlSize(.small)
+        .onPreferenceChange(ClearBorderedButtonHeightKey.self) { height in
+            guard height > 0, abs(height - clearBorderedLabelHeight) > 0.5 else { return }
+            clearBorderedLabelHeight = height
+            guard readerContentCellStyle == .card else { return }
+            logContentCell(
+                "metadataRow.clearBorderedHeight",
+                result: "height=\(height); buttonSize=\(buttonSize); verticalInset=\(clearBorderedVerticalInset); cardBottomRowOffset=\(cardBottomRowOffset); title=\(displayTitle.prefix(48))"
+            )
+        }
     }
 
     @ViewBuilder
@@ -739,6 +761,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         .onAppear {
             Task { @MainActor in
                 try? await viewModel.load(item: item, includeSource: appearance.includeSource)
+            }
+            if readerContentCellStyle == .card {
+                logContentCell(
+                    "cell.appear",
+                    result: "thumbnailEdgeLength=\(thumbnailEdgeLength); maxCellHeight=\(appearance.maxCellHeight); clearBorderedLabelHeight=\(clearBorderedLabelHeight); verticalInset=\(clearBorderedVerticalInset); cardBottomRowOffset=\(cardBottomRowOffset); title=\(displayTitle.prefix(48))"
+                )
             }
         }
         .onChange(of: item.imageUrl) { newImageURL in
