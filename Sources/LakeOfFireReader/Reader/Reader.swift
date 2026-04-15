@@ -2995,8 +2995,15 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         spreadGraph.movementGraph
     }
 
+    private var preferredRuntimeSpreadSequence: WebViewPaginationSpreadSequence? {
+        ReaderResolvedPagination.preferredSpreadSequence(
+            bridgeSpreadSequence: spreadSequence,
+            paginationSpreadSequence: lastKnownState.paginationState?.spreadSequence
+        )
+    }
+
     private var resolvedGraph: ReaderPageTurnResolvedGraph {
-        spreadGraph.resolvedGraph(runtimeSpreadSequence: spreadSequence)
+        spreadGraph.resolvedGraph(runtimeSpreadSequence: preferredRuntimeSpreadSequence)
     }
 
     private func spreadGraph(for probe: ReaderPageTurnNavigationProbe?) -> ReaderPageTurnSpreadGraph? {
