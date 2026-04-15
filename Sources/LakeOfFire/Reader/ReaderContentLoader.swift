@@ -420,7 +420,10 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static func load(html: String) async throws -> (any ReaderContentProtocol)? {
+    public static func load(
+        html: String,
+        allowContentMatch: Bool = true
+    ) async throws -> (any ReaderContentProtocol)? {
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
             let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
@@ -428,28 +431,43 @@ public struct ReaderContentLoader {
             
             let normalizedHTML = normalizeSnippetSourceHTML(html)
             let data = normalizedHTML.readerContentData
-            
-            let bookmark = bookmarkRealm.objects(Bookmark.self)
-                .sorted(by: \.createdAt, ascending: false)
-                .where { $0.content == data }
-                .first
-            //            .first(where: { $0.content == data })
-            let history = historyRealm.objects(HistoryRecord.self)
-                .sorted(by: \.createdAt, ascending: false)
-                .where { $0.content == data }
-                .first
-            let feed = feedRealm.objects(FeedEntry.self)
-                .sorted(by: \.createdAt, ascending: false)
-                .where { $0.content == data }
-                .first
-            let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
-            
-            if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
-                return ReaderContentLoader.ContentReference(content: match)
+            let generatedTitle = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
+            logSnippetEvent(
+                "loadHTML.begin",
+                "normalizedBytes=\(normalizedHTML.utf8.count)",
+                "generatedTitle=\(generatedTitle.truncate(80))",
+                "allowContentMatch=\(allowContentMatch)"
+            )
+
+            if allowContentMatch {
+                let bookmark = bookmarkRealm.objects(Bookmark.self)
+                    .sorted(by: \.createdAt, ascending: false)
+                    .where { $0.content == data }
+                    .first
+                let history = historyRealm.objects(HistoryRecord.self)
+                    .sorted(by: \.createdAt, ascending: false)
+                    .where { $0.content == data }
+                    .first
+                let feed = feedRealm.objects(FeedEntry.self)
+                    .sorted(by: \.createdAt, ascending: false)
+                    .where { $0.content == data }
+                    .first
+                let candidates: [any ReaderContentProtocol] = [bookmark, history, feed].compactMap { $0 }
+
+                if let match = candidates.max(by: { $0.createdAt < $1.createdAt }) {
+                    logSnippetEvent(
+                        "loadHTML.match",
+                        "url=\(match.url.absoluteString)",
+                        "title=\(match.title.truncate(80))",
+                        "createdAt=\(match.createdAt.timeIntervalSince1970)"
+                    )
+                    return ReaderContentLoader.ContentReference(content: match)
+                }
+            } else {
+                logSnippetEvent("loadHTML.matchSkipped", "reason=createNewSnippet")
             }
             
             let historyRecord = HistoryRecord()
-            let generatedTitle = generatedSnippetTitle(fromSourceHTML: normalizedHTML) ?? ""
             historyRecord.publicationDate = Date()
             historyRecord.content = data
             historyRecord.title = generatedTitle
@@ -464,11 +482,30 @@ public struct ReaderContentLoader {
             try await historyRealm.asyncWrite {
                 historyRealm.add(historyRecord, update: .modified)
             }
+
+            logSnippetEvent(
+                "loadHTML.createdSnippet",
+                "url=\(historyRecord.url.absoluteString)",
+                "title=\(historyRecord.title.truncate(80))",
+                "isTitlePrefixOfContent=\(historyRecord.isTitlePrefixOfContent)",
+                "contentBytes=\(historyRecord.content?.count ?? 0)"
+            )
             
             return ReaderContentLoader.ContentReference(content: historyRecord)
         }()
         
-        return try await contentRef?.resolveOnMainActor()
+        let resolved = try await contentRef?.resolveOnMainActor()
+        if let resolved {
+            logSnippetEvent(
+                "loadHTML.resolved",
+                "url=\(resolved.url.absoluteString)",
+                "title=\(resolved.title.truncate(80))",
+                "isSnippetURL=\(resolved.url.isSnippetURL)"
+            )
+        } else {
+            logSnippetEvent("loadHTML.resolved", "content=<nil>")
+        }
+        return resolved
     }
     
     /// Returns a URL to load for the given content into a Reader instance. The URL is either a resource (like a web location),
@@ -609,13 +646,21 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static func load(text: String) async throws -> (any ReaderContentProtocol)? {
+    public static func load(
+        text: String,
+        allowContentMatch: Bool = true
+    ) async throws -> (any ReaderContentProtocol)? {
         let html = snippetHTML(fromRawText: text)
-        return try await load(html: html)
+        return try await load(html: html, allowContentMatch: allowContentMatch)
     }
     
     @MainActor
-    public static func loadPasteboard(bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration, historyRealmConfiguration: Realm.Configuration = .defaultConfiguration, feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration) async throws -> (any ReaderContentProtocol)? {
+    public static func loadPasteboard(
+        bookmarkRealmConfiguration: Realm.Configuration = .defaultConfiguration,
+        historyRealmConfiguration: Realm.Configuration = .defaultConfiguration,
+        feedEntryRealmConfiguration: Realm.Configuration = .defaultConfiguration,
+        allowContentMatch: Bool = true
+    ) async throws -> (any ReaderContentProtocol)? {
         var match: (any ReaderContentProtocol)?
         
 #if os(macOS)
@@ -647,9 +692,10 @@ public struct ReaderContentLoader {
                 "loadPasteboard.payload",
                 "explicitHTML=\(payload.explicitHTML)",
                 "format=\(normalized.format)",
-                "textPreview=\(payload.text.truncate(80))"
+                "textPreview=\(payload.text.truncate(80))",
+                "allowContentMatch=\(allowContentMatch)"
             )
-            match = try await load(html: normalized.html)
+            match = try await load(html: normalized.html, allowContentMatch: allowContentMatch)
         }
 
         if let match {

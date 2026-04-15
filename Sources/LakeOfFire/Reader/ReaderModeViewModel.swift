@@ -449,7 +449,22 @@ func buildSnippetCanonicalReadabilityHTML(
         "hideReaderTitle=\(shouldHideReaderTitle)",
         "contentBytes=\(rawContent.utf8.count)"
     )
+    debugPrint(
+        "# SNIPPETS",
+        "buildSnippetCanonical",
+        "url=\(contentURL.absoluteString)",
+        "resolvedTitle=\(resolvedTitle.truncate(80))",
+        "fallbackTitle=\((fallbackTitle ?? "<nil>").truncate(80))",
+        "preferredTitle=\((preferredTitle ?? "<nil>").truncate(80))",
+        "rawContentPreview=\(rawContent.strippingHTML().truncate(120))"
+    )
     guard !sanitizedContent.isEmpty else {
+        debugPrint(
+            "# SNIPPETS",
+            "buildSnippetCanonical",
+            "url=\(contentURL.absoluteString)",
+            "result=emptySanitizedContent"
+        )
         return nil
     }
     return buildCanonicalReadabilityHTML(
@@ -502,7 +517,21 @@ private func rebuildCanonicalSnippetReadabilityHTML(
         "hideReaderTitle=\(shouldHideReaderTitle)",
         "contentBytes=\(extractedContent.utf8.count)"
     )
+    debugPrint(
+        "# SNIPPETS",
+        "rebuildSnippetCanonical",
+        "url=\(contentURL.absoluteString)",
+        "resolvedTitle=\(resolvedTitle.truncate(80))",
+        "extractedTitle=\((extractedTitle ?? "<nil>").truncate(80))",
+        "contentPreview=\(extractedContent.strippingHTML().truncate(120))"
+    )
     guard !sanitizedContent.isEmpty else {
+        debugPrint(
+            "# SNIPPETS",
+            "rebuildSnippetCanonical",
+            "url=\(contentURL.absoluteString)",
+            "result=emptySanitizedContent"
+        )
         return nil
     }
 
@@ -1541,6 +1570,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         let generation = UUID()
+        let scheduledAt = CFAbsoluteTimeGetCurrent()
         activeRenderGenerationByURL[key] = generation
         debugPrint(
             "# READERLOAD stage=readerMode.render.singleFlight.start",
@@ -1550,7 +1580,21 @@ public class ReaderModeViewModel: ObservableObject {
         )
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
+            debugPrint(
+                "# READERLOAD stage=readerMode.render.singleFlight.operationBegin",
+                "url=\(canonicalURL.absoluteString)",
+                "reason=\(reason)",
+                "generation=\(generation.uuidString)",
+                "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
+            )
             defer {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.render.singleFlight.operationEnd",
+                    "url=\(canonicalURL.absoluteString)",
+                    "reason=\(reason)",
+                    "generation=\(generation.uuidString)",
+                    "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
+                )
                 self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
             }
             await operation(generation)
@@ -1721,15 +1765,20 @@ public class ReaderModeViewModel: ObservableObject {
     ) async {
         do {
             let swiftProcessingStart = CFAbsoluteTimeGetCurrent()
+            var getContentElapsed: Double = 0
+            var localHTMLElapsed: Double = 0
+            var readabilityResolveElapsed: Double = 0
+            var showReadabilityElapsed: Double = 0
             let getContentStart = CFAbsoluteTimeGetCurrent()
             guard let content = try await readerContent.getContent() else {
                 cancelReaderModeLoad(for: readerContent.pageURL, reason: "swiftProcessing.missingContent")
                 return
             }
+            getContentElapsed = CFAbsoluteTimeGetCurrent() - getContentStart
             debugPrint(
                 "# READERLOAD stage=readerMode.swiftProcessing.getContent",
                 "contentURL=\(content.url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - getContentStart))s"
+                "elapsed=\(String(format: "%.3f", getContentElapsed))s"
             )
             let activeReaderFileManager = readerFileManager ?? .shared
             let localHTMLStart = CFAbsoluteTimeGetCurrent()
@@ -1740,11 +1789,12 @@ public class ReaderModeViewModel: ObservableObject {
                 cancelReaderModeLoad(for: content.url, reason: "swiftProcessing.missingHTML")
                 return
             }
+            localHTMLElapsed = CFAbsoluteTimeGetCurrent() - localHTMLStart
             debugPrint(
                 "# READERLOAD stage=readerMode.swiftProcessing.localHTML",
                 "contentURL=\(content.url.absoluteString)",
                 "bytes=\(html.utf8.count)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - localHTMLStart))s"
+                "elapsed=\(String(format: "%.3f", localHTMLElapsed))s"
             )
 
             let resolvedReadabilityHTML: String?
@@ -1758,10 +1808,11 @@ public class ReaderModeViewModel: ObservableObject {
                     snippetPublishedTime: content.humanReadablePublicationDate,
                     meaningfulContentMinChars: max(content.meaningfulContentMinLength, 1)
                 )
+                readabilityResolveElapsed = CFAbsoluteTimeGetCurrent() - readabilityProcessingStart
                 debugPrint(
                     "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolved",
                     "contentURL=\(content.url.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - readabilityProcessingStart))s"
+                    "elapsed=\(String(format: "%.3f", readabilityResolveElapsed))s"
                 )
                 switch swiftReadability {
                 case .success(let result):
@@ -1782,15 +1833,35 @@ public class ReaderModeViewModel: ObservableObject {
                     scriptCaller: scriptCaller,
                     renderGeneration: renderGeneration
                 )
+                showReadabilityElapsed = CFAbsoluteTimeGetCurrent() - showReadabilityStart
                 debugPrint(
                     "# READERLOAD stage=readerMode.swiftProcessing.showReadabilityContent",
                     "contentURL=\(content.url.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - showReadabilityStart))s"
+                    "elapsed=\(String(format: "%.3f", showReadabilityElapsed))s"
+                )
+                let totalElapsed = CFAbsoluteTimeGetCurrent() - swiftProcessingStart
+                let residualElapsed = max(
+                    0,
+                    totalElapsed
+                        - getContentElapsed
+                        - localHTMLElapsed
+                        - readabilityResolveElapsed
+                        - showReadabilityElapsed
+                )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.swiftProcessing.phaseSummary",
+                    "contentURL=\(content.url.absoluteString)",
+                    "getContent=\(String(format: "%.3f", getContentElapsed))s",
+                    "localHTML=\(String(format: "%.3f", localHTMLElapsed))s",
+                    "readabilityResolve=\(String(format: "%.3f", readabilityResolveElapsed))s",
+                    "showReadability=\(String(format: "%.3f", showReadabilityElapsed))s",
+                    "residual=\(String(format: "%.3f", residualElapsed))s",
+                    "total=\(String(format: "%.3f", totalElapsed))s"
                 )
                 debugPrint(
                     "# READERLOAD stage=readerMode.swiftProcessing.complete",
                     "contentURL=\(content.url.absoluteString)",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - swiftProcessingStart))s",
+                    "elapsed=\(String(format: "%.3f", totalElapsed))s",
                     "mode=readability"
                 )
                 return
@@ -1841,11 +1912,13 @@ public class ReaderModeViewModel: ObservableObject {
         renderGeneration: UUID? = nil
     ) async throws {
         let totalStart = CFAbsoluteTimeGetCurrent()
+        let getContentStart = CFAbsoluteTimeGetCurrent()
         guard let content = try await readerContent.getContent() else {
             print("No content set to show in reader mode")
             cancelReaderModeLoad(for: readerContent.pageURL, reason: "showReadabilityContent.missingContent")
             return
         }
+        let getContentElapsed = CFAbsoluteTimeGetCurrent() - getContentStart
         let url = content.url
         let renderBaseURL: URL
         if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
@@ -1868,7 +1941,13 @@ public class ReaderModeViewModel: ObservableObject {
                 "hasProcessHTML": processHTML != nil
             ] as [String: Any]
         )
+        debugPrint(
+            "# READERLOAD stage=readerMode.showReadabilityContent.getContent",
+            "contentURL=\(url.absoluteString)",
+            "elapsed=\(String(format: "%.3f", getContentElapsed))s"
+        )
         
+        let asyncWriteStart = CFAbsoluteTimeGetCurrent()
         try await content.asyncWrite { _, content in
             content.isReaderModeByDefault = true
             content.isReaderModeAvailable = false
@@ -1884,6 +1963,11 @@ public class ReaderModeViewModel: ObservableObject {
             }
             content.refreshChangeMetadata(explicitlyModified: true)
         }
+        debugPrint(
+            "# READERLOAD stage=readerMode.showReadabilityContent.asyncWrite",
+            "contentURL=\(url.absoluteString)",
+            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - asyncWriteStart))s"
+        )
         
         if !isReaderMode {
             isReaderMode = true

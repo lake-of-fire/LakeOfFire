@@ -335,6 +335,18 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
             return fallback
         }
 
+        if item.url.isSnippetURL {
+            debugPrint(
+                "# SNIPPETS",
+                "ReaderContentCell.fallbackTitle",
+                "reason=snippetUntitledFallback",
+                "url=\(item.url.absoluteString)",
+                "itemTitle=\(item.title.trimmingCharacters(in: .whitespacesAndNewlines).truncate(80))",
+                "viewModelTitle=\(viewModel.title.trimmingCharacters(in: .whitespacesAndNewlines).truncate(80))"
+            )
+            return "Untitled"
+        }
+
         if let host = item.url.host, !host.isEmpty {
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }

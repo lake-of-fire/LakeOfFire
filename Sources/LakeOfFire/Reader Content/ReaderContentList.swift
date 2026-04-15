@@ -9,6 +9,10 @@ private func logReaderLoad(_ message: String) {
     debugPrint("# READERLOAD \(message)")
 }
 
+private func logSnippetLoad(_ message: String) {
+    debugPrint("# SNIPPETLOAD", message)
+}
+
 public struct ReaderContentGroupingSection<C: ReaderContentProtocol>: Identifiable {
     public let id: String
     public let title: String
@@ -207,12 +211,27 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     return
                 }
                 let isAlreadyLoaded = selectedContent.url.matchesReaderURL(readerContent.pageURL)
+                if selectedContent.url.isSnippetURL {
+                    logSnippetLoad(
+                        "selectionChanged oldSelection=\(oldValue ?? "nil") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
+                    )
+                }
+                if isAlreadyLoaded {
+                    logReaderLoad(
+                        "# SAMECONTENT stage=list.selectionChanged oldSelection=\(oldValue ?? "nil") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString)"
+                    )
+                }
                 logReaderLoad(
                     "stage=contentList.selectionChanged selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString) currentReaderURL=\(readerContent.pageURL.absoluteString) shouldSyncToReader=\(shouldSyncToReader) hasCustomHandler=\(onSelection != nil) alreadyLoaded=\(isAlreadyLoaded)"
                 )
 
                 Task { @MainActor in
                     if let onSelection {
+                        if selectedContent.url.isSnippetURL {
+                            logSnippetLoad(
+                                "selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                            )
+                        }
                         logReaderLoad(
                             "stage=contentList.selectionDispatch mode=customHandler selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                         )
@@ -224,12 +243,23 @@ private struct ReaderContentSelectionSyncModifier<C: ReaderContentProtocol>: Vie
                     }
 
                     guard shouldSyncToReader else { return }
+                    if selectedContent.url.isSnippetURL {
+                        logSnippetLoad(
+                            "selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                        )
+                    }
                     logReaderLoad(
                         "stage=contentList.selectionDispatch mode=\(isAlreadyLoaded ? "alreadyLoaded" : "navigatorLoad") selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
                     )
                     contentSelectionNavigationHint?(selectedContent.url, selectedContent.compoundKey)
                     guard !isAlreadyLoaded else {
+                        logReaderLoad(
+                            "# SAMECONTENT stage=list.skipNavigatorLoad selection=\(itemSelection) selectedURL=\(selectedContent.url.absoluteString)"
+                        )
                         if entrySelection == itemSelection {
+                            logReaderLoad(
+                                "# SAMECONTENT stage=list.clearSelection selection=\(itemSelection)"
+                            )
                             entrySelection = nil
                         }
                         return
@@ -393,6 +423,23 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
     }
 
     @MainActor
+    private func applyFilteredContents(_ contents: [C], ids: [String]) {
+        let updateState = {
+            self.filteredContentIDs = ids
+            self.filteredContents = contents
+            self.hasLoadedBefore = true
+        }
+
+        if hasLoadedBefore {
+            withAnimation(.default) {
+                updateState()
+            }
+        } else {
+            updateState()
+        }
+    }
+
+    @MainActor
     public func load(
         contents: [C],
         sortOrder: ReaderContentSortOrder? = nil,
@@ -420,9 +467,10 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
         let contentIDs = contents.map(\.compoundKey)
 
         if sortOrder == nil && contentFilter == nil && postSortTransform == nil {
-            filteredContentIDs = contentIDs
-            filteredContents = contents.map { $0.realm == nil ? $0 : $0.freeze() }
-            hasLoadedBefore = true
+            applyFilteredContents(
+                contents.map { $0.realm == nil ? $0 : $0.freeze() },
+                ids: contentIDs
+            )
             return
         }
 
@@ -501,14 +549,14 @@ public class ReaderContentListViewModel<C: ReaderContentProtocol>: ObservableObj
             let ids = Array(filtered.prefix(10_000)).map(\.compoundKey)
             try await { @MainActor [weak self] in
                 guard let self else { return }
-                self.filteredContentIDs = ids
+                let resolvedContents: [C]
                 if let realmConfig {
                     let realm = try await Realm(configuration: realmConfig, actor: MainActor.shared)
-                    self.filteredContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0)?.freeze() }
+                    resolvedContents = ids.compactMap { realm.object(ofType: C.self, forPrimaryKey: $0)?.freeze() }
                 } else {
-                    self.filteredContents = filtered.map { $0.realm == nil ? $0 : $0.freeze() }
+                    resolvedContents = filtered.map { $0.realm == nil ? $0 : $0.freeze() }
                 }
-                self.hasLoadedBefore = true
+                self.applyFilteredContents(resolvedContents, ids: ids)
             }()
         }
 
@@ -530,6 +578,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
 
     @StateObject private var cloudDriveSyncStatusModel = CloudDriveSyncStatusModel()
     @EnvironmentObject private var readerContentListModalsModel: ReaderContentListModalsModel
+    @EnvironmentObject private var readerContent: ReaderContent
 
     @ScaledMetric(relativeTo: .headline) private var maxCellHeight: CGFloat = 120
 
@@ -588,9 +637,33 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .contentShape(Rectangle())
                     .simultaneousGesture(
                         TapGesture().onEnded {
+                            let wasSelected = (entrySelection == content.compoundKey)
+                            if content.url.isSnippetURL {
+                                logSnippetLoad(
+                                    "rowTap selection=\(content.compoundKey) currentEntrySelection=\(entrySelection ?? "nil") wasSelected=\(wasSelected)"
+                                )
+                            }
+                            if !wasSelected {
+                                entrySelection = content.compoundKey
+                                if content.url.isSnippetURL {
+                                    logSnippetLoad(
+                                        "rowTap.assignSelection selection=\(content.compoundKey)"
+                                    )
+                                }
+                            }
+                        }
+                    )
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
                             guard entrySelection == content.compoundKey else { return }
+                            logReaderLoad(
+                                "# SAMECONTENT stage=list.reselectGesture selection=\(content.compoundKey) currentReaderURL=\(readerContent.pageURL.absoluteString)"
+                            )
                             entrySelection = nil
                             Task { @MainActor in
+                                logReaderLoad(
+                                    "# SAMECONTENT stage=list.reselectGestureRestore selection=\(content.compoundKey)"
+                                )
                                 entrySelection = content.compoundKey
                             }
                         }
@@ -599,10 +672,20 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                     .accessibilityLabel(content.title)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction {
+                        if content.url.isSnippetURL {
+                            logSnippetLoad(
+                                "accessibilityAction selection=\(content.compoundKey)"
+                            )
+                        }
                         entrySelection = content.compoundKey
                     }
             } else {
                 Button {
+                    if content.url.isSnippetURL {
+                        logSnippetLoad(
+                            "legacyButtonTap selection=\(content.compoundKey) currentEntrySelection=\(entrySelection ?? "nil")"
+                        )
+                    }
                     entrySelection = content.compoundKey
                 } label: {
                     rowContent(item: content)
@@ -617,7 +700,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
         .deleteDisabled((content as? any DeletableReaderContent) == nil)
         .swipeActions {
             if let deletable = content as? any DeletableReaderContent {
-                Button(role: .destructive) {
+                Button {
                     if let onRequestDelete {
                         Task { @MainActor in
                             do {
@@ -635,6 +718,7 @@ fileprivate struct ReaderContentInnerListItem<C: ReaderContentProtocol>: View {
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
+                .tint(.red)
             }
         }
 #endif
