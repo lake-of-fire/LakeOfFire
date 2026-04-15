@@ -468,8 +468,16 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         readerContentCellStyle == .plain
     }
 
+    private var clearBorderedSmallMinHeight: CGFloat {
+        30
+    }
+
+    private var clearBorderedVerticalInset: CGFloat {
+        max(0, (clearBorderedSmallMinHeight - buttonSize) / 2)
+    }
+
     private var cardBottomRowOffset: CGFloat {
-        4
+        4 + clearBorderedVerticalInset
     }
 
     private var showsAudioBadge: Bool {

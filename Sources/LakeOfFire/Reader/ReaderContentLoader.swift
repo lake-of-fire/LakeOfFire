@@ -144,9 +144,6 @@ public struct ReaderContentLoader {
         let taskKey = loadAllTaskKey(url: url, skipContentFiles: skipContentFiles, skipFeedEntries: skipFeedEntries)
         if let cached = recentLoadAllCache[taskKey],
            Date().timeIntervalSince(cached.timestamp) < loadAllCacheTTL {
-            logReaderLoad(
-                "stage=contentLoader.loadAll.cacheHit url=\(url.absoluteString) age=\(String(format: "%.3fs", Date().timeIntervalSince(cached.timestamp))) count=\(cached.references.count)"
-            )
             return try await resolveContentReferences(cached.references)
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {

@@ -363,7 +363,6 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
     @EnvironmentObject var readerContent: ReaderContent
     @EnvironmentObject var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject var readerViewModel: ReaderViewModel
-    @State private var lastOverlayDiagnosticKey: String?
     
     func body(content: Content) -> some View {
         let currentCanonicalURL = readerContent.pageURL.canonicalReaderContentURLForHotfix()
@@ -393,16 +392,6 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                 && !readerContent.isRenderingReaderHTML
             )
         let shouldShowOverlay = readerModeViewModel.isReaderModeLoading && !hasVisibleContent
-        let diagnosticKey = [
-            shouldShowOverlay ? "show" : "hide",
-            readerModeViewModel.isReaderModeLoading ? "readerModeLoading" : "readerModeIdle",
-            hasVisibleContent ? "visibleContent" : "noVisibleContent",
-            readerContent.pageURL.absoluteString,
-            readerViewModel.state.pageURL.absoluteString,
-            readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "pending:nil",
-            readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "expected:nil",
-            readerModeViewModel.lastRenderedURL?.absoluteString ?? "rendered:nil",
-        ].joined(separator: "|")
         content
             .modifier(
                 ReaderLoadingProgressOverlayViewModifier(
@@ -410,36 +399,6 @@ fileprivate struct ReaderLoadingOverlayModifier: ViewModifier {
                     context: "ReaderOverlay"
                 )
             )
-            .task(id: diagnosticKey) { @MainActor in
-                guard lastOverlayDiagnosticKey != diagnosticKey else { return }
-                lastOverlayDiagnosticKey = diagnosticKey
-                debugPrint(
-                    "# READERLOAD stage=readerOverlay.state",
-                    "result=\(shouldShowOverlay)",
-                    "readerModeLoading=\(readerModeViewModel.isReaderModeLoading)",
-                    "hasVisibleContent=\(hasVisibleContent)",
-                    "hasRenderedCurrentPage=\(hasRenderedCurrentPage)",
-                    "webViewHasReaderRenderReady=\(webViewHasReaderRenderReady)",
-                    "pageURL=\(readerContent.pageURL.absoluteString)",
-                    "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
-                    "readerProvisionallyNavigating=\(readerContent.isReaderProvisionallyNavigating)",
-                    "isRenderingReaderHTML=\(readerContent.isRenderingReaderHTML)",
-                    "pendingReaderModeURL=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
-                    "expectedSyntheticReaderLoaderURL=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                    "lastRenderedURL=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")"
-                )
-                if readerModeViewModel.isReaderModeLoading && hasVisibleContent {
-                    debugPrint(
-                        "# READERLOAD stage=readerOverlay.suppressedVisibleContent",
-                        "pageURL=\(readerContent.pageURL.absoluteString)",
-                        "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
-                        "hasRenderedCurrentPage=\(hasRenderedCurrentPage)",
-                        "pendingReaderModeURL=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
-                        "expectedSyntheticReaderLoaderURL=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-                        "lastRenderedURL=\(readerModeViewModel.lastRenderedURL?.absoluteString ?? "nil")"
-                    )
-                }
-            }
 //            .overlay { Text(readerModeViewModel.isReaderModeLoading ? "read" : "") }
 //            .overlay {
 //                Text(readerModeViewModel.isReaderModeLoading.description)
@@ -478,20 +437,30 @@ public extension WebViewNavigator {
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
+            let loadSnapshot = debugLoadSnapshot
             debugPrint(
                 "# READERLOAD stage=navigator.loadContent.begin contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault)"
             )
+            debugPrint(
+                "# READERLOAD stage=navigator.loadContent.state targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) hasAttachedWebView=\(loadSnapshot.hasAttachedWebView)"
+            )
             if let readerModeViewModel {
-                let previouslyLoadedContent = try await ReaderContentLoader.load(url: url, persist: false, countsAsHistoryVisit: false)
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
-                    
-                    let isLoading = (previouslyLoadedContent ?? content).isReaderModeByDefault
+                    let isLoading = content.isReaderModeByDefault || url.isReaderURLLoaderURL
                     readerModeViewModel.readerModeLoading(isLoading)
                     debugPrint(
-                        "# READERLOAD stage=navigator.loadContent.readerModeLoading targetURL=\(url.absoluteString) loading=\(isLoading) previousContentURL=\(previouslyLoadedContent?.url.absoluteString ?? "nil")"
+                        "# READERLOAD stage=navigator.loadContent.readerModeLoading targetURL=\(url.absoluteString) loading=\(isLoading) source=currentContent contentURL=\(content.url.absoluteString)"
                     )
 //                    debugPrint("# WebViewNavigator load", isLoading)
                 }
+            }
+            if loadSnapshot.lastRequestURL == url.absoluteString
+                || loadSnapshot.lastDataLoadBaseURL == url.absoluteString
+                || loadSnapshot.lastHTMLBaseURL == url.absoluteString
+                || loadSnapshot.currentWebViewURL == url.absoluteString {
+                debugPrint(
+                    "# READERLOAD stage=navigator.loadContent.duplicateTarget targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL)"
+                )
             }
             load(URLRequest(url: url))
             debugPrint(

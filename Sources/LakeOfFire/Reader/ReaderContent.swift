@@ -212,9 +212,6 @@ public class ReaderContent: ObservableObject {
     public func getContent() async throws -> (any ReaderContentProtocol)? {
         let startedAt = CFAbsoluteTimeGetCurrent()
         if let content {
-            logReaderLoad(
-                "stage=readerContent.getContent source=cached contentURL=\(content.url.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
-            )
             return content
         }
         let content = try await loadingTask?.value
