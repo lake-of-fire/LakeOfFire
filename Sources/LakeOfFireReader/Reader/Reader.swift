@@ -235,11 +235,44 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
     public var gestureCaptureEnabled: Bool
     public var gestureCaptureBlockReason: String?
     public var hideNavigationDueToScroll: Bool
+    public var showTitleChrome: Bool?
+    public var showHeaderChrome: Bool?
     public var pageProgressionDirection: String
     public var phase: String
+    public var navigationStyle: String?
+    public var transitionFamily: String?
+    public var movementKind: String?
+    public var layoutState: String?
+    public var updateReason: String?
+    public var navigationEvent: String?
+    public var contentHostState: String?
+    public var contentHostSequenceMountedHostIdentifier: String?
+    public var contentHostSequenceAppliedHostIdentifier: String?
+    public var contentHostSequenceIsAppliedToMountedHost: Bool?
+    public var contentHostSequenceIsStable: Bool?
+    public var contentHostSequenceSerial: Int?
+    public var preloadStrategy: String?
+    public var currentContentLocation: String?
+    public var contentLoadingClass: String?
+    public var snapshotLoadingClass: String?
     public var mountedHostIdentifier: String?
     public var appliedHostIdentifier: String?
     public var liveWebViewIdentifier: String?
+    public var pageOffsetsDisplayed: [Int]?
+    public var currentSpreadSlots: [String]?
+    public var destinationSpreadSlots: [String]?
+    public var requestedLocationKind: String?
+    public var requestedLocationValue: String?
+    public var requestedLocationSource: String?
+    public var requestedLocationSurroundingContext: String?
+    public var requestedLocationIsPageChange: Bool?
+    public var requestedLocationFractionalCompletion: Double?
+    public var readingProgressCFI: String?
+    public var readingProgressFractionalCompletion: Double?
+    public var readingProgressHighWaterMarkFractionalCompletion: Double?
+    public var readingProgressSuppressionReason: String?
+    public var readingProgressReason: String?
+    public var readingProgressSectionIndex: Int?
     public var hasView: Bool
     public var hasRenderer: Bool
     public var canNext: Bool
@@ -301,6 +334,10 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
     public var layoutHasLeadingSingleton: Bool?
     public var layoutHasTrailingSingleton: Bool?
     public var layoutPrimarySpacing: Double?
+    public var layoutChromeGutterWidth: Double?
+    public var layoutReadableFrameWidth: Double?
+    public var layoutMaxContentWidth: Double?
+    public var layoutSemanticSideInset: Double?
     public var layoutMultiUnitActive: Bool?
     public var layoutSpreadPagesAllowedForViewport: Bool?
     public var layoutWritingMode: String?
@@ -319,6 +356,15 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
     public var nextPageTextSample: String?
     public var currentPageDisplayLabel: String?
     public var currentPhysicalPageLabel: String?
+    public var progressScrubberVisible: Bool?
+    public var progressScrubberActive: Bool?
+    public var historyCanGoBack: Bool?
+    public var historyCanGoForward: Bool?
+    public var historyDepth: Int?
+    public var historyCurrentIndex: Int?
+    public var historyPendingReplaceStateSuppressionCount: Int?
+    public var historySuppressedReplaceStateCount: Int?
+    public var historyLastSuppressedReplaceStateReason: String?
     public var loadEBookStarted: Bool
     public var loadEBookReady: Bool
     public var loadEBookAttemptCount: Int?
@@ -331,8 +377,19 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
     public var sameDocumentHostTurnPageCount: Int?
     public var sameDocumentHostTurnDatasetCurrentPageIndex: Int?
     public var sameDocumentHostTurnResult: String?
+    public var forwardDestinationAvailability: String?
+    public var backwardDestinationAvailability: String?
+    public var paginationComplete: Bool?
+    public var configurationKey: String?
+    public var publicationSource: String?
     public var pageLabelDisplayMode: String?
+    public var pageNumberMode: String?
     public var usesPhysicalPageLabels: Bool?
+    public var allowsMultipleColumns: Bool?
+    public var allowsMultipleLabelsInMultiUnitLayout: Bool?
+    public var visiblePageIndices: [Int]?
+    public var pageScrollerAnimationIsRunning: Bool?
+    public var liveResizeActive: Bool?
     public var canForward: Bool
     public var canBackward: Bool
     public var interactionKind: String?
@@ -356,11 +413,44 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         gestureCaptureEnabled: Bool,
         gestureCaptureBlockReason: String?,
         hideNavigationDueToScroll: Bool,
+        showTitleChrome: Bool?,
+        showHeaderChrome: Bool?,
         pageProgressionDirection: String,
         phase: String,
+        navigationStyle: String?,
+        transitionFamily: String?,
+        movementKind: String?,
+        layoutState: String?,
+        updateReason: String?,
+        navigationEvent: String?,
+        contentHostState: String?,
+        contentHostSequenceMountedHostIdentifier: String?,
+        contentHostSequenceAppliedHostIdentifier: String?,
+        contentHostSequenceIsAppliedToMountedHost: Bool?,
+        contentHostSequenceIsStable: Bool?,
+        contentHostSequenceSerial: Int?,
+        preloadStrategy: String?,
+        currentContentLocation: String?,
+        contentLoadingClass: String?,
+        snapshotLoadingClass: String?,
         mountedHostIdentifier: String?,
         appliedHostIdentifier: String?,
         liveWebViewIdentifier: String?,
+        pageOffsetsDisplayed: [Int]?,
+        currentSpreadSlots: [String]?,
+        destinationSpreadSlots: [String]?,
+        requestedLocationKind: String?,
+        requestedLocationValue: String?,
+        requestedLocationSource: String?,
+        requestedLocationSurroundingContext: String?,
+        requestedLocationIsPageChange: Bool?,
+        requestedLocationFractionalCompletion: Double?,
+        readingProgressCFI: String?,
+        readingProgressFractionalCompletion: Double?,
+        readingProgressHighWaterMarkFractionalCompletion: Double?,
+        readingProgressSuppressionReason: String?,
+        readingProgressReason: String?,
+        readingProgressSectionIndex: Int?,
         hasView: Bool,
         hasRenderer: Bool,
         canNext: Bool,
@@ -422,6 +512,10 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         layoutHasLeadingSingleton: Bool?,
         layoutHasTrailingSingleton: Bool?,
         layoutPrimarySpacing: Double?,
+        layoutChromeGutterWidth: Double?,
+        layoutReadableFrameWidth: Double?,
+        layoutMaxContentWidth: Double?,
+        layoutSemanticSideInset: Double?,
         layoutMultiUnitActive: Bool?,
         layoutSpreadPagesAllowedForViewport: Bool?,
         layoutWritingMode: String?,
@@ -440,6 +534,15 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         nextPageTextSample: String?,
         currentPageDisplayLabel: String?,
         currentPhysicalPageLabel: String?,
+        progressScrubberVisible: Bool?,
+        progressScrubberActive: Bool?,
+        historyCanGoBack: Bool?,
+        historyCanGoForward: Bool?,
+        historyDepth: Int?,
+        historyCurrentIndex: Int?,
+        historyPendingReplaceStateSuppressionCount: Int?,
+        historySuppressedReplaceStateCount: Int?,
+        historyLastSuppressedReplaceStateReason: String?,
         loadEBookStarted: Bool,
         loadEBookReady: Bool,
         loadEBookAttemptCount: Int?,
@@ -452,8 +555,19 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         sameDocumentHostTurnPageCount: Int?,
         sameDocumentHostTurnDatasetCurrentPageIndex: Int?,
         sameDocumentHostTurnResult: String?,
+        forwardDestinationAvailability: String?,
+        backwardDestinationAvailability: String?,
+        paginationComplete: Bool?,
+        configurationKey: String?,
+        publicationSource: String?,
         pageLabelDisplayMode: String?,
+        pageNumberMode: String?,
         usesPhysicalPageLabels: Bool?,
+        allowsMultipleColumns: Bool?,
+        allowsMultipleLabelsInMultiUnitLayout: Bool?,
+        visiblePageIndices: [Int]?,
+        pageScrollerAnimationIsRunning: Bool?,
+        liveResizeActive: Bool?,
         canForward: Bool,
         canBackward: Bool,
         interactionKind: String?,
@@ -476,11 +590,44 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         self.gestureCaptureEnabled = gestureCaptureEnabled
         self.gestureCaptureBlockReason = gestureCaptureBlockReason
         self.hideNavigationDueToScroll = hideNavigationDueToScroll
+        self.showTitleChrome = showTitleChrome
+        self.showHeaderChrome = showHeaderChrome
         self.pageProgressionDirection = pageProgressionDirection
         self.phase = phase
+        self.navigationStyle = navigationStyle
+        self.transitionFamily = transitionFamily
+        self.movementKind = movementKind
+        self.layoutState = layoutState
+        self.updateReason = updateReason
+        self.navigationEvent = navigationEvent
+        self.contentHostState = contentHostState
+        self.contentHostSequenceMountedHostIdentifier = contentHostSequenceMountedHostIdentifier
+        self.contentHostSequenceAppliedHostIdentifier = contentHostSequenceAppliedHostIdentifier
+        self.contentHostSequenceIsAppliedToMountedHost = contentHostSequenceIsAppliedToMountedHost
+        self.contentHostSequenceIsStable = contentHostSequenceIsStable
+        self.contentHostSequenceSerial = contentHostSequenceSerial
+        self.preloadStrategy = preloadStrategy
+        self.currentContentLocation = currentContentLocation
+        self.contentLoadingClass = contentLoadingClass
+        self.snapshotLoadingClass = snapshotLoadingClass
         self.mountedHostIdentifier = mountedHostIdentifier
         self.appliedHostIdentifier = appliedHostIdentifier
         self.liveWebViewIdentifier = liveWebViewIdentifier
+        self.pageOffsetsDisplayed = pageOffsetsDisplayed
+        self.currentSpreadSlots = currentSpreadSlots
+        self.destinationSpreadSlots = destinationSpreadSlots
+        self.requestedLocationKind = requestedLocationKind
+        self.requestedLocationValue = requestedLocationValue
+        self.requestedLocationSource = requestedLocationSource
+        self.requestedLocationSurroundingContext = requestedLocationSurroundingContext
+        self.requestedLocationIsPageChange = requestedLocationIsPageChange
+        self.requestedLocationFractionalCompletion = requestedLocationFractionalCompletion
+        self.readingProgressCFI = readingProgressCFI
+        self.readingProgressFractionalCompletion = readingProgressFractionalCompletion
+        self.readingProgressHighWaterMarkFractionalCompletion = readingProgressHighWaterMarkFractionalCompletion
+        self.readingProgressSuppressionReason = readingProgressSuppressionReason
+        self.readingProgressReason = readingProgressReason
+        self.readingProgressSectionIndex = readingProgressSectionIndex
         self.hasView = hasView
         self.hasRenderer = hasRenderer
         self.canNext = canNext
@@ -542,6 +689,10 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         self.layoutHasLeadingSingleton = layoutHasLeadingSingleton
         self.layoutHasTrailingSingleton = layoutHasTrailingSingleton
         self.layoutPrimarySpacing = layoutPrimarySpacing
+        self.layoutChromeGutterWidth = layoutChromeGutterWidth
+        self.layoutReadableFrameWidth = layoutReadableFrameWidth
+        self.layoutMaxContentWidth = layoutMaxContentWidth
+        self.layoutSemanticSideInset = layoutSemanticSideInset
         self.layoutMultiUnitActive = layoutMultiUnitActive
         self.layoutSpreadPagesAllowedForViewport = layoutSpreadPagesAllowedForViewport
         self.layoutWritingMode = layoutWritingMode
@@ -560,6 +711,15 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         self.nextPageTextSample = nextPageTextSample
         self.currentPageDisplayLabel = currentPageDisplayLabel
         self.currentPhysicalPageLabel = currentPhysicalPageLabel
+        self.progressScrubberVisible = progressScrubberVisible
+        self.progressScrubberActive = progressScrubberActive
+        self.historyCanGoBack = historyCanGoBack
+        self.historyCanGoForward = historyCanGoForward
+        self.historyDepth = historyDepth
+        self.historyCurrentIndex = historyCurrentIndex
+        self.historyPendingReplaceStateSuppressionCount = historyPendingReplaceStateSuppressionCount
+        self.historySuppressedReplaceStateCount = historySuppressedReplaceStateCount
+        self.historyLastSuppressedReplaceStateReason = historyLastSuppressedReplaceStateReason
         self.loadEBookStarted = loadEBookStarted
         self.loadEBookReady = loadEBookReady
         self.loadEBookAttemptCount = loadEBookAttemptCount
@@ -572,8 +732,19 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
         self.sameDocumentHostTurnPageCount = sameDocumentHostTurnPageCount
         self.sameDocumentHostTurnDatasetCurrentPageIndex = sameDocumentHostTurnDatasetCurrentPageIndex
         self.sameDocumentHostTurnResult = sameDocumentHostTurnResult
+        self.forwardDestinationAvailability = forwardDestinationAvailability
+        self.backwardDestinationAvailability = backwardDestinationAvailability
+        self.paginationComplete = paginationComplete
+        self.configurationKey = configurationKey
+        self.publicationSource = publicationSource
         self.pageLabelDisplayMode = pageLabelDisplayMode
+        self.pageNumberMode = pageNumberMode
         self.usesPhysicalPageLabels = usesPhysicalPageLabels
+        self.allowsMultipleColumns = allowsMultipleColumns
+        self.allowsMultipleLabelsInMultiUnitLayout = allowsMultipleLabelsInMultiUnitLayout
+        self.visiblePageIndices = visiblePageIndices
+        self.pageScrollerAnimationIsRunning = pageScrollerAnimationIsRunning
+        self.liveResizeActive = liveResizeActive
         self.canForward = canForward
         self.canBackward = canBackward
         self.interactionKind = interactionKind
@@ -590,118 +761,493 @@ public struct ReaderPageTurnProbeSnapshot: Codable, Equatable, Sendable {
     }
 
     public var summary: String {
-        [
-            "pageURL=\(pageURL)",
-            "requested=\(requestedEnabled)",
-            "eligible=\(structurallyEligible)",
-            "active=\(activeEnabled)",
-            "supports=\(supportsActivePageTurn)",
-            "gestureCaptureEnabled=\(gestureCaptureEnabled)",
-            "gestureCaptureBlockReason=\(gestureCaptureBlockReason ?? "nil")",
-            "hideNav=\(hideNavigationDueToScroll)",
-            "progression=\(pageProgressionDirection)",
-            "phase=\(phase)",
-            "mountedHost=\(mountedHostIdentifier ?? "nil")",
-            "appliedHost=\(appliedHostIdentifier ?? "nil")",
-            "liveWebView=\(liveWebViewIdentifier ?? "nil")",
-            "hasView=\(hasView)",
-            "hasRenderer=\(hasRenderer)",
-            "canNext=\(canNext)",
-            "canPrev=\(canPrev)",
-            "hasSectionLayoutController=\(hasSectionLayoutController)",
-            "bookDirection=\(bookDirection ?? "nil")",
-            "isRightToLeft=\(isRightToLeft)",
-            "isVertical=\(isVertical)",
-            "isVerticalRightToLeft=\(isVerticalRightToLeft)",
-            "currentSectionIndex=\(currentSectionIndex.map(String.init) ?? "nil")",
-            "currentSectionHref=\(currentSectionHref ?? "nil")",
-            "currentPage=\(currentPage.map(String.init) ?? "nil")",
-            "livePageIndex=\(livePageIndex.map(String.init) ?? "nil")",
-            "liveChunkPageIndex=\(liveChunkPageIndex.map(String.init) ?? "nil")",
-            "viewportCenterChunkPageIndex=\(viewportCenterChunkPageIndex.map(String.init) ?? "nil")",
-            "pageCount=\(pageCount.map(String.init) ?? "nil")",
-            "layoutPageRecordCount=\(layoutPageRecordCount.map(String.init) ?? "nil")",
-            "layoutLiveRootExists=\(layoutLiveRootExists.map(String.init) ?? "nil")",
-            "layoutLiveRootClassName=\(layoutLiveRootClassName ?? "nil")",
-            "layoutLiveRootChildCount=\(layoutLiveRootChildCount.map(String.init) ?? "nil")",
-            "layoutLiveRootRectWidth=\(layoutLiveRootRectWidth.map(String.init) ?? "nil")",
-            "layoutLiveRootRectHeight=\(layoutLiveRootRectHeight.map(String.init) ?? "nil")",
-            "layoutLiveCurrentPageExists=\(layoutLiveCurrentPageExists.map(String.init) ?? "nil")",
-            "layoutLiveCurrentPageClassName=\(layoutLiveCurrentPageClassName ?? "nil")",
-            "layoutLiveCurrentPageRectWidth=\(layoutLiveCurrentPageRectWidth.map(String.init) ?? "nil")",
-            "layoutLiveCurrentPageRectHeight=\(layoutLiveCurrentPageRectHeight.map(String.init) ?? "nil")",
-            "layoutLiveCurrentPageContainsChunkBody=\(layoutLiveCurrentPageContainsChunkBody.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkExists=\(layoutLiveCurrentChunkExists.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkTagName=\(layoutLiveCurrentChunkTagName ?? "nil")",
-            "layoutLiveCurrentChunkClassName=\(layoutLiveCurrentChunkClassName ?? "nil")",
-            "layoutLiveCurrentChunkDisplay=\(layoutLiveCurrentChunkDisplay ?? "nil")",
-            "layoutLiveCurrentChunkPosition=\(layoutLiveCurrentChunkPosition ?? "nil")",
-            "layoutLiveCurrentChunkFlex=\(layoutLiveCurrentChunkFlex ?? "nil")",
-            "layoutLiveCurrentChunkRectWidth=\(layoutLiveCurrentChunkRectWidth.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkRectHeight=\(layoutLiveCurrentChunkRectHeight.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkInnerHTMLLength=\(layoutLiveCurrentChunkInnerHTMLLength.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkContainsChunkBody=\(layoutLiveCurrentChunkContainsChunkBody.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkChildCount=\(layoutLiveCurrentChunkChildCount.map(String.init) ?? "nil")",
-            "layoutLiveCurrentChunkTextLength=\(layoutLiveCurrentChunkTextLength.map(String.init) ?? "nil")",
-            "layoutCurrentChunkBodyChildCount=\(layoutCurrentChunkBodyChildCount.map(String.init) ?? "nil")",
-            "layoutCurrentChunkBodyTextLength=\(layoutCurrentChunkBodyTextLength.map(String.init) ?? "nil")",
-            "layoutCurrentChunkBodyDisplay=\(layoutCurrentChunkBodyDisplay ?? "nil")",
-            "layoutCurrentChunkBodyPosition=\(layoutCurrentChunkBodyPosition ?? "nil")",
-            "layoutCurrentChunkBodyFlex=\(layoutCurrentChunkBodyFlex ?? "nil")",
-            "layoutColumnCount=\(layoutColumnCount.map(String.init) ?? "nil")",
-            "layoutCurrentPageIndex=\(layoutCurrentPageIndex.map(String.init) ?? "nil")",
-            "layoutCurrentPageChunkCount=\(layoutCurrentPageChunkCount.map(String.init) ?? "nil")",
-            "layoutMaxPageChunkCount=\(layoutMaxPageChunkCount.map(String.init) ?? "nil")",
-            "layoutUnitCount=\(layoutUnitCount.map(String.init) ?? "nil")",
-            "layoutActiveBuildPageIndex=\(layoutActiveBuildPageIndex.map(String.init) ?? "nil")",
-            "layoutComplete=\(layoutComplete.map(String.init) ?? "nil")",
-            "layoutSpreadCandidateDetected=\(layoutSpreadCandidateDetected.map(String.init) ?? "nil")",
-            "layoutVisibleUnitKind=\(layoutVisibleUnitKind ?? "nil")",
-            "layoutVisibleUnitAxis=\(layoutVisibleUnitAxis ?? "nil")",
-            "layoutVisiblePageCount=\(layoutVisiblePageCount.map(String.init) ?? "nil")",
-            "layoutCurrentUnitIndex=\(layoutCurrentUnitIndex.map(String.init) ?? "nil")",
-            "layoutLeadingPageIndex=\(layoutLeadingPageIndex.map(String.init) ?? "nil")",
-            "layoutTrailingPageIndex=\(layoutTrailingPageIndex.map(String.init) ?? "nil")",
-            "layoutHasLeadingSingleton=\(layoutHasLeadingSingleton.map(String.init) ?? "nil")",
-            "layoutHasTrailingSingleton=\(layoutHasTrailingSingleton.map(String.init) ?? "nil")",
-            "layoutPrimarySpacing=\(layoutPrimarySpacing.map { String($0) } ?? "nil")",
-            "layoutMultiUnitActive=\(layoutMultiUnitActive.map(String.init) ?? "nil")",
-            "layoutSpreadPagesAllowedForViewport=\(layoutSpreadPagesAllowedForViewport.map(String.init) ?? "nil")",
-            "layoutWritingMode=\(layoutWritingMode ?? "nil")",
-            "layoutViewportWidth=\(layoutViewportWidth.map(String.init) ?? "nil")",
-            "layoutViewportHeight=\(layoutViewportHeight.map(String.init) ?? "nil")",
-            "layoutMeasuredGap=\(layoutMeasuredGap.map { String($0) } ?? "nil")",
-            "layoutMetricSize=\(layoutMetricSize.map(String.init) ?? "nil")",
-            "layoutColumnInlineSize=\(layoutColumnInlineSize.map(String.init) ?? "nil")",
-            "layoutCurrentChunkClientWidth=\(layoutCurrentChunkClientWidth.map(String.init) ?? "nil")",
-            "layoutCurrentChunkClientHeight=\(layoutCurrentChunkClientHeight.map(String.init) ?? "nil")",
-            "layoutCurrentChunkScrollWidth=\(layoutCurrentChunkScrollWidth.map(String.init) ?? "nil")",
-            "layoutCurrentChunkScrollHeight=\(layoutCurrentChunkScrollHeight.map(String.init) ?? "nil")",
-            "layoutCurrentChunkOverflow=\(layoutCurrentChunkOverflow.map(String.init) ?? "nil")",
-            "computedFontSizeCSS=\(computedFontSizeCSS ?? "nil")",
-            "currentPageTextSample=\(currentPageTextSample ?? "nil")",
-            "nextPageTextSample=\(nextPageTextSample ?? "nil")",
-            "currentPageDisplayLabel=\(currentPageDisplayLabel ?? "nil")",
-            "currentPhysicalPageLabel=\(currentPhysicalPageLabel ?? "nil")",
-            "loadEBookStarted=\(loadEBookStarted)",
-            "loadEBookReady=\(loadEBookReady)",
-            "loadEBookAttemptCount=\(loadEBookAttemptCount.map(String.init) ?? "nil")",
-            "loadEBookStartAgeMs=\(loadEBookStartAgeMs.map(String.init) ?? "nil")",
-            "loadEBookLastState=\(loadEBookLastState ?? "nil")",
-            "canForward=\(canForward)",
-            "canBackward=\(canBackward)",
-            "interactionKind=\(interactionKind ?? "nil")",
-            "interactionQualified=\(interactionQualified.map(String.init) ?? "nil")",
-            "interactionDirection=\(interactionDirection ?? "nil")",
-            "interactionPrimary=\(interactionPrimaryAxisDelta.map { String(format: "%.3f", $0) } ?? "nil")",
-            "interactionSecondary=\(interactionSecondaryAxisDelta.map { String(format: "%.3f", $0) } ?? "nil")",
-            "interactionProgress=\(interactionProgress.map { String(format: "%.3f", $0) } ?? "nil")",
-            "interactionVelocity=\(interactionVelocity.map { String(format: "%.3f", $0) } ?? "nil")",
-            "interactionCommit=\(interactionShouldCommit.map(String.init) ?? "nil")",
-            "interactionOppositeFlickRefused=\(interactionRefusedOppositeDirectionFlick.map(String.init) ?? "nil")",
-            "interactionNote=\(interactionNote ?? "nil")",
-            "probeError=\(probeError ?? "nil")",
-        ].joined(separator: ";")
+        var fields: [String] = []
+        func add(_ key: String, _ value: String) {
+            fields.append("\(key)=\(value)")
+        }
+
+        add("pageURL", pageURL)
+        add("requested", String(requestedEnabled))
+        add("eligible", String(structurallyEligible))
+        add("active", String(activeEnabled))
+        add("supports", String(supportsActivePageTurn))
+        add("gestureCaptureEnabled", String(gestureCaptureEnabled))
+        add("gestureCaptureBlockReason", gestureCaptureBlockReason ?? "nil")
+        add("hideNav", String(hideNavigationDueToScroll))
+        add("showTitleChrome", showTitleChrome.map(String.init) ?? "nil")
+        add("showHeaderChrome", showHeaderChrome.map(String.init) ?? "nil")
+        add("progression", pageProgressionDirection)
+        add("phase", phase)
+        add("navigationStyle", navigationStyle ?? "nil")
+        add("transitionFamily", transitionFamily ?? "nil")
+        add("movementKind", movementKind ?? "nil")
+        add("layoutState", layoutState ?? "nil")
+        add("updateReason", updateReason ?? "nil")
+        add("navigationEvent", navigationEvent ?? "nil")
+        add("contentHostState", contentHostState ?? "nil")
+        add("contentHostSequenceMountedHost", contentHostSequenceMountedHostIdentifier ?? "nil")
+        add("contentHostSequenceAppliedHost", contentHostSequenceAppliedHostIdentifier ?? "nil")
+        add("contentHostSequenceAppliedToMountedHost", contentHostSequenceIsAppliedToMountedHost.map(String.init) ?? "nil")
+        add("contentHostSequenceStable", contentHostSequenceIsStable.map(String.init) ?? "nil")
+        add("contentHostSequenceSerial", contentHostSequenceSerial.map(String.init) ?? "nil")
+        add("preloadStrategy", preloadStrategy ?? "nil")
+        add("currentContentLocation", currentContentLocation ?? "nil")
+        add("contentLoadingClass", contentLoadingClass ?? "nil")
+        add("snapshotLoadingClass", snapshotLoadingClass ?? "nil")
+        add("mountedHost", mountedHostIdentifier ?? "nil")
+        add("appliedHost", appliedHostIdentifier ?? "nil")
+        add("liveWebView", liveWebViewIdentifier ?? "nil")
+        add("pageOffsetsDisplayed", pageOffsetsDisplayed?.map(String.init).joined(separator: ",") ?? "nil")
+        add("currentSpreadSlots", currentSpreadSlots?.joined(separator: ",") ?? "nil")
+        add("destinationSpreadSlots", destinationSpreadSlots?.joined(separator: ",") ?? "nil")
+        add("requestedLocationKind", requestedLocationKind ?? "nil")
+        add("requestedLocationValue", requestedLocationValue ?? "nil")
+        add("requestedLocationSource", requestedLocationSource ?? "nil")
+        add("requestedLocationContext", requestedLocationSurroundingContext ?? "nil")
+        add("requestedLocationIsPageChange", requestedLocationIsPageChange.map { String($0) } ?? "nil")
+        add("requestedLocationFractionalCompletion", requestedLocationFractionalCompletion.map { String($0) } ?? "nil")
+        add("readingProgressCFI", readingProgressCFI ?? "nil")
+        add("readingProgressFractionalCompletion", readingProgressFractionalCompletion.map { String($0) } ?? "nil")
+        add("readingProgressHighWaterMarkFractionalCompletion", readingProgressHighWaterMarkFractionalCompletion.map { String($0) } ?? "nil")
+        add("readingProgressSuppressionReason", readingProgressSuppressionReason ?? "nil")
+        add("readingProgressReason", readingProgressReason ?? "nil")
+        add("readingProgressSectionIndex", readingProgressSectionIndex.map { String($0) } ?? "nil")
+        add("hasView", String(hasView))
+        add("hasRenderer", String(hasRenderer))
+        add("canNext", String(canNext))
+        add("canPrev", String(canPrev))
+        add("hasSectionLayoutController", String(hasSectionLayoutController))
+        add("bookDirection", bookDirection ?? "nil")
+        add("isRightToLeft", String(isRightToLeft))
+        add("isVertical", String(isVertical))
+        add("isVerticalRightToLeft", String(isVerticalRightToLeft))
+        add("currentSectionIndex", currentSectionIndex.map(String.init) ?? "nil")
+        add("currentSectionHref", currentSectionHref ?? "nil")
+        add("currentPage", currentPage.map(String.init) ?? "nil")
+        add("livePageIndex", livePageIndex.map(String.init) ?? "nil")
+        add("liveChunkPageIndex", liveChunkPageIndex.map(String.init) ?? "nil")
+        add("viewportCenterChunkPageIndex", viewportCenterChunkPageIndex.map(String.init) ?? "nil")
+        add("pageCount", pageCount.map(String.init) ?? "nil")
+        add("layoutPageRecordCount", layoutPageRecordCount.map(String.init) ?? "nil")
+        add("layoutLiveRootExists", layoutLiveRootExists.map(String.init) ?? "nil")
+        add("layoutLiveRootClassName", layoutLiveRootClassName ?? "nil")
+        add("layoutLiveRootChildCount", layoutLiveRootChildCount.map(String.init) ?? "nil")
+        add("layoutLiveRootRectWidth", layoutLiveRootRectWidth.map(String.init) ?? "nil")
+        add("layoutLiveRootRectHeight", layoutLiveRootRectHeight.map(String.init) ?? "nil")
+        add("layoutLiveCurrentPageExists", layoutLiveCurrentPageExists.map(String.init) ?? "nil")
+        add("layoutLiveCurrentPageClassName", layoutLiveCurrentPageClassName ?? "nil")
+        add("layoutLiveCurrentPageRectWidth", layoutLiveCurrentPageRectWidth.map(String.init) ?? "nil")
+        add("layoutLiveCurrentPageRectHeight", layoutLiveCurrentPageRectHeight.map(String.init) ?? "nil")
+        add("layoutLiveCurrentPageContainsChunkBody", layoutLiveCurrentPageContainsChunkBody.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkExists", layoutLiveCurrentChunkExists.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkTagName", layoutLiveCurrentChunkTagName ?? "nil")
+        add("layoutLiveCurrentChunkClassName", layoutLiveCurrentChunkClassName ?? "nil")
+        add("layoutLiveCurrentChunkDisplay", layoutLiveCurrentChunkDisplay ?? "nil")
+        add("layoutLiveCurrentChunkPosition", layoutLiveCurrentChunkPosition ?? "nil")
+        add("layoutLiveCurrentChunkFlex", layoutLiveCurrentChunkFlex ?? "nil")
+        add("layoutLiveCurrentChunkRectWidth", layoutLiveCurrentChunkRectWidth.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkRectHeight", layoutLiveCurrentChunkRectHeight.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkInnerHTMLLength", layoutLiveCurrentChunkInnerHTMLLength.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkContainsChunkBody", layoutLiveCurrentChunkContainsChunkBody.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkChildCount", layoutLiveCurrentChunkChildCount.map(String.init) ?? "nil")
+        add("layoutLiveCurrentChunkTextLength", layoutLiveCurrentChunkTextLength.map(String.init) ?? "nil")
+        add("layoutCurrentChunkBodyChildCount", layoutCurrentChunkBodyChildCount.map(String.init) ?? "nil")
+        add("layoutCurrentChunkBodyTextLength", layoutCurrentChunkBodyTextLength.map(String.init) ?? "nil")
+        add("layoutCurrentChunkBodyDisplay", layoutCurrentChunkBodyDisplay ?? "nil")
+        add("layoutCurrentChunkBodyPosition", layoutCurrentChunkBodyPosition ?? "nil")
+        add("layoutCurrentChunkBodyFlex", layoutCurrentChunkBodyFlex ?? "nil")
+        add("layoutColumnCount", layoutColumnCount.map(String.init) ?? "nil")
+        add("layoutCurrentPageIndex", layoutCurrentPageIndex.map(String.init) ?? "nil")
+        add("layoutCurrentPageChunkCount", layoutCurrentPageChunkCount.map(String.init) ?? "nil")
+        add("layoutMaxPageChunkCount", layoutMaxPageChunkCount.map(String.init) ?? "nil")
+        add("layoutUnitCount", layoutUnitCount.map(String.init) ?? "nil")
+        add("layoutActiveBuildPageIndex", layoutActiveBuildPageIndex.map(String.init) ?? "nil")
+        add("layoutComplete", layoutComplete.map(String.init) ?? "nil")
+        add("layoutSpreadCandidateDetected", layoutSpreadCandidateDetected.map(String.init) ?? "nil")
+        add("layoutVisibleUnitKind", layoutVisibleUnitKind ?? "nil")
+        add("layoutVisibleUnitAxis", layoutVisibleUnitAxis ?? "nil")
+        add("layoutVisiblePageCount", layoutVisiblePageCount.map(String.init) ?? "nil")
+        add("layoutCurrentUnitIndex", layoutCurrentUnitIndex.map(String.init) ?? "nil")
+        add("layoutLeadingPageIndex", layoutLeadingPageIndex.map(String.init) ?? "nil")
+        add("layoutTrailingPageIndex", layoutTrailingPageIndex.map(String.init) ?? "nil")
+        add("layoutHasLeadingSingleton", layoutHasLeadingSingleton.map(String.init) ?? "nil")
+        add("layoutHasTrailingSingleton", layoutHasTrailingSingleton.map(String.init) ?? "nil")
+        add("layoutPrimarySpacing", layoutPrimarySpacing.map { String($0) } ?? "nil")
+        add("layoutChromeGutterWidth", layoutChromeGutterWidth.map { String($0) } ?? "nil")
+        add("layoutReadableFrameWidth", layoutReadableFrameWidth.map { String($0) } ?? "nil")
+        add("layoutMaxContentWidth", layoutMaxContentWidth.map { String($0) } ?? "nil")
+        add("layoutSemanticSideInset", layoutSemanticSideInset.map { String($0) } ?? "nil")
+        add("layoutMultiUnitActive", layoutMultiUnitActive.map(String.init) ?? "nil")
+        add("layoutSpreadPagesAllowedForViewport", layoutSpreadPagesAllowedForViewport.map(String.init) ?? "nil")
+        add("layoutWritingMode", layoutWritingMode ?? "nil")
+        add("layoutViewportWidth", layoutViewportWidth.map(String.init) ?? "nil")
+        add("layoutViewportHeight", layoutViewportHeight.map(String.init) ?? "nil")
+        add("layoutMeasuredGap", layoutMeasuredGap.map { String($0) } ?? "nil")
+        add("layoutMetricSize", layoutMetricSize.map { String($0) } ?? "nil")
+        add("layoutColumnInlineSize", layoutColumnInlineSize.map { String($0) } ?? "nil")
+        add("layoutCurrentChunkClientWidth", layoutCurrentChunkClientWidth.map(String.init) ?? "nil")
+        add("layoutCurrentChunkClientHeight", layoutCurrentChunkClientHeight.map(String.init) ?? "nil")
+        add("layoutCurrentChunkScrollWidth", layoutCurrentChunkScrollWidth.map(String.init) ?? "nil")
+        add("layoutCurrentChunkScrollHeight", layoutCurrentChunkScrollHeight.map(String.init) ?? "nil")
+        add("layoutCurrentChunkOverflow", layoutCurrentChunkOverflow.map(String.init) ?? "nil")
+        add("computedFontSizeCSS", computedFontSizeCSS ?? "nil")
+        add("currentPageTextSample", currentPageTextSample ?? "nil")
+        add("nextPageTextSample", nextPageTextSample ?? "nil")
+        add("currentPageDisplayLabel", currentPageDisplayLabel ?? "nil")
+        add("currentPhysicalPageLabel", currentPhysicalPageLabel ?? "nil")
+        add("progressScrubberVisible", progressScrubberVisible.map(String.init) ?? "nil")
+        add("progressScrubberActive", progressScrubberActive.map(String.init) ?? "nil")
+        add("historyCanGoBack", historyCanGoBack.map(String.init) ?? "nil")
+        add("historyCanGoForward", historyCanGoForward.map(String.init) ?? "nil")
+        add("historyDepth", historyDepth.map(String.init) ?? "nil")
+        add("historyCurrentIndex", historyCurrentIndex.map(String.init) ?? "nil")
+        add("historyPendingReplaceStateSuppressionCount", historyPendingReplaceStateSuppressionCount.map(String.init) ?? "nil")
+        add("historySuppressedReplaceStateCount", historySuppressedReplaceStateCount.map(String.init) ?? "nil")
+        add("historyLastSuppressedReplaceStateReason", historyLastSuppressedReplaceStateReason ?? "nil")
+        add("loadEBookStarted", String(loadEBookStarted))
+        add("loadEBookReady", String(loadEBookReady))
+        add("loadEBookAttemptCount", loadEBookAttemptCount.map(String.init) ?? "nil")
+        add("loadEBookStartAgeMs", loadEBookStartAgeMs.map(String.init) ?? "nil")
+        add("loadEBookLastState", loadEBookLastState ?? "nil")
+        add("forwardDestinationAvailability", forwardDestinationAvailability ?? "nil")
+        add("backwardDestinationAvailability", backwardDestinationAvailability ?? "nil")
+        add("paginationComplete", paginationComplete.map(String.init) ?? "nil")
+        add("configurationKey", configurationKey ?? "nil")
+        add("publicationSource", publicationSource ?? "nil")
+        add("pageLabelDisplayMode", pageLabelDisplayMode ?? "nil")
+        add("pageNumberMode", pageNumberMode ?? "nil")
+        add("usesPhysicalPageLabels", usesPhysicalPageLabels.map(String.init) ?? "nil")
+        add("allowsMultipleColumns", allowsMultipleColumns.map(String.init) ?? "nil")
+        add("allowsMultipleLabelsInMultiUnitLayout", allowsMultipleLabelsInMultiUnitLayout.map(String.init) ?? "nil")
+        add("visiblePageIndices", visiblePageIndices?.map(String.init).joined(separator: ",") ?? "nil")
+        add("pageScrollerAnimationIsRunning", pageScrollerAnimationIsRunning.map(String.init) ?? "nil")
+        add("liveResizeActive", liveResizeActive.map(String.init) ?? "nil")
+        add("canForward", String(canForward))
+        add("canBackward", String(canBackward))
+        add("interactionKind", interactionKind ?? "nil")
+        add("interactionQualified", interactionQualified.map(String.init) ?? "nil")
+        add("interactionDirection", interactionDirection ?? "nil")
+        add("interactionPrimary", interactionPrimaryAxisDelta.map { String(format: "%.3f", $0) } ?? "nil")
+        add("interactionSecondary", interactionSecondaryAxisDelta.map { String(format: "%.3f", $0) } ?? "nil")
+        add("interactionProgress", interactionProgress.map { String(format: "%.3f", $0) } ?? "nil")
+        add("interactionVelocity", interactionVelocity.map { String(format: "%.3f", $0) } ?? "nil")
+        add("interactionCommit", interactionShouldCommit.map(String.init) ?? "nil")
+        add("interactionOppositeFlickRefused", interactionRefusedOppositeDirectionFlick.map(String.init) ?? "nil")
+        add("interactionNote", interactionNote ?? "nil")
+        add("probeError", probeError ?? "nil")
+        return fields.joined(separator: ";")
+    }
+}
+
+struct ReaderPageTurnNavigationObservation: Equatable {
+    let supportsActivePageTurn: Bool
+    let currentSpread: WebViewPaginationSpread?
+    let destinationSpread: WebViewPaginationSpread?
+    let pageOffsetsDisplayed: [Int]?
+    let pageCount: Int?
+    let layoutLeadingPageIndex: Int?
+    let currentPage: Int?
+    let layoutTrailingPageIndex: Int?
+    let layoutVisiblePageCount: Int?
+    let currentSectionIndex: Int?
+    let currentSectionHref: String?
+    let livePageIndex: Int?
+    let liveChunkPageIndex: Int?
+    let viewportCenterChunkPageIndex: Int?
+    let canForward: Bool
+    let canBackward: Bool
+    let layoutActiveBuildPageIndex: Int?
+
+    init(
+        currentSpread: WebViewPaginationSpread? = nil,
+        destinationSpread: WebViewPaginationSpread? = nil,
+        pageOffsetsDisplayed: [Int]? = nil,
+        pageCount: Int? = nil,
+        layoutLeadingPageIndex: Int? = nil,
+        currentPage: Int? = nil,
+        layoutTrailingPageIndex: Int? = nil,
+        layoutVisiblePageCount: Int? = nil,
+        currentSectionIndex: Int? = nil,
+        currentSectionHref: String? = nil,
+        livePageIndex: Int? = nil,
+        liveChunkPageIndex: Int? = nil,
+        viewportCenterChunkPageIndex: Int? = nil,
+        supportsActivePageTurn: Bool = false,
+        canForward: Bool = false,
+        canBackward: Bool = false,
+        layoutActiveBuildPageIndex: Int? = nil
+    ) {
+        self.supportsActivePageTurn = supportsActivePageTurn
+        self.currentSpread = currentSpread
+        self.destinationSpread = destinationSpread
+        self.pageOffsetsDisplayed = pageOffsetsDisplayed
+        self.pageCount = pageCount
+        self.layoutLeadingPageIndex = layoutLeadingPageIndex
+        self.currentPage = currentPage
+        self.layoutTrailingPageIndex = layoutTrailingPageIndex
+        self.layoutVisiblePageCount = layoutVisiblePageCount
+        self.currentSectionIndex = currentSectionIndex
+        self.currentSectionHref = currentSectionHref
+        self.livePageIndex = livePageIndex
+        self.liveChunkPageIndex = liveChunkPageIndex
+        self.viewportCenterChunkPageIndex = viewportCenterChunkPageIndex
+        self.canForward = canForward
+        self.canBackward = canBackward
+        self.layoutActiveBuildPageIndex = layoutActiveBuildPageIndex
+    }
+
+    init(snapshot: ReaderPageTurnProbeSnapshot) {
+        self.init(
+            pageOffsetsDisplayed: snapshot.pageOffsetsDisplayed,
+            pageCount: snapshot.pageCount,
+            layoutLeadingPageIndex: snapshot.layoutLeadingPageIndex,
+            currentPage: snapshot.currentPage,
+            layoutTrailingPageIndex: snapshot.layoutTrailingPageIndex,
+            layoutVisiblePageCount: snapshot.layoutVisiblePageCount,
+            currentSectionIndex: snapshot.currentSectionIndex,
+            currentSectionHref: snapshot.currentSectionHref,
+            livePageIndex: snapshot.livePageIndex,
+            liveChunkPageIndex: snapshot.liveChunkPageIndex,
+            viewportCenterChunkPageIndex: snapshot.viewportCenterChunkPageIndex,
+            supportsActivePageTurn: snapshot.supportsActivePageTurn,
+            canForward: snapshot.canForward,
+            canBackward: snapshot.canBackward,
+            layoutActiveBuildPageIndex: snapshot.layoutActiveBuildPageIndex
+        )
+    }
+
+    fileprivate init(probe: ReaderPageTurnNavigationProbe) {
+        self.init(
+            currentSpread: probe.currentSpread,
+            destinationSpread: probe.destinationSpread,
+            pageOffsetsDisplayed: probe.pageOffsetsDisplayed,
+            pageCount: probe.pageCount,
+            layoutLeadingPageIndex: probe.layoutLeadingPageIndex,
+            currentPage: probe.currentPage,
+            layoutTrailingPageIndex: probe.layoutTrailingPageIndex,
+            layoutVisiblePageCount: probe.layoutVisiblePageCount,
+            currentSectionIndex: probe.currentSectionIndex,
+            currentSectionHref: probe.currentSectionHref,
+            livePageIndex: probe.livePageIndex,
+            liveChunkPageIndex: probe.liveChunkPageIndex,
+            viewportCenterChunkPageIndex: probe.viewportCenterChunkPageIndex,
+            supportsActivePageTurn: probe.supportsActivePageTurn,
+            canForward: probe.canForward,
+            canBackward: probe.canBackward,
+            layoutActiveBuildPageIndex: probe.layoutActiveBuildPageIndex
+        )
+    }
+
+    var resolvedGraph: ReaderPageTurnResolvedGraph {
+        ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: currentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        ).resolvedGraph
+    }
+}
+
+enum ReaderPageTurnNavigationComparison {
+    private static func probeHasLivePageMetrics(
+        _ probe: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        probe.livePageIndex != nil
+            || probe.liveChunkPageIndex != nil
+            || probe.viewportCenterChunkPageIndex != nil
+    }
+
+    private static func hasEquivalentScalarPaginationWindow(
+        snapshot: ReaderPageTurnProbeSnapshot,
+        comparedTo probe: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        snapshot.pageOffsetsDisplayed == probe.pageOffsetsDisplayed
+            && snapshot.pageCount == probe.pageCount
+            && snapshot.layoutLeadingPageIndex == probe.layoutLeadingPageIndex
+            && snapshot.currentPage == probe.currentPage
+            && snapshot.layoutTrailingPageIndex == probe.layoutTrailingPageIndex
+            && snapshot.layoutVisiblePageCount == probe.layoutVisiblePageCount
+            && snapshot.currentSectionIndex == probe.currentSectionIndex
+            && snapshot.currentSectionHref == probe.currentSectionHref
+            && snapshot.canForward == probe.canForward
+            && snapshot.canBackward == probe.canBackward
+    }
+
+    private static func optionalResolvedValueChanged<T: Equatable>(
+        _ snapshotValue: T?,
+        comparedTo probeValue: T?
+    ) -> Bool {
+        guard let snapshotValue, let probeValue else {
+            return false
+        }
+        return snapshotValue != probeValue
+    }
+
+    static func hasMeaningfulNavigationChange(
+        snapshot: ReaderPageTurnProbeSnapshot,
+        comparedTo probe: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        if !probeHasLivePageMetrics(probe),
+           probe.currentSpread == nil,
+           probe.destinationSpread == nil,
+           hasEquivalentScalarPaginationWindow(snapshot: snapshot, comparedTo: probe) {
+            return false
+        }
+        return hasMeaningfulNavigationChange(
+            snapshot: ReaderPageTurnNavigationObservation(snapshot: snapshot),
+            comparedTo: probe
+        )
+    }
+
+    fileprivate static func hasMeaningfulNavigationChange(
+        snapshot: ReaderPageTurnProbeSnapshot,
+        comparedTo probe: ReaderPageTurnNavigationProbe
+    ) -> Bool {
+        hasMeaningfulNavigationChange(snapshot: snapshot, comparedTo: ReaderPageTurnNavigationObservation(probe: probe))
+    }
+
+    static func hasMeaningfulNavigationChange(
+        snapshot: ReaderPageTurnNavigationObservation,
+        comparedTo probe: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        let resolvedGraph = snapshot.resolvedGraph
+        let probeResolvedGraph = probe.resolvedGraph
+        if resolvedGraph.hasMeaningfulNavigationChange(comparedTo: probeResolvedGraph) {
+            return true
+        }
+        if resolvedGraph.forwardDestinationAvailability != probeResolvedGraph.forwardDestinationAvailability {
+            return true
+        }
+        if resolvedGraph.backwardDestinationAvailability != probeResolvedGraph.backwardDestinationAvailability {
+            return true
+        }
+        if resolvedGraph.relativeSpreadOffset(comparedTo: probeResolvedGraph) != nil {
+            return true
+        }
+        if snapshot.currentSectionIndex != probe.currentSectionIndex {
+            return true
+        }
+        if snapshot.currentSectionHref != probe.currentSectionHref {
+            return true
+        }
+        if optionalResolvedValueChanged(snapshot.livePageIndex, comparedTo: probe.livePageIndex) {
+            return true
+        }
+        if optionalResolvedValueChanged(snapshot.liveChunkPageIndex, comparedTo: probe.liveChunkPageIndex) {
+            return true
+        }
+        if optionalResolvedValueChanged(
+            snapshot.viewportCenterChunkPageIndex,
+            comparedTo: probe.viewportCenterChunkPageIndex
+        ) {
+            return true
+        }
+        if snapshot.canForward != probe.canForward {
+            return true
+        }
+        if snapshot.canBackward != probe.canBackward {
+            return true
+        }
+        return false
+    }
+
+    static func showsMeaningfulSettle(
+        probe: ReaderPageTurnNavigationObservation,
+        comparedTo baseline: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        let probeResolvedGraph = probe.resolvedGraph
+        let baselineResolvedGraph = baseline.resolvedGraph
+        if probeResolvedGraph.hasMeaningfulNavigationChange(comparedTo: baselineResolvedGraph) {
+            return true
+        }
+        if probeResolvedGraph.forwardDestinationAvailability != baselineResolvedGraph.forwardDestinationAvailability {
+            return true
+        }
+        if probeResolvedGraph.backwardDestinationAvailability != baselineResolvedGraph.backwardDestinationAvailability {
+            return true
+        }
+        if probeResolvedGraph.relativeSpreadOffset(comparedTo: baselineResolvedGraph) != nil {
+            return true
+        }
+        if probe.currentSectionIndex != baseline.currentSectionIndex { return true }
+        if probe.currentSectionHref != baseline.currentSectionHref { return true }
+        if probe.currentPage != baseline.currentPage { return true }
+        if probe.pageOffsetsDisplayed != baseline.pageOffsetsDisplayed { return true }
+        if probe.currentSpread != baseline.currentSpread { return true }
+        if probe.destinationSpread != baseline.destinationSpread { return true }
+        if (probe.pageCount ?? 0) > (baseline.pageCount ?? 0) { return true }
+        if (probe.layoutActiveBuildPageIndex ?? 0) > (baseline.layoutActiveBuildPageIndex ?? 0) { return true }
+        return false
+    }
+
+    static func hasSettledCommittedTurn(
+        probe: ReaderPageTurnNavigationObservation,
+        direction: PageTurnDirection
+    ) -> Bool {
+        let resolvedGraph = probe.resolvedGraph
+        let hasResolvedVisibleState =
+            !(resolvedGraph.currentVisiblePageIndices?.isEmpty ?? true)
+            || resolvedGraph.currentPageIndex != nil
+            || probe.currentSectionIndex != nil
+        guard hasResolvedVisibleState else {
+            return false
+        }
+        switch direction {
+        case .forward:
+            return resolvedGraph.canMoveBackward || probe.canBackward || probe.currentSectionIndex != nil
+        case .backward:
+            return resolvedGraph.currentPageIndex != nil || probe.currentSectionIndex != nil
+        }
+    }
+
+    static func shouldRetryCommittedTurnAfterActivation(
+        baseline: ReaderPageTurnNavigationObservation,
+        activatedProbe: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        guard !hasMeaningfulNavigationChange(snapshot: activatedProbe, comparedTo: baseline) else {
+            return false
+        }
+        return (!baseline.supportsActivePageTurn && activatedProbe.supportsActivePageTurn)
+            || materiallyExpandedPagination(probe: activatedProbe, comparedTo: baseline)
+    }
+
+    static func classifyCommittedTurn(
+        direction: PageTurnDirection,
+        baseline: ReaderPageTurnNavigationObservation?,
+        after: ReaderPageTurnNavigationObservation?
+    ) -> ReaderPageTurnNavigationEventKind {
+        guard let after else {
+            return direction == .forward ? .nextPage : .previousPage
+        }
+        if let baseline {
+            guard hasMeaningfulNavigationChange(snapshot: after, comparedTo: baseline) else {
+                return .noPageChange
+            }
+            let baselineResolvedGraph = baseline.resolvedGraph
+            let afterResolvedGraph = after.resolvedGraph
+            return afterResolvedGraph.resolvedNavigationEventKind(
+                comparedTo: baselineResolvedGraph,
+                direction: direction
+            )
+        }
+        return direction == .forward ? .nextPage : .previousPage
+    }
+
+    static func materiallyExpandedPagination(
+        probe: ReaderPageTurnNavigationObservation,
+        comparedTo baseline: ReaderPageTurnNavigationObservation
+    ) -> Bool {
+        if (probe.pageCount ?? 0) > (baseline.pageCount ?? 0) {
+            return true
+        }
+        if (probe.layoutActiveBuildPageIndex ?? 0) > (baseline.layoutActiveBuildPageIndex ?? 0) {
+            return true
+        }
+        return false
     }
 }
 
@@ -832,31 +1378,10 @@ private actor ReaderPageTurnNavigationProbeResultBox {
 
 private extension ReaderPageTurnProbeSnapshot {
     func hasMeaningfulNavigationChange(comparedTo probe: ReaderPageTurnNavigationProbe) -> Bool {
-        if currentSectionIndex != probe.currentSectionIndex {
-            return true
-        }
-        if currentSectionHref != probe.currentSectionHref {
-            return true
-        }
-        if currentPage != probe.currentPage {
-            return true
-        }
-        if livePageIndex != probe.livePageIndex {
-            return true
-        }
-        if liveChunkPageIndex != probe.liveChunkPageIndex {
-            return true
-        }
-        if viewportCenterChunkPageIndex != probe.viewportCenterChunkPageIndex {
-            return true
-        }
-        if canForward != probe.canForward {
-            return true
-        }
-        if canBackward != probe.canBackward {
-            return true
-        }
-        return false
+        ReaderPageTurnNavigationComparison.hasMeaningfulNavigationChange(
+            snapshot: self,
+            comparedTo: probe
+        )
     }
 }
 
@@ -878,19 +1403,62 @@ public enum ReaderPageTurnProbeCommand: String, Codable, CaseIterable, Sendable,
     public var id: String { rawValue }
 }
 
+public enum ReaderPageTurnUpdateReason: String, Codable, CaseIterable, Sendable, Identifiable {
+    case userInteraction
+    case configurationChange
+    case locationFulfillment
+
+    public var id: String { rawValue }
+}
+
+public enum ReaderPageTurnContentHostState: String, Codable, CaseIterable, Sendable, Identifiable {
+    case initial
+    case waitingOnContentView
+    case preparingContentView
+    case placeholderViewAvailable
+    case contentViewAvailable
+    case preparingForReuse
+
+    public var id: String { rawValue }
+}
+
+public enum ReaderPageTurnNavigationEventKind: String, Codable, CaseIterable, Sendable, Identifiable {
+    case nextPage
+    case previousPage
+    case noPageChange
+    case attemptedPastEnd
+
+    public var id: String { rawValue }
+}
+
 public struct ReaderPageTurnInteractionContext: Equatable, Sendable {
+    public var ignorePageTurns: Bool
+    public var lineGuideEnabled: Bool
     public var lookupPresented: Bool
     public var mediaPresented: Bool
     public var hasSelection: Bool
+    public var requiresEdgeTouch: Bool
+    public var centerTapAreaLength: Double?
+    public var allowsBothMarginsAdvancePage: Bool
 
     public init(
+        ignorePageTurns: Bool = false,
+        lineGuideEnabled: Bool = false,
         lookupPresented: Bool = false,
         mediaPresented: Bool = false,
-        hasSelection: Bool = false
+        hasSelection: Bool = false,
+        requiresEdgeTouch: Bool = false,
+        centerTapAreaLength: Double? = nil,
+        allowsBothMarginsAdvancePage: Bool = false
     ) {
+        self.ignorePageTurns = ignorePageTurns
+        self.lineGuideEnabled = lineGuideEnabled
         self.lookupPresented = lookupPresented
         self.mediaPresented = mediaPresented
         self.hasSelection = hasSelection
+        self.requiresEdgeTouch = requiresEdgeTouch
+        self.centerTapAreaLength = centerTapAreaLength
+        self.allowsBothMarginsAdvancePage = allowsBothMarginsAdvancePage
     }
 
     public var blocksGestureCapture: Bool {
@@ -898,6 +1466,12 @@ public struct ReaderPageTurnInteractionContext: Equatable, Sendable {
     }
 
     public var blockingReason: String? {
+        if ignorePageTurns {
+            return "ignorePageTurns"
+        }
+        if lineGuideEnabled {
+            return "lineGuide"
+        }
         if hasSelection {
             return "selection"
         }
@@ -934,6 +1508,19 @@ public extension EnvironmentValues {
 }
 
 fileprivate struct ReaderPageTurnNavigationProbe {
+    var pageNavigationStyle: PageTurnNavigationStyle?
+    var transitionFamily: PageTurnTransitionFamily?
+    var movementKind: PageTurnMovementKind?
+    var layoutState: PageTurnLayoutState?
+    var updateReason: ReaderPageTurnUpdateReason?
+    var navigationEvent: ReaderPageTurnNavigationEventKind?
+    var contentHostState: ReaderPageTurnContentHostState?
+    var preloadStrategy: PageTurnPreloadStrategy?
+    var currentContentLocation: PageTurnCurrentContentLocation?
+    var pageOffsetsDisplayed: [Int]?
+    var currentSpread: WebViewPaginationSpread?
+    var destinationSpread: WebViewPaginationSpread?
+    var spreadSequence: WebViewPaginationSpreadSequence?
     var hasView: Bool
     var hasRenderer: Bool
     var canNext: Bool
@@ -997,6 +1584,10 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     var layoutHasLeadingSingleton: Bool?
     var layoutHasTrailingSingleton: Bool?
     var layoutPrimarySpacing: Double?
+    var layoutChromeGutterWidth: Double?
+    var layoutReadableFrameWidth: Double?
+    var layoutMaxContentWidth: Double?
+    var layoutSemanticSideInset: Double?
     var layoutMultiUnitActive: Bool?
     var layoutSpreadPagesAllowedForViewport: Bool?
     var layoutWritingMode: String?
@@ -1015,6 +1606,17 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     var nextPageTextSample: String?
     var currentPageDisplayLabel: String?
     var currentPhysicalPageLabel: String?
+    var progressScrubberVisible: Bool?
+    var progressScrubberActive: Bool?
+    var historyCanGoBack: Bool?
+    var historyCanGoForward: Bool?
+    var historyDepth: Int?
+    var historyCurrentIndex: Int?
+    var historyPendingReplaceStateSuppressionCount: Int?
+    var historySuppressedReplaceStateCount: Int?
+    var historyLastSuppressedReplaceStateReason: String?
+    var showTitleChrome: Bool?
+    var showHeaderChrome: Bool?
     var loadEBookStarted: Bool
     var loadEBookReady: Bool
     var loadEBookAttemptCount: Int?
@@ -1027,8 +1629,19 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     var sameDocumentHostTurnPageCount: Int?
     var sameDocumentHostTurnDatasetCurrentPageIndex: Int?
     var sameDocumentHostTurnResult: String?
+    var forwardDestinationAvailability: String?
+    var backwardDestinationAvailability: String?
+    var paginationComplete: Bool?
+    var configurationKey: String?
+    var publicationSource: WebViewPaginationPublicationSource?
     var pageLabelDisplayMode: String?
+    var pageNumberMode: WebViewPaginationPageNumberMode?
     var usesPhysicalPageLabels: Bool?
+    var allowsMultipleColumns: Bool?
+    var allowsMultipleLabelsInMultiUnitLayout: Bool?
+    var visiblePageIndices: [Int]?
+    var pageScrollerAnimationIsRunning: Bool?
+    var liveResizeActive: Bool?
     var probeError: String?
 
     var resolvedPaginationMode: WebViewPaginationMode {
@@ -1042,16 +1655,35 @@ fileprivate struct ReaderPageTurnNavigationProbe {
         resolvedPaginationMode == .rightToLeft ? .rightToLeft : .leftToRight
     }
 
+    private func localSemanticAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability {
+        let availability = spreadGraph.destinationAvailability(for: direction)
+        return availability == .unavailable ? .unavailable : availability
+    }
+
     var canSemanticForward: Bool {
-        canForward
+        canForward || localSemanticAvailability(for: .forward) != .unavailable
     }
 
     var canSemanticBackward: Bool {
-        canBackward
+        canBackward || localSemanticAvailability(for: .backward) != .unavailable
     }
 
     var logPayload: [String: String] {
         [
+            "pageNavigationStyle": pageNavigationStyle?.rawValue ?? "nil",
+            "transitionFamily": transitionFamily?.rawValue ?? "nil",
+            "movementKind": movementKind?.rawValue ?? "nil",
+            "layoutState": layoutState?.rawValue ?? "nil",
+            "updateReason": updateReason?.rawValue ?? "nil",
+            "navigationEvent": navigationEvent?.rawValue ?? "nil",
+            "contentHostState": contentHostState?.rawValue ?? "nil",
+            "preloadStrategy": preloadStrategy?.rawValue ?? "nil",
+            "currentContentLocation": currentContentLocation?.rawValue ?? "nil",
+            "pageOffsetsDisplayed": pageOffsetsDisplayed?.map(String.init).joined(separator: ",") ?? "nil",
+            "currentSpreadSlots": currentSpread?.slots.map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }.joined(separator: ",") ?? "nil",
+            "destinationSpreadSlots": destinationSpread?.slots.map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }.joined(separator: ",") ?? "nil",
+            "spreadSequenceCount": spreadSequence.map { String($0.spreads.count) } ?? "nil",
+            "spreadSequenceCurrentIndex": spreadSequence?.currentIndex.map(String.init) ?? "nil",
             "hasView": "\(hasView)",
             "hasRenderer": "\(hasRenderer)",
             "canNext": "\(canNext)",
@@ -1117,6 +1749,10 @@ fileprivate struct ReaderPageTurnNavigationProbe {
             "layoutHasLeadingSingleton": layoutHasLeadingSingleton.map(String.init) ?? "nil",
             "layoutHasTrailingSingleton": layoutHasTrailingSingleton.map(String.init) ?? "nil",
             "layoutPrimarySpacing": layoutPrimarySpacing.map { String($0) } ?? "nil",
+            "layoutChromeGutterWidth": layoutChromeGutterWidth.map { String($0) } ?? "nil",
+            "layoutReadableFrameWidth": layoutReadableFrameWidth.map { String($0) } ?? "nil",
+            "layoutMaxContentWidth": layoutMaxContentWidth.map { String($0) } ?? "nil",
+            "layoutSemanticSideInset": layoutSemanticSideInset.map { String($0) } ?? "nil",
             "layoutMultiUnitActive": layoutMultiUnitActive.map(String.init) ?? "nil",
             "layoutSpreadPagesAllowedForViewport": layoutSpreadPagesAllowedForViewport.map(String.init) ?? "nil",
             "layoutWritingMode": layoutWritingMode ?? "nil",
@@ -1135,6 +1771,17 @@ fileprivate struct ReaderPageTurnNavigationProbe {
             "nextPageTextSample": nextPageTextSample ?? "nil",
             "currentPageDisplayLabel": currentPageDisplayLabel ?? "nil",
             "currentPhysicalPageLabel": currentPhysicalPageLabel ?? "nil",
+            "progressScrubberVisible": progressScrubberVisible.map(String.init) ?? "nil",
+            "progressScrubberActive": progressScrubberActive.map(String.init) ?? "nil",
+            "historyCanGoBack": historyCanGoBack.map(String.init) ?? "nil",
+            "historyCanGoForward": historyCanGoForward.map(String.init) ?? "nil",
+            "historyDepth": historyDepth.map(String.init) ?? "nil",
+            "historyCurrentIndex": historyCurrentIndex.map(String.init) ?? "nil",
+            "historyPendingReplaceStateSuppressionCount": historyPendingReplaceStateSuppressionCount.map(String.init) ?? "nil",
+            "historySuppressedReplaceStateCount": historySuppressedReplaceStateCount.map(String.init) ?? "nil",
+            "historyLastSuppressedReplaceStateReason": historyLastSuppressedReplaceStateReason ?? "nil",
+            "showTitleChrome": showTitleChrome.map(String.init) ?? "nil",
+            "showHeaderChrome": showHeaderChrome.map(String.init) ?? "nil",
             "loadEBookStarted": "\(loadEBookStarted)",
             "loadEBookReady": "\(loadEBookReady)",
             "loadEBookAttemptCount": loadEBookAttemptCount.map(String.init) ?? "nil",
@@ -1147,8 +1794,19 @@ fileprivate struct ReaderPageTurnNavigationProbe {
             "sameDocumentHostTurnPageCount": sameDocumentHostTurnPageCount.map(String.init) ?? "nil",
             "sameDocumentHostTurnDatasetCurrentPageIndex": sameDocumentHostTurnDatasetCurrentPageIndex.map(String.init) ?? "nil",
             "sameDocumentHostTurnResult": sameDocumentHostTurnResult ?? "nil",
+            "forwardDestinationAvailability": forwardDestinationAvailability ?? "nil",
+            "backwardDestinationAvailability": backwardDestinationAvailability ?? "nil",
+            "paginationComplete": paginationComplete.map(String.init) ?? "nil",
+            "configurationKey": configurationKey ?? "nil",
+            "publicationSource": publicationSource?.rawValue ?? "nil",
             "pageLabelDisplayMode": pageLabelDisplayMode ?? "nil",
+            "pageNumberMode": pageNumberMode?.rawValue ?? "nil",
             "usesPhysicalPageLabels": usesPhysicalPageLabels.map(String.init) ?? "nil",
+            "allowsMultipleColumns": allowsMultipleColumns.map(String.init) ?? "nil",
+            "allowsMultipleLabelsInMultiUnitLayout": allowsMultipleLabelsInMultiUnitLayout.map(String.init) ?? "nil",
+            "visiblePageIndices": visiblePageIndices?.map(String.init).joined(separator: ",") ?? "nil",
+            "pageScrollerAnimationIsRunning": pageScrollerAnimationIsRunning.map(String.init) ?? "nil",
+            "liveResizeActive": liveResizeActive.map(String.init) ?? "nil",
             "probeError": probeError ?? "nil",
             "resolvedPaginationMode": resolvedPaginationMode.rawValue.description,
             "pageProgressionDirection": pageProgressionDirection.rawValue,
@@ -1157,13 +1815,34 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     }
 
     func hasMeaningfulNavigationChange(comparedTo baseline: Self) -> Bool {
+        let resolvedGraph = ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: currentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        ).resolvedGraph
+        let baselineResolvedGraph = ReaderPageTurnSpreadGraph(
+            currentSpread: baseline.currentSpread,
+            destinationSpread: baseline.destinationSpread,
+            pageOffsetsDisplayed: baseline.pageOffsetsDisplayed,
+            pageCount: baseline.pageCount,
+            layoutLeadingPageIndex: baseline.layoutLeadingPageIndex,
+            currentPage: baseline.currentPage,
+            layoutTrailingPageIndex: baseline.layoutTrailingPageIndex,
+            layoutVisiblePageCount: baseline.layoutVisiblePageCount
+        ).resolvedGraph
+
+        if resolvedGraph.hasMeaningfulNavigationChange(comparedTo: baselineResolvedGraph) {
+            return true
+        }
         if currentSectionIndex != baseline.currentSectionIndex {
             return true
         }
         if currentSectionHref != baseline.currentSectionHref {
-            return true
-        }
-        if currentPage != baseline.currentPage {
             return true
         }
         if livePageIndex != baseline.livePageIndex {
@@ -1173,18 +1852,6 @@ fileprivate struct ReaderPageTurnNavigationProbe {
             return true
         }
         if viewportCenterChunkPageIndex != baseline.viewportCenterChunkPageIndex {
-            return true
-        }
-        if layoutCurrentUnitIndex != baseline.layoutCurrentUnitIndex {
-            return true
-        }
-        if layoutLeadingPageIndex != baseline.layoutLeadingPageIndex {
-            return true
-        }
-        if layoutTrailingPageIndex != baseline.layoutTrailingPageIndex {
-            return true
-        }
-        if layoutVisibleUnitKind != baseline.layoutVisibleUnitKind {
             return true
         }
         if currentPageTextSample != baseline.currentPageTextSample {
@@ -1224,6 +1891,155 @@ fileprivate struct ReaderPageTurnNavigationProbe {
     }
 }
 
+private extension WebViewPageNavigationStyle {
+    var pageTurnNavigationStyle: PageTurnNavigationStyle {
+        switch self {
+        case .paged:
+            return .paged
+        case .verticalScroll:
+            return .verticalScroll
+        case .horizontalScroll:
+            return .horizontalScroll
+        }
+    }
+}
+
+private extension PageTurnNavigationStyle {
+    var webViewPaginationNavigationStyle: WebViewPageNavigationStyle {
+        switch self {
+        case .paged:
+            return .paged
+        case .verticalScroll:
+            return .verticalScroll
+        case .horizontalScroll:
+            return .horizontalScroll
+        }
+    }
+}
+
+private extension ReaderPageTurnRequestedLocationState {
+    var pageTurnRequestedLocation: PageTurnRequestedLocation? {
+        guard let kind = PageTurnRequestedLocationKind(rawValue: kind) else {
+            return nil
+        }
+        return PageTurnRequestedLocation(
+            kind: kind,
+            value: value,
+            surroundingContext: surroundingContext,
+            isRequestedPageChange: isRequestedPageChange
+        )
+    }
+
+    var webViewPaginationRequestedLocation: WebViewPaginationRequestedLocation? {
+        guard let kind = WebViewPaginationRequestedLocationKind(rawValue: kind) else {
+            return nil
+        }
+        return WebViewPaginationRequestedLocation(
+            kind: kind,
+            value: value,
+            surroundingContext: surroundingContext,
+            isRequestedPageChange: isRequestedPageChange
+        )
+    }
+}
+
+private extension ReaderPageTurnContentHostState {
+    var webViewPaginationContentHostState: WebViewPaginationContentHostState {
+        switch self {
+        case .initial:
+            return .initial
+        case .waitingOnContentView:
+            return .waitingOnContentView
+        case .preparingContentView:
+            return .preparingContentView
+        case .placeholderViewAvailable:
+            return .placeholderViewAvailable
+        case .contentViewAvailable:
+            return .contentViewAvailable
+        case .preparingForReuse:
+            return .preparingForReuse
+        }
+    }
+
+    var pageTurnContentHostState: PageTurnContentHostState {
+        switch self {
+        case .initial:
+            return .initial
+        case .waitingOnContentView:
+            return .waitingOnContentView
+        case .preparingContentView:
+            return .preparingContentView
+        case .placeholderViewAvailable:
+            return .placeholderViewAvailable
+        case .contentViewAvailable:
+            return .contentViewAvailable
+        case .preparingForReuse:
+            return .preparingForReuse
+        }
+    }
+}
+
+private extension PageTurnPreloadStrategy {
+    var webViewPaginationPreloadStrategy: WebViewPaginationPreloadStrategy {
+        switch self {
+        case .conservative:
+            return .conservative
+        case .standard:
+            return .standard
+        case .aggressive:
+            return .aggressive
+        }
+    }
+}
+
+private extension PageTurnCurrentContentLocation {
+    var webViewPaginationCurrentContentLocation: WebViewPaginationCurrentContentLocation {
+        switch self {
+        case .center:
+            return .center
+        case .leading:
+            return .leading
+        }
+    }
+}
+
+private extension ReaderPageTurnNavigationEventKind {
+    var pageTurnNavigationEventKind: PageTurnNavigationEventKind {
+        switch self {
+        case .nextPage:
+            return .nextPage
+        case .previousPage:
+            return .previousPage
+        case .noPageChange:
+            return .noPageChange
+        case .attemptedPastEnd:
+            return .attemptedPastEnd
+        }
+    }
+}
+
+private extension WebViewPaginationSpreadSlotKind {
+    var pageTurnSpreadSlotKind: PageTurnSpreadSlotKind {
+        switch self {
+        case .blank:
+            return .blank
+        case .page:
+            return .page
+        }
+    }
+}
+
+private extension WebViewPaginationSpread {
+    var pageTurnSpread: PageTurnSpread {
+        PageTurnSpread(
+            index: index,
+            slots: slots.map {
+                .init(kind: $0.kind.pageTurnSpreadSlotKind, pageIndex: $0.pageIndex)
+            }
+        )
+    }
+}
+
 @MainActor
 fileprivate func readerPageTurnObject(_ value: Any?) -> [String: Any]? {
     if let dictionary = value as? [String: Any] {
@@ -1250,6 +2066,41 @@ fileprivate func readerPageTurnBool(_ value: Any?, default fallback: Bool = fals
         return value.boolValue
     }
     return fallback
+}
+
+@MainActor
+fileprivate func readerPageTurnSpreadSlot(_ value: Any?) -> WebViewPaginationSpreadSlot? {
+    guard let dictionary = readerPageTurnObject(value),
+          let kindRawValue = dictionary["kind"] as? String,
+          let kind = WebViewPaginationSpreadSlotKind(rawValue: kindRawValue) else {
+        return nil
+    }
+    let pageIndex = dictionary["pageIndex"] as? Int ?? (dictionary["pageIndex"] as? NSNumber)?.intValue
+    return WebViewPaginationSpreadSlot(kind: kind, pageIndex: pageIndex)
+}
+
+@MainActor
+fileprivate func readerPageTurnSpread(_ value: Any?) -> WebViewPaginationSpread? {
+    guard let dictionary = readerPageTurnObject(value),
+          let slotValues = dictionary["slots"] as? [Any] else {
+        return nil
+    }
+    let slots = slotValues.compactMap(readerPageTurnSpreadSlot)
+    guard !slots.isEmpty else { return nil }
+    let index = dictionary["index"] as? Int ?? (dictionary["index"] as? NSNumber)?.intValue
+    return WebViewPaginationSpread(index: index, slots: slots)
+}
+
+@MainActor
+fileprivate func readerPageTurnSpreadSequence(_ value: Any?) -> WebViewPaginationSpreadSequence? {
+    guard let dictionary = readerPageTurnObject(value),
+          let spreadValues = dictionary["spreads"] as? [Any] else {
+        return nil
+    }
+    let spreads = spreadValues.compactMap(readerPageTurnSpread)
+    guard !spreads.isEmpty else { return nil }
+    let currentIndex = dictionary["currentIndex"] as? Int ?? (dictionary["currentIndex"] as? NSNumber)?.intValue
+    return WebViewPaginationSpreadSequence(spreads: spreads, currentIndex: currentIndex)
 }
 
 @MainActor
@@ -1290,15 +2141,687 @@ fileprivate struct ReaderPageTurnTurnEvent: Equatable {
     var direction: PageTurnDirection
 }
 
+public enum ReaderResolvedPagination {
+    private static func normalizedPageLabel(_ label: String?) -> String? {
+        guard let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    public static func currentPageDisplayLabel(
+        bridgeLabel: String?,
+        paginationState: WebViewPaginationState?
+    ) -> String? {
+        normalizedPageLabel(bridgeLabel) ?? normalizedPageLabel(paginationState?.currentPageDisplayLabel)
+    }
+
+    public static func currentPhysicalPageLabel(
+        bridgeLabel: String?,
+        paginationState: WebViewPaginationState?
+    ) -> String? {
+        normalizedPageLabel(bridgeLabel) ?? normalizedPageLabel(paginationState?.currentPhysicalPageLabel)
+    }
+
+    public static func pageLabelDisplayMode(
+        bridgePageLabelDisplayMode: String?,
+        paginationPageLabelPolicy: WebViewPaginationPageLabelPolicy?
+    ) -> PageTurnPageLabelDisplayMode {
+        if let paginationPageLabelPolicy {
+            switch paginationPageLabelPolicy.displayMode {
+            case .singleLabel:
+                return .singleLabel
+            case .multipleLabels:
+                return .multipleLabels
+            }
+        }
+        switch bridgePageLabelDisplayMode {
+        case WebViewPaginationPageLabelDisplayMode.multipleLabels.rawValue:
+            return .multipleLabels
+        default:
+            return .singleLabel
+        }
+    }
+
+    public static func usesPhysicalPageLabels(
+        bridgeCurrentPhysicalPageLabel: String?,
+        paginationPageLabelPolicy: WebViewPaginationPageLabelPolicy?
+    ) -> Bool {
+        normalizedPageLabel(bridgeCurrentPhysicalPageLabel) != nil
+            || paginationPageLabelPolicy?.usesPhysicalPageLabels == true
+    }
+
+    public static func allowsMultipleLabelsInMultiUnitLayout(
+        bridgeAllowsMultipleLabelsInMultiUnitLayout: Bool?,
+        paginationPageLabelPolicy: WebViewPaginationPageLabelPolicy?
+    ) -> Bool {
+        paginationPageLabelPolicy?.allowsMultipleLabelsInMultiUnitLayout
+            ?? bridgeAllowsMultipleLabelsInMultiUnitLayout
+            ?? false
+    }
+
+    public static func currentContentLocation(
+        bridgeCurrentContentLocation: PageTurnCurrentContentLocation?,
+        paginationCurrentContentLocation: WebViewPaginationCurrentContentLocation?,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> PageTurnCurrentContentLocation {
+        if let paginationCurrentContentLocation {
+            switch paginationCurrentContentLocation {
+            case .center:
+                return .center
+            case .leading:
+                return .leading
+            }
+        }
+        return bridgeCurrentContentLocation ?? resolvedGraph?.currentContentLocation ?? .leading
+    }
+
+    public static func preferredSpreadSequence(
+        bridgeSpreadSequence: WebViewPaginationSpreadSequence?,
+        paginationSpreadSequence: WebViewPaginationSpreadSequence?
+    ) -> WebViewPaginationSpreadSequence? {
+        paginationSpreadSequence ?? bridgeSpreadSequence
+    }
+
+    public static func destinationSpread(
+        direction: PageTurnDirection?,
+        paginationDestinationSpread: WebViewPaginationSpread? = nil,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> WebViewPaginationSpread? {
+        if let paginationDestinationSpread {
+            return paginationDestinationSpread
+        }
+        guard let direction else { return nil }
+        return resolvedGraph?.spreadSequence.node(for: direction)?.spread
+    }
+
+    public static func currentSpread(
+        bridgeCurrentSpread: WebViewPaginationSpread?,
+        paginationCurrentSpread: WebViewPaginationSpread?,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> WebViewPaginationSpread? {
+        bridgeCurrentSpread ?? paginationCurrentSpread ?? resolvedGraph?.spreadSequence.current?.spread
+    }
+
+    public static func pageOffsetsDisplayed(
+        paginationPageOffsetsDisplayed: [Int]?,
+        resolvedCurrentSpread: WebViewPaginationSpread?,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> [Int]? {
+        paginationPageOffsetsDisplayed
+            ?? resolvedCurrentSpread?.pageIndices
+            ?? resolvedGraph?.currentVisiblePageIndices
+    }
+
+    public static func livePageOffsetsDisplayed(
+        bridgePageOffsetsDisplayed: [Int]?,
+        paginationPageOffsetsDisplayed: [Int]?,
+        resolvedCurrentSpread: WebViewPaginationSpread?,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> [Int]? {
+        bridgePageOffsetsDisplayed
+            ?? pageOffsetsDisplayed(
+                paginationPageOffsetsDisplayed: paginationPageOffsetsDisplayed,
+                resolvedCurrentSpread: resolvedCurrentSpread,
+                resolvedGraph: resolvedGraph
+            )
+    }
+
+    public static func currentPageIndex(
+        bridgeCurrentPage: Int?,
+        paginationCurrentPageIndex: Int? = nil,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> Int? {
+        bridgeCurrentPage ?? paginationCurrentPageIndex ?? resolvedGraph?.currentPageIndex
+    }
+
+    public static func visiblePageIndices(
+        bridgeVisiblePageIndices: [Int]?,
+        paginationVisiblePageIndices: [Int]? = nil,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> [Int]? {
+        bridgeVisiblePageIndices ?? paginationVisiblePageIndices ?? resolvedGraph?.currentVisiblePageIndices
+    }
+
+    public static func canMoveForward(
+        bridgeCanMoveForward: Bool?,
+        paginationCanMoveForward: Bool? = nil,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> Bool? {
+        bridgeCanMoveForward ?? paginationCanMoveForward ?? resolvedGraph?.canMoveForward
+    }
+
+    public static func canMoveBackward(
+        bridgeCanMoveBackward: Bool?,
+        paginationCanMoveBackward: Bool? = nil,
+        resolvedGraph: ReaderPageTurnResolvedGraph?
+    ) -> Bool? {
+        bridgeCanMoveBackward ?? paginationCanMoveBackward ?? resolvedGraph?.canMoveBackward
+    }
+
+    public static func destinationAvailability(
+        bridgeAvailability: String?,
+        paginationAvailability: String? = nil,
+        resolvedGraphAvailability: PageTurnDestinationAvailability?
+    ) -> PageTurnDestinationAvailability? {
+        bridgeAvailability
+            .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+            ?? paginationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+            ?? resolvedGraphAvailability
+    }
+
+    public static func pageCount(
+        bridgePageCount: Int?,
+        paginationPageCount: Int?
+    ) -> Int? {
+        bridgePageCount ?? paginationPageCount
+    }
+
+    public static func paginationComplete(
+        bridgePaginationComplete: Bool?,
+        paginationComplete: Bool?
+    ) -> Bool? {
+        paginationComplete ?? bridgePaginationComplete
+    }
+
+    public static func configurationKey(
+        bridgeConfigurationKey: String?,
+        paginationConfigurationKey: String?
+    ) -> String? {
+        paginationConfigurationKey ?? bridgeConfigurationKey
+    }
+
+    public static func publicationSource(
+        bridgePublicationSource: WebViewPaginationPublicationSource?,
+        paginationPublicationSource: WebViewPaginationPublicationSource?
+    ) -> WebViewPaginationPublicationSource? {
+        paginationPublicationSource ?? bridgePublicationSource
+    }
+
+    public static func pageNumberMode(
+        bridgePageNumberMode: WebViewPaginationPageNumberMode?,
+        paginationPageNumberMode: WebViewPaginationPageNumberMode?
+    ) -> WebViewPaginationPageNumberMode? {
+        paginationPageNumberMode ?? bridgePageNumberMode
+    }
+
+    public static func allowsMultipleColumns(
+        bridgeAllowsMultipleColumns: Bool?,
+        paginationAllowsMultipleColumns: Bool?
+    ) -> Bool? {
+        paginationAllowsMultipleColumns ?? bridgeAllowsMultipleColumns
+    }
+}
+
+struct ReaderResolvedProbeVisibleState: Equatable {
+    let pageOffsetsDisplayed: [Int]?
+    let currentSpread: WebViewPaginationSpread?
+    let destinationSpread: WebViewPaginationSpread?
+    let currentPage: Int?
+    let pageCount: Int?
+    let currentPageDisplayLabel: String?
+    let currentPhysicalPageLabel: String?
+    let forwardDestinationAvailability: String
+    let backwardDestinationAvailability: String
+    let visiblePageIndices: [Int]?
+    let canForward: Bool
+    let canBackward: Bool
+
+    static func resolve(
+        probePageOffsetsDisplayed: [Int]?,
+        probeCurrentSpread: WebViewPaginationSpread?,
+        probeDestinationSpread: WebViewPaginationSpread?,
+        probeCurrentPage: Int?,
+        probePageCount: Int?,
+        probeCurrentPageDisplayLabel: String?,
+        probeCurrentPhysicalPageLabel: String?,
+        probeForwardDestinationAvailability: String?,
+        probeBackwardDestinationAvailability: String?,
+        probeVisiblePageIndices: [Int]?,
+        probeCanSemanticForward: Bool,
+        probeCanSemanticBackward: Bool,
+        probeResolvedGraph: ReaderPageTurnResolvedGraph?,
+        currentResolvedGraph: ReaderPageTurnResolvedGraph,
+        probeTurnDirection: PageTurnDirection?,
+        paginationState: WebViewPaginationState?,
+        existingPageCount: Int?,
+        localForwardAvailability: PageTurnDestinationAvailability,
+        localBackwardAvailability: PageTurnDestinationAvailability,
+        supportsActivePageTurn: Bool
+    ) -> ReaderResolvedProbeVisibleState {
+        let pageOffsetsDisplayed = probePageOffsetsDisplayed
+            ?? probeResolvedGraph?.currentVisiblePageIndices
+            ?? currentResolvedGraph.currentVisiblePageIndices
+        let currentSpread = probeCurrentSpread ?? probeResolvedGraph?.spreadSequence.current?.spread
+        let destinationSpread = probeDestinationSpread
+            ?? ReaderResolvedPagination.destinationSpread(
+                direction: probeTurnDirection,
+                resolvedGraph: probeResolvedGraph
+            )
+        let currentPage = probeCurrentPage
+            ?? probeResolvedGraph?.currentPageIndex
+            ?? currentResolvedGraph.currentPageIndex
+        let pageCount = probePageCount ?? existingPageCount
+        let currentPageDisplayLabel = ReaderResolvedPagination.currentPageDisplayLabel(
+            bridgeLabel: probeCurrentPageDisplayLabel,
+            paginationState: paginationState
+        )
+        let currentPhysicalPageLabel = ReaderResolvedPagination.currentPhysicalPageLabel(
+            bridgeLabel: probeCurrentPhysicalPageLabel,
+            paginationState: paginationState
+        )
+        let forwardDestinationAvailability = probeForwardDestinationAvailability ?? localForwardAvailability.rawValue
+        let backwardDestinationAvailability = probeBackwardDestinationAvailability ?? localBackwardAvailability.rawValue
+        let visiblePageIndices = probeVisiblePageIndices
+            ?? probeResolvedGraph?.currentVisiblePageIndices
+            ?? currentResolvedGraph.currentVisiblePageIndices
+        let canForward = supportsActivePageTurn && (
+            probeCanSemanticForward
+            || (probeResolvedGraph?.canMoveForward ?? (localForwardAvailability != .unavailable))
+        )
+        let canBackward = supportsActivePageTurn && (
+            probeCanSemanticBackward
+            || (probeResolvedGraph?.canMoveBackward ?? (localBackwardAvailability != .unavailable))
+        )
+        return ReaderResolvedProbeVisibleState(
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            currentPage: currentPage,
+            pageCount: pageCount,
+            currentPageDisplayLabel: currentPageDisplayLabel,
+            currentPhysicalPageLabel: currentPhysicalPageLabel,
+            forwardDestinationAvailability: forwardDestinationAvailability,
+            backwardDestinationAvailability: backwardDestinationAvailability,
+            visiblePageIndices: visiblePageIndices,
+            canForward: canForward,
+            canBackward: canBackward
+        )
+    }
+}
+
+public enum ReaderResolvedPaginationEnrichment {
+    public static func resolve(
+        runtimeOwnedSpreadStateAvailable: Bool,
+        runtimeOwnedDestinationSpreadAvailable: Bool,
+        visibleUnit: WebViewPaginationVisibleUnit?,
+        pageLabelPolicy: WebViewPaginationPageLabelPolicy?,
+        currentPageDisplayLabel: String?,
+        currentPhysicalPageLabel: String?,
+        pageNavigationStyle: WebViewPageNavigationStyle?,
+        allowsMultipleColumns: Bool?,
+        pageNumberMode: WebViewPaginationPageNumberMode?,
+        contentHostState: WebViewPaginationContentHostState?,
+        preloadStrategy: WebViewPaginationPreloadStrategy?,
+        currentContentLocation: WebViewPaginationCurrentContentLocation?,
+        requestedLocation: WebViewPaginationRequestedLocation?,
+        pageOffsetsDisplayed: [Int]?,
+        pageOffsetRange: WebViewPaginationPageOffsetRange?,
+        currentPageIndex: Int?,
+        visiblePageIndices: [Int]?,
+        canMoveForward: Bool?,
+        canMoveBackward: Bool?,
+        forwardDestinationAvailability: String?,
+        backwardDestinationAvailability: String?,
+        currentSpread: WebViewPaginationSpread?,
+        destinationSpread: WebViewPaginationSpread?
+    ) -> WebViewPaginationStateEnrichment {
+        WebViewPaginationStateEnrichment(
+            visibleUnit: runtimeOwnedSpreadStateAvailable ? nil : visibleUnit,
+            pageLabelPolicy: pageLabelPolicy,
+            currentPageDisplayLabel: currentPageDisplayLabel,
+            currentPhysicalPageLabel: currentPhysicalPageLabel,
+            pageNavigationStyle: runtimeOwnedSpreadStateAvailable ? nil : pageNavigationStyle,
+            allowsMultipleColumns: runtimeOwnedSpreadStateAvailable ? nil : allowsMultipleColumns,
+            pageNumberMode: pageNumberMode,
+            contentHostState: contentHostState,
+            preloadStrategy: preloadStrategy,
+            currentContentLocation: runtimeOwnedSpreadStateAvailable ? nil : currentContentLocation,
+            requestedLocation: requestedLocation,
+            pageOffsetsDisplayed: runtimeOwnedSpreadStateAvailable ? nil : pageOffsetsDisplayed,
+            pageOffsetRange: runtimeOwnedSpreadStateAvailable ? nil : pageOffsetRange,
+            currentPageIndex: runtimeOwnedSpreadStateAvailable ? nil : currentPageIndex,
+            visiblePageIndices: runtimeOwnedSpreadStateAvailable ? nil : visiblePageIndices,
+            canMoveForward: runtimeOwnedSpreadStateAvailable ? nil : canMoveForward,
+            canMoveBackward: runtimeOwnedSpreadStateAvailable ? nil : canMoveBackward,
+            forwardDestinationAvailability: runtimeOwnedSpreadStateAvailable ? nil : forwardDestinationAvailability,
+            backwardDestinationAvailability: runtimeOwnedSpreadStateAvailable ? nil : backwardDestinationAvailability,
+            currentSpread: runtimeOwnedSpreadStateAvailable ? nil : currentSpread,
+            destinationSpread: runtimeOwnedDestinationSpreadAvailable ? nil : destinationSpread
+        )
+    }
+}
+
+struct ReaderResolvedPaginationContext {
+    let paginationState: WebViewPaginationState?
+    let bridgeSpreadSequence: WebViewPaginationSpreadSequence?
+    let bridgeCurrentSpread: WebViewPaginationSpread?
+    let bridgeDestinationSpread: WebViewPaginationSpread?
+    let bridgePageOffsetsDisplayed: [Int]?
+    let bridgeVisiblePageIndices: [Int]?
+    let bridgePageCount: Int?
+    let bridgeCurrentPage: Int?
+    let bridgeCanMoveForward: Bool?
+    let bridgeCanMoveBackward: Bool?
+    let bridgeCurrentContentLocation: PageTurnCurrentContentLocation?
+    let bridgeForwardDestinationAvailability: String?
+    let bridgeBackwardDestinationAvailability: String?
+    let bridgePaginationComplete: Bool?
+    let bridgeConfigurationKey: String?
+    let bridgePublicationSource: WebViewPaginationPublicationSource?
+    let bridgePageNumberMode: WebViewPaginationPageNumberMode?
+    let bridgeAllowsMultipleColumns: Bool?
+    let paginationCurrentPageIndex: Int?
+    let paginationVisiblePageIndices: [Int]?
+    let paginationCanMoveForward: Bool?
+    let paginationCanMoveBackward: Bool?
+    let paginationCurrentContentLocation: WebViewPaginationCurrentContentLocation?
+    let paginationSpreadSequence: WebViewPaginationSpreadSequence?
+    let paginationForwardDestinationAvailability: String?
+    let paginationBackwardDestinationAvailability: String?
+    let paginationComplete: Bool?
+    let paginationConfigurationKey: String?
+    let paginationPublicationSource: WebViewPaginationPublicationSource?
+    let paginationPageNumberMode: WebViewPaginationPageNumberMode?
+    let paginationAllowsMultipleColumns: Bool?
+    let layoutLeadingPageIndex: Int?
+    let layoutTrailingPageIndex: Int?
+    let layoutVisiblePageCount: Int?
+
+    init(
+        paginationState: WebViewPaginationState?,
+        bridgeSpreadSequence: WebViewPaginationSpreadSequence?,
+        bridgeCurrentSpread: WebViewPaginationSpread?,
+        bridgeDestinationSpread: WebViewPaginationSpread?,
+        bridgePageOffsetsDisplayed: [Int]?,
+        bridgeVisiblePageIndices: [Int]?,
+        bridgePageCount: Int?,
+        bridgeCurrentPage: Int?,
+        bridgeCanMoveForward: Bool?,
+        bridgeCanMoveBackward: Bool?,
+        bridgeCurrentContentLocation: PageTurnCurrentContentLocation?,
+        bridgeForwardDestinationAvailability: String?,
+        bridgeBackwardDestinationAvailability: String?,
+        bridgePaginationComplete: Bool?,
+        bridgeConfigurationKey: String?,
+        bridgePublicationSource: WebViewPaginationPublicationSource?,
+        bridgePageNumberMode: WebViewPaginationPageNumberMode?,
+        bridgeAllowsMultipleColumns: Bool?,
+        paginationCurrentPageIndex: Int?,
+        paginationVisiblePageIndices: [Int]?,
+        paginationCanMoveForward: Bool?,
+        paginationCanMoveBackward: Bool?,
+        paginationCurrentContentLocation: WebViewPaginationCurrentContentLocation?,
+        paginationSpreadSequence: WebViewPaginationSpreadSequence?,
+        paginationForwardDestinationAvailability: String?,
+        paginationBackwardDestinationAvailability: String?,
+        paginationComplete: Bool?,
+        paginationConfigurationKey: String?,
+        paginationPublicationSource: WebViewPaginationPublicationSource?,
+        paginationPageNumberMode: WebViewPaginationPageNumberMode?,
+        paginationAllowsMultipleColumns: Bool?,
+        layoutLeadingPageIndex: Int?,
+        layoutTrailingPageIndex: Int?,
+        layoutVisiblePageCount: Int?
+    ) {
+        self.paginationState = paginationState
+        self.bridgeSpreadSequence = bridgeSpreadSequence
+        self.bridgeCurrentSpread = bridgeCurrentSpread
+        self.bridgeDestinationSpread = bridgeDestinationSpread
+        self.bridgePageOffsetsDisplayed = bridgePageOffsetsDisplayed
+        self.bridgeVisiblePageIndices = bridgeVisiblePageIndices
+        self.bridgePageCount = bridgePageCount
+        self.bridgeCurrentPage = bridgeCurrentPage
+        self.bridgeCanMoveForward = bridgeCanMoveForward
+        self.bridgeCanMoveBackward = bridgeCanMoveBackward
+        self.bridgeCurrentContentLocation = bridgeCurrentContentLocation
+        self.bridgeForwardDestinationAvailability = bridgeForwardDestinationAvailability
+        self.bridgeBackwardDestinationAvailability = bridgeBackwardDestinationAvailability
+        self.bridgePaginationComplete = bridgePaginationComplete
+        self.bridgeConfigurationKey = bridgeConfigurationKey
+        self.bridgePublicationSource = bridgePublicationSource
+        self.bridgePageNumberMode = bridgePageNumberMode
+        self.bridgeAllowsMultipleColumns = bridgeAllowsMultipleColumns
+        self.paginationCurrentPageIndex = paginationCurrentPageIndex
+        self.paginationVisiblePageIndices = paginationVisiblePageIndices
+        self.paginationCanMoveForward = paginationCanMoveForward
+        self.paginationCanMoveBackward = paginationCanMoveBackward
+        self.paginationCurrentContentLocation = paginationCurrentContentLocation
+        self.paginationSpreadSequence = paginationSpreadSequence
+        self.paginationForwardDestinationAvailability = paginationForwardDestinationAvailability
+        self.paginationBackwardDestinationAvailability = paginationBackwardDestinationAvailability
+        self.paginationComplete = paginationComplete
+        self.paginationConfigurationKey = paginationConfigurationKey
+        self.paginationPublicationSource = paginationPublicationSource
+        self.paginationPageNumberMode = paginationPageNumberMode
+        self.paginationAllowsMultipleColumns = paginationAllowsMultipleColumns
+        self.layoutLeadingPageIndex = layoutLeadingPageIndex
+        self.layoutTrailingPageIndex = layoutTrailingPageIndex
+        self.layoutVisiblePageCount = layoutVisiblePageCount
+    }
+
+    private var seedCurrentSpread: WebViewPaginationSpread? {
+        bridgeCurrentSpread ?? paginationSpreadSequence?.currentSpread ?? paginationState?.currentSpread
+    }
+
+    private var seedDestinationSpread: WebViewPaginationSpread? {
+        bridgeDestinationSpread ?? paginationState?.destinationSpread
+    }
+
+    private var preferredRuntimeSpreadSequence: WebViewPaginationSpreadSequence? {
+        ReaderResolvedPagination.preferredSpreadSequence(
+            bridgeSpreadSequence: bridgeSpreadSequence,
+            paginationSpreadSequence: paginationSpreadSequence
+        )
+    }
+
+    var preferredSpreadSequence: WebViewPaginationSpreadSequence? {
+        preferredRuntimeSpreadSequence
+    }
+
+    var pageCount: Int? {
+        ReaderResolvedPagination.pageCount(
+            bridgePageCount: bridgePageCount,
+            paginationPageCount: paginationState?.pageCount
+        )
+    }
+
+    var currentContentLocation: PageTurnCurrentContentLocation {
+        ReaderResolvedPagination.currentContentLocation(
+            bridgeCurrentContentLocation: bridgeCurrentContentLocation,
+            paginationCurrentContentLocation: paginationCurrentContentLocation,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    var metadataPaginationComplete: Bool? {
+        ReaderResolvedPagination.paginationComplete(
+            bridgePaginationComplete: bridgePaginationComplete,
+            paginationComplete: paginationComplete
+        )
+    }
+
+    var metadataConfigurationKey: String? {
+        ReaderResolvedPagination.configurationKey(
+            bridgeConfigurationKey: bridgeConfigurationKey,
+            paginationConfigurationKey: paginationConfigurationKey
+        )
+    }
+
+    var metadataPublicationSource: WebViewPaginationPublicationSource? {
+        ReaderResolvedPagination.publicationSource(
+            bridgePublicationSource: bridgePublicationSource,
+            paginationPublicationSource: paginationPublicationSource
+        )
+    }
+
+    var metadataPageNumberMode: WebViewPaginationPageNumberMode? {
+        ReaderResolvedPagination.pageNumberMode(
+            bridgePageNumberMode: bridgePageNumberMode,
+            paginationPageNumberMode: paginationPageNumberMode
+        )
+    }
+
+    var metadataAllowsMultipleColumns: Bool? {
+        ReaderResolvedPagination.allowsMultipleColumns(
+            bridgeAllowsMultipleColumns: bridgeAllowsMultipleColumns,
+            paginationAllowsMultipleColumns: paginationAllowsMultipleColumns
+        )
+    }
+
+    private var seedGraph: ReaderPageTurnResolvedGraph {
+        ReaderPageTurnSpreadGraph(
+            currentSpread: seedCurrentSpread,
+            destinationSpread: seedDestinationSpread,
+            pageOffsetsDisplayed: ReaderResolvedPagination.livePageOffsetsDisplayed(
+                bridgePageOffsetsDisplayed: bridgePageOffsetsDisplayed,
+                paginationPageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed,
+                resolvedCurrentSpread: seedCurrentSpread,
+                resolvedGraph: nil
+            ),
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: bridgeCurrentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        ).resolvedGraph
+    }
+
+    public var currentSpread: WebViewPaginationSpread? {
+        bridgeCurrentSpread
+            ?? paginationSpreadSequence?.currentSpread
+            ?? paginationState?.currentSpread
+            ?? seedGraph.spreadSequence.current?.spread
+    }
+
+    public var pageOffsetsDisplayed: [Int]? {
+        ReaderResolvedPagination.livePageOffsetsDisplayed(
+            bridgePageOffsetsDisplayed: bridgePageOffsetsDisplayed,
+            paginationPageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed,
+            resolvedCurrentSpread: currentSpread,
+            resolvedGraph: seedGraph
+        )
+    }
+
+    public var currentPageIndex: Int? {
+        ReaderResolvedPagination.currentPageIndex(
+            bridgeCurrentPage: bridgeCurrentPage,
+            paginationCurrentPageIndex: paginationCurrentPageIndex,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    public var visiblePageIndices: [Int]? {
+        ReaderResolvedPagination.visiblePageIndices(
+            bridgeVisiblePageIndices: bridgeVisiblePageIndices,
+            paginationVisiblePageIndices: paginationVisiblePageIndices,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    public var canMoveForward: Bool? {
+        ReaderResolvedPagination.canMoveForward(
+            bridgeCanMoveForward: bridgeCanMoveForward,
+            paginationCanMoveForward: paginationCanMoveForward,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    public var canMoveBackward: Bool? {
+        ReaderResolvedPagination.canMoveBackward(
+            bridgeCanMoveBackward: bridgeCanMoveBackward,
+            paginationCanMoveBackward: paginationCanMoveBackward,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    public func destinationAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability? {
+        switch direction {
+        case .forward:
+            return ReaderResolvedPagination.destinationAvailability(
+                bridgeAvailability: bridgeForwardDestinationAvailability,
+                paginationAvailability: paginationForwardDestinationAvailability,
+                resolvedGraphAvailability: resolvedGraph.forwardDestinationAvailability
+            )
+        case .backward:
+            return ReaderResolvedPagination.destinationAvailability(
+                bridgeAvailability: bridgeBackwardDestinationAvailability,
+                paginationAvailability: paginationBackwardDestinationAvailability,
+                resolvedGraphAvailability: resolvedGraph.backwardDestinationAvailability
+            )
+        }
+    }
+
+    public func destinationSpread(direction: PageTurnDirection?) -> WebViewPaginationSpread? {
+        ReaderResolvedPagination.destinationSpread(
+            direction: direction,
+            paginationDestinationSpread: seedDestinationSpread,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    public var resolvedGraph: ReaderPageTurnResolvedGraph {
+        ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: seedDestinationSpread,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: bridgeCurrentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        ).resolvedGraph(runtimeSpreadSequence: preferredRuntimeSpreadSequence)
+    }
+}
+
+fileprivate struct ReaderPageTurnNavigationEvent: Equatable {
+    var serial: Int
+    var kind: ReaderPageTurnNavigationEventKind
+    var direction: PageTurnDirection
+}
+
 @MainActor
 fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshotProvider, PageTurnTurnDriver, @unchecked Sendable {
     @Published private(set) var supportsActivePageTurn = false
+    @Published private(set) var probeConfirmedActivePageTurn = false
     @Published private(set) var pageProgressionDirection: PageTurnPageProgressionDirection = .leftToRight
     @Published private(set) var resolvedPaginationMode: WebViewPaginationMode = .leftToRight
+    @Published private(set) var pageNavigationStyle: PageTurnNavigationStyle = .paged
+    @Published private(set) var transitionFamily: PageTurnTransitionFamily = .slide
+    @Published private(set) var movementKind: PageTurnMovementKind?
+    @Published private(set) var layoutState: PageTurnLayoutState = .done
+    @Published private(set) var updateReason: ReaderPageTurnUpdateReason?
+    @Published private(set) var contentHostState: ReaderPageTurnContentHostState = .initial
+    @Published private(set) var contentHostSequence: PageTurnContentHostSequence = .init()
+    @Published private(set) var preloadStrategy: PageTurnPreloadStrategy = .standard
+    @Published private(set) var currentContentLocation: PageTurnCurrentContentLocation = .leading
+    @Published private(set) var paginationComplete: Bool?
+    @Published private(set) var configurationKey: String?
+    @Published private(set) var publicationSource: WebViewPaginationPublicationSource?
+    @Published private(set) var pageNumberMode: WebViewPaginationPageNumberMode?
+    @Published private(set) var allowsMultipleColumns: Bool?
+    @Published private(set) var pageOffsetsDisplayed: [Int]?
+    @Published private(set) var currentSpread: WebViewPaginationSpread?
+    @Published private(set) var destinationSpread: WebViewPaginationSpread?
+    @Published private(set) var spreadSequence: WebViewPaginationSpreadSequence?
+    @Published private(set) var layoutReadableFrameWidth: Double?
+    @Published private(set) var layoutMaxContentWidth: Double?
+    @Published private(set) var layoutSemanticSideInset: Double?
+    @Published private(set) var visiblePageIndices: [Int]?
+    @Published private(set) var pageScrollerAnimationIsRunning: Bool?
+    @Published private(set) var liveResizeActive: Bool?
     @Published private(set) var currentSectionIndex: Int?
     @Published private(set) var currentSectionHref: String?
     @Published private(set) var currentPage: Int?
     @Published private(set) var pageCount: Int?
+    @Published private(set) var historyCanGoBack: Bool?
+    @Published private(set) var historyCanGoForward: Bool?
+    @Published private(set) var historyDepth: Int?
+    @Published private(set) var historyCurrentIndex: Int?
+    @Published private(set) var historyPendingReplaceStateSuppressionCount: Int?
+    @Published private(set) var historySuppressedReplaceStateCount: Int?
+    @Published private(set) var historyLastSuppressedReplaceStateReason: String?
     @Published private(set) var layoutPageRecordCount: Int?
     @Published private(set) var layoutLiveRootExists: Bool?
     @Published private(set) var layoutLiveRootClassName: String?
@@ -1344,6 +2867,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     @Published private(set) var layoutHasLeadingSingleton: Bool?
     @Published private(set) var layoutHasTrailingSingleton: Bool?
     @Published private(set) var layoutPrimarySpacing: Double?
+    @Published private(set) var layoutChromeGutterWidth: Double?
     @Published private(set) var layoutMultiUnitActive: Bool?
     @Published private(set) var layoutSpreadPagesAllowedForViewport: Bool?
     @Published private(set) var layoutWritingMode: String?
@@ -1362,6 +2886,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     @Published private(set) var nextPageTextSample: String?
     @Published private(set) var currentPageDisplayLabel: String?
     @Published private(set) var currentPhysicalPageLabel: String?
+    @Published private(set) var progressScrubberVisible: Bool?
+    @Published private(set) var progressScrubberActive: Bool?
+    @Published private(set) var showTitleChrome: Bool?
+    @Published private(set) var showHeaderChrome: Bool?
     @Published private(set) var loadEBookStarted = false
     @Published private(set) var loadEBookReady = false
     @Published private(set) var loadEBookAttemptCount: Int?
@@ -1374,8 +2902,11 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     @Published private(set) var sameDocumentHostTurnPageCount: Int?
     @Published private(set) var sameDocumentHostTurnDatasetCurrentPageIndex: Int?
     @Published private(set) var sameDocumentHostTurnResult: String?
+    @Published private(set) var forwardDestinationAvailability: String?
+    @Published private(set) var backwardDestinationAvailability: String?
     @Published private(set) var pageLabelDisplayMode: String?
     @Published private(set) var usesPhysicalPageLabels: Bool?
+    @Published private(set) var allowsMultipleLabelsInMultiUnitLayout: Bool?
     @Published private(set) var hasView = false
     @Published private(set) var hasRenderer = false
     @Published private(set) var canNext = false
@@ -1392,13 +2923,18 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     @Published private(set) var canBackward = false
     @Published private(set) var lastProbeError: String?
     @Published private(set) var lastTurnEvent: ReaderPageTurnTurnEvent?
+    @Published private(set) var lastNavigationEvent: ReaderPageTurnNavigationEvent?
 
     private var navigator: WebViewNavigator?
     private var scriptCaller: WebViewScriptCaller?
     private var lastKnownState: WebViewState = .empty
     private var capabilityRefreshTask: Task<Void, Never>?
     private var lastCapabilityKey: String?
+    private var publicationSerial = 0
     private var nextTurnEventSerial = 0
+    private var nextNavigationEventSerial = 0
+    private var nextContentHostSequenceSerial = 0
+    private var requestedLocationState: ReaderPageTurnRequestedLocationState?
 
     deinit {
         capabilityRefreshTask?.cancel()
@@ -1413,6 +2949,331 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         return !normalizedCurrentPageText.isEmpty
     }
 
+    var currentSpreadTaskID: String {
+        currentSpread?.slots
+            .map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
+            .joined(separator: ",") ?? "nil"
+    }
+
+    var destinationSpreadTaskID: String {
+        destinationSpread?.slots
+            .map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
+            .joined(separator: ",") ?? "nil"
+    }
+
+    var preloadTaskID: String {
+        let visiblePageCountString: String
+        if let visiblePageCount = visiblePageIndices?.count ?? Optional(resolvedGraph.visiblePageCount), visiblePageCount > 0 {
+            visiblePageCountString = String(visiblePageCount)
+        } else {
+            visiblePageCountString = "nil"
+        }
+        let pageCountString = pageCount.map(String.init) ?? "nil"
+        let resolvedCurrentContentLocation = currentContentLocation
+        return [
+            preloadStrategy.rawValue,
+            resolvedCurrentContentLocation.rawValue,
+            visiblePageCountString,
+            pageCountString,
+        ].joined(separator: "|")
+    }
+
+    private var spreadGraph: ReaderPageTurnSpreadGraph {
+        ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: currentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        )
+    }
+
+    private var movementGraph: ReaderPageTurnMovementGraph {
+        spreadGraph.movementGraph
+    }
+
+    private var resolvedGraph: ReaderPageTurnResolvedGraph {
+        spreadGraph.resolvedGraph(runtimeSpreadSequence: spreadSequence)
+    }
+
+    private func spreadGraph(for probe: ReaderPageTurnNavigationProbe?) -> ReaderPageTurnSpreadGraph? {
+        guard let probe else { return nil }
+        return ReaderPageTurnSpreadGraph(
+            currentSpread: probe.currentSpread,
+            destinationSpread: probe.destinationSpread,
+            pageOffsetsDisplayed: probe.pageOffsetsDisplayed,
+            pageCount: probe.pageCount,
+            layoutLeadingPageIndex: probe.layoutLeadingPageIndex,
+            currentPage: probe.currentPage,
+            layoutTrailingPageIndex: probe.layoutTrailingPageIndex,
+            layoutVisiblePageCount: probe.layoutVisiblePageCount
+        )
+    }
+
+    private func resolvedGraph(for probe: ReaderPageTurnNavigationProbe?) -> ReaderPageTurnResolvedGraph? {
+        guard let probe else { return nil }
+        let preferredSpreadSequence = ReaderResolvedPagination.preferredSpreadSequence(
+            bridgeSpreadSequence: probe.spreadSequence,
+            paginationSpreadSequence: lastKnownState.paginationState?.spreadSequence
+        )
+        return spreadGraph(for: probe)?.resolvedGraph(runtimeSpreadSequence: preferredSpreadSequence)
+    }
+
+    private func localSemanticAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability {
+        let availability = resolvedGraph.destinationAvailability(for: direction)
+        return availability == .unavailable ? .unavailable : availability
+    }
+
+    private func resolvedPaginationGraph(
+        paginationState: WebViewPaginationState?
+    ) -> ReaderPageTurnResolvedGraph? {
+        guard let paginationState else { return nil }
+        return ReaderPageTurnSpreadGraph(
+            currentSpread: paginationState.currentSpread,
+            destinationSpread: paginationState.destinationSpread,
+            pageOffsetsDisplayed: paginationState.pageOffsetsDisplayed,
+            pageCount: paginationState.pageCount,
+            layoutLeadingPageIndex: nil,
+            currentPage: nil,
+            layoutTrailingPageIndex: nil,
+            layoutVisiblePageCount: nil
+        ).resolvedGraph(runtimeSpreadSequence: paginationState.spreadSequence)
+    }
+
+    private func bridgeResolvedPaginationContext(
+        paginationState: WebViewPaginationState?
+    ) -> ReaderResolvedPaginationContext {
+        ReaderResolvedPaginationContext(
+            paginationState: paginationState,
+            bridgeSpreadSequence: spreadSequence,
+            bridgeCurrentSpread: currentSpread,
+            bridgeDestinationSpread: destinationSpread,
+            bridgePageOffsetsDisplayed: pageOffsetsDisplayed,
+            bridgeVisiblePageIndices: visiblePageIndices,
+            bridgePageCount: pageCount,
+            bridgeCurrentPage: currentPage,
+            bridgeCanMoveForward: canForward,
+            bridgeCanMoveBackward: canBackward,
+            bridgeCurrentContentLocation: currentContentLocation,
+            bridgeForwardDestinationAvailability: forwardDestinationAvailability,
+            bridgeBackwardDestinationAvailability: backwardDestinationAvailability,
+            bridgePaginationComplete: paginationComplete,
+            bridgeConfigurationKey: configurationKey,
+            bridgePublicationSource: publicationSource,
+            bridgePageNumberMode: pageNumberMode,
+            bridgeAllowsMultipleColumns: allowsMultipleColumns,
+            paginationCurrentPageIndex: paginationState?.currentPageIndex,
+            paginationVisiblePageIndices: paginationState?.visiblePageIndices,
+            paginationCanMoveForward: paginationState?.canMoveForward,
+            paginationCanMoveBackward: paginationState?.canMoveBackward,
+            paginationCurrentContentLocation: paginationState?.currentContentLocation,
+            paginationSpreadSequence: paginationState?.spreadSequence,
+            paginationForwardDestinationAvailability: paginationState?.forwardDestinationAvailability,
+            paginationBackwardDestinationAvailability: paginationState?.backwardDestinationAvailability,
+            paginationComplete: paginationState?.paginationComplete,
+            paginationConfigurationKey: paginationState?.configurationKey,
+            paginationPublicationSource: paginationState?.publicationSource,
+            paginationPageNumberMode: paginationState?.pageNumberMode,
+            paginationAllowsMultipleColumns: paginationState?.allowsMultipleColumns,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        )
+    }
+
+    private func resetPublishedContextStateForIneligibleTurns() {
+        capabilityRefreshTask?.cancel()
+        capabilityRefreshTask = nil
+        lastCapabilityKey = nil
+        supportsActivePageTurn = false
+        probeConfirmedActivePageTurn = false
+        pageProgressionDirection = .leftToRight
+        resolvedPaginationMode = .leftToRight
+        pageNavigationStyle = .paged
+        transitionFamily = .slide
+        movementKind = nil
+        layoutState = .done
+        updateReason = nil
+        contentHostState = .initial
+        contentHostSequence = .init()
+        preloadStrategy = .standard
+        currentContentLocation = .leading
+        paginationComplete = nil
+        configurationKey = nil
+        publicationSource = nil
+        pageNumberMode = nil
+        allowsMultipleColumns = nil
+        pageOffsetsDisplayed = nil
+        currentSpread = nil
+        destinationSpread = nil
+        spreadSequence = nil
+        layoutReadableFrameWidth = nil
+        layoutMaxContentWidth = nil
+        layoutSemanticSideInset = nil
+        visiblePageIndices = nil
+        pageScrollerAnimationIsRunning = nil
+        liveResizeActive = nil
+        lastNavigationEvent = nil
+        currentSectionIndex = nil
+        currentSectionHref = nil
+        currentPage = nil
+        livePageIndex = nil
+        liveChunkPageIndex = nil
+        viewportCenterChunkPageIndex = nil
+        pageCount = nil
+        historyCanGoBack = nil
+        historyCanGoForward = nil
+        historyDepth = nil
+        historyCurrentIndex = nil
+        historyPendingReplaceStateSuppressionCount = nil
+        historySuppressedReplaceStateCount = nil
+        historyLastSuppressedReplaceStateReason = nil
+        layoutPageRecordCount = nil
+        layoutLiveRootExists = nil
+        layoutLiveRootClassName = nil
+        layoutLiveRootChildCount = nil
+        layoutLiveRootRectWidth = nil
+        layoutLiveRootRectHeight = nil
+        layoutLiveCurrentPageExists = nil
+        layoutLiveCurrentPageClassName = nil
+        layoutLiveCurrentPageRectWidth = nil
+        layoutLiveCurrentPageRectHeight = nil
+        layoutLiveCurrentPageContainsChunkBody = nil
+        layoutLiveCurrentChunkExists = nil
+        layoutLiveCurrentChunkTagName = nil
+        layoutLiveCurrentChunkClassName = nil
+        layoutLiveCurrentChunkDisplay = nil
+        layoutLiveCurrentChunkPosition = nil
+        layoutLiveCurrentChunkFlex = nil
+        layoutLiveCurrentChunkRectWidth = nil
+        layoutLiveCurrentChunkRectHeight = nil
+        layoutLiveCurrentChunkInnerHTMLLength = nil
+        layoutLiveCurrentChunkContainsChunkBody = nil
+        layoutLiveCurrentChunkChildCount = nil
+        layoutLiveCurrentChunkTextLength = nil
+        layoutCurrentChunkBodyChildCount = nil
+        layoutCurrentChunkBodyTextLength = nil
+        layoutCurrentChunkBodyDisplay = nil
+        layoutCurrentChunkBodyPosition = nil
+        layoutCurrentChunkBodyFlex = nil
+        layoutColumnCount = nil
+        layoutCurrentPageIndex = nil
+        layoutCurrentPageChunkCount = nil
+        layoutMaxPageChunkCount = nil
+        layoutUnitCount = nil
+        layoutActiveBuildPageIndex = nil
+        layoutComplete = nil
+        layoutSpreadCandidateDetected = nil
+        layoutPrimarySpacing = nil
+        layoutChromeGutterWidth = nil
+        layoutWritingMode = nil
+        layoutViewportWidth = nil
+        layoutViewportHeight = nil
+        layoutMeasuredGap = nil
+        layoutMetricSize = nil
+        layoutColumnInlineSize = nil
+        layoutCurrentChunkClientWidth = nil
+        layoutCurrentChunkClientHeight = nil
+        layoutCurrentChunkScrollWidth = nil
+        layoutCurrentChunkScrollHeight = nil
+        layoutCurrentChunkOverflow = nil
+        computedFontSizeCSS = nil
+        currentPageTextSample = nil
+        nextPageTextSample = nil
+        currentPageDisplayLabel = nil
+        currentPhysicalPageLabel = nil
+        progressScrubberVisible = nil
+        progressScrubberActive = nil
+        showTitleChrome = nil
+        showHeaderChrome = nil
+        loadEBookStarted = false
+        loadEBookReady = false
+        loadEBookAttemptCount = nil
+        loadEBookStartAgeMs = nil
+        loadEBookLastState = nil
+        forwardDestinationAvailability = nil
+        backwardDestinationAvailability = nil
+        pageLabelDisplayMode = nil
+        usesPhysicalPageLabels = nil
+        allowsMultipleLabelsInMultiUnitLayout = nil
+        canForward = false
+        canBackward = false
+        lastProbeError = nil
+    }
+
+    private func publishCurrentPageLabelState(
+        currentPageDisplayLabel: String?,
+        currentPhysicalPageLabel: String?,
+        pageLabelDisplayMode: String?,
+        usesPhysicalPageLabels: Bool?,
+        allowsMultipleLabelsInMultiUnitLayout: Bool?
+    ) {
+        self.currentPageDisplayLabel = currentPageDisplayLabel
+        self.currentPhysicalPageLabel = currentPhysicalPageLabel
+        self.pageLabelDisplayMode = pageLabelDisplayMode
+        self.usesPhysicalPageLabels = usesPhysicalPageLabels
+        self.allowsMultipleLabelsInMultiUnitLayout = allowsMultipleLabelsInMultiUnitLayout
+    }
+
+    private func publishPaginationMetadata(
+        currentContentLocation: PageTurnCurrentContentLocation,
+        paginationComplete: Bool?,
+        configurationKey: String?,
+        publicationSource: WebViewPaginationPublicationSource?,
+        pageNumberMode: WebViewPaginationPageNumberMode?,
+        allowsMultipleColumns: Bool?
+    ) {
+        self.currentContentLocation = currentContentLocation
+        self.paginationComplete = paginationComplete
+        self.configurationKey = configurationKey
+        self.publicationSource = publicationSource
+        self.pageNumberMode = pageNumberMode
+        self.allowsMultipleColumns = allowsMultipleColumns
+    }
+
+    private func publishProbeDiagnosticsState(_ probe: ReaderPageTurnNavigationProbe) {
+        hasView = probe.hasView
+        hasRenderer = probe.hasRenderer
+        hasSectionLayoutController = probe.hasSectionLayoutController
+        loadEBookStarted = probe.loadEBookStarted
+        loadEBookReady = probe.loadEBookReady
+        loadEBookAttemptCount = probe.loadEBookAttemptCount
+        loadEBookStartAgeMs = probe.loadEBookStartAgeMs
+        loadEBookLastState = probe.loadEBookLastState
+        lastProbeError = probe.probeError
+    }
+
+    private func resolvedLocalActiveTurnSupport(
+        navigator: WebViewNavigator?,
+        webViewState: WebViewState,
+        paginationState: WebViewPaginationState?
+    ) -> Bool {
+        guard navigator?.hasAttachedWebView == true,
+              let paginationState,
+              paginationState.isAppliedToMountedHost,
+              paginationState.paginationComplete == true,
+              !webViewState.isLoading,
+              !webViewState.isProvisionallyNavigating else {
+            return false
+        }
+
+        let resolvedGraph = resolvedPaginationGraph(paginationState: paginationState)
+        return (resolvedGraph?.visiblePageCount ?? 0) > 0 || ((paginationState.pageCount ?? 0) > 0)
+    }
+
+    var contentHostSequenceTaskID: String {
+        [
+            contentHostSequence.mountedHostIdentifier ?? "nil",
+            contentHostSequence.appliedHostIdentifier ?? "nil",
+            contentHostSequence.isAppliedToMountedHost ? "applied" : "notApplied",
+            contentHostSequence.isStable ? "stable" : "unstable",
+            String(contentHostSequence.serial),
+        ].joined(separator: "|")
+    }
+
     func updateContext(
         navigator: WebViewNavigator,
         scriptCaller: WebViewScriptCaller,
@@ -1424,86 +3285,76 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         self.lastKnownState = webViewState
 
         guard isEligibleForActiveTurns, scriptCaller.hasAsyncCaller else {
-            capabilityRefreshTask?.cancel()
-            capabilityRefreshTask = nil
-            lastCapabilityKey = nil
-            supportsActivePageTurn = false
-            pageProgressionDirection = .leftToRight
-            resolvedPaginationMode = .leftToRight
-            currentSectionIndex = nil
-            currentSectionHref = nil
-            currentPage = nil
-            livePageIndex = nil
-            liveChunkPageIndex = nil
-            viewportCenterChunkPageIndex = nil
-            pageCount = nil
-            layoutPageRecordCount = nil
-            layoutLiveRootExists = nil
-            layoutLiveRootClassName = nil
-            layoutLiveRootChildCount = nil
-            layoutLiveRootRectWidth = nil
-            layoutLiveRootRectHeight = nil
-            layoutLiveCurrentPageExists = nil
-            layoutLiveCurrentPageClassName = nil
-            layoutLiveCurrentPageRectWidth = nil
-            layoutLiveCurrentPageRectHeight = nil
-            layoutLiveCurrentPageContainsChunkBody = nil
-            layoutLiveCurrentChunkExists = nil
-            layoutLiveCurrentChunkTagName = nil
-            layoutLiveCurrentChunkClassName = nil
-            layoutLiveCurrentChunkDisplay = nil
-            layoutLiveCurrentChunkPosition = nil
-            layoutLiveCurrentChunkFlex = nil
-            layoutLiveCurrentChunkRectWidth = nil
-            layoutLiveCurrentChunkRectHeight = nil
-            layoutLiveCurrentChunkInnerHTMLLength = nil
-            layoutLiveCurrentChunkContainsChunkBody = nil
-            layoutLiveCurrentChunkChildCount = nil
-            layoutLiveCurrentChunkTextLength = nil
-            layoutCurrentChunkBodyChildCount = nil
-            layoutCurrentChunkBodyTextLength = nil
-            layoutCurrentChunkBodyDisplay = nil
-            layoutCurrentChunkBodyPosition = nil
-            layoutCurrentChunkBodyFlex = nil
-            layoutColumnCount = nil
-            layoutCurrentPageIndex = nil
-            layoutCurrentPageChunkCount = nil
-            layoutMaxPageChunkCount = nil
-            layoutUnitCount = nil
-            layoutActiveBuildPageIndex = nil
-            layoutComplete = nil
-            layoutSpreadCandidateDetected = nil
-            layoutPrimarySpacing = nil
-            layoutWritingMode = nil
-            layoutViewportWidth = nil
-            layoutViewportHeight = nil
-            layoutMeasuredGap = nil
-            layoutMetricSize = nil
-            layoutColumnInlineSize = nil
-            layoutCurrentChunkClientWidth = nil
-            layoutCurrentChunkClientHeight = nil
-            layoutCurrentChunkScrollWidth = nil
-            layoutCurrentChunkScrollHeight = nil
-            layoutCurrentChunkOverflow = nil
-            computedFontSizeCSS = nil
-            currentPageTextSample = nil
-            nextPageTextSample = nil
-            currentPageDisplayLabel = nil
-            currentPhysicalPageLabel = nil
-            loadEBookStarted = false
-            loadEBookReady = false
-            loadEBookAttemptCount = nil
-            loadEBookStartAgeMs = nil
-            loadEBookLastState = nil
-            pageLabelDisplayMode = nil
-            usesPhysicalPageLabels = nil
-            canForward = false
-            canBackward = false
-            lastProbeError = nil
+            resetPublishedContextStateForIneligibleTurns()
             return
         }
 
         let paginationState = webViewState.paginationState
+        let localSupportsActivePageTurn = resolvedLocalActiveTurnSupport(
+            navigator: navigator,
+            webViewState: webViewState,
+            paginationState: paginationState
+        )
+        let paginationContext = bridgeResolvedPaginationContext(paginationState: paginationState)
+        let resolvedGraph = paginationContext.resolvedGraph
+        publicationSerial += 1
+        updateReason = .configurationChange
+        pageNavigationStyle = paginationState?.pageNavigationStyle?.pageTurnNavigationStyle ?? .paged
+        transitionFamily = readerResolvedPageTurnTransitionFamily(
+            navigationStyle: pageNavigationStyle,
+            transitionFamily: .slide
+        )
+        layoutState = .aboutToChange
+        let nextContentHostState = resolvedContentHostState(
+            webViewState: webViewState,
+            paginationState: paginationState,
+            supportsActivePageTurn: localSupportsActivePageTurn
+        )
+        contentHostState = nextContentHostState
+        contentHostSequence = resolvedContentHostSequence(
+            webViewState: webViewState,
+            paginationState: paginationState
+        )
+        preloadStrategy = resolvedPreloadStrategy(
+            webViewState: webViewState,
+            paginationState: paginationState,
+            requestedLocationState: requestedLocationState,
+            contentHostState: nextContentHostState,
+            supportsActivePageTurn: localSupportsActivePageTurn
+        )
+        supportsActivePageTurn = localSupportsActivePageTurn
+        probeConfirmedActivePageTurn = false
+        publishPaginationMetadata(
+            currentContentLocation: paginationContext.currentContentLocation,
+            paginationComplete: paginationContext.metadataPaginationComplete,
+            configurationKey: paginationContext.metadataConfigurationKey,
+            publicationSource: paginationContext.metadataPublicationSource,
+            pageNumberMode: paginationContext.metadataPageNumberMode,
+            allowsMultipleColumns: paginationContext.metadataAllowsMultipleColumns
+        )
+        publishCurrentPageLabelState(
+            currentPageDisplayLabel: ReaderResolvedPagination.currentPageDisplayLabel(
+                bridgeLabel: nil,
+                paginationState: paginationContext.paginationState
+            ),
+            currentPhysicalPageLabel: ReaderResolvedPagination.currentPhysicalPageLabel(
+                bridgeLabel: nil,
+                paginationState: paginationContext.paginationState
+            ),
+            pageLabelDisplayMode: paginationState?.pageLabelPolicy?.displayMode.rawValue,
+            usesPhysicalPageLabels: paginationState?.pageLabelPolicy?.usesPhysicalPageLabels,
+            allowsMultipleLabelsInMultiUnitLayout: paginationState?.pageLabelPolicy?.allowsMultipleLabelsInMultiUnitLayout
+        )
+        pageOffsetsDisplayed = paginationContext.pageOffsetsDisplayed
+        currentSpread = paginationContext.currentSpread
+        destinationSpread = paginationContext.destinationSpread(direction: nil as PageTurnDirection?)
+        spreadSequence = paginationState?.spreadSequence ?? spreadSequence
+        pageCount = paginationContext.pageCount
+        visiblePageIndices = paginationContext.visiblePageIndices
+        canForward = localSupportsActivePageTurn && resolvedGraph.canMoveForward
+        canBackward = localSupportsActivePageTurn && resolvedGraph.canMoveBackward
+        forwardDestinationAvailability = resolvedGraph.forwardDestinationAvailability.rawValue
+        backwardDestinationAvailability = resolvedGraph.backwardDestinationAvailability.rawValue
         let nextKey = [
             webViewState.pageURL.absoluteString,
             webViewState.isLoading ? "loading" : "loaded",
@@ -1520,6 +3371,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         lastCapabilityKey = nextKey
 
         capabilityRefreshTask?.cancel()
+        let capturedPublicationSerial = publicationSerial
         capabilityRefreshTask = Task { [weak self] in
             guard let self else { return }
             let maxAttempts = 120
@@ -1529,8 +3381,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             for attempt in 1...maxAttempts {
                 let probe = await self.fetchNavigationProbe()
                 guard !Task.isCancelled else { return }
+                guard self.publicationSerial == capturedPublicationSerial else { return }
                 lastProbe = probe
-                self.applyNavigationProbe(probe)
+                self.applyNavigationProbe(probe, publicationSerial: capturedPublicationSerial)
                 if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1",
                    let probe {
                     Logger.shared.logger.info("# PAGETURN navProbe attempt=\(attempt) \(probe.logPayload)")
@@ -1546,41 +3399,53 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                lastProbe?.supportsActivePageTurn != true {
                 Logger.shared.logger.warning("# PAGETURN navProbe.unresolved attempts=\(maxAttempts) last=\(lastProbe?.logPayload ?? [:])")
             }
-            applyNavigationProbe(lastProbe)
+            applyNavigationProbe(lastProbe, publicationSerial: capturedPublicationSerial)
         }
+    }
+
+    func updateRequestedLocationState(_ state: ReaderPageTurnRequestedLocationState?) {
+        requestedLocationState = state
     }
 
     func destinationAvailability(for direction: PageTurnDirection) async -> PageTurnDestinationAvailability {
+        resolvedDestinationAvailability(for: direction)
+    }
+
+    private func resolvedDestinationAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability {
         guard supportsActivePageTurn || hasFallbackTurnReadiness else {
             return .unavailable
         }
+        let localAvailability = localSemanticAvailability(for: direction)
         guard supportsActivePageTurn else {
-            return .both
+            return localAvailability
         }
         let isAvailable = switch direction {
         case .forward:
-            canForward
+            canForward || canNext
         case .backward:
-            canBackward
+            canBackward || canPrev
         }
         guard isAvailable else {
-            return .unavailable
+            return localAvailability
         }
-        guard usesSpreadAwareNavigationSemantics,
-              let destinationPageIndices = destinationPageIndices(for: direction) else {
-            return .both
+        guard resolvedGraph.usesSpreadAwareNavigationSemantics else {
+            return localAvailability == .unavailable ? .both : localAvailability
         }
-        if destinationPageIndices.count > 1 {
-            return .both
-        }
-        guard let destinationPageIndex = destinationPageIndices.first else {
-            return .unavailable
-        }
-        return destinationPageIndex == 0 ? .first : .second
+        return localAvailability == .unavailable ? .both : localAvailability
     }
 
     func commitTurn(_ direction: PageTurnDirection) async throws {
+        updateReason = .userInteraction
         guard (supportsActivePageTurn || hasFallbackTurnReadiness), let scriptCaller else { return }
+        guard resolvedDestinationAvailability(for: direction) != .unavailable else {
+            movementKind = nil
+            publishNavigationEvent(.attemptedPastEnd, direction: direction)
+            throw NSError(
+                domain: "ReaderPageTurnBridge",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Destination unavailable for \(direction.rawValue)"]
+            )
+        }
         let fallbackFunctionName: String = {
             switch direction {
             case .forward:
@@ -1629,7 +3494,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         let shouldLogDiagnostics = ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
         let baselineProbe = await fetchNavigationProbe()
         if let baselineProbe {
-            applyNavigationProbe(baselineProbe)
+            applyNavigationProbe(baselineProbe, publicationSerial: publicationSerial)
         }
         let beforePayload = shouldLogDiagnostics ? currentNavigationDebugPayload() : [:]
 
@@ -1700,10 +3565,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         )
         if let baselineProbe,
            let activatedProbe = afterProbe,
-           !activatedProbe.hasLocationOrContentAdvance(comparedTo: baselineProbe),
-           (
-            (baselineProbe.supportsActivePageTurn != true && activatedProbe.supportsActivePageTurn)
-            || activatedProbe.materiallyExpandedPagination(comparedTo: baselineProbe)
+           ReaderPageTurnNavigationComparison.shouldRetryCommittedTurnAfterActivation(
+            baseline: ReaderPageTurnNavigationObservation(probe: baselineProbe),
+            activatedProbe: ReaderPageTurnNavigationObservation(probe: activatedProbe)
            ) {
             let followupScript = activeTurnScript(activatedProbe)
             await issueJavaScriptAcrossReaderPageTurnFrames(followupScript, scriptCaller: scriptCaller)
@@ -1729,40 +3593,40 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 userInfo: [NSLocalizedDescriptionKey: "commitTurn timed out for \(direction.rawValue)"]
             )
         }
+        let navigationEventKind = ReaderPageTurnNavigationComparison.classifyCommittedTurn(
+            direction: direction,
+            baseline: baselineProbe.map(ReaderPageTurnNavigationObservation.init(probe:)),
+            after: afterProbe.map(ReaderPageTurnNavigationObservation.init(probe:))
+        )
+        movementKind = resolvedMovementKind(
+            for: direction,
+            baselineProbe: baselineProbe,
+            afterProbe: afterProbe,
+            navigationEventKind: navigationEventKind
+        )
+        publishNavigationEvent(navigationEventKind, direction: direction)
         publishTurnEvent(.committed, direction: direction)
     }
 
     private func currentNavigationDebugPayload() -> [String: String] {
-        let pageLabelPolicy = resolvedPageLabelPolicy(visibleUnit: resolvedVisibleUnit())
-        let pageLabelDisplayMode = pageLabelPolicy.displayMode.rawValue
-        let usesPhysicalPageLabels = pageLabelPolicy.usesPhysicalPageLabels
-        var payload: [String: String] = [
-            "currentSectionIndex": currentSectionIndex.map(String.init) ?? "nil",
-            "currentSectionHref": currentSectionHref ?? "nil",
-            "currentPage": currentPage.map(String.init) ?? "nil",
-            "pageCount": pageCount.map(String.init) ?? "nil",
-            "canForward": "\(canForward)",
-            "canBackward": "\(canBackward)",
-            "supportsActivePageTurn": "\(supportsActivePageTurn)",
-            "resolvedPaginationMode": "\(resolvedPaginationMode.rawValue)",
-            "pageProgressionDirection": pageProgressionDirection.rawValue,
-        ]
-        payload.merge([
-            "layoutMeasuredGap": layoutMeasuredGap.map { String($0) } ?? "nil",
-            "layoutPrimarySpacing": layoutPrimarySpacing.map { String($0) } ?? "nil",
-            "currentPageDisplayLabel": currentPageDisplayLabel ?? "nil",
-            "currentPhysicalPageLabel": currentPhysicalPageLabel ?? "nil",
-            "pageLabelDisplayMode": pageLabelDisplayMode,
-            "usesPhysicalPageLabels": String(usesPhysicalPageLabels),
-        ], uniquingKeysWith: { _, rhs in rhs })
-        return payload
+        currentCachedNavigationProbe().logPayload
     }
 
     private func currentCachedNavigationProbe() -> ReaderPageTurnNavigationProbe {
-        let pageLabelPolicy = resolvedPageLabelPolicy(visibleUnit: resolvedVisibleUnit())
-        let pageLabelDisplayMode = pageLabelPolicy.displayMode.rawValue
-        let usesPhysicalPageLabels = pageLabelPolicy.usesPhysicalPageLabels
         return ReaderPageTurnNavigationProbe(
+            pageNavigationStyle: pageNavigationStyle,
+            transitionFamily: transitionFamily,
+            movementKind: movementKind,
+            layoutState: layoutState,
+            updateReason: updateReason,
+            navigationEvent: lastNavigationEvent?.kind,
+            contentHostState: contentHostState,
+            preloadStrategy: preloadStrategy,
+            currentContentLocation: currentContentLocation,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            spreadSequence: spreadSequence,
             hasView: hasView,
             hasRenderer: hasRenderer,
             canNext: canNext,
@@ -1777,6 +3641,9 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             currentSectionIndex: currentSectionIndex,
             currentSectionHref: currentSectionHref,
             currentPage: currentPage,
+            livePageIndex: livePageIndex,
+            liveChunkPageIndex: liveChunkPageIndex,
+            viewportCenterChunkPageIndex: viewportCenterChunkPageIndex,
             pageCount: pageCount,
             layoutPageRecordCount: layoutPageRecordCount,
             layoutLiveRootExists: layoutLiveRootExists,
@@ -1823,6 +3690,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             layoutHasLeadingSingleton: layoutHasLeadingSingleton,
             layoutHasTrailingSingleton: layoutHasTrailingSingleton,
             layoutPrimarySpacing: layoutPrimarySpacing,
+            layoutChromeGutterWidth: layoutChromeGutterWidth,
+            layoutReadableFrameWidth: layoutReadableFrameWidth,
+            layoutMaxContentWidth: layoutMaxContentWidth,
+            layoutSemanticSideInset: layoutSemanticSideInset,
             layoutMultiUnitActive: layoutMultiUnitActive,
             layoutSpreadPagesAllowedForViewport: layoutSpreadPagesAllowedForViewport,
             layoutWritingMode: layoutWritingMode,
@@ -1841,82 +3712,316 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             nextPageTextSample: nextPageTextSample,
             currentPageDisplayLabel: currentPageDisplayLabel,
             currentPhysicalPageLabel: currentPhysicalPageLabel,
+            progressScrubberVisible: progressScrubberVisible,
+            progressScrubberActive: progressScrubberActive,
+            historyCanGoBack: historyCanGoBack,
+            historyCanGoForward: historyCanGoForward,
+            historyDepth: historyDepth,
+            historyCurrentIndex: historyCurrentIndex,
+            historyPendingReplaceStateSuppressionCount: historyPendingReplaceStateSuppressionCount,
+            historySuppressedReplaceStateCount: historySuppressedReplaceStateCount,
+            historyLastSuppressedReplaceStateReason: historyLastSuppressedReplaceStateReason,
+            showTitleChrome: showTitleChrome,
+            showHeaderChrome: showHeaderChrome,
             loadEBookStarted: loadEBookStarted,
             loadEBookReady: loadEBookReady,
             loadEBookAttemptCount: loadEBookAttemptCount,
             loadEBookStartAgeMs: loadEBookStartAgeMs,
             loadEBookLastState: loadEBookLastState,
+            sameDocumentHostTurnPhase: sameDocumentHostTurnPhase,
+            sameDocumentHostTurnDirection: sameDocumentHostTurnDirection,
+            sameDocumentHostTurnCurrentPageIndex: sameDocumentHostTurnCurrentPageIndex,
+            sameDocumentHostTurnTargetPageIndex: sameDocumentHostTurnTargetPageIndex,
+            sameDocumentHostTurnPageCount: sameDocumentHostTurnPageCount,
+            sameDocumentHostTurnDatasetCurrentPageIndex: sameDocumentHostTurnDatasetCurrentPageIndex,
+            sameDocumentHostTurnResult: sameDocumentHostTurnResult,
+            forwardDestinationAvailability: forwardDestinationAvailability,
+            backwardDestinationAvailability: backwardDestinationAvailability,
+            paginationComplete: paginationComplete,
+            configurationKey: configurationKey,
+            publicationSource: publicationSource,
             pageLabelDisplayMode: pageLabelDisplayMode,
+            pageNumberMode: pageNumberMode,
             usesPhysicalPageLabels: usesPhysicalPageLabels,
+            allowsMultipleColumns: allowsMultipleColumns,
+            allowsMultipleLabelsInMultiUnitLayout: allowsMultipleLabelsInMultiUnitLayout,
+            visiblePageIndices: visiblePageIndices,
+            pageScrollerAnimationIsRunning: pageScrollerAnimationIsRunning,
+            liveResizeActive: liveResizeActive,
             probeError: lastProbeError
         )
     }
 
-    private var usesSpreadAwareNavigationSemantics: Bool {
-        layoutVisibleUnitKind == "pageSpread"
-            || layoutVisibleUnitKind == "paginatedRowSet"
-            || layoutSpreadPagesAllowedForViewport == true
-            || layoutMultiUnitActive == true
-            || layoutHasLeadingSingleton == true
-            || layoutHasTrailingSingleton == true
+    private func resolvedContentHostState(
+        webViewState: WebViewState,
+        paginationState: WebViewPaginationState?,
+        supportsActivePageTurn: Bool
+    ) -> ReaderPageTurnContentHostState {
+        if !webViewState.hasReaderRenderReady && !loadEBookStarted {
+            return .initial
+        }
+        if webViewState.isProvisionallyNavigating {
+            return .preparingForReuse
+        }
+        if webViewState.isLoading, paginationState?.mountedHostIdentifier == nil {
+            return .waitingOnContentView
+        }
+        if paginationState?.mountedHostIdentifier == nil {
+            return .waitingOnContentView
+        }
+        if paginationState?.appliedHostIdentifier == nil {
+            return .preparingContentView
+        }
+        if paginationState?.isAppliedToMountedHost != true {
+            return .placeholderViewAvailable
+        }
+        if paginationState?.paginationComplete == false {
+            return .placeholderViewAvailable
+        }
+        if paginationState?.isAppliedToMountedHost == true {
+            return supportsActivePageTurn ? .contentViewAvailable : .placeholderViewAvailable
+        }
+        return .placeholderViewAvailable
+    }
+
+    private func resolvedPreloadStrategy(
+        webViewState: WebViewState,
+        paginationState: WebViewPaginationState?,
+        requestedLocationState: ReaderPageTurnRequestedLocationState?,
+        contentHostState: ReaderPageTurnContentHostState,
+        supportsActivePageTurn: Bool
+    ) -> PageTurnPreloadStrategy {
+        let resolvedGraph = resolvedPaginationGraph(paginationState: paginationState)
+        let hasResolvedNeighborWindow =
+            resolvedGraph?.spreadSequence.backward != nil
+            || resolvedGraph?.spreadSequence.forward != nil
+        if webViewState.isProvisionallyNavigating || contentHostState == .preparingForReuse {
+            return .conservative
+        }
+        if requestedLocationState != nil || webViewState.isLoading {
+            return .conservative
+        }
+        if supportsActivePageTurn,
+           paginationState?.paginationComplete == true,
+           (resolvedGraph?.visiblePageCount ?? 0) > 1 || hasResolvedNeighborWindow {
+            return .aggressive
+        }
+        return .standard
+    }
+
+    private func resolvedCurrentContentLocation(
+        paginationState: WebViewPaginationState?
+    ) -> PageTurnCurrentContentLocation {
+        ReaderResolvedPagination.currentContentLocation(
+            bridgeCurrentContentLocation: currentContentLocation,
+            paginationCurrentContentLocation: paginationState?.currentContentLocation,
+            resolvedGraph: resolvedGraph
+        )
+    }
+
+    private func resolvedContentHostSequence(
+        webViewState: WebViewState,
+        paginationState: WebViewPaginationState?
+    ) -> PageTurnContentHostSequence {
+        let mountedHostIdentifier = paginationState?.mountedHostIdentifier
+        let appliedHostIdentifier = paginationState?.appliedHostIdentifier
+        let isAppliedToMountedHost = paginationState?.isAppliedToMountedHost ?? false
+        let isStable =
+            mountedHostIdentifier != nil
+            && isAppliedToMountedHost
+            && paginationState?.paginationComplete == true
+            && !webViewState.isLoading
+            && !webViewState.isProvisionallyNavigating
+
+        let hostIdentityChanged =
+            contentHostSequence.mountedHostIdentifier != mountedHostIdentifier
+            || contentHostSequence.appliedHostIdentifier != appliedHostIdentifier
+            || contentHostSequence.isAppliedToMountedHost != isAppliedToMountedHost
+
+        if hostIdentityChanged {
+            nextContentHostSequenceSerial += 1
+        }
+
+        return PageTurnContentHostSequence(
+            mountedHostIdentifier: mountedHostIdentifier,
+            appliedHostIdentifier: appliedHostIdentifier,
+            isAppliedToMountedHost: isAppliedToMountedHost,
+            isStable: isStable,
+            serial: nextContentHostSequenceSerial
+        )
+    }
+
+    private func resolvedProbePrimarySpacing(_ probe: ReaderPageTurnNavigationProbe) -> Double {
+        if let measuredGap = probe.layoutMeasuredGap ?? layoutMeasuredGap {
+            return max(0, measuredGap)
+        }
+        if let currentSpacing = probe.layoutPrimarySpacing ?? layoutPrimarySpacing {
+            return max(0, currentSpacing)
+        }
+        return 0
+    }
+
+    private func resolvedProbeChromeGutterWidth(_ probe: ReaderPageTurnNavigationProbe) -> Double {
+        let visiblePageCount = max(1, probe.layoutVisiblePageCount ?? probe.layoutColumnCount ?? 1)
+        guard visiblePageCount > 1 else { return 0 }
+        return min(max(resolvedProbePrimarySpacing(probe), 12), 48)
+    }
+
+    func updateResolvedPageLabelPolicy(_ pageLabelPolicy: PageTurnPageLabelPolicy) {
+        pageLabelDisplayMode = pageLabelPolicy.displayMode.rawValue
+        usesPhysicalPageLabels = pageLabelPolicy.usesPhysicalPageLabels
+        allowsMultipleLabelsInMultiUnitLayout = pageLabelPolicy.allowsMultipleLabelsInMultiUnitLayout
+    }
+
+    func updateResolvedChromeVisibility(_ chromeVisibility: PageTurnChromeVisibility) {
+        showTitleChrome = chromeVisibility.showTitle
+        showHeaderChrome = chromeVisibility.showHeader
+    }
+
+    func updateResolvedPageTurnPresentation(
+        navigationStyle: PageTurnNavigationStyle,
+        transitionFamily: PageTurnTransitionFamily,
+        layoutState: PageTurnLayoutState,
+        updateReason: ReaderPageTurnUpdateReason,
+        pageNumberMode: WebViewPaginationPageNumberMode,
+        allowsMultipleColumns: Bool
+    ) {
+        self.pageNavigationStyle = navigationStyle
+        self.transitionFamily = transitionFamily
+        self.layoutState = layoutState
+        self.updateReason = updateReason
+        self.pageNumberMode = pageNumberMode
+        self.allowsMultipleColumns = allowsMultipleColumns
+    }
+
+    private func resolvedMovementKind(
+        for direction: PageTurnDirection,
+        baselineProbe: ReaderPageTurnNavigationProbe?,
+        afterProbe: ReaderPageTurnNavigationProbe?,
+        navigationEventKind: ReaderPageTurnNavigationEventKind
+    ) -> PageTurnMovementKind? {
+        guard navigationEventKind != .noPageChange else {
+            return nil
+        }
+        let effectiveDirection: PageTurnDirection = switch navigationEventKind {
+        case .nextPage:
+            .forward
+        case .previousPage:
+            .backward
+        case .attemptedPastEnd, .noPageChange:
+            direction
+        }
+        let sectionChanged =
+            baselineProbe?.currentSectionIndex != afterProbe?.currentSectionIndex
+            || baselineProbe?.currentSectionHref != afterProbe?.currentSectionHref
+        if sectionChanged {
+            return effectiveDirection == .forward ? .chapterForward : .chapterBackward
+        }
+        return effectiveDirection == .forward ? .spreadForward : .spreadBackward
     }
 
     private func currentVisiblePageIndices() -> [Int]? {
-        let totalPages = pageCount ?? 0
-        guard totalPages > 0 else { return nil }
-
-        let leading = max(0, min(totalPages - 1, layoutLeadingPageIndex ?? currentPage ?? 0))
-        let trailing = max(
-            leading,
-            min(
-                totalPages - 1,
-                layoutTrailingPageIndex
-                    ?? (leading + max(0, (layoutVisiblePageCount ?? 1) - 1))
-            )
-        )
-        if trailing > leading {
-            return [leading, trailing]
-        }
-        return [leading]
+        resolvedGraph.spreadSequence.current?.pageIndices ?? resolvedGraph.currentVisiblePageIndices
     }
 
     private func destinationPageIndices(for direction: PageTurnDirection) -> [Int]? {
-        guard let currentIndices = currentVisiblePageIndices(),
-              let totalPages = pageCount,
-              totalPages > 0 else {
-            return nil
-        }
-
-        let leading = currentIndices.first ?? 0
-        let trailing = currentIndices.last ?? leading
-
-        switch direction {
-        case .forward:
-            let targetLeading = trailing + 1
-            guard targetLeading < totalPages else { return nil }
-            if targetLeading == totalPages - 1 {
-                return [targetLeading]
-            }
-            return [targetLeading, min(totalPages - 1, targetLeading + 1)]
-
-        case .backward:
-            let targetTrailing = leading - 1
-            guard targetTrailing >= 0 else { return nil }
-            if targetTrailing == 0 {
-                return [0]
-            }
-            return [max(0, targetTrailing - 1), targetTrailing]
-        }
+        resolvedGraph.spreadSequence.node(for: direction)?.pageIndices ?? resolvedGraph.destinationPageIndices(for: direction)
     }
 
     private func resolvedSnapshotChromeContent(for request: PageTurnSnapshotRequest) async -> PageTurnSnapshotChromeContent? {
         guard request.includeChrome else { return nil }
         let titlePrimary = lastKnownState.pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
         let titleSecondary = await resolvedSnapshotSectionTitle()
+        let snapshotVisibleUnit = request.visibleUnit
+        let snapshotPageLabelPolicy = request.pageLabelPolicy
+        let snapshotGraph = ReaderPageTurnSpreadGraph(
+            currentSpread: ReaderResolvedPagination.currentSpread(
+                bridgeCurrentSpread: currentSpread,
+                paginationCurrentSpread: lastKnownState.paginationState?.currentSpread,
+                resolvedGraph: resolvedGraph
+            ),
+            destinationSpread: ReaderResolvedPagination.destinationSpread(
+                direction: request.intent == .dragDestination ? request.direction : nil,
+                resolvedGraph: resolvedGraph
+            ),
+            pageOffsetsDisplayed: currentVisiblePageIndices(),
+            pageCount: pageCount,
+            layoutLeadingPageIndex: snapshotVisibleUnit.leadingPageIndex ?? layoutLeadingPageIndex,
+            currentPage: currentPage ?? snapshotVisibleUnit.currentUnitIndex,
+            layoutTrailingPageIndex: snapshotVisibleUnit.trailingPageIndex ?? layoutTrailingPageIndex,
+            layoutVisiblePageCount: snapshotVisibleUnit.visiblePageCount
+        ).resolvedGraph
+        let pageIndices = switch request.intent {
+        case .dragDestination:
+            snapshotGraph.spreadSequence.node(for: request.direction)?.pageIndices
+                ?? snapshotGraph.destinationPageIndices(for: request.direction)
+                ?? snapshotGraph.currentVisiblePageIndices
+                ?? []
+        case .dragSource, .turnSource:
+            snapshotGraph.spreadSequence.current?.pageIndices
+                ?? snapshotGraph.currentVisiblePageIndices
+                ?? []
+        }
+        let currentPageNumber = pageIndices.first.map { $0 + 1 }
+        let trailingPageNumber = pageIndices.last.map { $0 + 1 }
+        let totalPages = pageCount
+        let displayLabel: String? = {
+            if let currentPageNumber, let trailingPageNumber, trailingPageNumber > currentPageNumber {
+                if let totalPages {
+                    return "\(currentPageNumber)-\(trailingPageNumber) of \(totalPages)"
+                }
+                return "\(currentPageNumber)-\(trailingPageNumber)"
+            }
+            if request.intent != .dragDestination,
+               let currentPageDisplayLabel,
+               !currentPageDisplayLabel.isEmpty {
+                return currentPageDisplayLabel
+            }
+            if let currentPageNumber {
+                if let totalPages {
+                    return "Page \(currentPageNumber) of \(totalPages)"
+                }
+                return "Page \(currentPageNumber)"
+            }
+            return nil
+        }()
+        let leadingLabel = currentPageNumber.map { "Page \($0)" }
+        let trailingLabel: String?
+        if let trailingPageNumber, trailingPageNumber != currentPageNumber {
+            trailingLabel = "Page \(trailingPageNumber)"
+        } else {
+            trailingLabel = nil
+        }
+        let validatedPageCount = [
+            totalPages,
+            snapshotGraph.pageOffsetRange.map { $0.upperBound + 1 },
+            pageIndices.max().map { $0 + 1 }
+        ].compactMap { $0 }.max()
         return PageTurnSnapshotChromeContent(
             headerLabels: await resolvedSnapshotHeaderLabels(for: request),
             titlePrimary: (titlePrimary?.isEmpty == false) ? titlePrimary : nil,
-            titleSecondary: (titleSecondary?.isEmpty == false) ? titleSecondary : nil
+            titleSecondary: (titleSecondary?.isEmpty == false) ? titleSecondary : nil,
+            pageNumberHUD: .init(
+                isVisible: showHeaderChrome ?? true,
+                displayLabel: displayLabel,
+                leadingLabel: snapshotPageLabelPolicy.displayMode == .multipleLabels ? leadingLabel : nil,
+                trailingLabel: snapshotPageLabelPolicy.displayMode == .multipleLabels ? trailingLabel : nil,
+                currentPage: currentPageNumber,
+                totalPages: totalPages,
+                validatedPageCount: validatedPageCount,
+                topInset: request.contentRect.minY,
+                width: request.contentRect.width
+            ),
+            scrubberState: .init(
+                isVisible: progressScrubberVisible ?? false,
+                leadingPageNumber: currentPageNumber,
+                trailingPageNumber: trailingPageNumber,
+                pageRange: snapshotGraph.pageOffsetRange.map { ($0.lowerBound + 1)...($0.upperBound + 1) },
+                calloutWidth: request.contentRect.width,
+                leftRightInset: 0,
+                verticalInset: request.contentRect.minY,
+                followsThumb: progressScrubberActive ?? false
+            )
         )
     }
 
@@ -1937,7 +4042,6 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             })()
             """
             if let title = try? await scriptCaller.evaluateJavaScript(script) as? String,
-               let title,
                !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return title.trimmingCharacters(in: .whitespacesAndNewlines)
             }
@@ -1953,30 +4057,38 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         let visibleUnit = request.visibleUnit
         let currentIndex = max(0, currentPage ?? visibleUnit.currentUnitIndex ?? 0)
         let step = max(1, visibleUnit.usesMultiUnitSurface ? visibleUnit.visiblePageCount : 1)
-        let destinationBaseIndex: Int
-        switch request.intent {
+        let sourcePageIndices = resolvedGraph.spreadSequence.current?.pageIndices ?? currentVisiblePageIndices() ?? {
+            let leading = max(0, visibleUnit.leadingPageIndex ?? currentIndex)
+            let trailing = max(leading, visibleUnit.trailingPageIndex ?? (leading + max(0, step - 1)))
+            return trailing > leading ? [leading, trailing] : [leading]
+        }()
+        let resolvedDestinationPageIndices = resolvedGraph.spreadSequence.node(for: request.direction)?.pageIndices
+            ?? destinationPageIndices(for: request.direction)
+        let fallbackDestinationPageIndices: [Int] = switch request.intent {
         case .dragDestination:
-            switch request.direction {
-            case .forward:
-                destinationBaseIndex = currentIndex + step
-            case .backward:
-                destinationBaseIndex = max(0, currentIndex - step)
+            if let resolvedDestinationPageIndices, !resolvedDestinationPageIndices.isEmpty {
+                resolvedDestinationPageIndices
+            } else {
+                switch request.direction {
+                case .forward:
+                    [currentIndex + step]
+                case .backward:
+                    [max(0, currentIndex - step)]
+                }
             }
         case .dragSource, .turnSource:
-            destinationBaseIndex = currentIndex
+            [sourcePageIndices.first ?? currentIndex]
         }
+        let destinationBaseIndex = fallbackDestinationPageIndices.first ?? currentIndex
 
         if request.pageLabelPolicy.displayMode == .multipleLabels,
            visibleUnit.usesMultiUnitSurface {
             let pageIndices: [Int]
             switch request.intent {
             case .dragDestination:
-                pageIndices = destinationPageIndices(for: request.direction)
-                    ?? [destinationBaseIndex]
+                pageIndices = resolvedDestinationPageIndices ?? fallbackDestinationPageIndices
             case .dragSource, .turnSource:
-                let leading = max(0, visibleUnit.leadingPageIndex ?? destinationBaseIndex)
-                let trailing = max(leading, visibleUnit.trailingPageIndex ?? (leading + 1))
-                pageIndices = trailing > leading ? [leading, trailing] : [leading]
+                pageIndices = sourcePageIndices
             }
             let resolvedLabels = await resolvePageTargetLabels(
                 for: pageIndices,
@@ -1989,21 +4101,25 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         }
 
         if request.pageLabelPolicy.usesPhysicalPageLabels,
-           let currentPhysicalPageLabel,
-           !currentPhysicalPageLabel.isEmpty,
+           let currentPhysicalPageLabel = ReaderResolvedPagination.currentPhysicalPageLabel(
+                bridgeLabel: currentPhysicalPageLabel,
+                paginationState: lastKnownState.paginationState
+           ),
            request.intent != .dragDestination {
             return [currentPhysicalPageLabel]
         }
-        if let currentPageDisplayLabel,
-           !currentPageDisplayLabel.isEmpty,
+        if let currentPageDisplayLabel = ReaderResolvedPagination.currentPageDisplayLabel(
+            bridgeLabel: currentPageDisplayLabel,
+            paginationState: lastKnownState.paginationState
+        ),
            request.intent != .dragDestination {
             return [currentPageDisplayLabel]
         }
         let pageIndices = switch request.intent {
         case .dragDestination:
-            destinationPageIndices(for: request.direction) ?? [destinationBaseIndex]
+            resolvedDestinationPageIndices ?? fallbackDestinationPageIndices
         case .dragSource, .turnSource:
-            [destinationBaseIndex]
+            fallbackDestinationPageIndices
         }
         let resolvedLabels = await resolvePageTargetLabels(
             for: pageIndices,
@@ -2083,6 +4199,8 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     }
 
     func cancelTurn(_ direction: PageTurnDirection) async {
+        updateReason = .userInteraction
+        movementKind = nil
         publishTurnEvent(.cancelled, direction: direction)
     }
 
@@ -2232,7 +4350,20 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             }
             return nil
         }
-        let probe = ReaderPageTurnNavigationProbe(
+        let runtimeSpreadSequence = readerPageTurnSpreadSequence(dictionary["spreadSequence"])
+        var probe = ReaderPageTurnNavigationProbe(
+            pageNavigationStyle: pageNavigationStyle,
+            transitionFamily: transitionFamily,
+            layoutState: layoutState,
+            updateReason: updateReason,
+            navigationEvent: lastNavigationEvent?.kind,
+            contentHostState: contentHostState,
+            preloadStrategy: preloadStrategy,
+            currentContentLocation: currentContentLocation,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            spreadSequence: runtimeSpreadSequence,
             hasView: readerPageTurnBool(dictionary["hasView"]),
             hasRenderer: readerPageTurnBool(dictionary["hasRenderer"]),
             canNext: readerPageTurnBool(dictionary["canNext"]),
@@ -2295,6 +4426,11 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             layoutTrailingPageIndex: dictionary["layoutTrailingPageIndex"] as? Int ?? (dictionary["layoutTrailingPageIndex"] as? NSNumber)?.intValue,
             layoutHasLeadingSingleton: dictionary["layoutHasLeadingSingleton"] as? Bool ?? (dictionary["layoutHasLeadingSingleton"] as? NSNumber)?.boolValue,
             layoutHasTrailingSingleton: dictionary["layoutHasTrailingSingleton"] as? Bool ?? (dictionary["layoutHasTrailingSingleton"] as? NSNumber)?.boolValue,
+            layoutPrimarySpacing: nil,
+            layoutChromeGutterWidth: nil,
+            layoutReadableFrameWidth: layoutReadableFrameWidth,
+            layoutMaxContentWidth: layoutMaxContentWidth,
+            layoutSemanticSideInset: layoutSemanticSideInset,
             layoutMultiUnitActive: dictionary["layoutMultiUnitActive"] as? Bool ?? (dictionary["layoutMultiUnitActive"] as? NSNumber)?.boolValue,
             layoutSpreadPagesAllowedForViewport: dictionary["layoutSpreadPagesAllowedForViewport"] as? Bool ?? (dictionary["layoutSpreadPagesAllowedForViewport"] as? NSNumber)?.boolValue,
             layoutWritingMode: dictionary["layoutWritingMode"] as? String,
@@ -2313,6 +4449,17 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             nextPageTextSample: dictionary["nextPageTextSample"] as? String,
             currentPageDisplayLabel: dictionary["currentPageDisplayLabel"] as? String,
             currentPhysicalPageLabel: dictionary["currentPhysicalPageLabel"] as? String,
+            progressScrubberVisible: dictionary["progressScrubberVisible"] as? Bool ?? (dictionary["progressScrubberVisible"] as? NSNumber)?.boolValue,
+            progressScrubberActive: dictionary["progressScrubberActive"] as? Bool ?? (dictionary["progressScrubberActive"] as? NSNumber)?.boolValue,
+            historyCanGoBack: dictionary["historyCanGoBack"] as? Bool ?? (dictionary["historyCanGoBack"] as? NSNumber)?.boolValue,
+            historyCanGoForward: dictionary["historyCanGoForward"] as? Bool ?? (dictionary["historyCanGoForward"] as? NSNumber)?.boolValue,
+            historyDepth: dictionary["historyDepth"] as? Int ?? (dictionary["historyDepth"] as? NSNumber)?.intValue,
+            historyCurrentIndex: dictionary["historyCurrentIndex"] as? Int ?? (dictionary["historyCurrentIndex"] as? NSNumber)?.intValue,
+            historyPendingReplaceStateSuppressionCount: dictionary["historyPendingReplaceStateSuppressionCount"] as? Int ?? (dictionary["historyPendingReplaceStateSuppressionCount"] as? NSNumber)?.intValue,
+            historySuppressedReplaceStateCount: dictionary["historySuppressedReplaceStateCount"] as? Int ?? (dictionary["historySuppressedReplaceStateCount"] as? NSNumber)?.intValue,
+            historyLastSuppressedReplaceStateReason: dictionary["historyLastSuppressedReplaceStateReason"] as? String,
+            showTitleChrome: nil,
+            showHeaderChrome: nil,
             loadEBookStarted: readerPageTurnBool(dictionary["loadEBookStarted"]),
             loadEBookReady: readerPageTurnBool(dictionary["loadEBookReady"]),
             loadEBookAttemptCount: dictionary["loadEBookAttemptCount"] as? Int ?? (dictionary["loadEBookAttemptCount"] as? NSNumber)?.intValue,
@@ -2325,8 +4472,27 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             sameDocumentHostTurnPageCount: dictionary["sameDocumentHostTurnPageCount"] as? Int ?? (dictionary["sameDocumentHostTurnPageCount"] as? NSNumber)?.intValue,
             sameDocumentHostTurnDatasetCurrentPageIndex: dictionary["sameDocumentHostTurnDatasetCurrentPageIndex"] as? Int ?? (dictionary["sameDocumentHostTurnDatasetCurrentPageIndex"] as? NSNumber)?.intValue,
             sameDocumentHostTurnResult: dictionary["sameDocumentHostTurnResult"] as? String,
+            forwardDestinationAvailability: nil,
+            backwardDestinationAvailability: nil,
+            paginationComplete: paginationComplete,
+            configurationKey: configurationKey,
+            publicationSource: publicationSource,
+            pageLabelDisplayMode: dictionary["pageLabelDisplayMode"] as? String,
+            pageNumberMode: pageNumberMode,
+            usesPhysicalPageLabels: dictionary["usesPhysicalPageLabels"] as? Bool ?? (dictionary["usesPhysicalPageLabels"] as? NSNumber)?.boolValue,
+            allowsMultipleColumns: allowsMultipleColumns,
+            allowsMultipleLabelsInMultiUnitLayout: dictionary["allowsMultipleLabelsInMultiUnitLayout"] as? Bool ?? (dictionary["allowsMultipleLabelsInMultiUnitLayout"] as? NSNumber)?.boolValue,
+            visiblePageIndices: visiblePageIndices,
+            pageScrollerAnimationIsRunning: pageScrollerAnimationIsRunning,
+            liveResizeActive: liveResizeActive,
             probeError: dictionary["probeError"] as? String
         )
+        probe.showTitleChrome = showTitleChrome
+        probe.showHeaderChrome = showHeaderChrome
+        probe.layoutPrimarySpacing = resolvedProbePrimarySpacing(probe)
+        probe.layoutChromeGutterWidth = resolvedProbeChromeGutterWidth(probe)
+        probe.forwardDestinationAvailability = probe.resolvedDestinationAvailability(for: .forward).rawValue
+        probe.backwardDestinationAvailability = probe.resolvedDestinationAvailability(for: .backward).rawValue
         lastProbeError = probe.probeError
         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
             Logger.shared.logger.info("# PAGETURN navProbe.fetch \(probe.logPayload)")
@@ -2336,7 +4502,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
 
     func refreshNavigationState(preferredFrameOverride: WKFrameInfo? = nil) async -> ReaderPageTurnNavigationProbe? {
         let probe = await fetchNavigationProbe(preferredFrameOverride: preferredFrameOverride)
-        applyNavigationProbe(probe)
+        applyNavigationProbe(probe, publicationSerial: publicationSerial)
         return probe
     }
 
@@ -2407,105 +4573,270 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         }
     }
 
-    private func applyNavigationProbe(_ probe: ReaderPageTurnNavigationProbe?) {
-        supportsActivePageTurn = probe?.supportsActivePageTurn ?? false
-        pageProgressionDirection = probe?.pageProgressionDirection ?? .leftToRight
-        resolvedPaginationMode = probe?.resolvedPaginationMode ?? .leftToRight
-        hasView = probe?.hasView ?? false
-        hasRenderer = probe?.hasRenderer ?? false
-        canNext = probe?.canNext ?? false
-        canPrev = probe?.canPrev ?? false
-        hasSectionLayoutController = probe?.hasSectionLayoutController ?? false
-        bookDirection = probe?.bookDirection
-        isRightToLeft = probe?.isRightToLeft ?? false
-        isVertical = probe?.isVertical ?? false
-        isVerticalRightToLeft = probe?.isVerticalRightToLeft ?? false
-        currentSectionIndex = probe?.currentSectionIndex
-        currentSectionHref = probe?.currentSectionHref
-        currentPage = probe?.currentPage
-        livePageIndex = probe?.livePageIndex
-        liveChunkPageIndex = probe?.liveChunkPageIndex
-        viewportCenterChunkPageIndex = probe?.viewportCenterChunkPageIndex
-        pageCount = probe?.pageCount
-        layoutPageRecordCount = probe?.layoutPageRecordCount
-        layoutLiveRootExists = probe?.layoutLiveRootExists
-        layoutLiveRootClassName = probe?.layoutLiveRootClassName
-        layoutLiveRootChildCount = probe?.layoutLiveRootChildCount
-        layoutLiveRootRectWidth = probe?.layoutLiveRootRectWidth
-        layoutLiveRootRectHeight = probe?.layoutLiveRootRectHeight
-        layoutLiveCurrentPageExists = probe?.layoutLiveCurrentPageExists
-        layoutLiveCurrentPageClassName = probe?.layoutLiveCurrentPageClassName
-        layoutLiveCurrentPageRectWidth = probe?.layoutLiveCurrentPageRectWidth
-        layoutLiveCurrentPageRectHeight = probe?.layoutLiveCurrentPageRectHeight
-        layoutLiveCurrentPageContainsChunkBody = probe?.layoutLiveCurrentPageContainsChunkBody
-        layoutLiveCurrentChunkExists = probe?.layoutLiveCurrentChunkExists
-        layoutLiveCurrentChunkTagName = probe?.layoutLiveCurrentChunkTagName
-        layoutLiveCurrentChunkClassName = probe?.layoutLiveCurrentChunkClassName
-        layoutLiveCurrentChunkDisplay = probe?.layoutLiveCurrentChunkDisplay
-        layoutLiveCurrentChunkPosition = probe?.layoutLiveCurrentChunkPosition
-        layoutLiveCurrentChunkFlex = probe?.layoutLiveCurrentChunkFlex
-        layoutLiveCurrentChunkRectWidth = probe?.layoutLiveCurrentChunkRectWidth
-        layoutLiveCurrentChunkRectHeight = probe?.layoutLiveCurrentChunkRectHeight
-        layoutLiveCurrentChunkInnerHTMLLength = probe?.layoutLiveCurrentChunkInnerHTMLLength
-        layoutLiveCurrentChunkContainsChunkBody = probe?.layoutLiveCurrentChunkContainsChunkBody
-        layoutLiveCurrentChunkChildCount = probe?.layoutLiveCurrentChunkChildCount
-        layoutLiveCurrentChunkTextLength = probe?.layoutLiveCurrentChunkTextLength
-        layoutCurrentChunkBodyChildCount = probe?.layoutCurrentChunkBodyChildCount
-        layoutCurrentChunkBodyTextLength = probe?.layoutCurrentChunkBodyTextLength
-        layoutCurrentChunkBodyDisplay = probe?.layoutCurrentChunkBodyDisplay
-        layoutCurrentChunkBodyPosition = probe?.layoutCurrentChunkBodyPosition
-        layoutCurrentChunkBodyFlex = probe?.layoutCurrentChunkBodyFlex
-        layoutColumnCount = probe?.layoutColumnCount
-        layoutCurrentPageIndex = probe?.layoutCurrentPageIndex
-        layoutCurrentPageChunkCount = probe?.layoutCurrentPageChunkCount
-        layoutMaxPageChunkCount = probe?.layoutMaxPageChunkCount
-        layoutUnitCount = probe?.layoutUnitCount
-        layoutActiveBuildPageIndex = probe?.layoutActiveBuildPageIndex
-        layoutComplete = probe?.layoutComplete
-        layoutSpreadCandidateDetected = probe?.layoutSpreadCandidateDetected
-        layoutVisibleUnitKind = probe?.layoutVisibleUnitKind
-        layoutVisibleUnitAxis = probe?.layoutVisibleUnitAxis
-        layoutVisiblePageCount = probe?.layoutVisiblePageCount
-        layoutCurrentUnitIndex = probe?.layoutCurrentUnitIndex
-        layoutLeadingPageIndex = probe?.layoutLeadingPageIndex
-        layoutTrailingPageIndex = probe?.layoutTrailingPageIndex
-        layoutHasLeadingSingleton = probe?.layoutHasLeadingSingleton
-        layoutHasTrailingSingleton = probe?.layoutHasTrailingSingleton
-        layoutPrimarySpacing = probe?.layoutPrimarySpacing
-        layoutMultiUnitActive = probe?.layoutMultiUnitActive
-        layoutSpreadPagesAllowedForViewport = probe?.layoutSpreadPagesAllowedForViewport
-        layoutWritingMode = probe?.layoutWritingMode
-        layoutViewportWidth = probe?.layoutViewportWidth
-        layoutViewportHeight = probe?.layoutViewportHeight
-        layoutMeasuredGap = probe?.layoutMeasuredGap
-        layoutMetricSize = probe?.layoutMetricSize
-        layoutColumnInlineSize = probe?.layoutColumnInlineSize
-        layoutCurrentChunkClientWidth = probe?.layoutCurrentChunkClientWidth
-        layoutCurrentChunkClientHeight = probe?.layoutCurrentChunkClientHeight
-        layoutCurrentChunkScrollWidth = probe?.layoutCurrentChunkScrollWidth
-        layoutCurrentChunkScrollHeight = probe?.layoutCurrentChunkScrollHeight
-        layoutCurrentChunkOverflow = probe?.layoutCurrentChunkOverflow
-        computedFontSizeCSS = probe?.computedFontSizeCSS
-        currentPageTextSample = probe?.currentPageTextSample
-        nextPageTextSample = probe?.nextPageTextSample
-        currentPageDisplayLabel = probe?.currentPageDisplayLabel
-        currentPhysicalPageLabel = probe?.currentPhysicalPageLabel
-        loadEBookStarted = probe?.loadEBookStarted ?? false
-        loadEBookReady = probe?.loadEBookReady ?? false
-        loadEBookAttemptCount = probe?.loadEBookAttemptCount
-        loadEBookStartAgeMs = probe?.loadEBookStartAgeMs
-        loadEBookLastState = probe?.loadEBookLastState
-        sameDocumentHostTurnPhase = probe?.sameDocumentHostTurnPhase
-        sameDocumentHostTurnDirection = probe?.sameDocumentHostTurnDirection
-        sameDocumentHostTurnCurrentPageIndex = probe?.sameDocumentHostTurnCurrentPageIndex
-        sameDocumentHostTurnTargetPageIndex = probe?.sameDocumentHostTurnTargetPageIndex
-        sameDocumentHostTurnPageCount = probe?.sameDocumentHostTurnPageCount
-        sameDocumentHostTurnDatasetCurrentPageIndex = probe?.sameDocumentHostTurnDatasetCurrentPageIndex
-        sameDocumentHostTurnResult = probe?.sameDocumentHostTurnResult
-        pageLabelDisplayMode = probe?.pageLabelDisplayMode
-        usesPhysicalPageLabels = probe?.usesPhysicalPageLabels
-        canForward = probe?.canSemanticForward ?? false
-        canBackward = probe?.canSemanticBackward ?? false
+    private func applyNavigationProbe(
+        _ probe: ReaderPageTurnNavigationProbe?,
+        publicationSerial: Int
+    ) {
+        guard self.publicationSerial == publicationSerial else { return }
+
+        guard let probe else {
+            probeConfirmedActivePageTurn = false
+            return
+        }
+
+        let shouldPublishVisibleFields = shouldPublishVisibleProbeFields(probe)
+
+        let localSupportsActivePageTurn = resolvedLocalActiveTurnSupport(
+            navigator: navigator,
+            webViewState: lastKnownState,
+            paginationState: lastKnownState.paginationState
+        )
+        let probeResolvedGraph = resolvedGraph(for: probe)
+        probeConfirmedActivePageTurn = probe.supportsActivePageTurn
+        supportsActivePageTurn = probeConfirmedActivePageTurn || localSupportsActivePageTurn
+        pageProgressionDirection = probe.pageProgressionDirection
+        resolvedPaginationMode = probe.resolvedPaginationMode
+        pageNavigationStyle = probe.pageNavigationStyle ?? pageNavigationStyle
+        transitionFamily = probe.transitionFamily ?? transitionFamily
+        updateReason = probe.updateReason ?? updateReason
+        contentHostState = probe.contentHostState ?? contentHostState
+        contentHostSequence = resolvedContentHostSequence(
+            webViewState: lastKnownState,
+            paginationState: lastKnownState.paginationState
+        )
+        let localForwardAvailability = probeResolvedGraph?.forwardDestinationAvailability ?? resolvedGraph.forwardDestinationAvailability
+        let localBackwardAvailability = probeResolvedGraph?.backwardDestinationAvailability ?? resolvedGraph.backwardDestinationAvailability
+        preloadStrategy = probe.preloadStrategy ?? preloadStrategy
+        publishPaginationMetadata(
+            currentContentLocation: probe.currentContentLocation
+                ?? probeResolvedGraph?.currentContentLocation
+                ?? resolvedGraph.currentContentLocation,
+            paginationComplete: probe.paginationComplete ?? paginationComplete,
+            configurationKey: probe.configurationKey ?? configurationKey,
+            publicationSource: probe.publicationSource ?? publicationSource,
+            pageNumberMode: probe.pageNumberMode ?? pageNumberMode,
+            allowsMultipleColumns: probe.allowsMultipleColumns ?? allowsMultipleColumns
+        )
+        publishProbeDiagnosticsState(probe)
+        let probeTurnDirection = probe.sameDocumentHostTurnDirection.flatMap(PageTurnDirection.init(rawValue:))
+        publishCurrentPageLabelState(
+            currentPageDisplayLabel: currentPageDisplayLabel,
+            currentPhysicalPageLabel: currentPhysicalPageLabel,
+            pageLabelDisplayMode: probe.pageLabelDisplayMode,
+            usesPhysicalPageLabels: probe.usesPhysicalPageLabels,
+            allowsMultipleLabelsInMultiUnitLayout: probe.allowsMultipleLabelsInMultiUnitLayout
+        )
+
+        if shouldPublishVisibleFields {
+            publishVisibleProbeFields(
+                probe,
+                probeResolvedGraph: probeResolvedGraph,
+                probeTurnDirection: probeTurnDirection,
+                localForwardAvailability: localForwardAvailability,
+                localBackwardAvailability: localBackwardAvailability,
+                supportsActivePageTurn: supportsActivePageTurn
+            )
+        } else {
+            layoutState = requestedLocationState == nil ? .changing : .aboutToChange
+        }
+
+        if shouldPublishVisibleFields {
+            layoutState = supportsActivePageTurn ? .done : .changing
+            contentHostState = supportsActivePageTurn ? .contentViewAvailable : contentHostState
+        }
+    }
+
+    private func publishVisibleProbeFields(
+        _ probe: ReaderPageTurnNavigationProbe,
+        probeResolvedGraph: ReaderPageTurnResolvedGraph?,
+        probeTurnDirection: PageTurnDirection?,
+        localForwardAvailability: PageTurnDestinationAvailability,
+        localBackwardAvailability: PageTurnDestinationAvailability,
+        supportsActivePageTurn: Bool
+    ) {
+        let runtimeOwnedSpreadStateAvailable = lastKnownState.paginationState?.spreadSequence != nil
+        let runtimeOwnedDestinationSpreadAvailable = lastKnownState.paginationState?.destinationSpread != nil
+        let visibleState = ReaderResolvedProbeVisibleState.resolve(
+            probePageOffsetsDisplayed: probe.pageOffsetsDisplayed,
+            probeCurrentSpread: probe.currentSpread,
+            probeDestinationSpread: probe.destinationSpread,
+            probeCurrentPage: probe.currentPage,
+            probePageCount: probe.pageCount,
+            probeCurrentPageDisplayLabel: probe.currentPageDisplayLabel,
+            probeCurrentPhysicalPageLabel: probe.currentPhysicalPageLabel,
+            probeForwardDestinationAvailability: probe.forwardDestinationAvailability,
+            probeBackwardDestinationAvailability: probe.backwardDestinationAvailability,
+            probeVisiblePageIndices: probe.visiblePageIndices,
+            probeCanSemanticForward: probe.canSemanticForward,
+            probeCanSemanticBackward: probe.canSemanticBackward,
+            probeResolvedGraph: probeResolvedGraph,
+            currentResolvedGraph: resolvedGraph,
+            probeTurnDirection: probeTurnDirection,
+            paginationState: lastKnownState.paginationState,
+            existingPageCount: pageCount,
+            localForwardAvailability: localForwardAvailability,
+            localBackwardAvailability: localBackwardAvailability,
+            supportsActivePageTurn: supportsActivePageTurn
+        )
+        layoutState = probe.layoutState ?? .done
+        if !runtimeOwnedSpreadStateAvailable {
+            pageOffsetsDisplayed = visibleState.pageOffsetsDisplayed
+            currentSpread = visibleState.currentSpread
+            currentPage = visibleState.currentPage
+            pageCount = visibleState.pageCount
+            visiblePageIndices = visibleState.visiblePageIndices
+            forwardDestinationAvailability = visibleState.forwardDestinationAvailability
+            backwardDestinationAvailability = visibleState.backwardDestinationAvailability
+            canForward = visibleState.canForward
+            canBackward = visibleState.canBackward
+        }
+        if !runtimeOwnedDestinationSpreadAvailable {
+            destinationSpread = visibleState.destinationSpread
+        }
+        if !runtimeOwnedSpreadStateAvailable {
+            spreadSequence = spreadSequence ?? probe.spreadSequence
+        }
+        canNext = probe.canNext
+        canPrev = probe.canPrev
+        bookDirection = probe.bookDirection
+        isRightToLeft = probe.isRightToLeft
+        isVertical = probe.isVertical
+        isVerticalRightToLeft = probe.isVerticalRightToLeft
+        currentSectionIndex = probe.currentSectionIndex
+        currentSectionHref = probe.currentSectionHref
+        livePageIndex = probe.livePageIndex
+        liveChunkPageIndex = probe.liveChunkPageIndex
+        viewportCenterChunkPageIndex = probe.viewportCenterChunkPageIndex
+        historyCanGoBack = probe.historyCanGoBack
+        historyCanGoForward = probe.historyCanGoForward
+        historyDepth = probe.historyDepth
+        historyCurrentIndex = probe.historyCurrentIndex
+        historyPendingReplaceStateSuppressionCount = probe.historyPendingReplaceStateSuppressionCount
+        historySuppressedReplaceStateCount = probe.historySuppressedReplaceStateCount
+        historyLastSuppressedReplaceStateReason = probe.historyLastSuppressedReplaceStateReason
+        layoutPageRecordCount = probe.layoutPageRecordCount
+        layoutLiveRootExists = probe.layoutLiveRootExists
+        layoutLiveRootClassName = probe.layoutLiveRootClassName
+        layoutLiveRootChildCount = probe.layoutLiveRootChildCount
+        layoutLiveRootRectWidth = probe.layoutLiveRootRectWidth
+        layoutLiveRootRectHeight = probe.layoutLiveRootRectHeight
+        layoutLiveCurrentPageExists = probe.layoutLiveCurrentPageExists
+        layoutLiveCurrentPageClassName = probe.layoutLiveCurrentPageClassName
+        layoutLiveCurrentPageRectWidth = probe.layoutLiveCurrentPageRectWidth
+        layoutLiveCurrentPageRectHeight = probe.layoutLiveCurrentPageRectHeight
+        layoutLiveCurrentPageContainsChunkBody = probe.layoutLiveCurrentPageContainsChunkBody
+        layoutLiveCurrentChunkExists = probe.layoutLiveCurrentChunkExists
+        layoutLiveCurrentChunkTagName = probe.layoutLiveCurrentChunkTagName
+        layoutLiveCurrentChunkClassName = probe.layoutLiveCurrentChunkClassName
+        layoutLiveCurrentChunkDisplay = probe.layoutLiveCurrentChunkDisplay
+        layoutLiveCurrentChunkPosition = probe.layoutLiveCurrentChunkPosition
+        layoutLiveCurrentChunkFlex = probe.layoutLiveCurrentChunkFlex
+        layoutLiveCurrentChunkRectWidth = probe.layoutLiveCurrentChunkRectWidth
+        layoutLiveCurrentChunkRectHeight = probe.layoutLiveCurrentChunkRectHeight
+        layoutLiveCurrentChunkInnerHTMLLength = probe.layoutLiveCurrentChunkInnerHTMLLength
+        layoutLiveCurrentChunkContainsChunkBody = probe.layoutLiveCurrentChunkContainsChunkBody
+        layoutLiveCurrentChunkChildCount = probe.layoutLiveCurrentChunkChildCount
+        layoutLiveCurrentChunkTextLength = probe.layoutLiveCurrentChunkTextLength
+        layoutCurrentChunkBodyChildCount = probe.layoutCurrentChunkBodyChildCount
+        layoutCurrentChunkBodyTextLength = probe.layoutCurrentChunkBodyTextLength
+        layoutCurrentChunkBodyDisplay = probe.layoutCurrentChunkBodyDisplay
+        layoutCurrentChunkBodyPosition = probe.layoutCurrentChunkBodyPosition
+        layoutCurrentChunkBodyFlex = probe.layoutCurrentChunkBodyFlex
+        layoutColumnCount = probe.layoutColumnCount
+        layoutCurrentPageIndex = probe.layoutCurrentPageIndex
+        layoutCurrentPageChunkCount = probe.layoutCurrentPageChunkCount
+        layoutMaxPageChunkCount = probe.layoutMaxPageChunkCount
+        layoutUnitCount = probe.layoutUnitCount
+        layoutActiveBuildPageIndex = probe.layoutActiveBuildPageIndex
+        layoutComplete = probe.layoutComplete
+        layoutSpreadCandidateDetected = probe.layoutSpreadCandidateDetected
+        layoutVisibleUnitKind = probe.layoutVisibleUnitKind
+        layoutVisibleUnitAxis = probe.layoutVisibleUnitAxis
+        layoutVisiblePageCount = probe.layoutVisiblePageCount
+        layoutCurrentUnitIndex = probe.layoutCurrentUnitIndex
+        layoutLeadingPageIndex = probe.layoutLeadingPageIndex
+        layoutTrailingPageIndex = probe.layoutTrailingPageIndex
+        layoutHasLeadingSingleton = probe.layoutHasLeadingSingleton
+        layoutHasTrailingSingleton = probe.layoutHasTrailingSingleton
+        layoutPrimarySpacing = probe.layoutPrimarySpacing
+        layoutChromeGutterWidth = probe.layoutChromeGutterWidth
+        layoutReadableFrameWidth = probe.layoutReadableFrameWidth
+        layoutMaxContentWidth = probe.layoutMaxContentWidth
+        layoutSemanticSideInset = probe.layoutSemanticSideInset
+        layoutMultiUnitActive = probe.layoutMultiUnitActive
+        layoutSpreadPagesAllowedForViewport = probe.layoutSpreadPagesAllowedForViewport
+        layoutWritingMode = probe.layoutWritingMode
+        layoutViewportWidth = probe.layoutViewportWidth
+        layoutViewportHeight = probe.layoutViewportHeight
+        layoutMeasuredGap = probe.layoutMeasuredGap
+        layoutMetricSize = probe.layoutMetricSize
+        layoutColumnInlineSize = probe.layoutColumnInlineSize
+        layoutCurrentChunkClientWidth = probe.layoutCurrentChunkClientWidth
+        layoutCurrentChunkClientHeight = probe.layoutCurrentChunkClientHeight
+        layoutCurrentChunkScrollWidth = probe.layoutCurrentChunkScrollWidth
+        layoutCurrentChunkScrollHeight = probe.layoutCurrentChunkScrollHeight
+        layoutCurrentChunkOverflow = probe.layoutCurrentChunkOverflow
+        computedFontSizeCSS = probe.computedFontSizeCSS
+        currentPageTextSample = probe.currentPageTextSample
+        nextPageTextSample = probe.nextPageTextSample
+        self.currentPageDisplayLabel = visibleState.currentPageDisplayLabel
+        self.currentPhysicalPageLabel = visibleState.currentPhysicalPageLabel
+        progressScrubberVisible = probe.progressScrubberVisible
+        progressScrubberActive = probe.progressScrubberActive
+        showTitleChrome = probe.showTitleChrome
+        showHeaderChrome = probe.showHeaderChrome
+        sameDocumentHostTurnPhase = probe.sameDocumentHostTurnPhase
+        sameDocumentHostTurnDirection = probe.sameDocumentHostTurnDirection
+        sameDocumentHostTurnCurrentPageIndex = probe.sameDocumentHostTurnCurrentPageIndex
+        sameDocumentHostTurnTargetPageIndex = probe.sameDocumentHostTurnTargetPageIndex
+        sameDocumentHostTurnPageCount = probe.sameDocumentHostTurnPageCount
+        sameDocumentHostTurnDatasetCurrentPageIndex = probe.sameDocumentHostTurnDatasetCurrentPageIndex
+        sameDocumentHostTurnResult = probe.sameDocumentHostTurnResult
+        pageScrollerAnimationIsRunning = probe.pageScrollerAnimationIsRunning
+        liveResizeActive = probe.liveResizeActive
+    }
+
+    private func shouldPublishVisibleProbeFields(_ probe: ReaderPageTurnNavigationProbe) -> Bool {
+        guard let navigator, navigator.hasAttachedWebView else { return false }
+        if probe.probeError != nil { return false }
+        if !contentHostSequence.isStable { return false }
+        switch probe.contentHostState {
+        case .some(.initial), .some(.waitingOnContentView), .some(.preparingContentView), .some(.preparingForReuse):
+            return false
+        default:
+            break
+        }
+        if let expectedConfigurationKey = lastKnownState.paginationState?.configurationKey,
+           let probeConfigurationKey = probe.configurationKey,
+           expectedConfigurationKey != probeConfigurationKey {
+            return false
+        }
+        if requestedLocationState != nil && !probeShowsMeaningfulSettle(probe) {
+            return false
+        }
+        return true
+    }
+
+    private func probeShowsMeaningfulSettle(_ probe: ReaderPageTurnNavigationProbe) -> Bool {
+        ReaderPageTurnNavigationComparison.showsMeaningfulSettle(
+            probe: ReaderPageTurnNavigationObservation(probe: probe),
+            comparedTo: ReaderPageTurnNavigationObservation(
+                currentSpread: currentSpread,
+                destinationSpread: destinationSpread,
+                pageOffsetsDisplayed: pageOffsetsDisplayed,
+                pageCount: pageCount,
+                layoutLeadingPageIndex: layoutLeadingPageIndex,
+                currentPage: currentPage,
+                layoutTrailingPageIndex: layoutTrailingPageIndex,
+                layoutVisiblePageCount: layoutVisiblePageCount,
+                currentSectionIndex: currentSectionIndex,
+                currentSectionHref: currentSectionHref,
+                supportsActivePageTurn: supportsActivePageTurn,
+                canForward: canForward,
+                canBackward: canBackward,
+                layoutActiveBuildPageIndex: layoutActiveBuildPageIndex
+            )
+        )
     }
 
     private func readerPageTurnFrameInfo() -> WKFrameInfo? {
@@ -2588,13 +4919,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                     return probe
                 }
             } else {
-                let didAdvance = switch direction {
-                case .forward:
-                    probe.canBackward || probe.currentPage != nil || probe.currentSectionIndex != nil
-                case .backward:
-                    probe.currentPage != nil || probe.currentSectionIndex != nil
-                }
-                if didAdvance {
+                if probe.hasSettledCommittedTurn(direction: direction) {
                     return probe
                 }
             }
@@ -2632,6 +4957,20 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         )
     }
 
+    private func publishNavigationEvent(_ kind: ReaderPageTurnNavigationEventKind, direction: PageTurnDirection) {
+        nextNavigationEventSerial += 1
+        lastNavigationEvent = ReaderPageTurnNavigationEvent(
+            serial: nextNavigationEventSerial,
+            kind: kind,
+            direction: direction
+        )
+    }
+
+    func publishAttemptedPastEndForDiagnostics(direction: PageTurnDirection) {
+        movementKind = nil
+        publishNavigationEvent(.attemptedPastEnd, direction: direction)
+    }
+
 }
 
 fileprivate extension ReaderPageTurnNavigationProbe {
@@ -2642,21 +4981,67 @@ fileprivate extension ReaderPageTurnNavigationProbe {
         && hasSectionLayoutController
     }
 
+    private var spreadGraph: ReaderPageTurnSpreadGraph {
+        ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: destinationSpread,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: currentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        )
+    }
+
+    private var movementGraph: ReaderPageTurnMovementGraph {
+        spreadGraph.movementGraph
+    }
+
+    private var resolvedGraph: ReaderPageTurnResolvedGraph {
+        spreadGraph.resolvedGraph
+    }
+
+    private func currentVisiblePageIndices() -> [Int]? {
+        resolvedGraph.spreadSequence.current?.pageIndices ?? resolvedGraph.currentVisiblePageIndices
+    }
+
+    private func destinationPageIndices(for direction: PageTurnDirection) -> [Int]? {
+        resolvedGraph.spreadSequence.node(for: direction)?.pageIndices ?? resolvedGraph.destinationPageIndices(for: direction)
+    }
+
+    func resolvedDestinationAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability {
+        guard supportsActivePageTurn || (hasSectionLayoutController && (currentPageTextSample?.isEmpty == false)) else {
+            return .unavailable
+        }
+        guard supportsActivePageTurn else {
+            return .both
+        }
+        let isAvailable = switch direction {
+        case .forward:
+            canSemanticForward || canNext
+        case .backward:
+            canSemanticBackward || canPrev
+        }
+        guard isAvailable else {
+            return .unavailable
+        }
+        guard resolvedGraph.usesSpreadAwareNavigationSemantics else {
+            return .both
+        }
+        let availability = movementGraph.destinationAvailability(for: direction)
+        return availability == .unavailable ? .both : availability
+    }
+
     func hasLocationOrContentAdvance(comparedTo baseline: Self) -> Bool {
         hasMeaningfulNavigationChange(comparedTo: baseline)
     }
 
-    func materiallyExpandedPagination(comparedTo baseline: Self) -> Bool {
-        if (pageCount ?? 0) > (baseline.pageCount ?? 0) {
-            return true
-        }
-        if (layoutPageRecordCount ?? 0) > (baseline.layoutPageRecordCount ?? 0) {
-            return true
-        }
-        if (layoutActiveBuildPageIndex ?? 0) > (baseline.layoutActiveBuildPageIndex ?? 0) {
-            return true
-        }
-        return false
+    func hasSettledCommittedTurn(direction: PageTurnDirection) -> Bool {
+        ReaderPageTurnNavigationComparison.hasSettledCommittedTurn(
+            probe: ReaderPageTurnNavigationObservation(probe: self),
+            direction: direction
+        )
     }
 }
 
@@ -2768,23 +5153,52 @@ fileprivate final class ReaderPageTurnIdentityMonitor: ObservableObject {
 }
 
 @MainActor
-fileprivate func readerPageTurnStyle() -> PageTurnStyle {
-    switch readerPageTurnPlatformFamily() {
+fileprivate func readerPageTurnForceReducedMotionForUITests() -> Bool {
+    ProcessInfo.processInfo.arguments.contains("--ui-test-force-reduced-motion")
+}
+
+@MainActor
+fileprivate func readerResolvedPageTurnTransitionFamily(
+    navigationStyle: PageTurnNavigationStyle = .paged,
+    transitionFamily: PageTurnTransitionFamily = .slide
+) -> PageTurnTransitionFamily {
+    let reducedMotionRequested = readerPageTurnForceReducedMotionForUITests()
+    return readerPageTurnStyle(
+        navigationStyle: navigationStyle,
+        transitionFamily: transitionFamily
+    ).resolvedTransitionFamily(reducedMotionRequested: reducedMotionRequested)
+}
+
+@MainActor
+fileprivate func readerPageTurnStyle(
+    navigationStyle: PageTurnNavigationStyle = .paged,
+    transitionFamily: PageTurnTransitionFamily = .slide
+) -> PageTurnStyle {
+    let style: PageTurnStyle = switch readerPageTurnPlatformFamily() {
     case .macOS:
-        return .macOSDefault()
+        .macOSDefault()
     case .iPhone:
-        return .iPhoneDefault(
+        .iPhoneDefault(
             displayCornerRadiusProvider: { rect in
                 min(rect.width, rect.height) * 0.08
             }
         )
     case .iPad:
-        return .iPadDefault(
+        .iPadDefault(
             displayCornerRadiusProvider: { rect in
                 min(rect.width, rect.height) * 0.05
             }
         )
     }
+
+    var resolvedStyle = style
+    resolvedStyle.navigationStyle = navigationStyle
+    resolvedStyle.transitionFamily = transitionFamily
+    resolvedStyle.transitionFamily = resolvedStyle.resolvedTransitionFamily(
+        reducedMotionRequested: readerPageTurnForceReducedMotionForUITests()
+    )
+
+    return resolvedStyle
 }
 
 fileprivate struct ReaderPageTurnHost<Content: View>: View {
@@ -2805,6 +5219,12 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
     @Environment(\.readerPageTurnInteractionContext) private var interactionContext
     @EnvironmentObject private var scriptCaller: WebViewScriptCaller
     @EnvironmentObject private var readerViewModel: ReaderViewModel
+    @AppStorage("readerAllowMultipleColumns") private var readerAllowMultipleColumns = true
+#if os(iOS)
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+#endif
 
     init(
         requestedEnabled: Bool,
@@ -2827,7 +5247,10 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             snapshotProvider: bridge,
             turnDriver: bridge,
             layoutModel: layoutModel,
-            style: readerPageTurnStyle()
+            style: readerPageTurnStyle(
+                navigationStyle: bridge.pageNavigationStyle,
+                transitionFamily: bridge.transitionFamily
+            )
         )
         .environment(\.readerResolvedPaginationMode, bridge.resolvedPaginationMode)
         .task(id: bridgeRefreshKey) {
@@ -2837,7 +5260,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
                 webViewState: readerViewModel.state,
                 isEligibleForActiveTurns: isStructurallyEligibleForActiveTurns
             )
-            controller.setPageProgressionDirection(bridge.pageProgressionDirection)
+            syncControllerFromBridge()
         }
         .task(id: layoutSemanticsKey) {
             refreshLayoutSemantics()
@@ -2845,10 +5268,43 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         .task(id: bridge.pageProgressionDirection) {
             controller.setPageProgressionDirection(bridge.pageProgressionDirection)
         }
+        .task(id: bridge.pageNavigationStyle) {
+            controller.setNavigationStyle(bridge.pageNavigationStyle)
+        }
+        .task(id: bridge.transitionFamily) {
+            controller.setTransitionFamily(bridge.transitionFamily)
+        }
+        .task(id: bridge.movementKind) {
+            controller.setMovementKind(bridge.movementKind)
+        }
+        .task(id: bridge.layoutState) {
+            controller.setLayoutState(bridge.layoutState)
+        }
+        .task(id: resolvedCurrentSpreadTaskID()) {
+            controller.setCurrentSpread(resolvedControllerCurrentSpread()?.pageTurnSpread)
+        }
+        .task(id: resolvedDestinationSpreadTaskID()) {
+            controller.setDestinationSpread(resolvedControllerDestinationSpread()?.pageTurnSpread)
+        }
+        .task(id: bridge.contentHostState) {
+            controller.setContentHostState(bridge.contentHostState.pageTurnContentHostState)
+        }
+        .task(id: bridge.contentHostSequenceTaskID) {
+            controller.setContentHostSequence(bridge.contentHostSequence)
+        }
+        .task(id: bridge.preloadTaskID) {
+            controller.setPreloadState(resolvedPreloadState())
+        }
+        .task(id: bridge.lastNavigationEvent?.serial) {
+            controller.setNavigationEventKind(bridge.lastNavigationEvent?.kind.pageTurnNavigationEventKind)
+        }
+        .task(id: interactionContext) {
+            controller.setInteractionPolicy(resolvedInteractionPolicy())
+        }
         .task(id: readerViewModel.pageTurnBootstrapSerial) {
             guard readerViewModel.pageTurnBootstrapSerial > 0 else { return }
             _ = await bridge.refreshNavigationState()
-            controller.setPageProgressionDirection(bridge.pageProgressionDirection)
+            syncControllerFromBridge()
             let snapshot = await makeProbeSnapshot()
             probeModel.update(snapshot)
             logProbeSnapshotIfEnabled(snapshot)
@@ -2860,7 +5316,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             for _ in 1...maxAttempts {
                 guard shouldPollBridgeBootstrap else { break }
                 _ = await bridge.refreshNavigationState()
-                controller.setPageProgressionDirection(bridge.pageProgressionDirection)
+                syncControllerFromBridge()
                 let snapshot = await makeProbeSnapshot()
                 probeModel.update(snapshot)
                 logProbeSnapshotIfEnabled(snapshot)
@@ -2939,13 +5395,14 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
     private var shouldPollBridgeBootstrap: Bool {
         requestedEnabled
             && isStructurallyEligibleForActiveTurns
-            && !bridge.supportsActivePageTurn
+            && !bridge.probeConfirmedActivePageTurn
     }
 
     private var bridgeBootstrapPollingKey: String {
         [
             requestedEnabled ? "requested" : "passThrough",
             isStructurallyEligibleForActiveTurns ? "eligible" : "ineligible",
+            bridge.probeConfirmedActivePageTurn ? "probeReady" : "probePending",
             bridge.supportsActivePageTurn ? "bridgeReady" : "bridgePending",
             readerViewModel.state.pageURL.absoluteString,
             navigator.hasAttachedWebView ? "attached" : "detached",
@@ -2978,6 +5435,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             requestedEnabled ? "requested" : "passThrough",
             isStructurallyEligibleForActiveTurns ? "eligible" : "ineligible",
             isActivePageTurnEnabled ? "active" : "inactive",
+            bridge.probeConfirmedActivePageTurn ? "probeReady" : "probeBlocked",
             bridge.supportsActivePageTurn ? "bridgeReady" : "bridgeBlocked",
             isGestureCaptureEnabled ? "gestureCaptureEnabled" : "gestureCaptureBlocked",
             interactionContext.blockingReason ?? "noBlock",
@@ -2997,6 +5455,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             requestedEnabled ? "requested" : "passThrough",
             isStructurallyEligibleForActiveTurns ? "eligible" : "ineligible",
             isActivePageTurnEnabled ? "active" : "inactive",
+            bridge.probeConfirmedActivePageTurn ? "probeReady" : "probeBlocked",
             bridge.supportsActivePageTurn ? "bridgeReady" : "bridgeBlocked",
             isGestureCaptureEnabled ? "gestureCaptureEnabled" : "gestureCaptureBlocked",
             interactionContext.blockingReason ?? "noBlock",
@@ -3016,6 +5475,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             readerViewModel.state.pageURL.absoluteString,
             requestedEnabled ? "requested" : "passThrough",
             isStructurallyEligibleForActiveTurns ? "eligible" : "ineligible",
+            bridge.probeConfirmedActivePageTurn ? "probeReady" : "probeBlocked",
             bridge.supportsActivePageTurn ? "bridgeReady" : "bridgeBlocked",
             isGestureCaptureEnabled ? "gestureCaptureEnabled" : "gestureCaptureBlocked",
             interactionContext.blockingReason ?? "noBlock",
@@ -3032,13 +5492,38 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         let hasLeadingSingleton = bridge.layoutHasLeadingSingleton.map(String.init) ?? "nil"
         let hasTrailingSingleton = bridge.layoutHasTrailingSingleton.map(String.init) ?? "nil"
         let primarySpacing = String(describing: resolvedPrimarySpacing())
+        let chromeGutterWidth = String(describing: resolvedChromeGutterWidth())
         let measuredGap = bridge.layoutMeasuredGap.map { String($0) } ?? "nil"
         let multiUnitActive = bridge.layoutMultiUnitActive.map(String.init) ?? "nil"
         let spreadPagesAllowed = bridge.layoutSpreadPagesAllowedForViewport.map(String.init) ?? "nil"
         let columnCount = bridge.layoutColumnCount.map(String.init) ?? "nil"
         let columnInlineSize = bridge.layoutColumnInlineSize.map(String.init) ?? "nil"
+        let viewportWidth = bridge.layoutViewportWidth.map(String.init) ?? "nil"
+        let viewportHeight = bridge.layoutViewportHeight.map(String.init) ?? "nil"
+        let chromeVisibility = resolvedChromeVisibility()
+        let chromeTitleVisible = chromeVisibility.showTitle ? "titleVisible" : "titleHidden"
+        let chromeHeaderVisible = chromeVisibility.showHeader ? "headerVisible" : "headerHidden"
         let axisOrientation = bridge.isVertical ? "vertical" : "horizontal"
         let writingMode = bridge.layoutWritingMode ?? "nil"
+        let appearance = colorScheme == .dark ? "dark" : "light"
+        let navigationStyle = bridge.pageNavigationStyle.rawValue
+        let transitionFamily = bridge.transitionFamily.rawValue
+        let currentSpreadKey = bridge.currentSpreadTaskID
+        let currentPageDisplayLabel = bridge.currentPageDisplayLabel ?? "nil"
+        let currentPhysicalPageLabel = bridge.currentPhysicalPageLabel ?? "nil"
+        let allowsMultipleColumns = readerAllowMultipleColumns ? "multiColumnOn" : "multiColumnOff"
+        let pageScrollerAnimation = (bridge.pageScrollerAnimationIsRunning ?? false) ? "pageScrollerAnimating" : "pageScrollerIdle"
+        let liveResizeState = (bridge.liveResizeActive ?? false) ? "liveResizeActive" : "liveResizeInactive"
+        let requestedLocationState = effectiveRequestedLocationState(
+            readerViewModel.pageTurnRequestedLocationState,
+            currentSpread: bridge.currentSpread
+        )
+        let requestedLocationKey = [
+            requestedLocationState?.source.rawValue ?? "nil",
+            requestedLocationState?.kind ?? "nil",
+            requestedLocationState?.value ?? "nil",
+            requestedLocationState?.surroundingContext ?? "nil",
+        ].joined(separator: ":")
         return [
             visibleUnitKind,
             visibleUnitAxis,
@@ -3049,13 +5534,28 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             hasLeadingSingleton,
             hasTrailingSingleton,
             primarySpacing,
+            chromeGutterWidth,
             measuredGap,
             multiUnitActive,
             spreadPagesAllowed,
             columnCount,
             columnInlineSize,
+            viewportWidth,
+            viewportHeight,
+            chromeTitleVisible,
+            chromeHeaderVisible,
             axisOrientation,
             writingMode,
+            appearance,
+            navigationStyle,
+            transitionFamily,
+            currentSpreadKey,
+            currentPageDisplayLabel,
+            currentPhysicalPageLabel,
+            allowsMultipleColumns,
+            pageScrollerAnimation,
+            liveResizeState,
+            requestedLocationKey,
         ].joined(separator: "|")
     }
 
@@ -3083,16 +5583,157 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
     }
 
     private func refreshLayoutSemantics() {
+        let paginationState = readerViewModel.state.paginationState
         let visibleUnit = resolvedVisibleUnit()
+        let interactionDirection = controller.lastInteractionEvent?.direction
         let pageLabelPolicy = resolvedPageLabelPolicy(visibleUnit: visibleUnit)
+        bridge.updateResolvedPageLabelPolicy(pageLabelPolicy)
         let platformFamily = readerPageTurnPlatformFamily()
-        let chromeVisibility = PageTurnChromeVisibility(
-            showTitle: true,
-            showHeader: platformFamily != .iPhone
+        let chromeVisibility = resolvedChromeVisibility(platformFamily: platformFamily)
+        bridge.updateResolvedChromeVisibility(chromeVisibility)
+        let allowsMultipleColumns = readerAllowMultipleColumns
+        let pageNumberMode: WebViewPaginationPageNumberMode = pageLabelPolicy.usesPhysicalPageLabels ? .printEdition : .digitalBook
+        let currentSpread = paginationState?.currentSpread ?? resolvedWebViewCurrentSpread(from: visibleUnit)
+        let resolvedPageCount = ReaderResolvedPagination.pageCount(
+            bridgePageCount: bridge.pageCount,
+            paginationPageCount: paginationState?.pageCount
         )
-        navigator.paginationStateEnrichment = WebViewPaginationStateEnrichment(
+        let spreadGraph = ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: nil,
+            pageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed ?? currentSpread?.pageIndices,
+            pageCount: resolvedPageCount,
+            layoutLeadingPageIndex: visibleUnit.leadingPageIndex,
+            currentPage: bridge.currentPage,
+            layoutTrailingPageIndex: visibleUnit.trailingPageIndex,
+            layoutVisiblePageCount: visibleUnit.visiblePageCount
+        )
+        let resolvedGraph = spreadGraph.resolvedGraph
+        let resolvedCurrentSpread = ReaderResolvedPagination.currentSpread(
+            bridgeCurrentSpread: nil,
+            paginationCurrentSpread: paginationState?.currentSpread,
+            resolvedGraph: resolvedGraph
+        )
+        let resolvedDestinationSpread = ReaderResolvedPagination.destinationSpread(
+            direction: interactionDirection,
+            paginationDestinationSpread: paginationState?.destinationSpread,
+            resolvedGraph: resolvedGraph
+        )
+        let pageOffsetsDisplayed = ReaderResolvedPagination.pageOffsetsDisplayed(
+            paginationPageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed,
+            resolvedCurrentSpread: resolvedCurrentSpread,
+            resolvedGraph: resolvedGraph
+        )
+        let currentPageIndex = ReaderResolvedPagination.currentPageIndex(
+            bridgeCurrentPage: bridge.currentPage,
+            paginationCurrentPageIndex: paginationState?.currentPageIndex,
+            resolvedGraph: resolvedGraph
+        )
+        let visiblePageIndices = ReaderResolvedPagination.visiblePageIndices(
+            bridgeVisiblePageIndices: bridge.visiblePageIndices,
+            paginationVisiblePageIndices: paginationState?.visiblePageIndices,
+            resolvedGraph: resolvedGraph
+        )
+        let canMoveForward = ReaderResolvedPagination.canMoveForward(
+            bridgeCanMoveForward: bridge.canForward,
+            paginationCanMoveForward: paginationState?.canMoveForward,
+            resolvedGraph: resolvedGraph
+        )
+        let canMoveBackward = ReaderResolvedPagination.canMoveBackward(
+            bridgeCanMoveBackward: bridge.canBackward,
+            paginationCanMoveBackward: paginationState?.canMoveBackward,
+            resolvedGraph: resolvedGraph
+        )
+        let forwardDestinationAvailability = ReaderResolvedPagination.destinationAvailability(
+            bridgeAvailability: bridge.forwardDestinationAvailability,
+            paginationAvailability: paginationState?.forwardDestinationAvailability,
+            resolvedGraphAvailability: resolvedGraph.forwardDestinationAvailability
+        )
+        let backwardDestinationAvailability = ReaderResolvedPagination.destinationAvailability(
+            bridgeAvailability: bridge.backwardDestinationAvailability,
+            paginationAvailability: paginationState?.backwardDestinationAvailability,
+            resolvedGraphAvailability: resolvedGraph.backwardDestinationAvailability
+        )
+        let context = ReaderResolvedPaginationContext(
+            paginationState: paginationState,
+            bridgeSpreadSequence: bridge.spreadSequence,
+            bridgeCurrentSpread: nil,
+            bridgeDestinationSpread: nil,
+            bridgePageOffsetsDisplayed: nil,
+            bridgeVisiblePageIndices: bridge.visiblePageIndices,
+            bridgePageCount: bridge.pageCount,
+            bridgeCurrentPage: bridge.currentPage,
+            bridgeCanMoveForward: bridge.canForward,
+            bridgeCanMoveBackward: bridge.canBackward,
+            bridgeCurrentContentLocation: bridge.currentContentLocation,
+            bridgeForwardDestinationAvailability: bridge.forwardDestinationAvailability,
+            bridgeBackwardDestinationAvailability: bridge.backwardDestinationAvailability,
+            bridgePaginationComplete: bridge.paginationComplete,
+            bridgeConfigurationKey: bridge.configurationKey,
+            bridgePublicationSource: bridge.publicationSource,
+            bridgePageNumberMode: bridge.pageNumberMode,
+            bridgeAllowsMultipleColumns: bridge.allowsMultipleColumns,
+            paginationCurrentPageIndex: paginationState?.currentPageIndex,
+            paginationVisiblePageIndices: paginationState?.visiblePageIndices,
+            paginationCanMoveForward: paginationState?.canMoveForward,
+            paginationCanMoveBackward: paginationState?.canMoveBackward,
+            paginationCurrentContentLocation: paginationState?.currentContentLocation,
+            paginationSpreadSequence: paginationState?.spreadSequence,
+            paginationForwardDestinationAvailability: paginationState?.forwardDestinationAvailability,
+            paginationBackwardDestinationAvailability: paginationState?.backwardDestinationAvailability,
+            paginationComplete: paginationState?.paginationComplete,
+            paginationConfigurationKey: paginationState?.configurationKey,
+            paginationPublicationSource: paginationState?.publicationSource,
+            paginationPageNumberMode: paginationState?.pageNumberMode,
+            paginationAllowsMultipleColumns: paginationState?.allowsMultipleColumns,
+            layoutLeadingPageIndex: visibleUnit.leadingPageIndex,
+            layoutTrailingPageIndex: visibleUnit.trailingPageIndex,
+            layoutVisiblePageCount: visibleUnit.visiblePageCount
+        )
+        let pageOffsetRange = resolvedGraph.pageOffsetRange
+        let runtimeOwnedSpreadStateAvailable = paginationState?.spreadSequence != nil
+        let runtimeOwnedDestinationSpreadAvailable = paginationState?.destinationSpread != nil
+        let requestedLocation = effectiveRequestedLocationState(
+            readerViewModel.pageTurnRequestedLocationState,
+            currentSpread: resolvedCurrentSpread
+        )
+        let style = readerPageTurnStyle(
+            navigationStyle: bridge.pageNavigationStyle,
+            transitionFamily: bridge.transitionFamily
+        )
+        bridge.updateResolvedPageTurnPresentation(
+            navigationStyle: style.navigationStyle,
+            transitionFamily: style.transitionFamily,
+            layoutState: bridge.supportsActivePageTurn ? .done : .changing,
+            updateReason: requestedLocation == nil ? .configurationChange : .locationFulfillment,
+            pageNumberMode: pageNumberMode,
+            allowsMultipleColumns: allowsMultipleColumns
+        )
+        bridge.updateRequestedLocationState(requestedLocation)
+        navigator.paginationStateEnrichment = ReaderResolvedPaginationEnrichment.resolve(
+            runtimeOwnedSpreadStateAvailable: runtimeOwnedSpreadStateAvailable,
+            runtimeOwnedDestinationSpreadAvailable: runtimeOwnedDestinationSpreadAvailable,
             visibleUnit: resolvedWebViewVisibleUnit(from: visibleUnit),
-            pageLabelPolicy: resolvedWebViewPageLabelPolicy(from: pageLabelPolicy)
+            pageLabelPolicy: resolvedWebViewPageLabelPolicy(from: pageLabelPolicy),
+            currentPageDisplayLabel: resolvedCurrentPageDisplayLabel(),
+            currentPhysicalPageLabel: resolvedCurrentPhysicalPageLabel(),
+            pageNavigationStyle: style.navigationStyle.webViewPaginationNavigationStyle,
+            allowsMultipleColumns: allowsMultipleColumns,
+            pageNumberMode: pageNumberMode,
+            contentHostState: bridge.contentHostState.webViewPaginationContentHostState,
+            preloadStrategy: bridge.preloadStrategy.webViewPaginationPreloadStrategy,
+            currentContentLocation: context.currentContentLocation.webViewPaginationCurrentContentLocation,
+            requestedLocation: requestedLocation?.webViewPaginationRequestedLocation,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageOffsetRange: pageOffsetRange,
+            currentPageIndex: currentPageIndex,
+            visiblePageIndices: visiblePageIndices,
+            canMoveForward: canMoveForward,
+            canMoveBackward: canMoveBackward,
+            forwardDestinationAvailability: forwardDestinationAvailability?.rawValue,
+            backwardDestinationAvailability: backwardDestinationAvailability?.rawValue,
+            currentSpread: resolvedCurrentSpread,
+            destinationSpread: resolvedDestinationSpread
         )
         layoutModel.update(
             containerBounds: layoutModel.inputs.containerBounds,
@@ -3104,27 +5745,363 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             pageLabelPolicy: pageLabelPolicy,
             provider: .readerDefault
         )
+        let readableFrame = PageTurnReadableFrame(
+            semanticSideInset: max(0, layoutModel.inputs.contentRect.minX - layoutModel.inputs.containerBounds.minX),
+            pageContentWidthWithinMargins: layoutModel.inputs.contentRect.width,
+            maxContentWidth: max(0, layoutModel.inputs.containerBounds.width - layoutModel.inputs.safeAreaInsets.leading - layoutModel.inputs.safeAreaInsets.trailing)
+        )
+        controller.setReadableFrame(readableFrame)
+        controller.setRequestedLocation(requestedLocation?.pageTurnRequestedLocation)
+        controller.setCurrentSpread(resolvedCurrentSpread?.pageTurnSpread)
+        controller.setDestinationSpread(resolvedDestinationSpread?.pageTurnSpread)
+        controller.setPreloadState(resolvedPreloadState())
+        controller.setPageNumberHUD(
+            resolvedPageNumberHUDState(
+                visibleUnit: visibleUnit,
+                pageLabelPolicy: pageLabelPolicy,
+                resolvedGraph: resolvedGraph
+            )
+        )
+        controller.setScrubberState(
+            resolvedScrubberState(
+                resolvedGraph: resolvedGraph
+            )
+        )
+        controller.setInteractionPolicy(resolvedInteractionPolicy())
+        controller.setHostEnvironment(
+            .init(
+                contentRect: layoutModel.inputs.contentRect,
+                hostInsets: style.contentInsets,
+                contentInsets: style.contentInsets,
+                safeAreaInsets: layoutModel.inputs.safeAreaInsets,
+                closeBookInteracting: false,
+                scenePhase: resolvedScenePhase,
+                horizontalSizeClass: resolvedHorizontalSizeClass,
+                verticalSizeClass: resolvedVerticalSizeClass,
+                compactNavigationSheetPresented: false
+            )
+        )
+        controller.setVisiblePagesState(
+            resolvedVisiblePagesState(
+                visibleUnit: visibleUnit,
+                context: context
+            )
+        )
+    }
+
+    private func syncControllerFromBridge() {
+        let context = resolvedPaginationContext()
+        let resolvedCurrentSpread = resolvedControllerCurrentSpread(context: context)
+        let resolvedDestinationSpread = resolvedControllerDestinationSpread(context: context)
+        controller.setPageProgressionDirection(bridge.pageProgressionDirection)
+        controller.setNavigationStyle(bridge.pageNavigationStyle)
+        controller.setTransitionFamily(bridge.transitionFamily)
+        controller.setMovementKind(bridge.movementKind)
+        controller.setLayoutState(bridge.layoutState)
+        controller.setCurrentSpread(resolvedCurrentSpread?.pageTurnSpread)
+        controller.setDestinationSpread(resolvedDestinationSpread?.pageTurnSpread)
+        controller.setContentHostState(bridge.contentHostState.pageTurnContentHostState)
+        controller.setContentHostSequence(bridge.contentHostSequence)
+        controller.setPreloadState(resolvedPreloadState())
+        controller.setNavigationEventKind(bridge.lastNavigationEvent?.kind.pageTurnNavigationEventKind)
+        controller.setInteractionPolicy(resolvedInteractionPolicy())
+    }
+
+    private func resolvedPaginationContext(
+        paginationState: WebViewPaginationState? = nil
+    ) -> ReaderResolvedPaginationContext {
+        ReaderResolvedPaginationContext(
+            paginationState: paginationState ?? readerViewModel.state.paginationState,
+            bridgeSpreadSequence: bridge.spreadSequence,
+            bridgeCurrentSpread: bridge.currentSpread,
+            bridgeDestinationSpread: bridge.destinationSpread,
+            bridgePageOffsetsDisplayed: bridge.pageOffsetsDisplayed,
+            bridgeVisiblePageIndices: bridge.visiblePageIndices,
+            bridgePageCount: bridge.pageCount,
+            bridgeCurrentPage: bridge.currentPage,
+            bridgeCanMoveForward: bridge.canForward,
+            bridgeCanMoveBackward: bridge.canBackward,
+            bridgeCurrentContentLocation: bridge.currentContentLocation,
+            bridgeForwardDestinationAvailability: bridge.forwardDestinationAvailability,
+            bridgeBackwardDestinationAvailability: bridge.backwardDestinationAvailability,
+            bridgePaginationComplete: bridge.paginationComplete,
+            bridgeConfigurationKey: bridge.configurationKey,
+            bridgePublicationSource: bridge.publicationSource,
+            bridgePageNumberMode: bridge.pageNumberMode,
+            bridgeAllowsMultipleColumns: bridge.allowsMultipleColumns,
+            paginationCurrentPageIndex: (paginationState ?? readerViewModel.state.paginationState)?.currentPageIndex,
+            paginationVisiblePageIndices: (paginationState ?? readerViewModel.state.paginationState)?.visiblePageIndices,
+            paginationCanMoveForward: (paginationState ?? readerViewModel.state.paginationState)?.canMoveForward,
+            paginationCanMoveBackward: (paginationState ?? readerViewModel.state.paginationState)?.canMoveBackward,
+            paginationCurrentContentLocation: (paginationState ?? readerViewModel.state.paginationState)?.currentContentLocation,
+            paginationSpreadSequence: (paginationState ?? readerViewModel.state.paginationState)?.spreadSequence,
+            paginationForwardDestinationAvailability: (paginationState ?? readerViewModel.state.paginationState)?.forwardDestinationAvailability,
+            paginationBackwardDestinationAvailability: (paginationState ?? readerViewModel.state.paginationState)?.backwardDestinationAvailability,
+            paginationComplete: (paginationState ?? readerViewModel.state.paginationState)?.paginationComplete,
+            paginationConfigurationKey: (paginationState ?? readerViewModel.state.paginationState)?.configurationKey,
+            paginationPublicationSource: (paginationState ?? readerViewModel.state.paginationState)?.publicationSource,
+            paginationPageNumberMode: (paginationState ?? readerViewModel.state.paginationState)?.pageNumberMode,
+            paginationAllowsMultipleColumns: (paginationState ?? readerViewModel.state.paginationState)?.allowsMultipleColumns,
+            layoutLeadingPageIndex: bridge.layoutLeadingPageIndex,
+            layoutTrailingPageIndex: bridge.layoutTrailingPageIndex,
+            layoutVisiblePageCount: bridge.layoutVisiblePageCount
+        )
+    }
+
+    private func resolvedBridgeGraph() -> ReaderPageTurnResolvedGraph {
+        resolvedPaginationContext().resolvedGraph
+    }
+
+    private func resolvedControllerCurrentSpread(
+        context: ReaderResolvedPaginationContext? = nil
+    ) -> WebViewPaginationSpread? {
+        (context ?? resolvedPaginationContext()).currentSpread
+    }
+
+    private func resolvedControllerDestinationSpread(
+        context: ReaderResolvedPaginationContext? = nil
+    ) -> WebViewPaginationSpread? {
+        (context ?? resolvedPaginationContext()).destinationSpread(direction: controller.lastInteractionEvent?.direction)
+    }
+
+    private func resolvedCurrentSpreadTaskID() -> String {
+        let context = resolvedPaginationContext()
+        return spreadTaskID(for: resolvedControllerCurrentSpread(context: context))
+    }
+
+    private func resolvedDestinationSpreadTaskID() -> String {
+        let context = resolvedPaginationContext()
+        return spreadTaskID(for: resolvedControllerDestinationSpread(context: context))
+    }
+
+    private func spreadTaskID(for spread: WebViewPaginationSpread?) -> String {
+        spread?.slots
+            .map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
+            .joined(separator: ",")
+            ?? "nil"
+    }
+
+    private func resolvedPreloadState() -> PageTurnPreloadState {
+        let context = resolvedPaginationContext()
+        return .init(
+            strategy: bridge.preloadStrategy,
+            currentContentLocation: context.currentContentLocation,
+            visibleContentCount: context.visiblePageIndices?.count ?? context.resolvedGraph.visiblePageCount,
+            totalControllerCount: context.pageCount
+        )
+    }
+
+    private func resolvedVisiblePagesState(
+        visibleUnit: PageTurnVisibleUnit,
+        context: ReaderResolvedPaginationContext
+    ) -> PageTurnVisiblePagesState {
+        let pageIndices = context.visiblePageIndices ?? context.resolvedGraph.currentVisiblePageIndices
+        let currentPageIndex = context.currentPageIndex ?? visibleUnit.leadingPageIndex ?? bridge.currentPage
+        return .init(
+            visiblePageIndices: pageIndices ?? [],
+            currentPageIndex: currentPageIndex,
+            pageScrollerAnimationIsRunning: bridge.pageScrollerAnimationIsRunning ?? false,
+            liveResizeActive: bridge.liveResizeActive ?? false
+        )
+    }
+
+    private func resolvedInteractionPolicy() -> PageTurnInteractionPolicy {
+        .init(
+            ignorePageTurns: interactionContext.ignorePageTurns,
+            lineGuideEnabled: interactionContext.lineGuideEnabled,
+            requiresEdgeTouch: interactionContext.requiresEdgeTouch,
+            centerTapAreaLength: interactionContext.centerTapAreaLength.map { CGFloat($0) },
+            allowsBothMarginsAdvancePage: interactionContext.allowsBothMarginsAdvancePage
+        )
+    }
+
+    private func resolvedPageNumberHUDState(
+        visibleUnit: PageTurnVisibleUnit,
+        pageLabelPolicy: PageTurnPageLabelPolicy,
+        resolvedGraph: ReaderPageTurnResolvedGraph
+    ) -> PageTurnPageNumberHUDState {
+        let pageIndices = resolvedGraph.currentVisiblePageIndices
+            ?? [visibleUnit.leadingPageIndex ?? bridge.currentPage].compactMap { $0 }
+        let leadingPage = pageIndices.first.map { $0 + 1 }
+        let trailingPage = pageIndices.last.map { $0 + 1 }
+        let totalPages = ReaderResolvedPagination.pageCount(
+            bridgePageCount: bridge.pageCount,
+            paginationPageCount: readerViewModel.state.paginationState?.pageCount
+        )
+        let displayLabel: String?
+        if let leadingPage, let trailingPage, trailingPage > leadingPage {
+            if let totalPages {
+                displayLabel = "\(leadingPage)-\(trailingPage) of \(totalPages)"
+            } else {
+                displayLabel = "\(leadingPage)-\(trailingPage)"
+            }
+        } else if let currentPageDisplayLabel = resolvedCurrentPageDisplayLabel(), !currentPageDisplayLabel.isEmpty {
+            displayLabel = currentPageDisplayLabel
+        } else if let leadingPage {
+            if let totalPages {
+                displayLabel = "Page \(leadingPage) of \(totalPages)"
+            } else {
+                displayLabel = "Page \(leadingPage)"
+            }
+        } else {
+            displayLabel = nil
+        }
+
+        let leadingLabel = leadingPage.map { "Page \($0)" }
+        let trailingLabel: String?
+        if let trailingPage, trailingPage != leadingPage {
+            trailingLabel = "Page \(trailingPage)"
+        } else {
+            trailingLabel = nil
+        }
+
+        let validatedPageCount = [
+            totalPages,
+            resolvedGraph.pageOffsetRange.map { $0.upperBound + 1 },
+            pageIndices.max().map { $0 + 1 }
+        ].compactMap { $0 }.max()
+
+        return .init(
+            isVisible: bridge.showHeaderChrome ?? resolvedChromeVisibility().showHeader,
+            displayLabel: displayLabel,
+            leadingLabel: pageLabelPolicy.displayMode == .multipleLabels ? leadingLabel : nil,
+            trailingLabel: pageLabelPolicy.displayMode == .multipleLabels ? trailingLabel : nil,
+            currentPage: leadingPage,
+            totalPages: totalPages,
+            validatedPageCount: validatedPageCount,
+            topInset: max(layoutModel.inputs.safeAreaInsets.top, layoutModel.inputs.contentRect.minY),
+            width: resolvedPageNumberHUDWidth(for: visibleUnit)
+        )
+    }
+
+    private func resolvedScrubberState(
+        resolvedGraph: ReaderPageTurnResolvedGraph
+    ) -> PageTurnScrubberState {
+        let pageIndices = resolvedGraph.currentVisiblePageIndices
+        let pageOffsetRange = resolvedGraph.pageOffsetRange
+        let resolvedPageIndices = pageIndices ?? []
+        let pageRange = pageOffsetRange.map { ($0.lowerBound + 1)...($0.upperBound + 1) }
+        return .init(
+            isVisible: bridge.progressScrubberVisible ?? false,
+            leadingPageNumber: resolvedPageIndices.first.map { $0 + 1 },
+            trailingPageNumber: resolvedPageIndices.last.map { $0 + 1 },
+            pageRange: pageRange,
+            calloutWidth: resolvedPageNumberHUDWidth(for: resolvedVisibleUnit()),
+            leftRightInset: layoutModel.inputs.safeAreaInsets.leading + layoutModel.inputs.safeAreaInsets.trailing,
+            verticalInset: layoutModel.inputs.safeAreaInsets.top,
+            followsThumb: bridge.progressScrubberActive ?? false
+        )
+    }
+
+    private func resolvedChromeVisibility(platformFamily: PageTurnPlatformFamily? = nil) -> PageTurnChromeVisibility {
+        let family = platformFamily ?? readerPageTurnPlatformFamily()
+        let titlePrimary = readerViewModel.state.pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasTitleChromeContent = (titlePrimary?.isEmpty == false)
+            || !(bridge.currentSectionHref?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let hasHeaderChromeContent = !(resolvedCurrentPageDisplayLabel()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            || !(resolvedCurrentPhysicalPageLabel()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let fallbackShowTitle = !hideNavigationDueToScroll && hasTitleChromeContent
+        let fallbackShowHeader = !hideNavigationDueToScroll && family != .iPhone && hasHeaderChromeContent
+        return PageTurnChromeVisibility(
+            showTitle: bridge.showTitleChrome ?? fallbackShowTitle,
+            showHeader: bridge.showHeaderChrome ?? fallbackShowHeader
+        )
     }
 
     private func resolvedVisibleUnit() -> PageTurnVisibleUnit {
         if !hasLiveVisibleUnitSemantics(),
            let enrichedVisibleUnit = readerViewModel.state.paginationState?.visibleUnit {
-            return resolvedPageTurnVisibleUnit(from: enrichedVisibleUnit)
+            return adjustedVisibleUnitForColumnPolicy(resolvedPageTurnVisibleUnit(from: enrichedVisibleUnit))
         }
         let kind = resolvedVisibleUnitKind()
         let axis = resolvedVisibleUnitAxis()
         let visiblePageCount = max(1, bridge.layoutVisiblePageCount ?? bridge.layoutColumnCount ?? 1)
-        return PageTurnVisibleUnit(
+        return adjustedVisibleUnitForColumnPolicy(PageTurnVisibleUnit(
             kind: kind,
             axis: axis,
             visiblePageCount: visiblePageCount,
             primarySpacing: resolvedPrimarySpacing(),
+            chromeGutterWidth: resolvedChromeGutterWidth(),
             currentUnitIndex: bridge.layoutCurrentUnitIndex,
             leadingPageIndex: bridge.layoutLeadingPageIndex,
             trailingPageIndex: bridge.layoutTrailingPageIndex,
             hasLeadingSingleton: bridge.layoutHasLeadingSingleton ?? false,
             hasTrailingSingleton: bridge.layoutHasTrailingSingleton ?? false
+        ))
+    }
+
+    private func adjustedVisibleUnitForColumnPolicy(_ visibleUnit: PageTurnVisibleUnit) -> PageTurnVisibleUnit {
+        guard !readerAllowMultipleColumns, visibleUnit.visiblePageCount > 1 else {
+            return visibleUnit
+        }
+
+        let focusedPageIndex = visibleUnit.leadingPageIndex
+            ?? visibleUnit.currentUnitIndex
+            ?? bridge.currentPage
+
+        return PageTurnVisibleUnit(
+            kind: .singlePage,
+            axis: visibleUnit.axis,
+            visiblePageCount: 1,
+            primarySpacing: visibleUnit.primarySpacing,
+            chromeGutterWidth: 0,
+            currentUnitIndex: visibleUnit.currentUnitIndex,
+            leadingPageIndex: focusedPageIndex,
+            trailingPageIndex: nil,
+            hasLeadingSingleton: false,
+            hasTrailingSingleton: false
         )
+    }
+
+    private var resolvedScenePhase: String? {
+#if os(iOS)
+        switch scenePhase {
+        case .active:
+            return "active"
+        case .inactive:
+            return "inactive"
+        case .background:
+            return "background"
+        @unknown default:
+            return "unknown"
+        }
+#else
+        return nil
+#endif
+    }
+
+    private var resolvedHorizontalSizeClass: String? {
+#if os(iOS)
+        switch horizontalSizeClass {
+        case .compact:
+            return "compact"
+        case .regular:
+            return "regular"
+        case nil:
+            return nil
+        @unknown default:
+            return "unknown"
+        }
+#else
+        return nil
+#endif
+    }
+
+    private var resolvedVerticalSizeClass: String? {
+#if os(iOS)
+        switch verticalSizeClass {
+        case .compact:
+            return "compact"
+        case .regular:
+            return "regular"
+        case nil:
+            return nil
+        @unknown default:
+            return "unknown"
+        }
+#else
+        return nil
+#endif
     }
 
     private func hasLiveVisibleUnitSemantics() -> Bool {
@@ -3160,28 +6137,36 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
     }
 
     private func resolvedPageLabelPolicy(visibleUnit: PageTurnVisibleUnit) -> PageTurnPageLabelPolicy {
-        let columnCount = max(1, visibleUnit.visiblePageCount)
-        let usesPhysicalPageLabels =
-            bridge.currentPhysicalPageLabel != nil
-            || readerViewModel.state.paginationState?.pageLabelPolicy?.usesPhysicalPageLabels == true
-        let preferredDisplayMode = preferredPageLabelDisplayMode(for: visibleUnit)
-        return PageTurnPageLabelPolicy.derived(
-            columnCount: columnCount,
-            usesPhysicalPageLabels: usesPhysicalPageLabels,
-            allowsMultipleLabelsInTwoColumnLayout: preferredDisplayMode == .multipleLabels
+        let paginationPageLabelPolicy = readerViewModel.state.paginationState?.pageLabelPolicy
+        let explicitDisplayMode = ReaderResolvedPagination.pageLabelDisplayMode(
+            bridgePageLabelDisplayMode: bridge.pageLabelDisplayMode,
+            paginationPageLabelPolicy: paginationPageLabelPolicy
+        )
+        return PageTurnPageLabelPolicy(
+            displayMode: explicitDisplayMode,
+            usesPhysicalPageLabels: ReaderResolvedPagination.usesPhysicalPageLabels(
+                bridgeCurrentPhysicalPageLabel: bridge.currentPhysicalPageLabel,
+                paginationPageLabelPolicy: paginationPageLabelPolicy
+            ),
+            allowsMultipleLabelsInMultiUnitLayout: ReaderResolvedPagination.allowsMultipleLabelsInMultiUnitLayout(
+                bridgeAllowsMultipleLabelsInMultiUnitLayout: bridge.allowsMultipleLabelsInMultiUnitLayout,
+                paginationPageLabelPolicy: paginationPageLabelPolicy
+            )
+        ).adjusted(for: visibleUnit)
+    }
+
+    private func resolvedCurrentPageDisplayLabel() -> String? {
+        ReaderResolvedPagination.currentPageDisplayLabel(
+            bridgeLabel: bridge.currentPageDisplayLabel,
+            paginationState: readerViewModel.state.paginationState
         )
     }
 
-    private func preferredPageLabelDisplayMode(
-        for visibleUnit: PageTurnVisibleUnit
-    ) -> WebViewPaginationPageLabelDisplayMode {
-        if !visibleUnit.usesMultiUnitSurface {
-            return .singleLabel
-        }
-        if let enrichedPolicy = readerViewModel.state.paginationState?.pageLabelPolicy {
-            return enrichedPolicy.displayMode
-        }
-        return .multipleLabels
+    private func resolvedCurrentPhysicalPageLabel() -> String? {
+        ReaderResolvedPagination.currentPhysicalPageLabel(
+            bridgeLabel: bridge.currentPhysicalPageLabel,
+            paginationState: readerViewModel.state.paginationState
+        )
     }
 
     private func resolvedPageTurnVisibleUnit(from visibleUnit: WebViewPaginationVisibleUnit) -> PageTurnVisibleUnit {
@@ -3199,6 +6184,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             axis: axis,
             visiblePageCount: visibleUnit.visiblePageCount,
             primarySpacing: max(0, visibleUnit.primarySpacing),
+            chromeGutterWidth: max(0, visibleUnit.chromeGutterWidth),
             currentUnitIndex: visibleUnit.currentUnitIndex,
             leadingPageIndex: visibleUnit.leadingPageIndex,
             trailingPageIndex: visibleUnit.trailingPageIndex,
@@ -3218,6 +6204,62 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             return max(0, desiredGap)
         }
         return 0
+    }
+
+    private func resolvedExplicitChromeGutterWidth() -> CGFloat? {
+        if let chromeGutterWidth = bridge.layoutChromeGutterWidth {
+            return max(0, CGFloat(chromeGutterWidth))
+        }
+        if let chromeGutterWidth = readerViewModel.state.paginationState?.visibleUnit?.chromeGutterWidth {
+            return max(0, chromeGutterWidth)
+        }
+        return nil
+    }
+
+    private func resolvedChromeGutterWidth(
+        explicit: CGFloat?,
+        visiblePageCount: Int,
+        primarySpacing: CGFloat
+    ) -> CGFloat {
+        guard visiblePageCount > 1 else { return 0 }
+        if let explicit, explicit > 0 {
+            return explicit
+        }
+        return min(max(primarySpacing, 12), 48)
+    }
+
+    private func resolvedPageNumberHUDWidth(for visibleUnit: PageTurnVisibleUnit) -> CGFloat {
+        let contentWidth = layoutModel.inputs.contentRect.width
+        let readableWidth = controller.visualState.readableFrame.pageContentWidthWithinMargins
+            ?? controller.visualState.readableFrame.maxContentWidth
+            ?? contentWidth
+        let gutterWidth = resolvedChromeGutterWidth(for: visibleUnit)
+        let candidateWidth = min(contentWidth, max(readableWidth, contentWidth - gutterWidth))
+        return max(0, candidateWidth)
+    }
+
+    private func resolvedChromeGutterWidth() -> CGFloat {
+        resolvedChromeGutterWidth(
+            explicit: resolvedExplicitChromeGutterWidth(),
+            visiblePageCount: max(1, bridge.layoutVisiblePageCount ?? bridge.layoutColumnCount ?? 1),
+            primarySpacing: resolvedPrimarySpacing()
+        )
+    }
+
+    private func resolvedChromeGutterWidth(for visibleUnit: PageTurnVisibleUnit) -> CGFloat {
+        resolvedChromeGutterWidth(
+            explicit: max(0, visibleUnit.chromeGutterWidth),
+            visiblePageCount: visibleUnit.visiblePageCount,
+            primarySpacing: resolvedPrimarySpacing()
+        )
+    }
+
+    private func resolvedChromeGutterWidth(for probe: ReaderPageTurnNavigationProbe) -> CGFloat {
+        resolvedChromeGutterWidth(
+            explicit: probe.layoutChromeGutterWidth.map { CGFloat($0) },
+            visiblePageCount: max(1, probe.layoutVisiblePageCount ?? probe.layoutColumnCount ?? 1),
+            primarySpacing: CGFloat(probe.layoutPrimarySpacing ?? Double(resolvedPrimarySpacing()))
+        )
     }
 
     private func resolvedWebViewVisibleUnit(from visibleUnit: PageTurnVisibleUnit) -> WebViewPaginationVisibleUnit {
@@ -3242,6 +6284,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             axis: axis,
             visiblePageCount: visibleUnit.visiblePageCount,
             primarySpacing: max(0, visibleUnit.primarySpacing),
+            chromeGutterWidth: max(0, visibleUnit.chromeGutterWidth),
             currentUnitIndex: visibleUnit.currentUnitIndex,
             leadingPageIndex: visibleUnit.leadingPageIndex,
             trailingPageIndex: visibleUnit.trailingPageIndex,
@@ -3251,6 +6294,39 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         )
     }
 
+    private func resolvedWebViewCurrentSpread(from visibleUnit: PageTurnVisibleUnit) -> WebViewPaginationSpread? {
+        let slots: [WebViewPaginationSpreadSlot]
+        switch visibleUnit.kind {
+        case .singlePage:
+            let pageIndex = visibleUnit.leadingPageIndex ?? visibleUnit.currentUnitIndex
+            guard let pageIndex else { return nil }
+            slots = [.init(kind: .page, pageIndex: pageIndex)]
+        case .pageSpread:
+            if visibleUnit.hasLeadingSingleton {
+                guard let trailing = visibleUnit.trailingPageIndex ?? visibleUnit.leadingPageIndex else { return nil }
+                slots = [
+                    .init(kind: .blank),
+                    .init(kind: .page, pageIndex: trailing),
+                ]
+            } else if visibleUnit.hasTrailingSingleton {
+                guard let leading = visibleUnit.leadingPageIndex ?? visibleUnit.trailingPageIndex else { return nil }
+                slots = [
+                    .init(kind: .page, pageIndex: leading),
+                    .init(kind: .blank),
+                ]
+            } else {
+                let indices = [visibleUnit.leadingPageIndex, visibleUnit.trailingPageIndex].compactMap { $0 }
+                guard !indices.isEmpty else { return nil }
+                slots = indices.map { .init(kind: .page, pageIndex: $0) }
+            }
+        case .paginatedRowSet:
+            let indices = [visibleUnit.leadingPageIndex, visibleUnit.trailingPageIndex].compactMap { $0 }
+            guard !indices.isEmpty else { return nil }
+            slots = indices.map { .init(kind: .page, pageIndex: $0) }
+        }
+        return WebViewPaginationSpread(index: visibleUnit.currentUnitIndex, slots: slots)
+    }
+
     private func resolvedWebViewPageLabelPolicy(from pageLabelPolicy: PageTurnPageLabelPolicy) -> WebViewPaginationPageLabelPolicy {
         let displayMode: WebViewPaginationPageLabelDisplayMode = switch pageLabelPolicy.displayMode {
         case .singleLabel: .singleLabel
@@ -3258,7 +6334,61 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         }
         return WebViewPaginationPageLabelPolicy(
             displayMode: displayMode,
-            usesPhysicalPageLabels: pageLabelPolicy.usesPhysicalPageLabels
+            usesPhysicalPageLabels: pageLabelPolicy.usesPhysicalPageLabels,
+            allowsMultipleLabelsInMultiUnitLayout: pageLabelPolicy.allowsMultipleLabelsInMultiUnitLayout
+        )
+    }
+
+    private func effectiveRequestedLocationState(
+        _ requestedLocation: ReaderPageTurnRequestedLocationState?,
+        currentSpread: WebViewPaginationSpread?
+    ) -> ReaderPageTurnRequestedLocationState? {
+        guard let requestedLocation else { return nil }
+        let context = resolvedPaginationContext()
+        return isRequestedLocationAlreadyVisible(
+            requestedLocation,
+            currentSpread: currentSpread,
+            pageOffsetsDisplayed: ReaderResolvedPagination.livePageOffsetsDisplayed(
+                bridgePageOffsetsDisplayed: context.bridgePageOffsetsDisplayed,
+                paginationPageOffsetsDisplayed: context.paginationState?.pageOffsetsDisplayed,
+                resolvedCurrentSpread: currentSpread,
+                resolvedGraph: context.resolvedGraph
+            ),
+            pageCount: context.pageCount,
+            currentPage: context.currentPageIndex,
+            currentSectionHref: bridge.currentSectionHref,
+            layoutLeadingPageIndex: bridge.layoutLeadingPageIndex,
+            layoutTrailingPageIndex: bridge.layoutTrailingPageIndex,
+            layoutVisiblePageCount: bridge.layoutVisiblePageCount
+        )
+            ? nil
+            : requestedLocation
+    }
+
+    private func isRequestedLocationAlreadyVisible(
+        _ requestedLocation: ReaderPageTurnRequestedLocationState,
+        currentSpread: WebViewPaginationSpread?,
+        pageOffsetsDisplayed: [Int]?,
+        pageCount: Int?,
+        currentPage: Int?,
+        currentSectionHref: String?,
+        layoutLeadingPageIndex: Int?,
+        layoutTrailingPageIndex: Int?,
+        layoutVisiblePageCount: Int?
+    ) -> Bool {
+        let resolvedGraph = ReaderPageTurnSpreadGraph(
+            currentSpread: currentSpread,
+            destinationSpread: bridge.destinationSpread,
+            pageOffsetsDisplayed: pageOffsetsDisplayed,
+            pageCount: pageCount,
+            layoutLeadingPageIndex: layoutLeadingPageIndex,
+            currentPage: currentPage,
+            layoutTrailingPageIndex: layoutTrailingPageIndex,
+            layoutVisiblePageCount: layoutVisiblePageCount
+        ).resolvedGraph
+        return resolvedGraph.contains(
+            requestedLocation,
+            currentSectionHref: currentSectionHref
         )
     }
 
@@ -3267,8 +6397,24 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             String(describing: ObjectIdentifier(webView))
         } ?? nil
         let paginationState = readerViewModel.state.paginationState
+        let paginationContext = resolvedPaginationContext(paginationState: paginationState)
         let interaction = controller.lastInteractionEvent
+        let resolvedSnapshotGraph = paginationContext.resolvedGraph
+        let resolvedCurrentSpread = paginationContext.currentSpread
+        let resolvedDestinationSpread = paginationContext.destinationSpread(direction: interaction?.direction)
         let pageLabelPolicy = resolvedPageLabelPolicy(visibleUnit: resolvedVisibleUnit())
+        let chromeVisibility = resolvedChromeVisibility()
+        let resolvedCanMoveForward = paginationContext.canMoveForward ?? false
+        let resolvedCanMoveBackward = paginationContext.canMoveBackward ?? false
+        let resolvedForwardDestinationAvailability = paginationContext.destinationAvailability(for: .forward)
+            ?? resolvedSnapshotGraph.forwardDestinationAvailability
+        let resolvedBackwardDestinationAvailability = paginationContext.destinationAvailability(for: .backward)
+            ?? resolvedSnapshotGraph.backwardDestinationAvailability
+        let requestedLocationState = effectiveRequestedLocationState(
+            readerViewModel.pageTurnRequestedLocationState,
+            currentSpread: resolvedCurrentSpread
+        )
+        let readingProgressState = readerViewModel.pageTurnReadingProgressState
         return ReaderPageTurnProbeSnapshot(
             pageURL: readerViewModel.state.pageURL.absoluteString,
             requestedEnabled: requestedEnabled,
@@ -3278,11 +6424,60 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             gestureCaptureEnabled: isGestureCaptureEnabled,
             gestureCaptureBlockReason: interactionContext.blockingReason,
             hideNavigationDueToScroll: hideNavigationDueToScroll,
+            showTitleChrome: bridge.showTitleChrome ?? chromeVisibility.showTitle,
+            showHeaderChrome: bridge.showHeaderChrome ?? chromeVisibility.showHeader,
             pageProgressionDirection: bridge.pageProgressionDirection.rawValue,
             phase: controller.phase.rawValue,
+            navigationStyle: bridge.pageNavigationStyle.rawValue,
+            transitionFamily: bridge.transitionFamily.rawValue,
+            movementKind: controller.visualState.movementKind?.rawValue ?? bridge.movementKind?.rawValue,
+            layoutState: bridge.layoutState.rawValue,
+            updateReason: bridge.updateReason?.rawValue,
+            navigationEvent: bridge.lastNavigationEvent?.kind.rawValue,
+            contentHostState: bridge.contentHostState.rawValue,
+            contentHostSequenceMountedHostIdentifier: bridge.contentHostSequence.mountedHostIdentifier,
+            contentHostSequenceAppliedHostIdentifier: bridge.contentHostSequence.appliedHostIdentifier,
+            contentHostSequenceIsAppliedToMountedHost: bridge.contentHostSequence.isAppliedToMountedHost,
+            contentHostSequenceIsStable: bridge.contentHostSequence.isStable,
+            contentHostSequenceSerial: bridge.contentHostSequence.serial,
+            preloadStrategy: bridge.preloadStrategy.rawValue,
+            currentContentLocation: paginationContext.currentContentLocation.rawValue,
+            contentLoadingClass: controller.visualState.loadingTracks.content.rawValue,
+            snapshotLoadingClass: controller.visualState.loadingTracks.snapshot.rawValue,
             mountedHostIdentifier: paginationState?.mountedHostIdentifier,
             appliedHostIdentifier: paginationState?.appliedHostIdentifier,
             liveWebViewIdentifier: liveWebViewIdentifier,
+            pageOffsetsDisplayed: paginationContext.pageOffsetsDisplayed
+                ?? resolvedSnapshotGraph.currentVisiblePageIndices,
+            currentSpreadSlots: serializedSpreadSlots(
+                resolvedCurrentSpread,
+                fallbackSpread: resolvedSnapshotGraph.spreadSequence.current?.spread,
+                fallbackPageIndices: resolvedSnapshotGraph.spreadSequence.current?.pageIndices
+                    ?? resolvedSnapshotGraph.currentVisiblePageIndices
+            ),
+            destinationSpreadSlots: serializedSpreadSlots(
+                resolvedDestinationSpread,
+                fallbackSpread: ReaderResolvedPagination.destinationSpread(
+                    direction: interaction?.direction,
+                    resolvedGraph: resolvedSnapshotGraph
+                ),
+                fallbackPageIndices: interaction?.direction.flatMap { direction in
+                    resolvedSnapshotGraph.spreadSequence.node(for: direction)?.pageIndices
+                        ?? resolvedSnapshotGraph.destinationPageIndices(for: direction)
+                }
+            ),
+            requestedLocationKind: controller.visualState.requestedLocation?.kind.rawValue ?? requestedLocationState?.kind,
+            requestedLocationValue: controller.visualState.requestedLocation?.value ?? requestedLocationState?.value,
+            requestedLocationSource: requestedLocationState?.source.rawValue,
+            requestedLocationSurroundingContext: controller.visualState.requestedLocation?.surroundingContext ?? requestedLocationState?.surroundingContext,
+            requestedLocationIsPageChange: controller.visualState.requestedLocation?.isRequestedPageChange ?? requestedLocationState?.isRequestedPageChange,
+            requestedLocationFractionalCompletion: requestedLocationState?.fractionalCompletion.map(Double.init),
+            readingProgressCFI: readingProgressState?.cfi,
+            readingProgressFractionalCompletion: readingProgressState?.fractionalCompletion.map(Double.init),
+            readingProgressHighWaterMarkFractionalCompletion: readingProgressState?.highWaterMarkFractionalCompletion.map(Double.init),
+            readingProgressSuppressionReason: readerViewModel.pageTurnReadingProgressSuppressionReason,
+            readingProgressReason: readingProgressState?.reason,
+            readingProgressSectionIndex: readingProgressState?.sectionIndex,
             hasView: bridge.hasView,
             hasRenderer: bridge.hasRenderer,
             canNext: bridge.canNext,
@@ -3294,11 +6489,11 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             isVerticalRightToLeft: bridge.isVerticalRightToLeft,
             currentSectionIndex: bridge.currentSectionIndex,
             currentSectionHref: bridge.currentSectionHref,
-            currentPage: bridge.currentPage,
+            currentPage: paginationContext.currentPageIndex,
             livePageIndex: bridge.livePageIndex,
             liveChunkPageIndex: bridge.liveChunkPageIndex,
             viewportCenterChunkPageIndex: bridge.viewportCenterChunkPageIndex,
-            pageCount: bridge.pageCount,
+            pageCount: paginationContext.pageCount,
             layoutPageRecordCount: bridge.layoutPageRecordCount,
             layoutLiveRootExists: bridge.layoutLiveRootExists,
             layoutLiveRootClassName: bridge.layoutLiveRootClassName,
@@ -3344,6 +6539,10 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             layoutHasLeadingSingleton: bridge.layoutHasLeadingSingleton,
             layoutHasTrailingSingleton: bridge.layoutHasTrailingSingleton,
             layoutPrimarySpacing: resolvedPrimarySpacing(),
+            layoutChromeGutterWidth: Double(resolvedChromeGutterWidth()),
+            layoutReadableFrameWidth: Double(controller.visualState.readableFrame.pageContentWidthWithinMargins ?? 0),
+            layoutMaxContentWidth: Double(controller.visualState.readableFrame.maxContentWidth ?? 0),
+            layoutSemanticSideInset: Double(controller.visualState.readableFrame.semanticSideInset),
             layoutMultiUnitActive: bridge.layoutMultiUnitActive,
             layoutSpreadPagesAllowedForViewport: bridge.layoutSpreadPagesAllowedForViewport,
             layoutWritingMode: bridge.layoutWritingMode,
@@ -3360,8 +6559,17 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             computedFontSizeCSS: bridge.computedFontSizeCSS,
             currentPageTextSample: bridge.currentPageTextSample,
             nextPageTextSample: bridge.nextPageTextSample,
-            currentPageDisplayLabel: bridge.currentPageDisplayLabel,
-            currentPhysicalPageLabel: bridge.currentPhysicalPageLabel,
+            currentPageDisplayLabel: resolvedCurrentPageDisplayLabel(),
+            currentPhysicalPageLabel: resolvedCurrentPhysicalPageLabel(),
+            progressScrubberVisible: bridge.progressScrubberVisible,
+            progressScrubberActive: bridge.progressScrubberActive,
+            historyCanGoBack: bridge.historyCanGoBack,
+            historyCanGoForward: bridge.historyCanGoForward,
+            historyDepth: bridge.historyDepth,
+            historyCurrentIndex: bridge.historyCurrentIndex,
+            historyPendingReplaceStateSuppressionCount: bridge.historyPendingReplaceStateSuppressionCount,
+            historySuppressedReplaceStateCount: bridge.historySuppressedReplaceStateCount,
+            historyLastSuppressedReplaceStateReason: bridge.historyLastSuppressedReplaceStateReason,
             loadEBookStarted: bridge.loadEBookStarted,
             loadEBookReady: bridge.loadEBookReady,
             loadEBookAttemptCount: bridge.loadEBookAttemptCount,
@@ -3374,10 +6582,26 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             sameDocumentHostTurnPageCount: bridge.sameDocumentHostTurnPageCount,
             sameDocumentHostTurnDatasetCurrentPageIndex: bridge.sameDocumentHostTurnDatasetCurrentPageIndex,
             sameDocumentHostTurnResult: bridge.sameDocumentHostTurnResult,
+            forwardDestinationAvailability: resolvedForwardDestinationAvailability.rawValue,
+            backwardDestinationAvailability: resolvedBackwardDestinationAvailability.rawValue,
+            paginationComplete: paginationContext.metadataPaginationComplete,
+            configurationKey: paginationContext.metadataConfigurationKey,
+            publicationSource: paginationContext.metadataPublicationSource?.rawValue,
             pageLabelDisplayMode: pageLabelPolicy.displayMode.rawValue,
+            pageNumberMode: paginationContext.metadataPageNumberMode?.rawValue,
             usesPhysicalPageLabels: pageLabelPolicy.usesPhysicalPageLabels,
-            canForward: bridge.canForward,
-            canBackward: bridge.canBackward,
+            allowsMultipleColumns: paginationContext.metadataAllowsMultipleColumns,
+            allowsMultipleLabelsInMultiUnitLayout: pageLabelPolicy.allowsMultipleLabelsInMultiUnitLayout,
+            visiblePageIndices: ReaderResolvedPagination.visiblePageIndices(
+                bridgeVisiblePageIndices: controller.visualState.visiblePagesState.visiblePageIndices.isEmpty
+                    ? nil
+                    : controller.visualState.visiblePagesState.visiblePageIndices,
+                resolvedGraph: resolvedSnapshotGraph
+            ),
+            pageScrollerAnimationIsRunning: controller.visualState.visiblePagesState.pageScrollerAnimationIsRunning,
+            liveResizeActive: controller.visualState.visiblePagesState.liveResizeActive,
+            canForward: resolvedCanMoveForward,
+            canBackward: resolvedCanMoveBackward,
             interactionKind: interaction?.kind.rawValue,
             interactionQualified: interaction?.qualified,
             interactionDirection: interaction?.direction?.rawValue,
@@ -3390,6 +6614,29 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             interactionNote: interaction?.note,
             probeError: bridge.lastProbeError
         )
+    }
+
+    private func resolvedProbeSnapshotGraph(
+        paginationState: WebViewPaginationState?
+    ) -> ReaderPageTurnResolvedGraph {
+        resolvedPaginationContext(paginationState: paginationState).resolvedGraph
+    }
+
+    private func serializedSpreadSlots(
+        _ spread: WebViewPaginationSpread?,
+        fallbackSpread: WebViewPaginationSpread? = nil,
+        fallbackPageIndices: [Int]? = nil
+    ) -> [String]? {
+        if let spread {
+            return spread.slots.map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
+        }
+        if let fallbackSpread {
+            return fallbackSpread.slots.map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
+        }
+        guard let fallbackPageIndices, !fallbackPageIndices.isEmpty else {
+            return nil
+        }
+        return fallbackPageIndices.map { "page:\($0)" }
     }
 
     private func logProbeSnapshotIfEnabled(_ snapshot: ReaderPageTurnProbeSnapshot) {
@@ -3714,6 +6961,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
 
         let availability = await bridge.destinationAvailability(for: direction)
         guard availability != .unavailable else {
+            bridge.publishAttemptedPastEndForDiagnostics(direction: direction)
             if diagnosticsEnabled {
                 Logger.shared.logger.warning("# PAGETURN probeCommand command=\(command.rawValue) result=blocked:destinationUnavailable:\(direction.rawValue)")
             }
@@ -3885,12 +7133,18 @@ public struct Reader: View {
     }
 
     private var pageTurnProbeSummary: String {
+        let centerTapAreaLength = readerPageTurnInteractionContext.centerTapAreaLength.map { String($0) } ?? "nil"
         return [
             pageTurnProbeModel.snapshot?.summary ?? "pageTurnProbe=nil",
             "lastCommandResult=\(pageTurnProbeModel.lastCommandResult ?? "nil")",
             "lookupPresented=\(readerPageTurnInteractionContext.lookupPresented)",
             "mediaPresented=\(readerPageTurnInteractionContext.mediaPresented)",
             "hasSelection=\(readerPageTurnInteractionContext.hasSelection)",
+            "ignorePageTurns=\(readerPageTurnInteractionContext.ignorePageTurns)",
+            "lineGuideEnabled=\(readerPageTurnInteractionContext.lineGuideEnabled)",
+            "requiresEdgeTouch=\(readerPageTurnInteractionContext.requiresEdgeTouch)",
+            "centerTapAreaLength=\(centerTapAreaLength)",
+            "bothMarginsAdvancePage=\(readerPageTurnInteractionContext.allowsBothMarginsAdvancePage)",
             "gestureCaptureBlocked=\(readerPageTurnInteractionContext.blocksGestureCapture)",
             "gestureCaptureBlockReason=\(readerPageTurnInteractionContext.blockingReason ?? "nil")",
             "hideNav=\(hideNavigationDueToScroll)",

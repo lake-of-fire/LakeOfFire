@@ -40,7 +40,7 @@ public class FeedViewModel: ObservableObject {
                 .collectionPublisher
                 .subscribe(on: feedQueue)
                 .map { _ in }
-                .debounceLeadingTrailing(for: .seconds(0.3), scheduler: feedQueue)
+                .debounce(for: .seconds(0.3), scheduler: feedQueue)
                 .receive(on: feedQueue)
                 .sink(receiveCompletion: { _ in}, receiveValue: { [weak self] _ in
                     debugPrint("# FeedViewModel.subscriptionTriggered feedID=\(feedID.uuidString)")
@@ -87,6 +87,7 @@ public struct FeedView: View {
             try await viewModel.fetchIfNeeded(feed: feed, force: forceRefreshRequested)
         }, showInitialContent: !(viewModel.entries?.isEmpty ?? true)) { _ in
             if let entries = viewModel.entries {
+                let entryIDs = entries.map(\.compoundKey)
                 Group {
                     if isHorizontal {
                         ReaderContentHorizontalList(
@@ -97,6 +98,7 @@ public struct FeedView: View {
                         ) {
                             EmptyView()
                         }
+                        .animation(.easeInOut(duration: 0.25), value: entryIDs)
                     } else {
                         ReaderContentList(
                             contents: entries,
@@ -111,6 +113,7 @@ public struct FeedView: View {
                                 systemImageName: "newspaper.fill"
                             )
                         }
+                        .animation(.easeInOut(duration: 0.25), value: entryIDs)
 #if os(iOS)
                         .listStyle(.insetGrouped)
 #endif

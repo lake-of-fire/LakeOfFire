@@ -13317,30 +13317,17 @@ body.${MANABI_TRACKING_FORCE_VISIBLE_CLASS} ${MANABI_TRACKING_SECTION_SELECTOR} 
       }
     }
   };
-  var getSharedFontCSSText = () => {
-    if (globalThis.manabiFontCSSText) return globalThis.manabiFontCSSText;
-    const base64 = globalThis.manabiFontCSSBase64 || globalThis.parent?.manabiFontCSSBase64 || globalThis.top?.manabiFontCSSBase64 || document.getElementById("manabi-font-css-base64")?.textContent || "";
-    if (!base64) return null;
+  var resolveSharedFontStylesheetURL = (doc, familyName) => {
+    const targetFamily = familyName || "YuKyokasho";
+    const referenceURL = doc?.location?.href || doc?.baseURI || globalThis.location?.href || "";
+    if (!referenceURL) return null;
     try {
-      const css = atob(base64);
-      globalThis.manabiFontCSSText = css;
-      return css;
-    } catch (_err) {
-      logEBookPerf2("font-css-decode-error", {});
+      const parsed = new URL(referenceURL);
+      if (parsed.protocol !== "ebook:") return null;
+      return `${parsed.protocol}//${parsed.host}/load/manabi-fonts.css?family=${encodeURIComponent(targetFamily)}`;
+    } catch (_error) {
       return null;
     }
-  };
-  var waitForFontCSSReady = async (timeoutMs = 2e3) => {
-    const start = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
-    let css = getSharedFontCSSText();
-    while (!css) {
-      const now = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
-      if (now - start >= timeoutMs) break;
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      css = getSharedFontCSSText();
-    }
-    if (!css) logEBookPerf2("font-css-timeout", { waitedMs: (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()) - start });
-    return css;
   };
   var ensureCustomFontsForDoc = async (doc) => {
     try {
@@ -13352,13 +13339,14 @@ body.${MANABI_TRACKING_FORCE_VISIBLE_CLASS} ${MANABI_TRACKING_SECTION_SELECTOR} 
         }
         return false;
       }
-      const css = await waitForFontCSSReady(4e3);
-      if (!css || !doc?.head) return false;
+      if (!doc?.head) return false;
       const horizontalFamily = globalThis.manabiHorizontalFontFamilyName || "YuKyokasho Yoko";
       const verticalFamily = globalThis.manabiVerticalFontFamilyName || "YuKyokasho";
       const writingDirection = globalThis.manabiEbookWritingDirection || "original";
       const shouldUseVertical = writingDirection === "vertical" || writingDirection === "original" && globalThis.manabiTrackingVertical === true;
       const targetFamily = shouldUseVertical ? verticalFamily : horizontalFamily;
+      const stylesheetURL = resolveSharedFontStylesheetURL(doc, targetFamily);
+      if (!stylesheetURL) return false;
       if (root) {
         root.dataset.manabiFontPending = "1";
         root.dataset.manabiFontReady = "0";
@@ -13369,26 +13357,11 @@ body.${MANABI_TRACKING_FORCE_VISIBLE_CLASS} ${MANABI_TRACKING_SECTION_SELECTOR} 
         style.id = "manabi-custom-fonts-inline";
         style.rel = "stylesheet";
         doc.head.appendChild(style);
-        logEBookPerf2("font-inline-insert", { bytes: css.length, mode: "blob-link" });
+        logEBookPerf2("font-inline-insert", { family: targetFamily, mode: "same-scheme-link" });
       }
-      if (style.dataset.manabiInjectedFontFamily !== targetFamily || !style.href) {
-        const sourceCSS = globalThis.manabiFontCSSText || css;
-        const nextCSS = sourceCSS.replace(
-          /font-family:\s*['"][^'"]+['"]\s*;/g,
-          "font-family: '" + targetFamily + "';"
-        );
-        const blob = new Blob([nextCSS], { type: "text/css" });
-        const nextBlobURL = URL.createObjectURL(blob);
-        const previousBlobURL = style.dataset.manabiBlobURL || "";
-        style.href = nextBlobURL;
-        style.dataset.manabiBlobURL = nextBlobURL;
+      if (style.dataset.manabiInjectedFontFamily !== targetFamily || style.href !== stylesheetURL) {
+        style.href = stylesheetURL;
         style.dataset.manabiInjectedFontFamily = targetFamily;
-        if (previousBlobURL && previousBlobURL !== nextBlobURL) {
-          try {
-            URL.revokeObjectURL(previousBlobURL);
-          } catch (_error) {
-          }
-        }
       }
       const fontSet = doc.fonts;
       if (fontSet) {
@@ -15994,8 +15967,46 @@ break-inside: avoid !important;
       };
       const currentPageTextSample = sampleForRange(visibleRangeFor(pageIndex));
       const nextPageTextSample = Number.isFinite(pageCount) && pageIndex + 1 < pageCount ? sampleForRange(visibleRangeFor(pageIndex + 1)) : null;
-      const currentPageDisplayLabel = typeof globalThis.navHUD?.latestPrimaryLabel === "string" ? globalThis.navHUD.latestPrimaryLabel : null;
-      const currentPhysicalPageLabel = typeof globalThis.navHUD?.lastPrimaryLabelDiagnostics?.pageItemLabel === "string" ? globalThis.navHUD.lastPrimaryLabelDiagnostics.pageItemLabel : null;
+      const pageTargets = Array.isArray(globalThis.navHUD?.pageTargets) ? globalThis.navHUD.pageTargets : [];
+      const normalizedPageTarget = Number.isFinite(pageIndex) && pageIndex >= 0 ? pageTargets[pageIndex] ?? null : null;
+      const normalizedTotalPages = Number.isFinite(pageCount) && pageCount > 0 ? pageCount : pageTargets.length > 0 ? pageTargets.length : null;
+      const normalizedDisplayLabel = (value) => {
+        if (typeof value !== "string")
+          return null;
+        const trimmed = value.trim();
+        return trimmed.length > 0 ? trimmed : null;
+      };
+      const currentPageDisplayLabel = (() => {
+        const latestLabel = normalizedDisplayLabel(globalThis.navHUD?.latestPrimaryLabel);
+        if (latestLabel) {
+          return latestLabel;
+        }
+        if (typeof globalThis.navHUD?.getPrimaryDisplayLabel === "function" && Number.isFinite(pageIndex) && pageIndex >= 0) {
+          const computedLabel = normalizedDisplayLabel(globalThis.navHUD.getPrimaryDisplayLabel({
+            pageItem: normalizedPageTarget,
+            pageNumber: pageIndex + 1,
+            pageCount: normalizedTotalPages,
+            location: normalizedTotalPages ? { current: pageIndex, total: normalizedTotalPages } : null
+          }));
+          if (computedLabel) {
+            return computedLabel;
+          }
+        }
+        if (Number.isFinite(pageIndex) && pageIndex >= 0) {
+          if (typeof normalizedTotalPages === "number" && normalizedTotalPages > 0) {
+            return `Page ${pageIndex + 1} of ${normalizedTotalPages}`;
+          }
+          return `Page ${pageIndex + 1}`;
+        }
+        return null;
+      })();
+      const currentPhysicalPageLabel = (() => {
+        const diagnosticLabel = normalizedDisplayLabel(globalThis.navHUD?.lastPrimaryLabelDiagnostics?.pageItemLabel);
+        if (diagnosticLabel) {
+          return diagnosticLabel;
+        }
+        return normalizedDisplayLabel(normalizedPageTarget?.label);
+      })();
       const livePageIndex = Number.isFinite(layoutLiveCurrentPageIndex) && layoutLiveCurrentPageIndex >= 0 ? layoutLiveCurrentPageIndex : null;
       const liveChunkPageIndex = Number.isFinite(layoutLiveCurrentChunkPageIndex) && layoutLiveCurrentChunkPageIndex >= 0 ? layoutLiveCurrentChunkPageIndex : null;
       const viewportCenterChunkPageIndex = Number.isFinite(layoutViewportCenterChunkPageIndex) && layoutViewportCenterChunkPageIndex >= 0 ? layoutViewportCenterChunkPageIndex : null;

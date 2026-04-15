@@ -278,7 +278,10 @@ let package = Package(
             name: "LakeOfFireTests",
             dependencies: [
                 .product(name: "WebMedia", package: "swift-brave"),
+                .product(name: "RealmSwift", package: "realm-swift"),
+                .product(name: "RealmSwiftGaps", package: "RealmSwiftGaps"),
                 "LakeOfFireContent",
+                "LakeOfFireCore",
                 "LakeOfFireReader",
                 "LakeOfFireWeb",
             ],

@@ -3,8 +3,11 @@ import WebKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
+import LakeOfFireFiles
 
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
+    public var sharedReaderFontAsset: SharedReaderFontAsset?
+
     enum CustomSchemeHandlerError: Error {
         case notFound
         case missingKey
@@ -18,6 +21,16 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         guard let url = urlSchemeTask.request.url, url.host == "local" else {
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
+            return
+        }
+
+        if let fontResponse = sharedReaderFontResponse(
+            for: url,
+            asset: sharedReaderFontAsset
+        ) {
+            urlSchemeTask.didReceive(fontResponse.response)
+            urlSchemeTask.didReceive(fontResponse.data)
+            urlSchemeTask.didFinish()
             return
         }
 

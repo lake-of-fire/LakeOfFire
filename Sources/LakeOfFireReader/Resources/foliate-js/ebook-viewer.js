@@ -130,37 +130,17 @@ const logEBookPageNum = (event, detail = {}) => {
     }
 };
 
-// Shared font blob support: the native viewer injects base64 CSS into the shell once.
-const getSharedFontCSSText = () => {
-    if (globalThis.manabiFontCSSText) return globalThis.manabiFontCSSText;
-    const base64 =
-        globalThis.manabiFontCSSBase64 ||
-        globalThis.parent?.manabiFontCSSBase64 ||
-        globalThis.top?.manabiFontCSSBase64 ||
-        document.getElementById('manabi-font-css-base64')?.textContent ||
-        '';
-    if (!base64) return null;
+const resolveSharedFontStylesheetURL = (doc, familyName) => {
+    const targetFamily = familyName || 'YuKyokasho';
+    const referenceURL = doc?.location?.href || doc?.baseURI || globalThis.location?.href || '';
+    if (!referenceURL) return null;
     try {
-        const css = atob(base64);
-        globalThis.manabiFontCSSText = css;
-        return css;
-    } catch (_err) {
-        logEBookPerf('font-css-decode-error', {});
+        const parsed = new URL(referenceURL);
+        if (parsed.protocol !== 'ebook:') return null;
+        return `${parsed.protocol}//${parsed.host}/load/manabi-fonts.css?family=${encodeURIComponent(targetFamily)}`;
+    } catch (_error) {
         return null;
     }
-};
-
-const waitForFontCSSReady = async (timeoutMs = 2000) => {
-    const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-    let css = getSharedFontCSSText();
-    while (!css) {
-        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        if (now - start >= timeoutMs) break;
-        await new Promise(resolve => requestAnimationFrame(resolve));
-        css = getSharedFontCSSText();
-    }
-    if (!css) logEBookPerf('font-css-timeout', { waitedMs: ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - start });
-    return css;
 };
 
 const ensureCustomFontsForDoc = async (doc) => {
@@ -173,14 +153,15 @@ const ensureCustomFontsForDoc = async (doc) => {
             }
             return false;
         }
-        const css = await waitForFontCSSReady(4000);
-        if (!css || !doc?.head) return false;
+        if (!doc?.head) return false;
         const horizontalFamily = globalThis.manabiHorizontalFontFamilyName || 'YuKyokasho Yoko';
         const verticalFamily = globalThis.manabiVerticalFontFamilyName || 'YuKyokasho';
         const writingDirection = globalThis.manabiEbookWritingDirection || 'original';
         const shouldUseVertical = writingDirection === 'vertical'
             || (writingDirection === 'original' && globalThis.manabiTrackingVertical === true);
         const targetFamily = shouldUseVertical ? verticalFamily : horizontalFamily;
+        const stylesheetURL = resolveSharedFontStylesheetURL(doc, targetFamily);
+        if (!stylesheetURL) return false;
         if (root) {
             root.dataset.manabiFontPending = '1';
             root.dataset.manabiFontReady = '0';
@@ -191,23 +172,11 @@ const ensureCustomFontsForDoc = async (doc) => {
             style.id = 'manabi-custom-fonts-inline';
             style.rel = 'stylesheet';
             doc.head.appendChild(style);
-            logEBookPerf('font-inline-insert', { bytes: css.length, mode: 'blob-link' });
+            logEBookPerf('font-inline-insert', { family: targetFamily, mode: 'same-scheme-link' });
         }
-        if (style.dataset.manabiInjectedFontFamily !== targetFamily || !style.href) {
-            const sourceCSS = globalThis.manabiFontCSSText || css;
-            const nextCSS = sourceCSS.replace(
-                /font-family:\s*['"][^'"]+['"]\s*;/g,
-                "font-family: '" + targetFamily + "';"
-            );
-            const blob = new Blob([nextCSS], { type: 'text/css' });
-            const nextBlobURL = URL.createObjectURL(blob);
-            const previousBlobURL = style.dataset.manabiBlobURL || '';
-            style.href = nextBlobURL;
-            style.dataset.manabiBlobURL = nextBlobURL;
+        if (style.dataset.manabiInjectedFontFamily !== targetFamily || style.href !== stylesheetURL) {
+            style.href = stylesheetURL;
             style.dataset.manabiInjectedFontFamily = targetFamily;
-            if (previousBlobURL && previousBlobURL !== nextBlobURL) {
-                try { URL.revokeObjectURL(previousBlobURL); } catch (_error) {}
-            }
         }
 
         const fontSet = doc.fonts;
@@ -2152,6 +2121,7 @@ class Reader {
         topWindowURL: window.top.location.href,
         currentPageURL,
         })
+        postRuntimePaginationReadback();
         logEBookPageNum('onLoad:updateCurrentContentPage', {
             topWindowURL: window.top?.location?.href ?? null,
             currentPageURL: currentPageURL ?? null,
@@ -2449,6 +2419,7 @@ class Reader {
         this._lastRelocateSectionIndex = sectionIndex;
         this.#updateJumpUnitAvailability();
         this.#syncJumpInputWithState();
+        postRuntimePaginationReadback();
             if (percentButton) {
                 percentButton.disabled = true;
             }
@@ -2753,6 +2724,14 @@ window.manabi_seekToSentenceIdentifierForReadAloud = (sentenceIdentifier) => {
 window.manabi_getPlaybackSyncAnchor = () => {
     const frame = resolvePrimaryReaderFrame();
     if (!frame) {
+        const sliderVisibility = (() => {
+            if (!slider || !slider.isConnected) return null;
+            const computedStyle = window.getComputedStyle?.(slider);
+            if (!computedStyle) return null;
+            return computedStyle.visibility !== 'hidden'
+                && computedStyle.display !== 'none'
+                && computedStyle.opacity !== '0';
+        })();
         return {
             sentenceIdentifier: null,
             transcriptStartSeconds: null,
@@ -2910,6 +2889,19 @@ const logReaderBootstrapState = (event) => {
         pageURL: window.location.href,
     });
 };
+
+const postRuntimePaginationReadback = throttle(() => {
+    try {
+        const sectionLayoutController = globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
+            ?? globalThis.manabiEbookSectionLayoutController;
+        const layoutDiagnostics = typeof sectionLayoutController?.layoutDiagnostics === 'function'
+            ? sectionLayoutController.layoutDiagnostics()
+            : null;
+        window.webkit?.messageHandlers?.swiftUIWebViewPaginationReadback?.postMessage?.({
+            spreadSequence: layoutDiagnostics?.spreadSequence ?? null,
+        });
+    } catch (_error) {}
+}, 120);
 
 window.manabiGetPageTurnProbeSnapshot = async () => {
     try {
@@ -3129,6 +3121,7 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
         const layoutCurrentChunkOverflow = typeof layoutDiagnostics?.currentChunkOverflow === 'boolean'
             ? layoutDiagnostics.currentChunkOverflow
             : null;
+        const spreadSequence = layoutDiagnostics?.spreadSequence ?? null;
         const shouldLogZeroLayout =
             layoutLiveRootExists === true
             && layoutLiveCurrentPageExists === true
@@ -3310,12 +3303,51 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
         const nextPageTextSample = Number.isFinite(pageCount) && pageIndex + 1 < pageCount
             ? sampleForRange(visibleRangeFor(pageIndex + 1))
             : null;
-        const currentPageDisplayLabel = typeof globalThis.navHUD?.latestPrimaryLabel === 'string'
-            ? globalThis.navHUD.latestPrimaryLabel
+        const pageTargets = Array.isArray(globalThis.navHUD?.pageTargets) ? globalThis.navHUD.pageTargets : [];
+        const normalizedPageTarget = Number.isFinite(pageIndex) && pageIndex >= 0
+            ? (pageTargets[pageIndex] ?? null)
             : null;
-        const currentPhysicalPageLabel = typeof globalThis.navHUD?.lastPrimaryLabelDiagnostics?.pageItemLabel === 'string'
-            ? globalThis.navHUD.lastPrimaryLabelDiagnostics.pageItemLabel
-            : null;
+        const normalizedTotalPages = Number.isFinite(pageCount) && pageCount > 0
+            ? pageCount
+            : (pageTargets.length > 0 ? pageTargets.length : null);
+        const normalizedDisplayLabel = value => {
+            if (typeof value !== 'string') return null;
+            const trimmed = value.trim();
+            return trimmed.length > 0 ? trimmed : null;
+        };
+        const currentPageDisplayLabel = (() => {
+            const latestLabel = normalizedDisplayLabel(globalThis.navHUD?.latestPrimaryLabel);
+            if (latestLabel) {
+                return latestLabel;
+            }
+            if (typeof globalThis.navHUD?.getPrimaryDisplayLabel === 'function'
+                && Number.isFinite(pageIndex)
+                && pageIndex >= 0) {
+                const computedLabel = normalizedDisplayLabel(globalThis.navHUD.getPrimaryDisplayLabel({
+                    pageItem: normalizedPageTarget,
+                    pageNumber: pageIndex + 1,
+                    pageCount: normalizedTotalPages,
+                    location: normalizedTotalPages ? { current: pageIndex, total: normalizedTotalPages } : null,
+                }));
+                if (computedLabel) {
+                    return computedLabel;
+                }
+            }
+            if (Number.isFinite(pageIndex) && pageIndex >= 0) {
+                if (typeof normalizedTotalPages === 'number' && normalizedTotalPages > 0) {
+                    return `Page ${pageIndex + 1} of ${normalizedTotalPages}`;
+                }
+                return `Page ${pageIndex + 1}`;
+            }
+            return null;
+        })();
+        const currentPhysicalPageLabel = (() => {
+            const diagnosticLabel = normalizedDisplayLabel(globalThis.navHUD?.lastPrimaryLabelDiagnostics?.pageItemLabel);
+            if (diagnosticLabel) {
+                return diagnosticLabel;
+            }
+            return normalizedDisplayLabel(normalizedPageTarget?.label);
+        })();
         const livePageIndex = Number.isFinite(layoutLiveCurrentPageIndex) && layoutLiveCurrentPageIndex >= 0 ? layoutLiveCurrentPageIndex : null;
         const liveChunkPageIndex = Number.isFinite(layoutLiveCurrentChunkPageIndex) && layoutLiveCurrentChunkPageIndex >= 0 ? layoutLiveCurrentChunkPageIndex : null;
         const viewportCenterChunkPageIndex = Number.isFinite(layoutViewportCenterChunkPageIndex) && layoutViewportCenterChunkPageIndex >= 0 ? layoutViewportCenterChunkPageIndex : null;
@@ -3343,6 +3375,27 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             : null;
         const sameDocumentHostTurnResult = typeof globalThis.manabiSameDocumentHostTurnDiagnostics?.result === 'string'
             ? globalThis.manabiSameDocumentHostTurnDiagnostics.result
+            : null;
+        const historyCanGoBack = typeof view?.history?.canGoBack === 'boolean'
+            ? view.history.canGoBack
+            : null;
+        const historyCanGoForward = typeof view?.history?.canGoForward === 'boolean'
+            ? view.history.canGoForward
+            : null;
+        const historyDepth = Number.isFinite(view?.history?.length)
+            ? view.history.length
+            : null;
+        const historyCurrentIndex = Number.isFinite(view?.history?.index)
+            ? view.history.index
+            : null;
+        const historyPendingReplaceStateSuppressionCount = Number.isFinite(view?.history?.pendingReplaceStateSuppressionCount)
+            ? view.history.pendingReplaceStateSuppressionCount
+            : null;
+        const historySuppressedReplaceStateCount = Number.isFinite(view?.history?.suppressedReplaceStateCount)
+            ? view.history.suppressedReplaceStateCount
+            : null;
+        const historyLastSuppressedReplaceStateReason = typeof view?.history?.lastSuppressedReplaceStateReason === 'string'
+            ? view.history.lastSuppressedReplaceStateReason
             : null;
         const shouldReportPreviousLoadIssue =
             !view &&
@@ -3426,11 +3479,21 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             layoutCurrentChunkScrollWidth,
             layoutCurrentChunkScrollHeight,
             layoutCurrentChunkOverflow,
+            spreadSequence,
             computedFontSizeCSS,
             currentPageTextSample,
             nextPageTextSample,
             currentPageDisplayLabel,
             currentPhysicalPageLabel,
+            progressScrubberVisible: sliderVisibility,
+            progressScrubberActive: !!this.#progressScrubState,
+            historyCanGoBack,
+            historyCanGoForward,
+            historyDepth,
+            historyCurrentIndex,
+            historyPendingReplaceStateSuppressionCount,
+            historySuppressedReplaceStateCount,
+            historyLastSuppressedReplaceStateReason,
             livePageIndex,
             liveChunkPageIndex,
             viewportCenterChunkPageIndex,
@@ -3474,6 +3537,7 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             canPrev: typeof globalThis.reader?.view?.prev === 'function',
             canForward: false,
             canBackward: false,
+            spreadSequence: null,
             hasSectionLayoutController: !!(
                 globalThis.reader?.view?.document?.defaultView?.manabiEbookSectionLayoutController
                 ?? globalThis.manabiEbookSectionLayoutController
@@ -3540,6 +3604,13 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             computedFontSizeCSS: globalThis.getComputedStyle?.(globalThis.document?.body ?? null)?.fontSize ?? null,
             currentPageTextSample: null,
             nextPageTextSample: null,
+            historyCanGoBack: null,
+            historyCanGoForward: null,
+            historyDepth: null,
+            historyCurrentIndex: null,
+            historyPendingReplaceStateSuppressionCount: null,
+            historySuppressedReplaceStateCount: null,
+            historyLastSuppressedReplaceStateReason: null,
             livePageIndex: null,
             liveChunkPageIndex: null,
             viewportCenterChunkPageIndex: null,
@@ -3831,7 +3902,14 @@ window.loadLastPosition = async ({
     const parsedFraction = Number(fractionalCompletion)
     const hasFractionalCompletion = Number.isFinite(parsedFraction)
     const shouldRestoreFraction = hasFractionalCompletion && parsedFraction > 0
+    const suppressNextHistoryReplace = reason => {
+        globalThis.reader?.view?.history?.suppressNextReplaceState?.(reason)
+    }
+    const clearPendingHistoryReplaceSuppression = () => {
+        globalThis.reader?.view?.history?.clearPendingReplaceStateSuppression?.()
+    }
     const restoreFirstSection = async reason => {
+        suppressNextHistoryReplace(`loadLastPosition:${reason}`)
         await globalThis.reader.view.renderer.firstSection()
         logFix('loadLastPosition:first-section', {
             reason,
@@ -3842,9 +3920,12 @@ window.loadLastPosition = async ({
     }
 
     if (cfi.length > 0) {
+        suppressNextHistoryReplace('loadLastPosition:cfi')
         await globalThis.reader.view.goTo(cfi).catch(async e => {
             console.error(e)
+            clearPendingHistoryReplaceSuppression()
             if (shouldRestoreFraction) {
+                suppressNextHistoryReplace('loadLastPosition:fraction-fallback')
                 await globalThis.reader.view.goToFraction(parsedFraction)
                 logFix('loadLastPosition:fraction-fallback', {
                     reason: 'cfi-error',
@@ -3855,6 +3936,7 @@ window.loadLastPosition = async ({
             }
         })
     } else if (shouldRestoreFraction) {
+        suppressNextHistoryReplace('loadLastPosition:fraction')
         await globalThis.reader.view.goToFraction(parsedFraction)
         logFix('loadLastPosition:fraction', {
             fractionalCompletion: parsedFraction,

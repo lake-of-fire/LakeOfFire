@@ -69,6 +69,71 @@ const deriveVisibleUnitDiagnostics = ({
     }
 }
 
+const deriveSpreadSequenceDiagnostics = ({
+    currentPageIndex = null,
+    pageCount = null,
+    visiblePageCount = 1,
+    hasLeadingSingleton = false,
+    hasTrailingSingleton = false,
+}) => {
+    if (!Number.isFinite(currentPageIndex) || !Number.isFinite(pageCount) || pageCount <= 0) {
+        return null
+    }
+
+    const resolvedVisiblePageCount = Math.max(1, Number.parseInt(String(visiblePageCount || 1), 10) || 1)
+    const spreads = []
+    let pageIndex = 0
+
+    if (resolvedVisiblePageCount > 1 && hasLeadingSingleton === true && pageIndex < pageCount) {
+        spreads.push({
+            index: spreads.length,
+            slots: [
+                { kind: 'blank', pageIndex: null },
+                { kind: 'page', pageIndex },
+            ],
+        })
+        pageIndex += 1
+    }
+
+    while (pageIndex < pageCount) {
+        const remaining = pageCount - pageIndex
+        if (resolvedVisiblePageCount > 1 && hasTrailingSingleton === true && remaining === 1) {
+            spreads.push({
+                index: spreads.length,
+                slots: [
+                    { kind: 'page', pageIndex },
+                    { kind: 'blank', pageIndex: null },
+                ],
+            })
+            pageIndex += 1
+            continue
+        }
+
+        const slotCount = Math.min(resolvedVisiblePageCount, remaining)
+        const slots = []
+        for (let offset = 0; offset < slotCount; offset += 1) {
+            slots.push({
+                kind: 'page',
+                pageIndex: pageIndex + offset,
+            })
+        }
+        spreads.push({
+            index: spreads.length,
+            slots,
+        })
+        pageIndex += slotCount
+    }
+
+    const currentIndex = spreads.findIndex(spread =>
+        Array.isArray(spread?.slots) && spread.slots.some(slot => slot?.pageIndex === currentPageIndex)
+    )
+
+    return {
+        currentIndex: currentIndex >= 0 ? currentIndex : null,
+        spreads,
+    }
+}
+
 const logReaderPerf = (event, detail = {}) => {
     try {
         const line = `# READERPERF ${JSON.stringify({ event, ...detail })}`
@@ -863,6 +928,13 @@ export class EbookSectionLayout {
             currentPageIndex: resolvedCurrentPageIndex,
             pageCount: this.pageCount(),
         })
+        const spreadSequence = deriveSpreadSequenceDiagnostics({
+            currentPageIndex: resolvedCurrentPageIndex,
+            pageCount: this.pageCount(),
+            visiblePageCount: visibleUnitDiagnostics.visiblePageCount,
+            hasLeadingSingleton: visibleUnitDiagnostics.hasLeadingSingleton,
+            hasTrailingSingleton: visibleUnitDiagnostics.hasTrailingSingleton,
+        })
         return {
             pageCount: this.pageCount(),
             pageRecordCount: this.#pageRecords.length,
@@ -916,6 +988,7 @@ export class EbookSectionLayout {
             writingMode: buildMetrics?.vertical === true
                 ? (buildMetrics?.verticalRTL === true ? 'vertical-rl' : 'vertical-lr')
                 : 'horizontal-tb',
+            spreadSequence,
             ...visibleUnitDiagnostics,
             layoutComplete: this.isLayoutComplete(),
         }

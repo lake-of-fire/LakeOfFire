@@ -12,12 +12,78 @@ import LakeOfFireContent
 
 let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
 
+public enum ReaderPageTurnRequestedLocationSource: String, Codable, Equatable, Sendable {
+    case defaultRestore
+    case savedRestore
+}
+
+public struct ReaderPageTurnRequestedLocationState: Codable, Equatable, Sendable {
+    public let source: ReaderPageTurnRequestedLocationSource
+    public let kind: String
+    public let value: String
+    public let surroundingContext: String?
+    public let isRequestedPageChange: Bool
+    public let fractionalCompletion: Float?
+    public let sectionIndex: Int?
+    public let mainDocumentURL: URL?
+
+    public init(
+        source: ReaderPageTurnRequestedLocationSource,
+        kind: String,
+        value: String,
+        surroundingContext: String? = nil,
+        isRequestedPageChange: Bool = false,
+        fractionalCompletion: Float? = nil,
+        sectionIndex: Int? = nil,
+        mainDocumentURL: URL? = nil
+    ) {
+        self.source = source
+        self.kind = kind
+        self.value = value
+        self.surroundingContext = surroundingContext
+        self.isRequestedPageChange = isRequestedPageChange
+        self.fractionalCompletion = fractionalCompletion
+        self.sectionIndex = sectionIndex
+        self.mainDocumentURL = mainDocumentURL
+    }
+}
+
+public struct ReaderPageTurnReadingProgressState: Codable, Equatable, Sendable {
+    public let cfi: String?
+    public let fractionalCompletion: Float?
+    public let highWaterMarkFractionalCompletion: Float?
+    public let reason: String
+    public let sectionIndex: Int?
+    public let mainDocumentURL: URL?
+
+    public init(
+        cfi: String?,
+        fractionalCompletion: Float?,
+        highWaterMarkFractionalCompletion: Float? = nil,
+        reason: String,
+        sectionIndex: Int? = nil,
+        mainDocumentURL: URL? = nil
+    ) {
+        self.cfi = cfi
+        self.fractionalCompletion = fractionalCompletion
+        self.highWaterMarkFractionalCompletion = highWaterMarkFractionalCompletion
+        self.reason = reason
+        self.sectionIndex = sectionIndex
+        self.mainDocumentURL = mainDocumentURL
+    }
+}
+
 @MainActor
 public class ReaderViewModel: NSObject, ObservableObject {
     public var navigator: WebViewNavigator?
     @Published public var state: WebViewState = .empty
     @Published public private(set) var pageTurnBootstrapSerial = 0
     @Published public private(set) var ebookViewerLoadedProbeSummary: String?
+    @Published public private(set) var pageTurnRequestedLocationState: ReaderPageTurnRequestedLocationState?
+    @Published public private(set) var pageTurnReadingProgressState: ReaderPageTurnReadingProgressState?
+    @Published public private(set) var pageTurnReadingProgressSuppressionReason: String?
+    private var pageTurnReadingProgressHighWaterMark: Float?
+    private var pendingPageTurnReadingProgressSuppressionCount = 0
     private var pageTurnProbeRefreshHandler: ((WKFrameInfo?) async -> Void)?
     
     public var scriptCaller = WebViewScriptCaller()
@@ -163,6 +229,57 @@ public class ReaderViewModel: NSObject, ObservableObject {
     @MainActor
     public func setEbookViewerLoadedProbeSummary(_ summary: String?) {
         ebookViewerLoadedProbeSummary = summary
+    }
+
+    @MainActor
+    public func setPageTurnRequestedLocationState(_ state: ReaderPageTurnRequestedLocationState?) {
+        pageTurnRequestedLocationState = state
+        if let state, state.source == .defaultRestore || state.source == .savedRestore {
+            pendingPageTurnReadingProgressSuppressionCount = max(1, pendingPageTurnReadingProgressSuppressionCount)
+            pageTurnReadingProgressSuppressionReason = "requestedLocation:\(state.source.rawValue)"
+        } else if state == nil {
+            pendingPageTurnReadingProgressSuppressionCount = 0
+            pageTurnReadingProgressSuppressionReason = nil
+        }
+    }
+
+    @MainActor
+    public func setPageTurnReadingProgressState(_ state: ReaderPageTurnReadingProgressState?) {
+        guard let state else {
+            pageTurnReadingProgressHighWaterMark = nil
+            pageTurnReadingProgressState = nil
+            pageTurnReadingProgressSuppressionReason = nil
+            return
+        }
+
+        if pendingPageTurnReadingProgressSuppressionCount > 0 {
+            pendingPageTurnReadingProgressSuppressionCount -= 1
+            pageTurnReadingProgressSuppressionReason = "progress:\(state.reason)"
+            if pageTurnRequestedLocationState?.source == .defaultRestore
+                || pageTurnRequestedLocationState?.source == .savedRestore {
+                pageTurnRequestedLocationState = nil
+            }
+            return
+        }
+        pageTurnReadingProgressSuppressionReason = nil
+
+        let nextHighWater = [
+            pageTurnReadingProgressHighWaterMark,
+            state.highWaterMarkFractionalCompletion,
+            state.fractionalCompletion,
+        ]
+        .compactMap { $0 }
+        .max()
+
+        pageTurnReadingProgressHighWaterMark = nextHighWater
+        pageTurnReadingProgressState = ReaderPageTurnReadingProgressState(
+            cfi: state.cfi,
+            fractionalCompletion: state.fractionalCompletion,
+            highWaterMarkFractionalCompletion: nextHighWater,
+            reason: state.reason,
+            sectionIndex: state.sectionIndex,
+            mainDocumentURL: state.mainDocumentURL
+        )
     }
     
     @RealmBackgroundActor

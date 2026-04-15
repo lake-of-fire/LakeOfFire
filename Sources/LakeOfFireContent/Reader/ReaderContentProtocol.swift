@@ -567,7 +567,9 @@ public extension ReaderContentProtocol {
             )
             let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
             if let content = realm.object(ofType: Self.self, forPrimaryKey: compoundKey) {
-                content.configureBookmark(bookmark)
+                try await realm.asyncWrite {
+                    content.configureBookmark(bookmark)
+                }
             }
             
             let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)

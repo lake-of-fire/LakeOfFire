@@ -29,10 +29,10 @@ public class ReadingSession: BaseReadingProgress {
     @Persisted public var hasContributedToPaceSummary = false
 
     public var worthDisplayingSummaryToUser: Bool {
-        return wordsRead > 0
+        return wordsRead > 0 || webpagesCompleted > 0 || bookChaptersCompleted > 0
     }
 
     public var isEmpty: Bool {
-        return !articleMarkedAsFinished && wordsRead == 0
+        return !articleMarkedAsFinished && wordsRead == 0 && webpagesCompleted == 0 && bookChaptersCompleted == 0
     }
 }

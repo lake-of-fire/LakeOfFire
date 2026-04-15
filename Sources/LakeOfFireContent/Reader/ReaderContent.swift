@@ -19,6 +19,7 @@ public class ReaderContent: ObservableObject {
     @Published public var currentSectionIndex: Int?
     @Published public var locationBarTitle: String?
     @Published public var isReaderProvisionallyNavigating = false
+    @Published public var isRenderingReaderHTML = false
     @Published public private(set) var isReaderMainFrameNavigating = false
     @Published public private(set) var mainFrameNavigationURL: URL?
     private var mainFrameNavigationTasks: [UUID: URL] = [:]

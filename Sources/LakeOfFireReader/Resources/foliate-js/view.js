@@ -66,6 +66,9 @@ const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) 
 class History extends EventTarget {
     #arr = []
     #index = -1
+    #pendingReplaceStateSuppressionCount = 0
+    #suppressedReplaceStateCount = 0
+    #lastSuppressedReplaceStateReason = null
     pushState(x) {
         const last = this.#arr[this.#index]
         if (last === x || last?.fraction && last.fraction === x.fraction) return
@@ -74,6 +77,11 @@ class History extends EventTarget {
             this.dispatchEvent(new Event('index-change'))
             }
     replaceState(x) {
+        if (this.#pendingReplaceStateSuppressionCount > 0) {
+            this.#pendingReplaceStateSuppressionCount -= 1
+            this.#suppressedReplaceStateCount += 1
+            return
+        }
         const index = this.#index
         this.#arr[index] = x
     }
@@ -99,9 +107,34 @@ class History extends EventTarget {
     get canGoForward() {
         return this.#index < this.#arr.length - 1
     }
+    get index() {
+        return this.#index
+    }
+    get length() {
+        return this.#arr.length
+    }
+    get pendingReplaceStateSuppressionCount() {
+        return this.#pendingReplaceStateSuppressionCount
+    }
+    get suppressedReplaceStateCount() {
+        return this.#suppressedReplaceStateCount
+    }
+    get lastSuppressedReplaceStateReason() {
+        return this.#lastSuppressedReplaceStateReason
+    }
+    suppressNextReplaceState(reason = 'internal') {
+        this.#pendingReplaceStateSuppressionCount += 1
+        this.#lastSuppressedReplaceStateReason = reason ?? null
+    }
+    clearPendingReplaceStateSuppression() {
+        this.#pendingReplaceStateSuppressionCount = 0
+    }
     clear() {
         this.#arr = []
         this.#index = -1
+        this.#pendingReplaceStateSuppressionCount = 0
+        this.#suppressedReplaceStateCount = 0
+        this.#lastSuppressedReplaceStateReason = null
     }
 }
 
@@ -233,6 +266,7 @@ export class View extends HTMLElement {
     async init({ lastLocation, showTextStart }) {
         const resolved = lastLocation ? this.resolveNavigation(lastLocation) : null
         if (resolved) {
+            this.history.suppressNextReplaceState('init:lastLocation')
             await this.renderer.goTo(resolved)
             this.history.pushState(lastLocation)
         }

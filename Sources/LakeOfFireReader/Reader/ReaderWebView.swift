@@ -664,13 +664,6 @@ private class ReaderWebViewHandler {
                 newState: state,
                 scriptCaller: scriptCaller
             )
-            let hasReaderContent = (try? await scriptCaller.evaluateJavaScript(
-                "return !!document.getElementById('reader-content')"
-            ) as? Bool) ?? false
-            self.readerModeViewModel.handleRenderedReaderDocumentReady(
-                pageURL: state.pageURL,
-                hasReaderContent: hasReaderContent
-            )
             self.logNativeReaderSurfaceSnapshot(source: "readerWebView.onNavigationFinished", state: state)
             self.logNativeViewportDOMProbe(source: "readerWebView.onNavigationFinished", state: state)
             Task { @MainActor [weak self] in
@@ -943,6 +936,7 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerViewModel: ReaderViewModel
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
+    @Environment(\.webViewNavigator) private var navigator: WebViewNavigator
 
     @State private var handler: ReaderWebViewHandler?
 
@@ -990,6 +984,7 @@ public struct ReaderWebView: View {
                     state: $readerViewModel.state,
                     ebookURLSchemeHandler: ebookURLSchemeHandler,
                     readerFileURLSchemeHandler: readerFileURLSchemeHandler,
+                    sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
                     handler: handler
                 )
             } else {
@@ -998,6 +993,7 @@ public struct ReaderWebView: View {
             }
         }
         .task { @MainActor in
+            navigator.attachFallbackDelayNanoseconds = 700_000_000
             if handler == nil {
                 handler = ReaderWebViewHandler(
                     onNavigationCommitted: onNavigationCommitted,
@@ -1042,6 +1038,8 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.processHTML = readerModeViewModel.processHTML
             ebookURLSchemeHandler.sharedFontCSSBase64 = readerModeViewModel.sharedFontCSSBase64
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
+            ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
+            readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -1064,6 +1062,7 @@ private struct ReaderWebViewInternal: View {
     @Binding var state: WebViewState
     var ebookURLSchemeHandler: EbookURLSchemeHandler
     var readerFileURLSchemeHandler: ReaderFileURLSchemeHandler
+    let sharedReaderFontAsset: SharedReaderFontAsset?
     var handler: ReaderWebViewHandler
 
     @State private var internalURLSchemeHandler = InternalURLSchemeHandler()
@@ -1185,6 +1184,9 @@ private struct ReaderWebViewInternal: View {
                 "contentURL=\(readerContent.content?.url.absoluteString ?? "nil")",
                 "navigatorAttached=\(navigator.hasAttachedWebView)"
             )
+        }
+        .task(id: sharedReaderFontAsset?.localFileURL.path ?? "") { @MainActor in
+            internalURLSchemeHandler.sharedReaderFontAsset = sharedReaderFontAsset
         }
     }
 }

@@ -641,8 +641,34 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     }
                 }
             }),
-            ("readerDocState", { @MainActor _ in
-                debugPrint("# READER docState.ping")
+            ("readerDocState", { @MainActor [weak self] message in
+                guard let self else { return }
+                guard let body = message.body as? [String: Any],
+                      let href = body["href"] as? String,
+                      let pageURL = URL(string: href)
+                else { return }
+                let hasReaderRenderReady = body["hasReaderRenderReady"] as? Bool ?? false
+                let hasReaderContent = body["hasReaderContent"] as? Bool ?? false
+                let readyState = body["readyState"] as? String ?? "unknown"
+                let reason = body["reason"] as? String ?? "unknown"
+
+                debugPrint(
+                    "# READERLOAD stage=readerDocState",
+                    "pageURL=\(pageURL.absoluteString)",
+                    "readyState=\(readyState)",
+                    "hasReaderRenderReady=\(hasReaderRenderReady)",
+                    "hasReaderContent=\(hasReaderContent)",
+                    "reason=\(reason)"
+                )
+
+                guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
+                if readerContent.pageURL.matchesReaderURL(pageURL) {
+                    readerContent.isRenderingReaderHTML = false
+                }
+                readerModeViewModel.handleRenderedReaderDocumentReady(
+                    pageURL: pageURL,
+                    hasReaderContent: true
+                )
             }),
             ("readabilityModeUnavailable", { @MainActor [weak self] message in
                 guard let self else { return }

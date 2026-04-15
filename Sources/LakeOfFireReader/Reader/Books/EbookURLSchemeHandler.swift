@@ -6,6 +6,7 @@ import SwiftUtilities
 import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
+import LakeOfFireFiles
 import LakeKit
 
 fileprivate let ebookHTMLDebugMarker = "芥川賞"
@@ -244,14 +245,8 @@ fileprivate actor EBookLoadingActor {
             (function() {
                 try {
                     globalThis.manabiFontCSSBase64 = "\(base64)";
-                    const el = document.getElementById('manabi-font-css-base64');
-                    if (!el || globalThis.manabiFontCSSBlobURL) return;
-                    const css = atob(el.textContent || '');
-                    const blob = new Blob([css], { type: 'text/css' });
-                    const url = URL.createObjectURL(blob);
-                    globalThis.manabiFontCSSBlobURL = url;
                 } catch (err) {
-                    console.error('Failed to prepare font blob', err);
+                    console.error('Failed to expose shared font css payload', err);
                 }
             })();
             </script>
@@ -305,6 +300,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated(unsafe) public var sharedFontCSSBase64: String?
     /// Optional provider to lazily supply the base64 CSS when not yet set.
     nonisolated(unsafe) var sharedFontCSSBase64Provider: SharedFontCSSBase64Provider?
+    nonisolated(unsafe) public var sharedReaderFontAsset: SharedReaderFontAsset?
 
     private var schemeHandlers: [Int: WKURLSchemeTask] = [:]
     private let processTextRequestDeduper = EBookProcessTextRequestDeduper()
@@ -329,6 +325,17 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
         if ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
             let mainDocumentURL = urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil"
             print("# EBOOKASSET start url=\(url.absoluteString) mainDocument=\(mainDocumentURL)")
+        }
+        let sharedReaderFontAsset = self.sharedReaderFontAsset
+        if let fontResponse = sharedReaderFontResponse(
+            for: url,
+            asset: sharedReaderFontAsset
+        ) {
+            urlSchemeTask.didReceive(fontResponse.response)
+            urlSchemeTask.didReceive(fontResponse.data)
+            urlSchemeTask.didFinish()
+            schemeHandlers.removeValue(forKey: urlSchemeTask.hash)
+            return
         }
         guard let readerFileManager else {
             print("Error: Missing ReaderFileManager in EbookURLSchemeHandler")

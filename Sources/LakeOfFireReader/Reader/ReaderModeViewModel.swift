@@ -12,7 +12,9 @@ import WebKit
 import LakeOfFireCore
 import LakeOfFireAdblock
 import LakeOfFireContent
+import LakeOfFireFiles
 import WebMedia
+import SwiftUtilities
 
 private extension URL {
     var isAboutBlank: Bool { absoluteString == "about:blank" }
@@ -57,6 +59,22 @@ fileprivate actor ReaderModePreprocessMetricsAccumulator {
 private func readerFontPayloadHash(_ payload: String) -> String {
     let digest = SHA256.hash(data: Data(payload.utf8))
     return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+}
+
+private func readerModeSystemUIFontCSSDeclarations() -> String {
+    [
+        "--manabi-system-font-size-caption: \(Int(Font.pointSize(for: .caption).rounded()))px;",
+        "--manabi-system-font-size-caption2: \(Int(Font.pointSize(for: .caption2).rounded()))px;",
+        "--manabi-system-font-size-footnote: \(Int(Font.pointSize(for: .footnote).rounded()))px;",
+        "--manabi-system-font-size-callout: \(Int(Font.pointSize(for: .callout).rounded()))px;",
+        "--manabi-system-font-size-body: \(Int(Font.pointSize(for: .body).rounded()))px;",
+        "--manabi-system-font-size-subheadline: \(Int(Font.pointSize(for: .subheadline).rounded()))px;",
+        "--manabi-system-font-size-headline: \(Int(Font.pointSize(for: .headline).rounded()))px;",
+        "--manabi-system-font-size-title3: \(Int(Font.pointSize(for: .title3).rounded()))px;",
+        "--manabi-system-font-size-title2: \(Int(Font.pointSize(for: .title2).rounded()))px;",
+        "--manabi-system-font-size-title: \(Int(Font.pointSize(for: .title).rounded()))px;",
+        "--manabi-system-font-size-largeTitle: \(Int(Font.pointSize(for: .largeTitle).rounded()))px;"
+    ].joined(separator: " ")
 }
 
 private struct ReaderFontReadinessProbeResult: Decodable {
@@ -271,14 +289,45 @@ internal func buildCanonicalReadabilityHTML(
     let metaLine = "<div id=\"reader-meta-line\" class=\"byline-meta-line\"><span id=\"reader-publication-date\"></span>\(viewOriginal.isEmpty ? "" : "<span class=\"reader-meta-divider\"></span>\(viewOriginal)")</div>"
     let css = Readability.shared.css
     let scripts = Readability.shared.scripts
-    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\""
+    let availabilityAttributes = "data-manabi-reader-mode-available=\"true\" data-manabi-reader-mode-available-for=\"\(escapeReadabilityHTMLAttribute(contentURL.absoluteString))\" data-manabi-reader-render-ready=\"1\""
     let writingDirectionAttribute = "\(ReaderModeWritingDirectionContract.bodyDataAttributeWritingDirection)=\"\(writingDirectionBootstrap.rawValue)\""
+    let bodyStyle = readerModeSystemUIFontCSSDeclarations()
     let bodyClasses = writingDirectionBootstrap == .vertical
         ? "readability-mode \(ReaderModeWritingDirectionContract.bodyClassReaderVerticalWriting)"
         : "readability-mode"
     let bootstrapWritingDirectionStyle = writingDirectionBootstrap == .vertical
         ? readerModeVerticalBootstrapStyleTag()
         : ""
+    let systemUICSS = """
+    body.readability-mode #reader-byline-container {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: var(--manabi-system-font-size-footnote, 13px);
+        line-height: 20px;
+    }
+    body.readability-mode #reader-byline-line,
+    body.readability-mode #reader-byline,
+    body.readability-mode #reader-byline-container .reader-view-original,
+    body.readability-mode #reader-byline-container .byline-label {
+        font-size: inherit;
+        line-height: inherit;
+    }
+    body.readability-mode #reader-meta-line {
+        font-size: inherit;
+        line-height: inherit;
+    }
+    body.readability-mode #manabi-tracking-footer button,
+    body.readability-mode .manabi-start-over-book-button,
+    body.readability-mode .manabi-start-over-button {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: var(--manabi-system-font-size-footnote, 13px);
+        font-weight: 600;
+        height: 40px !important;
+    }
+    body.readability-mode .manabi-finished-reading-button-subtitle {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: var(--manabi-system-font-size-footnote, 13px);
+    }
+    """
     let documentReadyScript = """
     (function () {
         function logDocumentState(reason) {
@@ -327,11 +376,12 @@ internal func buildCanonicalReadabilityHTML(
             \(bootstrapWritingDirectionStyle)
             <style id='swiftuiwebview-readability-styles'>
                 \(css)
+                \(systemUICSS)
             </style>
             <title>\(title)</title>
         </head>
 
-        <body class="\(bodyClasses)" \(availabilityAttributes) \(writingDirectionAttribute)>
+        <body class="\(bodyClasses)" style="\(escapeReadabilityHTMLAttribute(bodyStyle))" \(availabilityAttributes) \(writingDirectionAttribute)>
             <div id="reader-header" class="header">
                 <h1 id="reader-title">\(title)</h1>
                 <div id="reader-byline-container">
@@ -394,6 +444,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     public var sharedFontCSSBase64: String?
     public var sharedFontCSSBase64Provider: (@Sendable () async -> String?)?
+    @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
     private var lastFallbackLoaderURL: URL?
     public private(set) var lastReaderModeRouteForTesting: String?
     @Published public private(set) var lastRenderedURL: URL?
@@ -1539,14 +1590,16 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHash($0, pageURL) } ?? false
-        guard pendingMatches || expectedMatches else { return }
+        let syntheticCompletionInFlight = isReaderModeLoading && !pageURL.isReaderURLLoaderURL
+        guard pendingMatches || expectedMatches || syntheticCompletionInFlight else { return }
 
         debugPrint(
             "# READER snippet.readerDocumentReady",
             "pageURL=\(pageURL.absoluteString)",
             "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
             "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-            "hasReaderContent=\(hasReaderContent)"
+            "hasReaderContent=\(hasReaderContent)",
+            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
         )
 
         lastRenderedURL = canonicalURL
@@ -1555,7 +1608,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             expectedSyntheticReaderLoaderURL = nil
         }
 
-        if pendingMatches {
+        if pendingMatches || syntheticCompletionInFlight {
             markReaderModeLoadComplete(for: canonicalURL)
         }
     }
@@ -2490,7 +2543,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let bodyBytesAfterProcessForReaderMode = bodyByteCount(doc)
             try Task.checkCancellation()
             let sharedFontCSSBytes = sharedReaderFontCSS?.utf8.count ?? 0
-            if sharedReaderFontCSS != nil {
+            if await shouldUseDeferredSharedReaderFontGate(for: url) {
                 let fontEmbedStartedAt = Date()
                 do {
                     try upsertDeferredSharedReaderFontGate(in: doc)
@@ -2549,6 +2602,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let docBytesBeforeSerialization = documentByteCount(doc)
             let headBytesBeforeSerialization = headByteCount(doc)
             let bodyBytesBeforeSerialization = bodyByteCount(doc)
+            markReaderRenderReady(in: doc)
             let serializeOuterHTMLStartedAt = Date()
             var html = try doc.outerHtml()
             serializeOuterHTMLElapsed = Date().timeIntervalSince(serializeOuterHTMLStartedAt)
@@ -2734,13 +2788,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                         mimeType: "text/html",
                         characterEncodingName: "UTF-8",
                         baseURL: renderBaseURL
-                    )
-                    let canonicalRenderURL = url.canonicalReaderContentURL()
-                    lastRenderedURL = canonicalRenderURL
-                    debugPrint(
-                        "# FLASH readerMode.rendered.set",
-                        "url=\(canonicalRenderURL.absoluteString)",
-                        "reason=showReadabilityContent.navigatorLoadDispatched"
                     )
                     debugPrint(
                         "# FLASH readability.navigator.load",
@@ -3911,6 +3958,14 @@ extension ReaderModeViewModel {
         decodeSharedReaderFontCSS(from: await resolveSharedReaderFontCSSBase64())
     }
 
+    private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
+        if sharedReaderFontUsesLocalScheme(for: pageURL) {
+            return true
+        }
+        guard let base64 = await resolveSharedReaderFontCSSBase64() else { return false }
+        return !base64.isEmpty
+    }
+
     public func awaitReaderFontReadinessForCompletionIfNeeded(
         scriptCaller: WebViewScriptCaller,
         pageURL: URL
@@ -4026,9 +4081,96 @@ extension ReaderModeViewModel {
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard isReaderMode || isReaderModeLoading else { return }
-        guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return }
+        guard pageURL.absoluteString != "about:blank" else { return }
         guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
+        if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
+            let js = """
+            (function() {
+                const setFontPendingState = (pending) => {
+                    const root = document.documentElement;
+                    if (!root) return;
+                    if (pending) {
+                        root.dataset.manabiFontPending = '1';
+                        root.dataset.manabiFontReady = '0';
+                    } else {
+                        delete root.dataset.manabiFontPending;
+                        root.dataset.manabiFontReady = '1';
+                    }
+                };
+                const resolveStylesheetURL = (desiredFamily) => {
+                    const family = desiredFamily || 'YuKyokasho';
+                    return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
+                };
+                const ensureReaderFontStyle = (desiredFamily) => {
+                    const root = document.documentElement;
+                    if (!root) return null;
+                    const family = desiredFamily
+                        || root?.dataset?.manabiHorizontalFontFamily
+                        || globalThis.manabiHorizontalFontFamilyName
+                        || 'YuKyokasho';
+                    const stylesheetURL = resolveStylesheetURL(family);
+                    let style = document.getElementById('manabi-custom-fonts-inline');
+                    if (!style) {
+                        style = document.createElement('link');
+                        style.id = 'manabi-custom-fonts-inline';
+                        style.rel = 'stylesheet';
+                        (document.head || document.documentElement).appendChild(style);
+                    }
+                    style.href = stylesheetURL;
+                    style.dataset.manabiInjectedFontFamily = family;
+                    style.dataset.manabiFontSource = 'local-scheme';
+                    root.dataset.manabiInjectedFontFamily = family;
+                    root.dataset.manabiFontInjected = '1';
+                    return style;
+                };
+                globalThis.manabiReaderFontInjectionMode = 'local-scheme';
+                globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
+                globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+                const waitForFontReady = async (desiredFamily) => {
+                    const fontSet = document.fonts;
+                    if (!fontSet) return;
+                    if (desiredFamily && typeof fontSet.load === 'function') {
+                        try {
+                            await fontSet.load("1em '" + desiredFamily + "'");
+                        } catch (_) {}
+                    }
+                    if (typeof fontSet.ready === 'object' && fontSet.ready && typeof fontSet.ready.then === 'function') {
+                        try {
+                            await fontSet.ready;
+                        } catch (_) {}
+                    }
+                };
+                return (async () => {
+                    const root = document.documentElement;
+                    const desiredFamily =
+                        root?.dataset?.manabiHorizontalFontFamily
+                        || globalThis.manabiHorizontalFontFamilyName
+                        || 'YuKyokasho';
+                    setFontPendingState(true);
+                    ensureReaderFontStyle(desiredFamily);
+                    if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
+                        window.manabiApplyDirectionalInjectedFont();
+                    }
+                    const resolvedFamily =
+                        document.documentElement?.dataset?.manabiInjectedFontFamily
+                        || desiredFamily
+                        || null;
+                    await waitForFontReady(resolvedFamily);
+                    setFontPendingState(false);
+                })().catch((e) => {
+                    setFontPendingState(false);
+                    try { console.log('manabi font inject error', e); } catch (_) {}
+                });
+            })();
+            """
+            try? await scriptCaller.evaluateJavaScript(
+                js,
+                arguments: ["stylesheetURLTemplate": stylesheetURLTemplate],
+                duplicateInMultiTargetFrames: true
+            )
+            return
+        }
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
         let fontHash = readerFontPayloadHash(base64)
         let js = """
@@ -4063,6 +4205,7 @@ extension ReaderModeViewModel {
                 const previousBlobURL = globalThis.manabiReaderFontCSSBlobURL || null;
                 globalThis.manabiReaderFontCSSBlobURL = nextBlobURL;
                 globalThis.manabiReaderFontCSSHash = fontHash;
+                globalThis.manabiReaderFontInjectionMode = 'blob';
                 if (previousBlobURL && previousBlobURL !== nextBlobURL) {
                     try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
                 }
@@ -4182,6 +4325,7 @@ extension ReaderModeViewModel {
     }
 }
 
+@MainActor
 private func makeReaderHeaderDateText(
     readabilityPublishedTime: String?,
     content: any ReaderContentProtocol
@@ -4384,6 +4528,11 @@ internal func hasMatchingReaderModeAvailableMarker(in html: String, for url: URL
 
 internal func hasCanonicalReadabilityMarkup(in html: String, expectedContentURL _: URL? = nil) -> Bool {
     hasReaderContentNodeMarkup(in: html) && hasReaderHeaderNodeMarkup(in: html)
+}
+
+internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
+    try? doc.select("html").first()?.attr("data-manabi-reader-render-ready", "1")
+    try? doc.body()?.attr("data-manabi-reader-render-ready", "1")
 }
 
 internal func prepareHTMLForNextReaderLoad(_ html: String) -> String {

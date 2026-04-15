@@ -25,6 +25,7 @@ public enum DarkModeTheme: String, CaseIterable, Identifiable {
 struct ReaderSettingsForm: View {
     @ScaledMetric(relativeTo: .body) private var defaultFontSize: CGFloat = Font.pointSize(for: Font.TextStyle.body) + 4
     @AppStorage("readerFontSize") private var readerFontSize: Double?
+    @AppStorage("readerAllowMultipleColumns") private var readerAllowMultipleColumns = true
     @AppStorage("lightModeTheme") private var lightModeTheme: LightModeTheme = .white
     @AppStorage("darkModeTheme") private var darkModeTheme: DarkModeTheme = .black
     @AppStorage("appTint") private var appTint = Color.accentColor
@@ -33,6 +34,7 @@ struct ReaderSettingsForm: View {
         Form {
             Section("Display") {
                 Stepper("Font Size: \(Int(round(readerFontSize ?? defaultFontSize))) px", value: Binding(get: { CGFloat(readerFontSize ?? defaultFontSize) }, set: { readerFontSize = Double($0) }), in: 5...160)
+                Toggle("Allow Multiple Columns", isOn: $readerAllowMultipleColumns)
                 Picker("Light Mode Theme", selection: $lightModeTheme) {
                     ForEach(LightModeTheme.allCases) { theme in
                         Text(theme.rawValue.capitalized).tag(theme)

@@ -38,6 +38,16 @@ public struct ReaderContentLoader {
     private static var recentLoadAllCache: [String: (timestamp: Date, references: [ContentReference])] = [:]
     private static let loadAllCacheTTL: TimeInterval = 5
 
+    public static func resetTransientCachesForTesting() async {
+        await MainActor.run {
+            inFlightGetContentTasks.removeAll()
+        }
+        await { @RealmBackgroundActor in
+            inFlightLoadAllTasks.removeAll()
+            recentLoadAllCache.removeAll()
+        }()
+    }
+
     public struct ContentReference {
         public let contentType: RealmSwift.Object.Type
         public let contentKey: String
