@@ -25,4 +25,34 @@ final class ViewerModuleLoadingTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: foliateJSDirectory.appendingPathComponent("ebook-viewer.bundle.iife.js").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: foliateJSDirectory.appendingPathComponent("ebook-viewer.bundle.js").path))
     }
+
+    func testEbookViewerModuleEntryPointImportsExistingSourceModules() throws {
+        let moduleURL = foliateJSDirectory.appendingPathComponent("ebook-viewer.js")
+        let moduleSource = try String(contentsOf: moduleURL, encoding: .utf8)
+        let pattern = #"(?:import\s+['"](\.[^'"]+)['"]|from\s+['"](\.[^'"]+)['"])"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let nsSource = moduleSource as NSString
+        let matches = regex.matches(
+            in: moduleSource,
+            range: NSRange(location: 0, length: nsSource.length)
+        )
+
+        let relativeImports = matches.compactMap { match -> String? in
+            for captureIndex in 1..<match.numberOfRanges {
+                let range = match.range(at: captureIndex)
+                guard range.location != NSNotFound else { continue }
+                return nsSource.substring(with: range)
+            }
+            return nil
+        }
+
+        XCTAssertFalse(relativeImports.isEmpty)
+        for relativeImport in relativeImports {
+            let importedURL = moduleURL.deletingLastPathComponent().appendingPathComponent(relativeImport)
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: importedURL.path),
+                "Missing imported module at \(importedURL.path)"
+            )
+        }
+    }
 }

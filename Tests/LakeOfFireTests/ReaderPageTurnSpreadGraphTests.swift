@@ -211,6 +211,52 @@ final class ReaderPageTurnSpreadGraphTests: XCTestCase {
         XCTAssertEqual(graph.currentContentLocation, .center)
     }
 
+    func testSpreadGraphDerivesTrailingLocationForLeadingSingleton() {
+        let graph = ReaderPageTurnSpreadGraph(
+            currentSpread: WebViewPaginationSpread(
+                index: 0,
+                slots: [
+                    .init(kind: .blank, pageIndex: nil),
+                    .init(kind: .page, pageIndex: 0),
+                ]
+            ),
+            destinationSpread: nil,
+            pageOffsetsDisplayed: nil,
+            pageCount: 10,
+            layoutLeadingPageIndex: nil,
+            currentPage: 0,
+            layoutTrailingPageIndex: nil,
+            layoutVisiblePageCount: nil
+        )
+
+        XCTAssertEqual(graph.currentPageIndex, 0)
+        XCTAssertEqual(graph.visiblePageCount, 1)
+        XCTAssertEqual(graph.currentContentLocation, .trailing)
+    }
+
+    func testSpreadGraphDerivesLeadingLocationForTrailingSingleton() {
+        let graph = ReaderPageTurnSpreadGraph(
+            currentSpread: WebViewPaginationSpread(
+                index: 4,
+                slots: [
+                    .init(kind: .page, pageIndex: 8),
+                    .init(kind: .blank, pageIndex: nil),
+                ]
+            ),
+            destinationSpread: nil,
+            pageOffsetsDisplayed: nil,
+            pageCount: 10,
+            layoutLeadingPageIndex: nil,
+            currentPage: 8,
+            layoutTrailingPageIndex: nil,
+            layoutVisiblePageCount: nil
+        )
+
+        XCTAssertEqual(graph.currentPageIndex, 8)
+        XCTAssertEqual(graph.visiblePageCount, 1)
+        XCTAssertEqual(graph.currentContentLocation, .leading)
+    }
+
     func testDestinationAvailabilityIsUnavailableAtForwardEnd() {
         let graph = ReaderPageTurnSpreadGraph(
             currentSpread: nil,

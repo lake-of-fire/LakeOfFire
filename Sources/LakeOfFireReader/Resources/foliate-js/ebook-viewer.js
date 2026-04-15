@@ -3902,15 +3902,33 @@ window.loadLastPosition = async ({
     const parsedFraction = Number(fractionalCompletion)
     const hasFractionalCompletion = Number.isFinite(parsedFraction)
     const shouldRestoreFraction = hasFractionalCompletion && parsedFraction > 0
-    const suppressNextHistoryReplace = reason => {
-        globalThis.reader?.view?.history?.suppressNextReplaceState?.(reason)
-    }
     const clearPendingHistoryReplaceSuppression = () => {
         globalThis.reader?.view?.history?.clearPendingReplaceStateSuppression?.()
     }
+    const waitForRestoreHistorySettle = () => new Promise(resolve => {
+        if (typeof globalThis.requestAnimationFrame === 'function') {
+            globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve))
+            return
+        }
+        setTimeout(resolve, 0)
+    })
+    const performHistorySuppressedRestore = async (reason, operation) => {
+        const history = globalThis.reader?.view?.history
+        history?.beginReplaceStateSuppression?.(`loadLastPosition:${reason}`)
+        try {
+            return await operation()
+        } catch (error) {
+            clearPendingHistoryReplaceSuppression()
+            throw error
+        } finally {
+            await waitForRestoreHistorySettle()
+            history?.endReplaceStateSuppression?.()
+        }
+    }
     const restoreFirstSection = async reason => {
-        suppressNextHistoryReplace(`loadLastPosition:${reason}`)
-        await globalThis.reader.view.renderer.firstSection()
+        await performHistorySuppressedRestore(reason, async () => {
+            await globalThis.reader.view.renderer.firstSection()
+        })
         logFix('loadLastPosition:first-section', {
             reason,
             hasCFI: cfi.length > 0,
@@ -3920,13 +3938,14 @@ window.loadLastPosition = async ({
     }
 
     if (cfi.length > 0) {
-        suppressNextHistoryReplace('loadLastPosition:cfi')
-        await globalThis.reader.view.goTo(cfi).catch(async e => {
+        await performHistorySuppressedRestore('cfi', async () => {
+            await globalThis.reader.view.goTo(cfi)
+        }).catch(async e => {
             console.error(e)
-            clearPendingHistoryReplaceSuppression()
             if (shouldRestoreFraction) {
-                suppressNextHistoryReplace('loadLastPosition:fraction-fallback')
-                await globalThis.reader.view.goToFraction(parsedFraction)
+                await performHistorySuppressedRestore('fraction-fallback', async () => {
+                    await globalThis.reader.view.goToFraction(parsedFraction)
+                })
                 logFix('loadLastPosition:fraction-fallback', {
                     reason: 'cfi-error',
                     fractionalCompletion: parsedFraction,
@@ -3936,8 +3955,9 @@ window.loadLastPosition = async ({
             }
         })
     } else if (shouldRestoreFraction) {
-        suppressNextHistoryReplace('loadLastPosition:fraction')
-        await globalThis.reader.view.goToFraction(parsedFraction)
+        await performHistorySuppressedRestore('fraction', async () => {
+            await globalThis.reader.view.goToFraction(parsedFraction)
+        })
         logFix('loadLastPosition:fraction', {
             fractionalCompletion: parsedFraction,
         })

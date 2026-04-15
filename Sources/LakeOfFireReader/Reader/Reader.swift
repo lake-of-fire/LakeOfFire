@@ -1999,6 +1999,8 @@ private extension PageTurnCurrentContentLocation {
             return .center
         case .leading:
             return .leading
+        case .trailing:
+            return .trailing
         }
     }
 }
@@ -2212,6 +2214,8 @@ public enum ReaderResolvedPagination {
                 return .center
             case .leading:
                 return .leading
+            case .trailing:
+                return .trailing
             }
         }
         return bridgeCurrentContentLocation ?? resolvedGraph?.currentContentLocation ?? .leading
@@ -2441,6 +2445,70 @@ struct ReaderResolvedProbeVisibleState: Equatable {
     }
 }
 
+struct ReaderResolvedBridgeSpreadState: Equatable {
+    let pageOffsetsDisplayed: [Int]?
+    let currentSpread: WebViewPaginationSpread?
+    let destinationSpread: WebViewPaginationSpread?
+    let spreadSequence: WebViewPaginationSpreadSequence?
+    let pageCount: Int?
+    let visiblePageIndices: [Int]?
+    let canForward: Bool
+    let canBackward: Bool
+    let forwardDestinationAvailability: String?
+    let backwardDestinationAvailability: String?
+
+    static func resolve(
+        runtimeOwnedSpreadStateAvailable: Bool,
+        runtimeOwnedDestinationSpreadAvailable: Bool,
+        existingPageOffsetsDisplayed: [Int]?,
+        existingCurrentSpread: WebViewPaginationSpread?,
+        existingDestinationSpread: WebViewPaginationSpread?,
+        existingSpreadSequence: WebViewPaginationSpreadSequence?,
+        existingPageCount: Int?,
+        existingVisiblePageIndices: [Int]?,
+        existingCanForward: Bool,
+        existingCanBackward: Bool,
+        existingForwardDestinationAvailability: String?,
+        existingBackwardDestinationAvailability: String?,
+        paginationContext: ReaderResolvedPaginationContext,
+        supportsActivePageTurn: Bool
+    ) -> ReaderResolvedBridgeSpreadState {
+        let resolvedGraph = paginationContext.resolvedGraph
+        return ReaderResolvedBridgeSpreadState(
+            pageOffsetsDisplayed: runtimeOwnedSpreadStateAvailable
+                ? existingPageOffsetsDisplayed
+                : paginationContext.pageOffsetsDisplayed,
+            currentSpread: runtimeOwnedSpreadStateAvailable
+                ? existingCurrentSpread
+                : paginationContext.currentSpread,
+            destinationSpread: runtimeOwnedDestinationSpreadAvailable
+                ? existingDestinationSpread
+                : paginationContext.destinationSpread(direction: nil as PageTurnDirection?),
+            spreadSequence: paginationContext.preferredSpreadSequence ?? existingSpreadSequence,
+            pageCount: runtimeOwnedSpreadStateAvailable
+                ? existingPageCount
+                : paginationContext.pageCount,
+            visiblePageIndices: runtimeOwnedSpreadStateAvailable
+                ? existingVisiblePageIndices
+                : paginationContext.visiblePageIndices,
+            canForward: runtimeOwnedSpreadStateAvailable
+                ? existingCanForward
+                : (supportsActivePageTurn && (paginationContext.canMoveForward ?? resolvedGraph.canMoveForward)),
+            canBackward: runtimeOwnedSpreadStateAvailable
+                ? existingCanBackward
+                : (supportsActivePageTurn && (paginationContext.canMoveBackward ?? resolvedGraph.canMoveBackward)),
+            forwardDestinationAvailability: runtimeOwnedSpreadStateAvailable
+                ? existingForwardDestinationAvailability
+                : (paginationContext.destinationAvailability(for: .forward)?.rawValue
+                    ?? resolvedGraph.forwardDestinationAvailability.rawValue),
+            backwardDestinationAvailability: runtimeOwnedSpreadStateAvailable
+                ? existingBackwardDestinationAvailability
+                : (paginationContext.destinationAvailability(for: .backward)?.rawValue
+                    ?? resolvedGraph.backwardDestinationAvailability.rawValue)
+        )
+    }
+}
+
 public enum ReaderResolvedPaginationEnrichment {
     public static func resolve(
         runtimeOwnedSpreadStateAvailable: Bool,
@@ -2602,11 +2670,11 @@ struct ReaderResolvedPaginationContext {
     }
 
     private var seedCurrentSpread: WebViewPaginationSpread? {
-        bridgeCurrentSpread ?? paginationSpreadSequence?.currentSpread ?? paginationState?.currentSpread
+        paginationSpreadSequence?.currentSpread ?? paginationState?.currentSpread ?? bridgeCurrentSpread
     }
 
     private var seedDestinationSpread: WebViewPaginationSpread? {
-        bridgeDestinationSpread ?? paginationState?.destinationSpread
+        paginationState?.destinationSpread ?? bridgeDestinationSpread
     }
 
     private var preferredRuntimeSpreadSequence: WebViewPaginationSpreadSequence? {
@@ -2621,10 +2689,12 @@ struct ReaderResolvedPaginationContext {
     }
 
     var pageCount: Int? {
-        ReaderResolvedPagination.pageCount(
-            bridgePageCount: bridgePageCount,
-            paginationPageCount: paginationState?.pageCount
-        )
+        paginationState?.pageCount
+            ?? bridgePageCount
+            ?? preferredRuntimeSpreadSequence?.spreads
+                .flatMap(\.pageIndices)
+                .max()
+                .map { $0 + 1 }
     }
 
     var currentContentLocation: PageTurnCurrentContentLocation {
@@ -2689,67 +2759,47 @@ struct ReaderResolvedPaginationContext {
     }
 
     public var currentSpread: WebViewPaginationSpread? {
-        bridgeCurrentSpread
-            ?? paginationSpreadSequence?.currentSpread
+        paginationSpreadSequence?.currentSpread
             ?? paginationState?.currentSpread
+            ?? bridgeCurrentSpread
             ?? seedGraph.spreadSequence.current?.spread
     }
 
     public var pageOffsetsDisplayed: [Int]? {
-        ReaderResolvedPagination.livePageOffsetsDisplayed(
-            bridgePageOffsetsDisplayed: bridgePageOffsetsDisplayed,
-            paginationPageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed,
-            resolvedCurrentSpread: currentSpread,
-            resolvedGraph: seedGraph
-        )
+        paginationState?.pageOffsetsDisplayed
+            ?? bridgePageOffsetsDisplayed
+            ?? currentSpread?.pageIndices
+            ?? seedGraph.currentVisiblePageIndices
     }
 
     public var currentPageIndex: Int? {
-        ReaderResolvedPagination.currentPageIndex(
-            bridgeCurrentPage: bridgeCurrentPage,
-            paginationCurrentPageIndex: paginationCurrentPageIndex,
-            resolvedGraph: resolvedGraph
-        )
+        paginationCurrentPageIndex ?? bridgeCurrentPage ?? seedGraph.currentPageIndex
     }
 
     public var visiblePageIndices: [Int]? {
-        ReaderResolvedPagination.visiblePageIndices(
-            bridgeVisiblePageIndices: bridgeVisiblePageIndices,
-            paginationVisiblePageIndices: paginationVisiblePageIndices,
-            resolvedGraph: resolvedGraph
-        )
+        paginationVisiblePageIndices ?? bridgeVisiblePageIndices ?? seedGraph.currentVisiblePageIndices
     }
 
     public var canMoveForward: Bool? {
-        ReaderResolvedPagination.canMoveForward(
-            bridgeCanMoveForward: bridgeCanMoveForward,
-            paginationCanMoveForward: paginationCanMoveForward,
-            resolvedGraph: resolvedGraph
-        )
+        paginationCanMoveForward ?? bridgeCanMoveForward ?? seedGraph.canMoveForward
     }
 
     public var canMoveBackward: Bool? {
-        ReaderResolvedPagination.canMoveBackward(
-            bridgeCanMoveBackward: bridgeCanMoveBackward,
-            paginationCanMoveBackward: paginationCanMoveBackward,
-            resolvedGraph: resolvedGraph
-        )
+        paginationCanMoveBackward ?? bridgeCanMoveBackward ?? seedGraph.canMoveBackward
     }
 
     public func destinationAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability? {
         switch direction {
         case .forward:
-            return ReaderResolvedPagination.destinationAvailability(
-                bridgeAvailability: bridgeForwardDestinationAvailability,
-                paginationAvailability: paginationForwardDestinationAvailability,
-                resolvedGraphAvailability: resolvedGraph.forwardDestinationAvailability
-            )
+            return paginationForwardDestinationAvailability
+                .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                ?? bridgeForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                ?? seedGraph.forwardDestinationAvailability
         case .backward:
-            return ReaderResolvedPagination.destinationAvailability(
-                bridgeAvailability: bridgeBackwardDestinationAvailability,
-                paginationAvailability: paginationBackwardDestinationAvailability,
-                resolvedGraphAvailability: resolvedGraph.backwardDestinationAvailability
-            )
+            return paginationBackwardDestinationAvailability
+                .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                ?? bridgeBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                ?? seedGraph.backwardDestinationAvailability
         }
     }
 
@@ -2768,7 +2818,7 @@ struct ReaderResolvedPaginationContext {
             pageOffsetsDisplayed: pageOffsetsDisplayed,
             pageCount: pageCount,
             layoutLeadingPageIndex: layoutLeadingPageIndex,
-            currentPage: bridgeCurrentPage,
+            currentPage: currentPageIndex,
             layoutTrailingPageIndex: layoutTrailingPageIndex,
             layoutVisiblePageCount: layoutVisiblePageCount
         ).resolvedGraph(runtimeSpreadSequence: preferredRuntimeSpreadSequence)
@@ -2947,18 +2997,6 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         let normalizedCurrentPageText = currentPageTextSample?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return !normalizedCurrentPageText.isEmpty
-    }
-
-    var currentSpreadTaskID: String {
-        currentSpread?.slots
-            .map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
-            .joined(separator: ",") ?? "nil"
-    }
-
-    var destinationSpreadTaskID: String {
-        destinationSpread?.slots
-            .map { "\($0.kind.rawValue):\($0.pageIndex.map(String.init) ?? "nil")" }
-            .joined(separator: ",") ?? "nil"
     }
 
     var preloadTaskID: String {
@@ -3304,6 +3342,24 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         )
         let paginationContext = bridgeResolvedPaginationContext(paginationState: paginationState)
         let resolvedGraph = paginationContext.resolvedGraph
+        let runtimeOwnedSpreadStateAvailable = paginationState?.spreadSequence != nil
+        let runtimeOwnedDestinationSpreadAvailable = paginationState?.destinationSpread != nil
+        let publishedSpreadState = ReaderResolvedBridgeSpreadState.resolve(
+            runtimeOwnedSpreadStateAvailable: runtimeOwnedSpreadStateAvailable,
+            runtimeOwnedDestinationSpreadAvailable: runtimeOwnedDestinationSpreadAvailable,
+            existingPageOffsetsDisplayed: pageOffsetsDisplayed,
+            existingCurrentSpread: currentSpread,
+            existingDestinationSpread: destinationSpread,
+            existingSpreadSequence: spreadSequence,
+            existingPageCount: pageCount,
+            existingVisiblePageIndices: visiblePageIndices,
+            existingCanForward: canForward,
+            existingCanBackward: canBackward,
+            existingForwardDestinationAvailability: forwardDestinationAvailability,
+            existingBackwardDestinationAvailability: backwardDestinationAvailability,
+            paginationContext: paginationContext,
+            supportsActivePageTurn: localSupportsActivePageTurn
+        )
         publicationSerial += 1
         updateReason = .configurationChange
         pageNavigationStyle = paginationState?.pageNavigationStyle?.pageTurnNavigationStyle ?? .paged
@@ -3352,16 +3408,16 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             usesPhysicalPageLabels: paginationState?.pageLabelPolicy?.usesPhysicalPageLabels,
             allowsMultipleLabelsInMultiUnitLayout: paginationState?.pageLabelPolicy?.allowsMultipleLabelsInMultiUnitLayout
         )
-        pageOffsetsDisplayed = paginationContext.pageOffsetsDisplayed
-        currentSpread = paginationContext.currentSpread
-        destinationSpread = paginationContext.destinationSpread(direction: nil as PageTurnDirection?)
-        spreadSequence = paginationState?.spreadSequence ?? spreadSequence
-        pageCount = paginationContext.pageCount
-        visiblePageIndices = paginationContext.visiblePageIndices
-        canForward = localSupportsActivePageTurn && resolvedGraph.canMoveForward
-        canBackward = localSupportsActivePageTurn && resolvedGraph.canMoveBackward
-        forwardDestinationAvailability = resolvedGraph.forwardDestinationAvailability.rawValue
-        backwardDestinationAvailability = resolvedGraph.backwardDestinationAvailability.rawValue
+        pageOffsetsDisplayed = publishedSpreadState.pageOffsetsDisplayed
+        currentSpread = publishedSpreadState.currentSpread
+        destinationSpread = publishedSpreadState.destinationSpread
+        spreadSequence = publishedSpreadState.spreadSequence
+        pageCount = publishedSpreadState.pageCount
+        visiblePageIndices = publishedSpreadState.visiblePageIndices
+        canForward = publishedSpreadState.canForward
+        canBackward = publishedSpreadState.canBackward
+        forwardDestinationAvailability = publishedSpreadState.forwardDestinationAvailability
+        backwardDestinationAvailability = publishedSpreadState.backwardDestinationAvailability
         let nextKey = [
             webViewState.pageURL.absoluteString,
             webViewState.isLoading ? "loading" : "loaded",
@@ -3941,6 +3997,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         let titleSecondary = await resolvedSnapshotSectionTitle()
         let snapshotVisibleUnit = request.visibleUnit
         let snapshotPageLabelPolicy = request.pageLabelPolicy
+        let paginationContext = bridgeResolvedPaginationContext(paginationState: lastKnownState.paginationState)
         let snapshotGraph = ReaderPageTurnSpreadGraph(
             currentSpread: ReaderResolvedPagination.currentSpread(
                 bridgeCurrentSpread: currentSpread,
@@ -3971,7 +4028,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         }
         let currentPageNumber = pageIndices.first.map { $0 + 1 }
         let trailingPageNumber = pageIndices.last.map { $0 + 1 }
-        let totalPages = pageCount
+        let totalPages = paginationContext.pageCount
         let displayLabel: String? = {
             if let currentPageNumber, let trailingPageNumber, trailingPageNumber > currentPageNumber {
                 if let totalPages {
@@ -3980,7 +4037,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 return "\(currentPageNumber)-\(trailingPageNumber)"
             }
             if request.intent != .dragDestination,
-               let currentPageDisplayLabel,
+               let currentPageDisplayLabel = currentPageDisplayLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
                !currentPageDisplayLabel.isEmpty {
                 return currentPageDisplayLabel
             }
@@ -4004,31 +4061,27 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             snapshotGraph.pageOffsetRange.map { $0.upperBound + 1 },
             pageIndices.max().map { $0 + 1 }
         ].compactMap { $0 }.max()
-        return PageTurnSnapshotChromeContent(
+        let pageRange = snapshotGraph.pageOffsetRange.map { ($0.lowerBound + 1)...($0.upperBound + 1) }
+        let chromeTopInset = max(0, request.contentRect.minY)
+        let horizontalInset = max(0, request.contentRect.minX)
+        let hudWidth = max(0, request.contentRect.width)
+        return ReaderPageTurnSnapshotChrome.resolve(
             headerLabels: await resolvedSnapshotHeaderLabels(for: request),
-            titlePrimary: (titlePrimary?.isEmpty == false) ? titlePrimary : nil,
-            titleSecondary: (titleSecondary?.isEmpty == false) ? titleSecondary : nil,
-            pageNumberHUD: .init(
-                isVisible: showHeaderChrome ?? true,
-                displayLabel: displayLabel,
-                leadingLabel: snapshotPageLabelPolicy.displayMode == .multipleLabels ? leadingLabel : nil,
-                trailingLabel: snapshotPageLabelPolicy.displayMode == .multipleLabels ? trailingLabel : nil,
-                currentPage: currentPageNumber,
-                totalPages: totalPages,
-                validatedPageCount: validatedPageCount,
-                topInset: request.contentRect.minY,
-                width: request.contentRect.width
-            ),
-            scrubberState: .init(
-                isVisible: progressScrubberVisible ?? false,
-                leadingPageNumber: currentPageNumber,
-                trailingPageNumber: trailingPageNumber,
-                pageRange: snapshotGraph.pageOffsetRange.map { ($0.lowerBound + 1)...($0.upperBound + 1) },
-                calloutWidth: request.contentRect.width,
-                leftRightInset: 0,
-                verticalInset: request.contentRect.minY,
-                followsThumb: progressScrubberActive ?? false
-            )
+            titlePrimary: titlePrimary,
+            titleSecondary: titleSecondary,
+            pageLabelDisplayMode: snapshotPageLabelPolicy.displayMode,
+            displayLabel: displayLabel,
+            currentPageNumber: currentPageNumber,
+            trailingPageNumber: trailingPageNumber,
+            totalPages: totalPages,
+            validatedPageCount: validatedPageCount,
+            pageRange: pageRange,
+            progressScrubberVisible: progressScrubberVisible,
+            progressScrubberActive: progressScrubberActive,
+            hideNavigationDueToScroll: false,
+            chromeTopInset: chromeTopInset,
+            horizontalInset: horizontalInset,
+            hudWidth: hudWidth
         )
     }
 
@@ -5066,6 +5119,154 @@ fileprivate func readerPageTurnPlatformFamily() -> PageTurnPlatformFamily {
     #endif
 }
 
+struct ReaderPageTurnChromeGeometry {
+    static func topInset(
+        contentRect: CGRect,
+        safeAreaInsets: PageTurnEdgeInsets
+    ) -> CGFloat {
+        max(safeAreaInsets.top, contentRect.minY)
+    }
+
+    static func horizontalInset(
+        containerBounds: CGRect,
+        contentRect: CGRect,
+        safeAreaInsets: PageTurnEdgeInsets
+    ) -> CGFloat {
+        let contentInsets = max(contentRect.minX, 0)
+            + max(containerBounds.width - contentRect.maxX, 0)
+        let safeAreaTotal = max(safeAreaInsets.leading + safeAreaInsets.trailing, 0)
+        return max(contentInsets, safeAreaTotal)
+    }
+}
+
+struct ReaderPageTurnChromePolicy {
+    static func titleVisibility(
+        hideNavigationDueToScroll: Bool,
+        hasTitleChromeContent: Bool
+    ) -> Bool {
+        !hideNavigationDueToScroll && hasTitleChromeContent
+    }
+
+    static func headerVisibility(
+        hideNavigationDueToScroll: Bool,
+        hasHeaderChromeContent: Bool
+    ) -> Bool {
+        !hideNavigationDueToScroll && hasHeaderChromeContent
+    }
+
+    static func pageNumberHUDVisibility(
+        displayLabel: String?,
+        currentPage: Int?,
+        totalPages: Int?,
+        hideNavigationDueToScroll: Bool
+    ) -> Bool {
+        guard !hideNavigationDueToScroll else { return false }
+        if let displayLabel, !displayLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        if currentPage != nil {
+            return true
+        }
+        if let totalPages, totalPages > 1 {
+            return true
+        }
+        return false
+    }
+
+    static func scrubberVisibility(
+        override: Bool?,
+        pageRange: ClosedRange<Int>?,
+        totalPages: Int?,
+        hideNavigationDueToScroll: Bool
+    ) -> Bool {
+        if let override {
+            return override
+        }
+        guard !hideNavigationDueToScroll else { return false }
+        guard let pageRange else { return false }
+        let validatedPageCount = max(totalPages ?? 0, pageRange.upperBound)
+        return validatedPageCount > 1
+    }
+
+    static func suppressesStandalonePageNumberHUD(
+        scrubberVisible: Bool,
+        scrubberFollowsThumb: Bool
+    ) -> Bool {
+        scrubberVisible && scrubberFollowsThumb
+    }
+}
+
+struct ReaderPageTurnSnapshotChrome {
+    static func resolve(
+        headerLabels: [String],
+        titlePrimary: String?,
+        titleSecondary: String?,
+        pageLabelDisplayMode: PageTurnPageLabelDisplayMode,
+        displayLabel: String?,
+        currentPageNumber: Int?,
+        trailingPageNumber: Int?,
+        totalPages: Int?,
+        validatedPageCount: Int?,
+        pageRange: ClosedRange<Int>?,
+        progressScrubberVisible: Bool?,
+        progressScrubberActive: Bool?,
+        hideNavigationDueToScroll: Bool,
+        chromeTopInset: CGFloat,
+        horizontalInset: CGFloat,
+        hudWidth: CGFloat
+    ) -> PageTurnSnapshotChromeContent {
+        let scrubberIsVisible = ReaderPageTurnChromePolicy.scrubberVisibility(
+            override: progressScrubberVisible,
+            pageRange: pageRange,
+            totalPages: totalPages,
+            hideNavigationDueToScroll: hideNavigationDueToScroll
+        )
+        let scrubberFollowsThumb = progressScrubberActive ?? false
+        let suppressesStandalonePageNumberHUD = ReaderPageTurnChromePolicy.suppressesStandalonePageNumberHUD(
+            scrubberVisible: scrubberIsVisible,
+            scrubberFollowsThumb: scrubberFollowsThumb
+        )
+        let leadingLabel = currentPageNumber.map { "Page \($0)" }
+        let trailingLabel: String?
+        if let trailingPageNumber, trailingPageNumber != currentPageNumber {
+            trailingLabel = "Page \(trailingPageNumber)"
+        } else {
+            trailingLabel = nil
+        }
+        return PageTurnSnapshotChromeContent(
+            headerLabels: headerLabels,
+            titlePrimary: (titlePrimary?.isEmpty == false) ? titlePrimary : nil,
+            titleSecondary: (titleSecondary?.isEmpty == false) ? titleSecondary : nil,
+            pageNumberHUD: .init(
+                isVisible: !suppressesStandalonePageNumberHUD && ReaderPageTurnChromePolicy.pageNumberHUDVisibility(
+                    displayLabel: displayLabel,
+                    currentPage: currentPageNumber,
+                    totalPages: totalPages,
+                    hideNavigationDueToScroll: hideNavigationDueToScroll
+                ),
+                displayLabel: displayLabel,
+                leadingLabel: pageLabelDisplayMode == .multipleLabels ? leadingLabel : nil,
+                trailingLabel: pageLabelDisplayMode == .multipleLabels ? trailingLabel : nil,
+                currentPage: currentPageNumber,
+                totalPages: totalPages,
+                validatedPageCount: validatedPageCount,
+                topInset: chromeTopInset,
+                width: hudWidth
+            ),
+            scrubberState: .init(
+                isVisible: scrubberIsVisible,
+                leadingPageNumber: currentPageNumber,
+                trailingPageNumber: trailingPageNumber,
+                pageRange: pageRange,
+                calloutWidth: hudWidth,
+                leftRightInset: horizontalInset,
+                verticalInset: chromeTopInset,
+                followsThumb: scrubberFollowsThumb
+            )
+        )
+    }
+}
+
 @MainActor
 fileprivate func makeReaderPageTurnLayoutModel() -> PageTurnLayoutModel {
     let platformFamily = readerPageTurnPlatformFamily()
@@ -5515,15 +5716,15 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         let appearance = colorScheme == .dark ? "dark" : "light"
         let navigationStyle = bridge.pageNavigationStyle.rawValue
         let transitionFamily = bridge.transitionFamily.rawValue
-        let currentSpreadKey = bridge.currentSpreadTaskID
-        let currentPageDisplayLabel = bridge.currentPageDisplayLabel ?? "nil"
-        let currentPhysicalPageLabel = bridge.currentPhysicalPageLabel ?? "nil"
+        let currentSpreadKey = resolvedCurrentSpreadTaskID()
+        let currentPageDisplayLabel = resolvedCurrentPageDisplayLabel() ?? "nil"
+        let currentPhysicalPageLabel = resolvedCurrentPhysicalPageLabel() ?? "nil"
         let allowsMultipleColumns = readerAllowMultipleColumns ? "multiColumnOn" : "multiColumnOff"
         let pageScrollerAnimation = (bridge.pageScrollerAnimationIsRunning ?? false) ? "pageScrollerAnimating" : "pageScrollerIdle"
         let liveResizeState = (bridge.liveResizeActive ?? false) ? "liveResizeActive" : "liveResizeInactive"
         let requestedLocationState = effectiveRequestedLocationState(
             readerViewModel.pageTurnRequestedLocationState,
-            currentSpread: bridge.currentSpread
+            currentSpread: resolvedControllerCurrentSpread()
         )
         let requestedLocationKey = [
             requestedLocationState?.source.rawValue ?? "nil",
@@ -5593,6 +5794,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         let paginationState = readerViewModel.state.paginationState
         let visibleUnit = resolvedVisibleUnit()
         let interactionDirection = controller.lastInteractionEvent?.direction
+        let currentContext = resolvedPaginationContext(paginationState: paginationState)
         let pageLabelPolicy = resolvedPageLabelPolicy(visibleUnit: visibleUnit)
         bridge.updateResolvedPageLabelPolicy(pageLabelPolicy)
         let platformFamily = readerPageTurnPlatformFamily()
@@ -5600,67 +5802,28 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         bridge.updateResolvedChromeVisibility(chromeVisibility)
         let allowsMultipleColumns = readerAllowMultipleColumns
         let pageNumberMode: WebViewPaginationPageNumberMode = pageLabelPolicy.usesPhysicalPageLabels ? .printEdition : .digitalBook
-        let currentSpread = paginationState?.currentSpread ?? resolvedWebViewCurrentSpread(from: visibleUnit)
-        let resolvedPageCount = ReaderResolvedPagination.pageCount(
-            bridgePageCount: bridge.pageCount,
-            paginationPageCount: paginationState?.pageCount
-        )
+        let currentSpread = currentContext.currentSpread ?? resolvedWebViewCurrentSpread(from: visibleUnit)
+        let resolvedPageCount = currentContext.pageCount
         let spreadGraph = ReaderPageTurnSpreadGraph(
             currentSpread: currentSpread,
             destinationSpread: nil,
-            pageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed ?? currentSpread?.pageIndices,
+            pageOffsetsDisplayed: currentContext.pageOffsetsDisplayed ?? currentSpread?.pageIndices,
             pageCount: resolvedPageCount,
             layoutLeadingPageIndex: visibleUnit.leadingPageIndex,
-            currentPage: bridge.currentPage,
+            currentPage: currentContext.currentPageIndex,
             layoutTrailingPageIndex: visibleUnit.trailingPageIndex,
             layoutVisiblePageCount: visibleUnit.visiblePageCount
         )
         let resolvedGraph = spreadGraph.resolvedGraph
-        let resolvedCurrentSpread = ReaderResolvedPagination.currentSpread(
-            bridgeCurrentSpread: nil,
-            paginationCurrentSpread: paginationState?.currentSpread,
-            resolvedGraph: resolvedGraph
-        )
-        let resolvedDestinationSpread = ReaderResolvedPagination.destinationSpread(
-            direction: interactionDirection,
-            paginationDestinationSpread: paginationState?.destinationSpread,
-            resolvedGraph: resolvedGraph
-        )
-        let pageOffsetsDisplayed = ReaderResolvedPagination.pageOffsetsDisplayed(
-            paginationPageOffsetsDisplayed: paginationState?.pageOffsetsDisplayed,
-            resolvedCurrentSpread: resolvedCurrentSpread,
-            resolvedGraph: resolvedGraph
-        )
-        let currentPageIndex = ReaderResolvedPagination.currentPageIndex(
-            bridgeCurrentPage: bridge.currentPage,
-            paginationCurrentPageIndex: paginationState?.currentPageIndex,
-            resolvedGraph: resolvedGraph
-        )
-        let visiblePageIndices = ReaderResolvedPagination.visiblePageIndices(
-            bridgeVisiblePageIndices: bridge.visiblePageIndices,
-            paginationVisiblePageIndices: paginationState?.visiblePageIndices,
-            resolvedGraph: resolvedGraph
-        )
-        let canMoveForward = ReaderResolvedPagination.canMoveForward(
-            bridgeCanMoveForward: bridge.canForward,
-            paginationCanMoveForward: paginationState?.canMoveForward,
-            resolvedGraph: resolvedGraph
-        )
-        let canMoveBackward = ReaderResolvedPagination.canMoveBackward(
-            bridgeCanMoveBackward: bridge.canBackward,
-            paginationCanMoveBackward: paginationState?.canMoveBackward,
-            resolvedGraph: resolvedGraph
-        )
-        let forwardDestinationAvailability = ReaderResolvedPagination.destinationAvailability(
-            bridgeAvailability: bridge.forwardDestinationAvailability,
-            paginationAvailability: paginationState?.forwardDestinationAvailability,
-            resolvedGraphAvailability: resolvedGraph.forwardDestinationAvailability
-        )
-        let backwardDestinationAvailability = ReaderResolvedPagination.destinationAvailability(
-            bridgeAvailability: bridge.backwardDestinationAvailability,
-            paginationAvailability: paginationState?.backwardDestinationAvailability,
-            resolvedGraphAvailability: resolvedGraph.backwardDestinationAvailability
-        )
+        let resolvedCurrentSpread = currentContext.currentSpread
+        let resolvedDestinationSpread = currentContext.destinationSpread(direction: interactionDirection)
+        let pageOffsetsDisplayed = currentContext.pageOffsetsDisplayed
+        let currentPageIndex = currentContext.currentPageIndex
+        let visiblePageIndices = currentContext.visiblePageIndices
+        let canMoveForward = currentContext.canMoveForward
+        let canMoveBackward = currentContext.canMoveBackward
+        let forwardDestinationAvailability = currentContext.destinationAvailability(for: PageTurnDirection.forward)
+        let backwardDestinationAvailability = currentContext.destinationAvailability(for: PageTurnDirection.backward)
         let context = ReaderResolvedPaginationContext(
             paginationState: paginationState,
             bridgeSpreadSequence: bridge.spreadSequence,
@@ -5903,7 +6066,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         context: ReaderResolvedPaginationContext
     ) -> PageTurnVisiblePagesState {
         let pageIndices = context.visiblePageIndices ?? context.resolvedGraph.currentVisiblePageIndices
-        let currentPageIndex = context.currentPageIndex ?? visibleUnit.leadingPageIndex ?? bridge.currentPage
+        let currentPageIndex = context.currentPageIndex ?? visibleUnit.leadingPageIndex
         return .init(
             visiblePageIndices: pageIndices ?? [],
             currentPageIndex: currentPageIndex,
@@ -5927,14 +6090,12 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         pageLabelPolicy: PageTurnPageLabelPolicy,
         resolvedGraph: ReaderPageTurnResolvedGraph
     ) -> PageTurnPageNumberHUDState {
+        let paginationContext = resolvedPaginationContext()
         let pageIndices = resolvedGraph.currentVisiblePageIndices
-            ?? [visibleUnit.leadingPageIndex ?? bridge.currentPage].compactMap { $0 }
+            ?? [visibleUnit.leadingPageIndex ?? paginationContext.currentPageIndex].compactMap { $0 }
         let leadingPage = pageIndices.first.map { $0 + 1 }
         let trailingPage = pageIndices.last.map { $0 + 1 }
-        let totalPages = ReaderResolvedPagination.pageCount(
-            bridgePageCount: bridge.pageCount,
-            paginationPageCount: readerViewModel.state.paginationState?.pageCount
-        )
+        let totalPages = paginationContext.pageCount
         let displayLabel: String?
         if let leadingPage, let trailingPage, trailingPage > leadingPage {
             if let totalPages {
@@ -5967,16 +6128,26 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
             resolvedGraph.pageOffsetRange.map { $0.upperBound + 1 },
             pageIndices.max().map { $0 + 1 }
         ].compactMap { $0 }.max()
+        let chromeTopInset = ReaderPageTurnChromeGeometry.topInset(
+            contentRect: layoutModel.inputs.contentRect,
+            safeAreaInsets: layoutModel.inputs.safeAreaInsets
+        )
+        let isVisible = ReaderPageTurnChromePolicy.pageNumberHUDVisibility(
+            displayLabel: displayLabel,
+            currentPage: leadingPage,
+            totalPages: totalPages,
+            hideNavigationDueToScroll: hideNavigationDueToScroll
+        )
 
         return .init(
-            isVisible: bridge.showHeaderChrome ?? resolvedChromeVisibility().showHeader,
+            isVisible: isVisible,
             displayLabel: displayLabel,
             leadingLabel: pageLabelPolicy.displayMode == .multipleLabels ? leadingLabel : nil,
             trailingLabel: pageLabelPolicy.displayMode == .multipleLabels ? trailingLabel : nil,
             currentPage: leadingPage,
             totalPages: totalPages,
             validatedPageCount: validatedPageCount,
-            topInset: max(layoutModel.inputs.safeAreaInsets.top, layoutModel.inputs.contentRect.minY),
+            topInset: chromeTopInset,
             width: resolvedPageNumberHUDWidth(for: visibleUnit)
         )
     }
@@ -5988,27 +6159,48 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         let pageOffsetRange = resolvedGraph.pageOffsetRange
         let resolvedPageIndices = pageIndices ?? []
         let pageRange = pageOffsetRange.map { ($0.lowerBound + 1)...($0.upperBound + 1) }
+        let chromeTopInset = ReaderPageTurnChromeGeometry.topInset(
+            contentRect: layoutModel.inputs.contentRect,
+            safeAreaInsets: layoutModel.inputs.safeAreaInsets
+        )
+        let horizontalInset = ReaderPageTurnChromeGeometry.horizontalInset(
+            containerBounds: layoutModel.inputs.containerBounds,
+            contentRect: layoutModel.inputs.contentRect,
+            safeAreaInsets: layoutModel.inputs.safeAreaInsets
+        )
+        let paginationContext = resolvedPaginationContext()
         return .init(
-            isVisible: bridge.progressScrubberVisible ?? false,
+            isVisible: ReaderPageTurnChromePolicy.scrubberVisibility(
+                override: bridge.progressScrubberVisible,
+                pageRange: pageRange,
+                totalPages: paginationContext.pageCount,
+                hideNavigationDueToScroll: hideNavigationDueToScroll
+            ),
             leadingPageNumber: resolvedPageIndices.first.map { $0 + 1 },
             trailingPageNumber: resolvedPageIndices.last.map { $0 + 1 },
             pageRange: pageRange,
             calloutWidth: resolvedPageNumberHUDWidth(for: resolvedVisibleUnit()),
-            leftRightInset: layoutModel.inputs.safeAreaInsets.leading + layoutModel.inputs.safeAreaInsets.trailing,
-            verticalInset: layoutModel.inputs.safeAreaInsets.top,
+            leftRightInset: horizontalInset,
+            verticalInset: chromeTopInset,
             followsThumb: bridge.progressScrubberActive ?? false
         )
     }
 
     private func resolvedChromeVisibility(platformFamily: PageTurnPlatformFamily? = nil) -> PageTurnChromeVisibility {
-        let family = platformFamily ?? readerPageTurnPlatformFamily()
+        _ = platformFamily ?? readerPageTurnPlatformFamily()
         let titlePrimary = readerViewModel.state.pageTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasTitleChromeContent = (titlePrimary?.isEmpty == false)
             || !(bridge.currentSectionHref?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let hasHeaderChromeContent = !(resolvedCurrentPageDisplayLabel()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             || !(resolvedCurrentPhysicalPageLabel()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        let fallbackShowTitle = !hideNavigationDueToScroll && hasTitleChromeContent
-        let fallbackShowHeader = !hideNavigationDueToScroll && family != .iPhone && hasHeaderChromeContent
+        let fallbackShowTitle = ReaderPageTurnChromePolicy.titleVisibility(
+            hideNavigationDueToScroll: hideNavigationDueToScroll,
+            hasTitleChromeContent: hasTitleChromeContent
+        )
+        let fallbackShowHeader = ReaderPageTurnChromePolicy.headerVisibility(
+            hideNavigationDueToScroll: hideNavigationDueToScroll,
+            hasHeaderChromeContent: hasHeaderChromeContent
+        )
         return PageTurnChromeVisibility(
             showTitle: bridge.showTitleChrome ?? fallbackShowTitle,
             showHeader: bridge.showHeaderChrome ?? fallbackShowHeader
@@ -6044,7 +6236,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
 
         let focusedPageIndex = visibleUnit.leadingPageIndex
             ?? visibleUnit.currentUnitIndex
-            ?? bridge.currentPage
+            ?? resolvedPaginationContext().currentPageIndex
 
         return PageTurnVisibleUnit(
             kind: .singlePage,
@@ -6383,9 +6575,10 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         layoutTrailingPageIndex: Int?,
         layoutVisiblePageCount: Int?
     ) -> Bool {
+        let paginationContext = resolvedPaginationContext()
         let resolvedGraph = ReaderPageTurnSpreadGraph(
             currentSpread: currentSpread,
-            destinationSpread: bridge.destinationSpread,
+            destinationSpread: paginationContext.destinationSpread(direction: nil),
             pageOffsetsDisplayed: pageOffsetsDisplayed,
             pageCount: pageCount,
             layoutLeadingPageIndex: layoutLeadingPageIndex,

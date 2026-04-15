@@ -11,6 +11,7 @@ import LakeOfFireAdblock
 import LakeOfFireContent
 
 let readerViewModelQueue = DispatchQueue(label: "ReaderViewModelQueue")
+private let readerPageTurnRestoreProgressSuppressionWindow = 2
 
 public enum ReaderPageTurnRequestedLocationSource: String, Codable, Equatable, Sendable {
     case defaultRestore
@@ -235,7 +236,10 @@ public class ReaderViewModel: NSObject, ObservableObject {
     public func setPageTurnRequestedLocationState(_ state: ReaderPageTurnRequestedLocationState?) {
         pageTurnRequestedLocationState = state
         if let state, state.source == .defaultRestore || state.source == .savedRestore {
-            pendingPageTurnReadingProgressSuppressionCount = max(1, pendingPageTurnReadingProgressSuppressionCount)
+            pendingPageTurnReadingProgressSuppressionCount = max(
+                readerPageTurnRestoreProgressSuppressionWindow,
+                pendingPageTurnReadingProgressSuppressionCount
+            )
             pageTurnReadingProgressSuppressionReason = "requestedLocation:\(state.source.rawValue)"
         } else if state == nil {
             pendingPageTurnReadingProgressSuppressionCount = 0

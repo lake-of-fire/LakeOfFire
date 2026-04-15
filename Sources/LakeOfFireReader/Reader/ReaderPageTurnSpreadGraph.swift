@@ -543,7 +543,13 @@ struct ReaderPageTurnSpreadGraph: Equatable {
     }
 
     var currentContentLocation: PageTurnCurrentContentLocation {
-        visiblePageCount > 1 ? .center : .leading
+        if visiblePageCount > 1 {
+            return .center
+        }
+        if currentSpread?.slots.first?.kind == .blank {
+            return .trailing
+        }
+        return .leading
     }
 
     var movementGraph: ReaderPageTurnMovementGraph {

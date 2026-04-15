@@ -67,6 +67,7 @@ class History extends EventTarget {
     #arr = []
     #index = -1
     #pendingReplaceStateSuppressionCount = 0
+    #activeReplaceStateSuppressionCount = 0
     #suppressedReplaceStateCount = 0
     #lastSuppressedReplaceStateReason = null
     pushState(x) {
@@ -79,6 +80,10 @@ class History extends EventTarget {
     replaceState(x) {
         if (this.#pendingReplaceStateSuppressionCount > 0) {
             this.#pendingReplaceStateSuppressionCount -= 1
+            this.#suppressedReplaceStateCount += 1
+            return
+        }
+        if (this.#activeReplaceStateSuppressionCount > 0) {
             this.#suppressedReplaceStateCount += 1
             return
         }
@@ -114,7 +119,7 @@ class History extends EventTarget {
         return this.#arr.length
     }
     get pendingReplaceStateSuppressionCount() {
-        return this.#pendingReplaceStateSuppressionCount
+        return this.#pendingReplaceStateSuppressionCount + this.#activeReplaceStateSuppressionCount
     }
     get suppressedReplaceStateCount() {
         return this.#suppressedReplaceStateCount
@@ -126,13 +131,22 @@ class History extends EventTarget {
         this.#pendingReplaceStateSuppressionCount += 1
         this.#lastSuppressedReplaceStateReason = reason ?? null
     }
+    beginReplaceStateSuppression(reason = 'internal') {
+        this.#activeReplaceStateSuppressionCount += 1
+        this.#lastSuppressedReplaceStateReason = reason ?? null
+    }
+    endReplaceStateSuppression() {
+        this.#activeReplaceStateSuppressionCount = Math.max(0, this.#activeReplaceStateSuppressionCount - 1)
+    }
     clearPendingReplaceStateSuppression() {
         this.#pendingReplaceStateSuppressionCount = 0
+        this.#activeReplaceStateSuppressionCount = 0
     }
     clear() {
         this.#arr = []
         this.#index = -1
         this.#pendingReplaceStateSuppressionCount = 0
+        this.#activeReplaceStateSuppressionCount = 0
         this.#suppressedReplaceStateCount = 0
         this.#lastSuppressedReplaceStateReason = null
     }

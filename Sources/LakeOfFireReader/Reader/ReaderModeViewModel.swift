@@ -747,6 +747,24 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         return true
     }
 
+    private func shouldSkipDuplicateLoaderRender(for url: URL) -> Bool {
+        let canonicalURL = url.canonicalReaderContentURL()
+
+        if hasActiveRender(for: canonicalURL) {
+            return true
+        }
+
+        if pendingKeysMatch(pendingReaderModeURL, canonicalURL), readabilityContent != nil {
+            return true
+        }
+
+        if pendingKeysMatch(lastRenderedURL, canonicalURL), readabilityContent != nil {
+            return true
+        }
+
+        return false
+    }
+
     @MainActor
     public func isReadabilityRenderInFlight(for url: URL) -> Bool {
         hasActiveRender(for: url)
@@ -1548,6 +1566,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         let loadStart = loadStartTimes[traceURL.absoluteString] ?? Date()
         let loadElapsed = Date().timeIntervalSince(loadStart)
         let hasReadableBody = readabilityBytes > 0
+        expectedSyntheticReaderLoaderURL = nil
         debugPrint(
             "# READERLOAD stage=readerMode.complete",
             "url=\(traceURL.absoluteString)",
@@ -1568,18 +1587,11 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "readabilityBytes=\(readabilityBytes)",
             "hasReadableBody=\(hasReadableBody)"
         )
-        if lastRenderedURL == nil {
-            lastRenderedURL = traceURL
-            debugPrint(
-                "# FLASH readerMode.rendered.setFallback",
-                "url=\(traceURL.absoluteString)",
-                "reason=complete.success.noRenderedURL"
-            )
-        }
         logStateSnapshot("complete.success", url: traceURL)
         logTrace(.complete, url: traceURL, details: "markReaderModeLoadComplete")
         loadStartTimes.removeValue(forKey: traceURL.absoluteString)
         readerModeLoading(false, frameIsMain: true)
+        lastRenderedURL = canonicalURL
         readerModeLoadCompletionHandler?(traceURL)
     }
 
@@ -1601,8 +1613,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "hasReaderContent=\(hasReaderContent)",
             "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
         )
-
-        lastRenderedURL = canonicalURL
 
         if expectedMatches {
             expectedSyntheticReaderLoaderURL = nil
@@ -1761,6 +1771,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
 
     @MainActor
     private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
+        if readabilityContent?.isEmpty == false {
+            return .capturedReadability
+        }
         if let content = try? await readerContent.getContent() {
             let activeReaderFileManager = readerFileManager ?? ReaderFileManager.shared
             if let html = try? await locallyRetrievableReaderHTML(
@@ -1769,9 +1782,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             ), html.isEmpty == false {
                 return .localHTML
             }
-        }
-        if readabilityContent != nil {
-            return .capturedReadability
         }
         return .unavailable
     }
@@ -2270,56 +2280,94 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             }
         }
 
-        let asyncWriteStartedAt = Date()
         let isNativeReaderView = await MainActor.run { url.isNativeReaderView }
-        logTrace(.contentWriteStart, url: url, details: "marking reader defaults")
-        try await content.asyncWrite { [weak self] _, content in
-            content.isReaderModeByDefault = true
-            content.isReaderModeAvailable = false
-            if !url.isEBookURL && !isNativeReaderView {
-                let existingHTML = content.html ?? ""
-                let shouldPersistRenderedHTML =
-                    existingHTML.isEmpty
-                    || !url.isSnippetURL
-                    || existingHTML != readabilityContent
-                if shouldPersistRenderedHTML {
-                    content.html = readabilityContent
-                } else if url.isSnippetURL {
-                    guard let self else { return }
-                    let oldPreview = Self.snippetPreview(existingHTML)
-                    let newPreview = Self.snippetPreview(readabilityContent)
-                    debugPrint(
-                        "# READER snippetUpdate.skipContentOverwrite",
-                        "url=\(url.absoluteString)",
-                        "oldPreview=\(oldPreview)",
-                        "newPreview=\(newPreview)",
-                        "newBytes=\(readabilityContent.utf8.count)"
-                    )
-                }
-                if content.title.isEmpty {
-                    let oldTitle = content.title
-                    let newTitle = content.html?.strippingHTML().trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first?.truncate(36) ?? ""
-                    content.title = newTitle
-                    if oldTitle != newTitle {
+        let existingHTML = content.html ?? ""
+        let shouldPersistRenderedHTML =
+            !url.isEBookURL
+            && !isNativeReaderView
+            && (
+                existingHTML.isEmpty
+                || !url.isSnippetURL
+                || existingHTML != readabilityContent
+            )
+        let resolvedTitleIfNeeded: String? = {
+            guard content.title.isEmpty else { return nil }
+            return (shouldPersistRenderedHTML ? readabilityContent : existingHTML)
+                .strippingHTML()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: "\n")
+                .first?
+                .truncate(36) ?? ""
+        }()
+        let needsAsyncWrite =
+            content.isReaderModeByDefault == false
+            || content.isReaderModeAvailable == true
+            || (
+                !url.isEBookURL
+                && !isNativeReaderView
+                && content.rssContainsFullContent == false
+            )
+            || (shouldPersistRenderedHTML && content.html != readabilityContent)
+            || (resolvedTitleIfNeeded != nil && content.title != resolvedTitleIfNeeded)
+
+        if needsAsyncWrite {
+            let asyncWriteStartedAt = Date()
+            logTrace(.contentWriteStart, url: url, details: "marking reader defaults")
+            try await content.asyncWrite { [weak self] _, content in
+                content.isReaderModeByDefault = true
+                content.isReaderModeAvailable = false
+                if !url.isEBookURL && !isNativeReaderView {
+                    let existingHTML = content.html ?? ""
+                    let shouldPersistRenderedHTML =
+                        existingHTML.isEmpty
+                        || !url.isSnippetURL
+                        || existingHTML != readabilityContent
+                    if shouldPersistRenderedHTML {
+                        content.html = readabilityContent
+                    } else if url.isSnippetURL {
+                        guard let self else { return }
+                        let oldPreview = Self.snippetPreview(existingHTML)
+                        let newPreview = Self.snippetPreview(readabilityContent)
                         debugPrint(
-                            "# READERMODETITLE content.titleFromReadability",
+                            "# READER snippetUpdate.skipContentOverwrite",
                             "url=\(url.absoluteString)",
-                            "old=\(oldTitle)",
-                            "new=\(newTitle)"
+                            "oldPreview=\(oldPreview)",
+                            "newPreview=\(newPreview)",
+                            "newBytes=\(readabilityContent.utf8.count)"
                         )
                     }
+                    if let resolvedTitleIfNeeded {
+                        let oldTitle = content.title
+                        content.title = resolvedTitleIfNeeded
+                        if oldTitle != resolvedTitleIfNeeded {
+                            debugPrint(
+                                "# READERMODETITLE content.titleFromReadability",
+                                "url=\(url.absoluteString)",
+                                "old=\(oldTitle)",
+                                "new=\(resolvedTitleIfNeeded)"
+                            )
+                        }
+                    }
+                    content.rssContainsFullContent = true
                 }
-                content.rssContainsFullContent = true
+                content.refreshChangeMetadata(explicitlyModified: true)
             }
-            content.refreshChangeMetadata(explicitlyModified: true)
+            let writeElapsed = Date().timeIntervalSince(asyncWriteStartedAt)
+            logTrace(.contentWriteEnd, url: url, details: "duration=\(formattedInterval(writeElapsed))")
+            debugPrint(
+                "# READERPERF readerMode.contentWrite",
+                "url=\(url.absoluteString)",
+                "elapsed=\(formattedInterval(writeElapsed))",
+                "skipped=false"
+            )
+        } else {
+            debugPrint(
+                "# READERPERF readerMode.contentWrite",
+                "url=\(url.absoluteString)",
+                "elapsed=0.000s",
+                "skipped=true"
+            )
         }
-        let writeElapsed = Date().timeIntervalSince(asyncWriteStartedAt)
-        logTrace(.contentWriteEnd, url: url, details: "duration=\(formattedInterval(writeElapsed))")
-        debugPrint(
-            "# READERPERF readerMode.contentWrite",
-            "url=\(url.absoluteString)",
-            "elapsed=\(formattedInterval(writeElapsed))"
-        )
 
         let metadataStartedAt = Date()
         logTrace(.metadataStart, url: url)
@@ -3218,6 +3266,17 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")"
                 )
             }
+        }
+
+        if isLoaderNavigation, shouldSkipDuplicateLoaderRender(for: committedURL) {
+            debugPrint(
+                "# READER readerMode.navCommit.skipLoaderDuplicate",
+                "loaderURL=\(newState.pageURL.absoluteString)",
+                "contentURL=\(committedURL.absoluteString)",
+                "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+                "lastRendered=\(lastRenderedURL?.absoluteString ?? "nil")"
+            )
+            return
         }
 
         let isReaderModeVerified = content.isReaderModeByDefault
