@@ -995,9 +995,26 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                     readerContentListModalsModel.confirmDelete = true
                 }
             } label: {
-                Label("Delete", systemImage: "trash")
+                if #available(iOS 26, *), allowEditing {
+                    Image(systemName: "trash")
+                        .font(.system(size: 24, weight: .regular, design: .rounded))
+                        .foregroundStyle(.red)
+                        .frame(width: 54, height: 54)
+                        .background(
+                            Circle()
+                                .fill(.ultraThinMaterial.opacity(0.92))
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                        )
+                } else {
+                    Label("Delete", systemImage: "trash")
+                }
             }
+            .buttonStyle(.plain)
             .disabled(isDeletionToolbarButtonDisabled)
+            .opacity(isDeletionToolbarButtonDisabled ? 0.45 : 1)
         }
     }
 

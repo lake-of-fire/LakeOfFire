@@ -16,6 +16,10 @@ private func readerLoadSchemeLog(_ stage: String, _ metadata: [String: String] =
 
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public var sharedReaderFontAsset: SharedReaderFontAsset?
+    private static let readerLoaderStartedAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.startedAt."
+    private static let readerLoaderResponseAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.responseAt."
+    private static let readerLoaderDataAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.dataAt."
+    private static let readerLoaderFinishedAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.finishedAt."
 
     enum CustomSchemeHandlerError: Error {
         case notFound
@@ -42,6 +46,20 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 "webViewURL": webView.url?.absoluteString ?? "nil"
             ]
         )
+        if url.path == "/load/reader" {
+            UserDefaults.standard.set(
+                startedAt.timeIntervalSince1970,
+                forKey: Self.readerLoaderStartedAtKeyPrefix + url.absoluteString
+            )
+            readerLoadSchemeLog(
+                "internalScheme.readerLoader.begin",
+                [
+                    "url": url.absoluteString,
+                    "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil",
+                    "webViewURL": webView.url?.absoluteString ?? "nil"
+                ]
+            )
+        }
         if let fontResponse = sharedReaderFontResponse(
             for: url,
             asset: sharedReaderFontAsset
@@ -66,6 +84,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             expectedContentLength: 0,
             textEncodingName: nil)
         urlSchemeTask.didReceive(response)
+        if url.path == "/load/reader" {
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self.readerLoaderResponseAtKeyPrefix + url.absoluteString
+            )
+            readerLoadSchemeLog(
+                "internalScheme.readerLoader.didReceiveResponse",
+                [
+                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                    "url": url.absoluteString
+                ]
+            )
+        }
         readerLoadSchemeLog(
             "internalScheme.didReceiveResponse",
             [
@@ -74,6 +105,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             ]
         )
         urlSchemeTask.didReceive(Data())
+        if url.path == "/load/reader" {
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self.readerLoaderDataAtKeyPrefix + url.absoluteString
+            )
+            readerLoadSchemeLog(
+                "internalScheme.readerLoader.didReceiveData",
+                [
+                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                    "url": url.absoluteString
+                ]
+            )
+        }
         readerLoadSchemeLog(
             "internalScheme.didReceiveData",
             [
@@ -82,6 +126,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             ]
         )
         urlSchemeTask.didFinish()
+        if url.path == "/load/reader" {
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self.readerLoaderFinishedAtKeyPrefix + url.absoluteString
+            )
+            readerLoadSchemeLog(
+                "internalScheme.readerLoader.didFinish",
+                [
+                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                    "url": url.absoluteString
+                ]
+            )
+        }
         readerLoadSchemeLog(
             "internalScheme.didFinish",
             [

@@ -28,6 +28,40 @@ extension ReaderContentLoader {
     private static let markdownExtensions: Set<String> = ["md", "markdown"]
     private static let plainTextExtensions: Set<String> = ["txt", "text"]
 
+    private static func detectedSupportedFileFormat(
+        mimeType: String? = nil,
+        typeIdentifier: String? = nil,
+        pathExtension: String? = nil
+    ) -> IngestedTextFormat? {
+        let normalizedMimeType = mimeType?.lowercased()
+        let normalizedTypeIdentifier = typeIdentifier?.lowercased()
+        let normalizedExtension = pathExtension?.lowercased()
+
+        if normalizedMimeType == htmlMimeType || normalizedTypeIdentifier == UTType.html.identifier.lowercased() {
+            return .html
+        }
+        if normalizedMimeType == markdownMimeType || normalizedTypeIdentifier == markdownUTTypeIdentifier {
+            return .markdown
+        }
+        if normalizedMimeType == plainTextMimeType || normalizedTypeIdentifier == UTType.plainText.identifier.lowercased() {
+            return .plainText
+        }
+
+        if let normalizedExtension {
+            if htmlExtensions.contains(normalizedExtension) {
+                return .html
+            }
+            if markdownExtensions.contains(normalizedExtension) {
+                return .markdown
+            }
+            if plainTextExtensions.contains(normalizedExtension) {
+                return .plainText
+            }
+        }
+
+        return nil
+    }
+
     static func normalizeIngestedText(
         _ text: String,
         explicitHTML: Bool = false,
@@ -94,33 +128,11 @@ extension ReaderContentLoader {
         typeIdentifier: String? = nil,
         pathExtension: String? = nil
     ) -> IngestedTextFormat {
-        let normalizedMimeType = mimeType?.lowercased()
-        let normalizedTypeIdentifier = typeIdentifier?.lowercased()
-        let normalizedExtension = pathExtension?.lowercased()
-
-        if normalizedMimeType == htmlMimeType || normalizedTypeIdentifier == UTType.html.identifier.lowercased() {
-            return .html
-        }
-        if normalizedMimeType == markdownMimeType || normalizedTypeIdentifier == markdownUTTypeIdentifier {
-            return .markdown
-        }
-        if markdownExtensions.contains(normalizedExtension ?? "") {
-            return .markdown
-        }
-        if normalizedMimeType == plainTextMimeType || normalizedTypeIdentifier == UTType.plainText.identifier.lowercased() {
-            return .plainText
-        }
-
-        if let normalizedExtension {
-            if htmlExtensions.contains(normalizedExtension) {
-                return .html
-            }
-            if plainTextExtensions.contains(normalizedExtension) {
-                return .plainText
-            }
-        }
-
-        return .plainText
+        detectedSupportedFileFormat(
+            mimeType: mimeType,
+            typeIdentifier: typeIdentifier,
+            pathExtension: pathExtension
+        ) ?? .plainText
     }
 
     static func canonicalMimeType(
@@ -142,24 +154,39 @@ extension ReaderContentLoader {
             return markdownMimeType
         }
 
-        switch detectFileFormat(mimeType: mimeType, typeIdentifier: typeIdentifier, pathExtension: pathExtension) {
-        case .html:
-            return htmlMimeType
-        case .markdown:
-            return markdownMimeType
-        case .plainText:
-            return plainTextMimeType
+        if let detectedFormat = detectedSupportedFileFormat(
+            mimeType: mimeType,
+            typeIdentifier: typeIdentifier,
+            pathExtension: pathExtension
+        ) {
+            switch detectedFormat {
+            case .html:
+                return htmlMimeType
+            case .markdown:
+                return markdownMimeType
+            case .plainText:
+                return plainTextMimeType
+            }
         }
+
+        if let normalizedMimeType, !normalizedMimeType.isEmpty {
+            return normalizedMimeType
+        }
+        if let normalizedExtension,
+           let inferredMimeType = UTType(filenameExtension: normalizedExtension)?.preferredMIMEType?.lowercased() {
+            return inferredMimeType
+        }
+        return "application/octet-stream"
     }
 
     static func supportsReaderContent(
         mimeType: String? = nil,
         pathExtension: String? = nil
     ) -> Bool {
-        switch detectFileFormat(mimeType: mimeType, pathExtension: pathExtension) {
-        case .html, .markdown, .plainText:
-            return true
-        }
+        detectedSupportedFileFormat(
+            mimeType: mimeType,
+            pathExtension: pathExtension
+        ) != nil
     }
 
     private static func looksLikeHTML(_ text: String) -> Bool {

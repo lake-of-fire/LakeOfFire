@@ -14,6 +14,10 @@ public extension EnvironmentValues {
     }
 }
 
+private func logNav(_ message: String) {
+    debugPrint("# NAV \(message)")
+}
+
 @MainActor
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration?
@@ -126,6 +130,7 @@ public struct MangaCategoryButton: View {
     
     public var body: some View {
         CategoryCardButton(action: {
+            logNav("stage=home.categoryCard.tap kind=manga previousSelection=\(categorySelection ?? "nil")")
             withAnimation {
                 categorySelection = "manga"
             }
@@ -157,6 +162,7 @@ public struct BooksCategoryButton: View {
     
     public var body: some View {
         CategoryCardButton(action: {
+            logNav("stage=home.categoryCard.tap kind=books previousSelection=\(categorySelection ?? "nil")")
             withAnimation {
                 categorySelection = "books"
             }
@@ -185,6 +191,7 @@ public struct FeedCategoryButton: View {
     
     public var body: some View {
         CategoryCardButton(action: {
+            logNav("stage=home.categoryCard.tap kind=feedCategory categoryID=\(category.id.uuidString) title=\(category.title) previousCategory=\(categorySelection ?? "nil") previousFeed=\(feedSelection ?? "nil")")
             feedSelection = nil
             categorySelection = category.id.uuidString
         }) {

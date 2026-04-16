@@ -47,6 +47,7 @@ let package = Package(
 //        .package(url: "https://github.com/ksemianov/WrappingHStack.git", branch: "main"),
         .package(path: "../LakeKit"),
         .package(url: "https://github.com/nicklockwood/LRUCache.git", from: "1.1.2"),
+        .package(url: "https://github.com/ivan-magda/swiftui-expandable-text.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -89,6 +90,7 @@ let package = Package(
                 .product(name: "LakeKit", package: "LakeKit"),
 //                .product(name: "WrappingHStack", package: "WrappingHStack"),
                 .product(name: "LRUCache", package: "LRUCache"),
+                .product(name: "ExpandableText", package: "swiftui-expandable-text"),
             ],
             resources: [
                 .copy("Resources/foliate-js/"), // CodeSign errors with "process"...

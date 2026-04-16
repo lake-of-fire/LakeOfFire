@@ -108,10 +108,7 @@ fileprivate struct DownloadableBookGridCell: View {
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await ReaderFileManager.shared.importFile(
-                fileURL: downloadable.localDestination,
-                fromDownloadURL: downloadable.url
-            )
+            try? await ReaderFileManager.shared.refreshAllFilesMetadata()
             wasDownloaded = true
         }
     }

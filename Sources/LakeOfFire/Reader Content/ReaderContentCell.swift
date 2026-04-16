@@ -402,7 +402,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
               let formatted = ReaderDateFormatter.shortDurationString(from: remainingTime) else {
             return nil
         }
-        return "\(formatted) remaining"
+        return "\(formatted) left"
     }
 
     private var publicationDateText: String? {
@@ -570,9 +570,8 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
             BookmarkButton(iconOnly: true, readerContent: item, hiddenIfUnbookmarked: true)
                 .labelStyle(.iconOnly)
-                .frame(width: viewModel.forceShowBookmark ? buttonSize : 0, height: buttonSize)
-                .opacity(viewModel.forceShowBookmark ? 1 : 0)
-                .accessibilityHidden(!viewModel.forceShowBookmark)
+                .imageScale(.small)
+                .frame(width: buttonSize, height: buttonSize)
 
             controlsRow
         }

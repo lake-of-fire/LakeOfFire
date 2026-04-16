@@ -578,7 +578,7 @@ private func locallyRetrievableReaderHTML(
 
 private func propagateReaderModeDefaults(
     for url: URL,
-    primaryRecord: any ReaderContentProtocol,
+    primaryKey: String,
     readabilityHTML: String,
     fallbackTitle: String?,
     derivedTitle: String? = nil
@@ -595,7 +595,6 @@ private func propagateReaderModeDefaults(
         )
         return
     }
-    let primaryKey = primaryRecord.compoundKey
     let resolvedTitle = derivedTitle ?? titleFromReadabilityHTML(readabilityHTML) ?? fallbackTitle
     do {
         try await propagateReaderModeDefaultsOnBackgroundActor(
@@ -2161,6 +2160,7 @@ public class ReaderModeViewModel: ObservableObject {
         let snippetRawTitle = content.title
         let snippetNeedsClipboardIndicator = content.needsClipboardIndicator
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
+        let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
         
         let renderDispatchStart = CFAbsoluteTimeGetCurrent()
         try await { @ReaderViewModelActor [weak self] in
@@ -2224,7 +2224,7 @@ public class ReaderModeViewModel: ObservableObject {
             let propagateStart = CFAbsoluteTimeGetCurrent()
             await propagateReaderModeDefaults(
                 for: url,
-                primaryRecord: content,
+                primaryKey: primaryRecordCompoundKey,
                 readabilityHTML: readabilityContent,
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle

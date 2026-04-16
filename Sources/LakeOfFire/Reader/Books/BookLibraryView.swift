@@ -114,8 +114,8 @@ public struct BookLibraryView: View {
         self.viewModel = viewModel
         self.showsInlineAddButton = showsInlineAddButton
     }
-
-    @SceneStorage("bookFileEntrySelection") private var entrySelection: String?
+    
+    @Environment(\.contentSelection) private var contentSelection
 
     @EnvironmentObject private var bookLibraryModalsModel: BookLibraryModalsModel
     @EnvironmentObject private var readerFileManager: ReaderFileManager
@@ -177,7 +177,7 @@ public struct BookLibraryView: View {
         } else {
             ReaderContentListItems(
                 viewModel: readerContentListViewModel,
-                entrySelection: $entrySelection,
+                entrySelection: contentSelection,
                 includeSource: false,
                 alwaysShowThumbnails: true,
                 showSeparators: false,
@@ -200,7 +200,7 @@ public struct BookLibraryView: View {
 
     @ViewBuilder
     var list: some View {
-        List(selection: $entrySelection) {
+        List(selection: contentSelection) {
             if #available(iOS 17, macOS 14.0, *) {
                 Section(isExpanded: $isMyBooksExpanded) {
                     myBooksSection
@@ -231,19 +231,17 @@ public struct BookLibraryView: View {
         .scrollContentBackgroundIfAvailable(.hidden)
         .task { @MainActor in
             await viewModel.fetchAllData()
-            await reloadMyBooks()
         }
         .refreshable {
             await viewModel.fetchAllData()
-            await reloadMyBooks()
         }
         .task { @MainActor in
-            await reloadMyBooks()
+            await loadMyBooks(readerFileManager.files(ofTypes: viewModel.fileTypes) ?? [])
         }
         .onChange(of: readerFileManager.files(ofTypes: viewModel.fileTypes)) { ebookFiles in
             Task { @MainActor in
-                guard ebookFiles != nil else { return }
-                await reloadMyBooks()
+                guard let ebookFiles else { return }
+                await loadMyBooks(ebookFiles)
             }
         }
         .onChange(of: readerContentListViewModel.filteredContentIDs) { filteredFileIDs in
@@ -260,11 +258,10 @@ public struct BookLibraryView: View {
     public var body: some View {
         list
     }
-
+    
     @MainActor
-    private func reloadMyBooks() async {
+    private func loadMyBooks(_ files: [ContentFile]) async {
         let fileFilter = viewModel.fileFilter
-        let files = readerFileManager.files(ofTypes: viewModel.fileTypes) ?? []
         try? await readerContentListViewModel.load(
             contents: files,
             sortOrder: .createdAt,
@@ -312,7 +309,6 @@ public class BookLibraryViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     func fetchAllData() async {
-        await Self.refreshDownloadedEditorsPicks(readerFileManager: ReaderFileManager.shared)
         fetchEditorsPicks()
     }
 
@@ -339,13 +335,10 @@ public class BookLibraryViewModel: ObservableObject {
                 await downloadable.existsLocally()
             else { continue }
             downloads.insert(downloadable)
-            _ = try? await readerFileManager.importFile(
-                fileURL: downloadable.localDestination,
-                fromDownloadURL: downloadable.url
-            )
         }
         if !downloads.isEmpty {
             await DownloadController.shared.ensureDownloaded(downloads)
+            try? await readerFileManager.refreshAllFilesMetadata()
         }
     }
 
@@ -394,7 +387,7 @@ public class BookLibraryViewModel: ObservableObject {
         }
     }
 
-    @RealmBackgroundActor
+    @MainActor
     func open(
         publication: Publication,
         readerFileManager: ReaderFileManager = .shared,
@@ -417,15 +410,13 @@ public class BookLibraryViewModel: ObservableObject {
         }
 
         guard let toLoad = importedURL else { return }
-        try await Task { @MainActor in
-            guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
-            try await navigator.load(
-                content: content,
-                readerFileManager: readerFileManager,
-                readerModeViewModel: readerModeViewModel
-            )
-            onNavigateToReader?()
-        }.value
+        guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
+        try await navigator.load(
+            content: content,
+            readerFileManager: readerFileManager,
+            readerModeViewModel: readerModeViewModel
+        )
+        onNavigateToReader?()
     }
 
     @MainActor
@@ -463,4 +454,5 @@ public struct Publication: Identifiable, Hashable {
     public var coverURL: URL?
     public var downloadURL: URL?
     public var summary: String?
+    public var hasContentAudio = false
 }

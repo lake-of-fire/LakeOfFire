@@ -5,6 +5,7 @@ import LakeImage
 import LakeKit
 import Pow
 import SwiftUIWebView
+import ExpandableText
 
 struct BookThumbnail: View {
     let imageURL: URL
@@ -117,6 +118,7 @@ fileprivate struct StaticBookListRow: View {
             author: publication.author,
             publicationDate: publication.publicationDate,
             summary: publication.summary,
+            hasContentAudio: publication.hasContentAudio,
             onTopTap: nil
         ) {
             EmptyView()
@@ -144,6 +146,7 @@ fileprivate struct DownloadableBookListRow: View {
             author: publication.author,
             publicationDate: publication.publicationDate,
             summary: publication.summary,
+            hasContentAudio: publication.hasContentAudio,
             onTopTap: topTap
         ) {
             HidingDownloadButton(
@@ -180,10 +183,7 @@ fileprivate struct DownloadableBookListRow: View {
             let wasAlreadyDownloaded = await downloadable.existsLocally()
             if !wasAlreadyDownloaded {
                 await downloadController.ensureDownloaded([downloadable])
-                _ = try? await ReaderFileManager.shared.importFile(
-                    fileURL: downloadable.localDestination,
-                    fromDownloadURL: downloadable.url
-                )
+                try? await ReaderFileManager.shared.refreshAllFilesMetadata()
             }
             onSelected?(wasAlreadyDownloaded)
         }
@@ -192,10 +192,7 @@ fileprivate struct DownloadableBookListRow: View {
     @MainActor
     private func refreshDownloadable() async {
         if await downloadable.existsLocally() && !wasDownloaded {
-            _ = try? await ReaderFileManager.shared.importFile(
-                fileURL: downloadable.localDestination,
-                fromDownloadURL: downloadable.url
-            )
+            try? await ReaderFileManager.shared.refreshAllFilesMetadata()
             wasDownloaded = true
         }
     }
@@ -229,22 +226,17 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     let author: String?
     let publicationDate: Date?
     let summary: String?
+    let hasContentAudio: Bool
     let onTopTap: (() -> Void)?
     private let trailing: () -> Trailing
 
     @ScaledMetric(relativeTo: .title3) private var thumbnailWidth: CGFloat = 68
     private var thumbnailDimension: CGFloat { thumbnailWidth * 1.45 * (2.0 / 3.0) }
     private let cornerRadius: CGFloat = 18
-    @State private var isSummaryExpanded = false
 
     private var resolvedSummary: String? {
         let trimmed = summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private var shouldShowSummaryMoreButton: Bool {
-        guard let resolvedSummary else { return false }
-        return resolvedSummary.count > 140
     }
 
     init(
@@ -253,6 +245,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         author: String?,
         publicationDate: Date?,
         summary: String?,
+        hasContentAudio: Bool = false,
         onTopTap: (() -> Void)? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
@@ -261,6 +254,7 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         self.author = author
         self.publicationDate = publicationDate
         self.summary = summary
+        self.hasContentAudio = hasContentAudio
         self.onTopTap = onTopTap
         self.trailing = trailing
     }
@@ -268,12 +262,11 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             topHalf
-            if resolvedSummary != nil {
-                Divider()
-                    .padding(.horizontal, 14)
-                summaryView
-                    .contentShape(Rectangle())
-            }
+            Divider()
+                .padding(.horizontal, 14)
+            summaryView
+                .contentShape(Rectangle())
+                .allowsHitTesting(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -304,6 +297,16 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                     .lineLimit(3)
+                if hasContentAudio {
+                    HStack(spacing: 6) {
+                        Image(systemName: "headphones")
+                            .imageScale(.small)
+                        Text("Audiobook with Text")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundStyle(.secondary)
+                }
                 if let publicationYearText {
                     Text(publicationYearText)
                         .font(.caption)
@@ -334,31 +337,23 @@ fileprivate struct BookListRowContent<Trailing: View>: View {
         }
     }
 
-    @ViewBuilder
     private var summaryView: some View {
-        if let resolvedSummary {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(resolvedSummary)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(isSummaryExpanded ? nil : 3)
+        Group {
+            if let resolvedSummary {
+                ExpandableText(LocalizedStringKey(resolvedSummary))
+                    .lineLimit(3)
+                    .foregroundColor(.secondary)
+                    .moreButtonText("MORE")
+                    .moreButtonFont(.footnote)
+                    .moreButtonForegroundStyle(.primary)
+                    .expandAnimation(.easeIn)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-
-                if shouldShowSummaryMoreButton && !isSummaryExpanded {
-                    Button("MORE") {
-                        withAnimation(.easeIn(duration: 0.18)) {
-                            isSummaryExpanded = true
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.primary)
-                }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
