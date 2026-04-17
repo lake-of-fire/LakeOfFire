@@ -9,17 +9,6 @@ private let ebookAbsoluteDateFormatter: DateFormatter = {
     ReaderDateFormatter.makeAbsoluteFormatter(dateStyle: .medium)
 }()
 
-@inline(__always)
-private func logContentCell(_ stage: String, result: String) {
-    debugPrint(
-        "# CONTENTCELL",
-        [
-            "stage": stage,
-            "result": result
-        ] as [String: Any]
-    )
-}
-
 @globalActor
 fileprivate actor ReaderContentCellActor {
     static var shared = ReaderContentCellActor()
@@ -65,10 +54,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let hasOpenedHistoryRecord: Bool?
             if item is FeedEntry {
                 let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
-                hasOpenedHistoryRecord = historyRealm.objects(HistoryRecord.self)
-                    .where { !$0.isDeleted }
-                    .filter(NSPredicate(format: "url == %@", item.url.absoluteString))
-                    .first != nil
+                hasOpenedHistoryRecord = HistoryRecord.hasOpenedRecord(for: item.url, in: historyRealm)
             } else {
                 hasOpenedHistoryRecord = nil
             }
@@ -600,20 +586,12 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         .onPreferenceChange(ClearBorderedButtonHeightKey.self) { height in
             guard height >= buttonSize else {
                 if readerContentCellStyle == .card {
-                    logContentCell(
-                        "metadataRow.clearBorderedHeight.ignored",
-                        result: "height=\(height); buttonSize=\(buttonSize); currentHeight=\(clearBorderedLabelHeight); title=\(displayTitle.prefix(48))"
-                    )
                 }
                 return
             }
             guard abs(height - clearBorderedLabelHeight) > 0.5 else { return }
             clearBorderedLabelHeight = height
             guard readerContentCellStyle == .card else { return }
-            logContentCell(
-                "metadataRow.clearBorderedHeight",
-                result: "height=\(height); buttonSize=\(buttonSize); verticalInset=\(clearBorderedVerticalInset); cardBottomRowOffset=\(cardBottomRowOffset); title=\(displayTitle.prefix(48))"
-            )
         }
     }
 
@@ -799,10 +777,6 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                 try? await viewModel.load(item: item, includeSource: appearance.includeSource)
             }
             if readerContentCellStyle == .card {
-                logContentCell(
-                    "cell.appear",
-                    result: "thumbnailEdgeLength=\(thumbnailEdgeLength); maxCellHeight=\(appearance.maxCellHeight); clearBorderedLabelHeight=\(clearBorderedLabelHeight); verticalInset=\(clearBorderedVerticalInset); cardBottomRowOffset=\(cardBottomRowOffset); title=\(displayTitle.prefix(48))"
-                )
             }
         }
         .onChange(of: item.imageUrl) { newImageURL in
