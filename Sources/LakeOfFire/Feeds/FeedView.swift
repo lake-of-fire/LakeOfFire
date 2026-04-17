@@ -94,11 +94,24 @@ public struct FeedView: View {
                 }
             }
         }
+        .task(id: feed.id) {
+            try? await markFeedAsViewed()
+        }
     }
     
     public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false) {
         self.feed = feed
         self.viewModel = viewModel
         self.isHorizontal = isHorizontal
+    }
+
+    @MainActor
+    private func markFeedAsViewed() async throws {
+        try await Realm.asyncWrite(
+            ThreadSafeReference(to: feed),
+            configuration: ReaderContentLoader.feedEntryRealmConfiguration
+        ) { _, feed in
+            feed.lastViewedAt = Date()
+        }
     }
 }

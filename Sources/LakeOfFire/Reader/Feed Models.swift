@@ -83,6 +83,7 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
+    @Persisted public var lastViewedAt: Date?
     @Persisted public var isDeleted = false
     
     public enum CodingKeys: String, CodingKey, CaseIterable {

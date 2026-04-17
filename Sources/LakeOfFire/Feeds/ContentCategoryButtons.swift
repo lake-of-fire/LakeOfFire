@@ -19,6 +19,28 @@ private func logNav(_ message: String) {
 }
 
 @MainActor
+private func forceCategorySelection(
+    _ target: String,
+    categorySelection: Binding<String?>,
+    feedSelection: Binding<String?>? = nil
+) {
+    if feedSelection?.wrappedValue != nil {
+        feedSelection?.wrappedValue = nil
+    }
+    guard categorySelection.wrappedValue == target else {
+        categorySelection.wrappedValue = target
+        return
+    }
+    categorySelection.wrappedValue = nil
+    Task { @MainActor in
+        await Task.yield()
+        withAnimation {
+            categorySelection.wrappedValue = target
+        }
+    }
+}
+
+@MainActor
 fileprivate class ContentCategoryButtonsViewModel: ObservableObject {
     @Published var libraryConfiguration: LibraryConfiguration?
 
@@ -132,7 +154,7 @@ public struct MangaCategoryButton: View {
         CategoryCardButton(action: {
             logNav("stage=home.categoryCard.tap kind=manga previousSelection=\(categorySelection ?? "nil")")
             withAnimation {
-                categorySelection = "manga"
+                forceCategorySelection("manga", categorySelection: $categorySelection)
             }
         }) {
             FeedCategoryButtonLabel(
@@ -164,7 +186,7 @@ public struct BooksCategoryButton: View {
         CategoryCardButton(action: {
             logNav("stage=home.categoryCard.tap kind=books previousSelection=\(categorySelection ?? "nil")")
             withAnimation {
-                categorySelection = "books"
+                forceCategorySelection("books", categorySelection: $categorySelection)
             }
         }) {
             FeedCategoryButtonLabel(title: "Books", backgroundImageURL: URL(string: "https://reader.manabi.io/static/reader/category_images/books.jpg")!, /*font: font,*/ isCompact: isCompact)
@@ -192,8 +214,11 @@ public struct FeedCategoryButton: View {
     public var body: some View {
         CategoryCardButton(action: {
             logNav("stage=home.categoryCard.tap kind=feedCategory categoryID=\(category.id.uuidString) title=\(category.title) previousCategory=\(categorySelection ?? "nil") previousFeed=\(feedSelection ?? "nil")")
-            feedSelection = nil
-            categorySelection = category.id.uuidString
+            forceCategorySelection(
+                category.id.uuidString,
+                categorySelection: $categorySelection,
+                feedSelection: $feedSelection
+            )
         }) {
             FeedCategoryButtonLabel(
                 title: category.title,

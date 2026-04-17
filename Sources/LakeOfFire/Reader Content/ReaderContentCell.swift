@@ -29,6 +29,7 @@ fileprivate actor ReaderContentCellActor {
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
+    @Published var hasOpenedHistoryRecord: Bool? = nil
     @Published var forceShowBookmark = false
     @Published var title = ""
     @Published var author: String?
@@ -61,6 +62,16 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
             let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
+            let hasOpenedHistoryRecord: Bool?
+            if item is FeedEntry {
+                let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
+                hasOpenedHistoryRecord = historyRealm.objects(HistoryRecord.self)
+                    .where { !$0.isDeleted }
+                    .filter(NSPredicate(format: "url == %@", item.url.absoluteString))
+                    .first != nil
+            } else {
+                hasOpenedHistoryRecord = nil
+            }
 
             var sourceIconURL: URL?
             var sourceTitle: String?
@@ -91,6 +102,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.readingProgress = nil
                     self.isFullArticleFinished = nil
                 }
+                self.hasOpenedHistoryRecord = hasOpenedHistoryRecord
                 self.totalWordCount = metadataResult?.totalWordCount
                 self.remainingTime = metadataResult?.remainingTime
             }()
@@ -386,6 +398,13 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         fallbackTitle
     }
 
+    private var showsUnreadIndicator: Bool {
+        if item is FeedEntry {
+            return viewModel.hasOpenedHistoryRecord == false
+        }
+        return false
+    }
+
     private var isProgressVisible: Bool {
         if let readingProgressFloat = viewModel.readingProgress, readingProgressFloat > 0 {
             return true
@@ -618,6 +637,28 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     @ViewBuilder
+    private var titleRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(displayTitle)
+                .font(.headline)
+                .lineLimit(titleLineLimit)
+                .multilineTextAlignment(.leading)
+                .environment(\._lineHeightMultiple, 0.875)
+                .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
+                .layoutPriority(1)
+
+            if showsUnreadIndicator {
+                Image(systemName: "circle.fill")
+                    .font(.headline.weight(.regular))
+                    .imageScale(.small)
+                    .foregroundColor(.accentColor)
+                    .padding(.leading, 10)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
     private var controlsRow: some View {
         let deletable = item as? (any DeletableReaderContent)
 
@@ -709,14 +750,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             sourceOrAuthorRow
 
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(displayTitle)
-                                    .font(.headline)
-                                    .lineLimit(titleLineLimit)
-                                    .multilineTextAlignment(.leading)
-                                    .environment(\._lineHeightMultiple, 0.875)
-                                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .layoutPriority(1)
+                                titleRow
 
                                 topStatusRow
                             }
@@ -734,14 +768,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     VStack(alignment: .leading, spacing: 0) {
                         VStack(alignment: .leading, spacing: 6) {
                             sourceOrAuthorRow
-                            Text(displayTitle)
-                                .font(.headline)
-                                .lineLimit(titleLineLimit)
-                                .multilineTextAlignment(.leading)
-                                .environment(\._lineHeightMultiple, 0.875)
-                                .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .layoutPriority(1)
+                            titleRow
 
                             topStatusRow
                         }
