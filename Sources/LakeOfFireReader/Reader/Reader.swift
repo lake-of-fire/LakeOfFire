@@ -4719,7 +4719,12 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         var resolvedResult: Any?
         for frame in readerPageTurnCandidateFrames(preferredFrameOverride: preferredFrameOverride, scriptCaller: scriptCaller) {
             do {
-                resolvedResult = try await scriptCaller.evaluateJavaScript(probeScript, in: frame)
+                resolvedResult = try await evaluateReaderPageTurnJavaScriptBounded(
+                    probeScript,
+                    in: frame,
+                    scriptCaller: scriptCaller,
+                    timeoutNanoseconds: 1_500_000_000
+                )
                 lastEvaluationError = nil
                 break
             } catch {
