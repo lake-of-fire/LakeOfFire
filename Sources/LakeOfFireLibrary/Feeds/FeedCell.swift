@@ -11,6 +11,48 @@ public struct FeedCell: View {
     var horizontalSpacing: CGFloat = 10
     
     @ScaledMetric(relativeTo: .headline) private var scaledIconHeight: CGFloat = 26
+
+    private var showsAudioIndicator: Bool {
+        feed.firstEntryHasAudio
+    }
+
+    private var showsUnreadIndicator: Bool {
+        feed.hasEntriesNewerThanLastViewedAt
+    }
+
+    private var titleLabel: Text {
+        unreadIndicatorTitleSegment
+        + titleText
+        + audioIndicatorTitleSegment
+    }
+
+    private var unreadIndicatorTitleSegment: Text {
+        guard showsUnreadIndicator else { return Text("") }
+        return Text(Image(systemName: "circlebadge.fill"))
+            .font(.subheadline.weight(.regular))
+            .foregroundColor(.accentColor)
+            + Text("  ")
+    }
+
+    private var titleText: Text {
+        if feed.title.isEmpty {
+            return Text("Untitled Feed")
+                .foregroundColor(.secondary)
+        }
+        if feed.isArchived {
+            return Text(feed.title)
+                .foregroundColor(.secondary)
+        }
+        return Text(feed.title)
+    }
+
+    private var audioIndicatorTitleSegment: Text {
+        guard showsAudioIndicator else { return Text("") }
+        return Text("  ")
+            + Text(Image(systemName: "headphones"))
+                .font(.subheadline.weight(.regular))
+                .foregroundColor(.secondary)
+    }
     
     public var body: some View {
         HStack(spacing: 0) {
@@ -25,16 +67,8 @@ public struct FeedCell: View {
                     .opacity(feed.isArchived ? 0.8 : 1)
                     .padding(4)
                     
-                    Group {
-                        if feed.title.isEmpty {
-                            Text("Untitled Feed")
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text(feed.title)
-                                .foregroundColor(feed.isArchived ? .secondary : nil)
-                        }
-                    }
-                    .font(.headline.bold())
+                    titleLabel
+                        .font(.headline.bold())
                     Spacer()
                 }
                 if includesDescription, let markdownDescription = feed.markdownDescription, !markdownDescription.isEmpty {

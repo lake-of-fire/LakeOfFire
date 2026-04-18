@@ -138,6 +138,31 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         }
         return Array(getUserScripts()?.filter { !$0.isArchived }.compactMap { $0.getWebViewUserScriptDescriptor() } ?? [])
     }
+
+    private static func mergedUniqueIDs(
+        primary: [UUID],
+        orderedAdditions: [[UUID]]
+    ) -> [UUID] {
+        var merged = primary
+        var seen = Set(primary)
+        for additions in orderedAdditions {
+            for id in additions where !seen.contains(id) {
+                seen.insert(id)
+                merged.append(id)
+            }
+        }
+        return merged
+    }
+
+    private static func replaceListIfNeeded<T: RealmCollectionValue>(
+        _ list: RealmSwift.List<T>,
+        with values: [T]
+    ) {
+        let existing = Array(list)
+        guard existing != values else { return }
+        list.removeAll()
+        list.append(objectsIn: values)
+    }
 //    
 //    public static func get() throws -> LibraryConfiguration? {
 //        let realm = try Realm(configuration: LibraryDataManager.realmConfiguration)
@@ -176,98 +201,50 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         let configurations = Array(realm.objects(LibraryConfiguration.self).where { !$0.isDeleted } .sorted(by: \.modifiedAt, ascending: true))
         if let primaryConfiguration = configurations.first {
             let otherConfigurations = configurations.dropFirst()
-            
-            // Remove archived or deleted categories
-            let inactiveCategoryIDs = primaryConfiguration.getCategories(includingDeleted: true)?.filter({ $0.isArchived || $0.isDeleted }).map({ $0.id }) ?? []
-            if !inactiveCategoryIDs.isEmpty {
-//                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    // Remove items in reverse order to prevent index shifting
-                    var sortedIndexes = [Int]()
-                    for (index, categoryID) in primaryConfiguration.categoryIDs.enumerated() {
-                        if inactiveCategoryIDs.contains(categoryID) {
-                            try Task.checkCancellation()
-                            sortedIndexes.append(index)
-                        }
-                    }
-                    sortedIndexes.sort(by: >)
-                    for index in sortedIndexes {
-                        primaryConfiguration.categoryIDs.remove(at: index)
-                    }
+
+            let activeCategoryID: (UUID) -> UUID? = { categoryID in
+                guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID),
+                      !category.isDeleted,
+                      !category.isArchived else {
+                    return nil
                 }
+                return categoryID
+            }
+            let activeUserScriptID: (UUID) -> UUID? = { scriptID in
+                guard let script = realm.object(ofType: UserScript.self, forPrimaryKey: scriptID),
+                      !script.isDeleted,
+                      !script.isArchived else {
+                    return nil
+                }
+                return scriptID
             }
 
-            if !otherConfigurations.isEmpty {
-                let primaryCategoryIDs = Set(primaryConfiguration.categoryIDs)
-                let primaryUserScriptIDs = Set(primaryConfiguration.userScriptIDs)
-                
-//                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    // Consolidate categories
-                    for otherConfig in otherConfigurations {
-                        var newCategories: [FeedCategory] = []
-                        for category in otherConfig.getCategories() ?? [] where !category.isArchived && !category.isDeleted {
-                            if !primaryCategoryIDs.contains(category.id)
-                                && !newCategories.contains(where: { $0.id == category.id }) {
-                                newCategories.append(category)
-                            }
-                        }
-                        // Merge newCategories into primaryConfiguration.categories in the correct order
-                        for category in newCategories {
-                            // Find the index of the last matching category that exists in both primary and otherConfig
-                            if let lastMatchingIndex = primaryConfiguration.categoryIDs.lastIndex(where: { otherConfig.categoryIDs.firstIndex(of: $0) != nil }),
-                               let insertIndexInPrimary = primaryConfiguration.categoryIDs.index(of: primaryConfiguration.categoryIDs[lastMatchingIndex]) {
-                                primaryConfiguration.categoryIDs.insert(category.id, at: insertIndexInPrimary + 1)
-                            } else {
-                                // If no preceding category exists, append to the end
-                                primaryConfiguration.categoryIDs.append(category.id)
-                            }
-                        }
-                    }
-                    
-                    // Consolidate userScripts
-                    for otherConfig in otherConfigurations {
-                        var newScripts: [UserScript] = []
-                        for script in otherConfig.getUserScripts() ?? [] where !script.isArchived && !script.isDeleted {
-                            if !primaryUserScriptIDs.contains(script.id) &&
-                                !newScripts.contains(where: { $0.id == script.id }) {
-                                newScripts.append(script)
-                            }
-                        }
-                        // Merge newScripts into primaryConfiguration.userScripts in the correct order
-                        for script in newScripts {
-                            // Find the index of the last matching script that exists in both primary and otherConfig
-                            if let lastMatchingIndex = primaryConfiguration.userScriptIDs.lastIndex(where: { otherConfig.userScriptIDs.firstIndex(of: $0) != nil }),
-                               let insertIndexInPrimary = primaryConfiguration.userScriptIDs.index(of: primaryConfiguration.userScriptIDs[lastMatchingIndex]) {
-                                primaryConfiguration.userScriptIDs.insert(script.id, at: insertIndexInPrimary + 1)
-                            } else {
-                                // If no preceding script exists, append to the end
-                                primaryConfiguration.userScriptIDs.append(script.id)
-                            }
-                        }
-                    }
-                    
-                    // Delete consolidated configurations
-                    for otherConfig in otherConfigurations {
+            let mergedCategoryIDs = Self.mergedUniqueIDs(
+                primary: primaryConfiguration.categoryIDs.compactMap(activeCategoryID),
+                orderedAdditions: Array(otherConfigurations).map { config in
+                    config.categoryIDs.compactMap(activeCategoryID)
+                } + [
+                    Array(realm.objects(FeedCategory.self).where {
+                        !$0.isDeleted && !$0.isArchived
+                    }.map(\.id))
+                ]
+            )
+            let mergedUserScriptIDs = Self.mergedUniqueIDs(
+                primary: primaryConfiguration.userScriptIDs.compactMap(activeUserScriptID),
+                orderedAdditions: Array(otherConfigurations).map { config in
+                    config.userScriptIDs.compactMap(activeUserScriptID)
+                }
+            )
+
+            let categoryIDsChanged = Array(primaryConfiguration.categoryIDs) != mergedCategoryIDs
+            let userScriptIDsChanged = Array(primaryConfiguration.userScriptIDs) != mergedUserScriptIDs
+            if categoryIDsChanged || userScriptIDsChanged || !otherConfigurations.isEmpty {
+                try realm.write {
+                    Self.replaceListIfNeeded(primaryConfiguration.categoryIDs, with: mergedCategoryIDs)
+                    Self.replaceListIfNeeded(primaryConfiguration.userScriptIDs, with: mergedUserScriptIDs)
+                    for otherConfig in otherConfigurations where !otherConfig.isDeleted {
                         otherConfig.isDeleted = true
                         otherConfig.refreshChangeMetadata(explicitlyModified: true)
-                    }
-                    primaryConfiguration.refreshChangeMetadata(explicitlyModified: true)
-                }
-            }
-            
-            // Add orphaned categories
-            let updatedCategoryIDs: [UUID] = primaryConfiguration.categoryIDs.map { $0 }
-            let orphanCategories = Array(realm.objects(FeedCategory.self).where {
-                !$0.isDeleted && !$0.isArchived && !$0.id.in(updatedCategoryIDs)
-            })
-            if !orphanCategories.isEmpty {
-//                await realm.asyncRefresh()
-                try await realm.asyncWrite {
-                    let existingCategoryIDs = Set(primaryConfiguration.categoryIDs)
-                    for category in orphanCategories where !existingCategoryIDs.contains(category.id) {
-                        try Task.checkCancellation()
-                        primaryConfiguration.categoryIDs.append(category.id)
                     }
                     primaryConfiguration.refreshChangeMetadata(explicitlyModified: true)
                 }
@@ -278,7 +255,7 @@ public class LibraryConfiguration: Object, UnownedSyncableObject, ChangeMetadata
         
         let newConfiguration = LibraryConfiguration()
 //        await realm.asyncRefresh()
-        try await realm.asyncWrite {
+        try realm.write {
             realm.add(newConfiguration, update: .modified)
         }
         return newConfiguration

@@ -1581,44 +1581,44 @@ const setStylesImportant = (el, styles) => {
 }
 
 class View {
-    #wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-    #debouncedExpand
-    #inExpand = false
-    #hasResizerObserverTriggered = false
-    #lastResizerRect = null
-    #lastBodyRect = null
-    #lastContainerRect = null
-    #resizeEventSeq = 0
-    #resizeObserverFrame = null
-    #pendingResizeRect = null
-    #resizeObserver = null
-    #styleCache = new WeakMap()
-    #isCacheWarmer = false
-    #pendingResizeAfterExpand = null
-    #expandRetryScheduled = false
-    #sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED
-    #sameDocumentStyleNodes = []
-    #sameDocumentAppliedBodyClasses = []
-    #sameDocumentSourceURL = null
-    #sameDocumentObservedElement = null
+    _wait = ms => new Promise(resolve => setTimeout(resolve, ms))
+    _debouncedExpand
+    _inExpand = false
+    _hasResizerObserverTriggered = false
+    _lastResizerRect = null
+    _lastBodyRect = null
+    _lastContainerRect = null
+    _resizeEventSeq = 0
+    _resizeObserverFrame = null
+    _pendingResizeRect = null
+    _resizeObserver = null
+    _styleCache = new WeakMap()
+    _isCacheWarmer = false
+    _pendingResizeAfterExpand = null
+    _expandRetryScheduled = false
+    _sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED
+    _sameDocumentStyleNodes = []
+    _sameDocumentAppliedBodyClasses = []
+    _sameDocumentSourceURL = null
+    _sameDocumentObservedElement = null
     cachedViewSize = null
     getLastBodyRect() {
         // Rounded body rect captured by the resize observer; avoids forcing layout reads elsewhere.
-        return this.#lastBodyRect
+        return this._lastBodyRect
     }
-    #handleResize(newSize) {
+    _handleResize(newSize) {
         if (!newSize) return
-        const inExpand = this.#inExpand || false
+        const inExpand = this._inExpand || false
         // Keep resize lightweight: invalidate cached sizes and ask container to re-bake when enabled.
-        if (this.#isCacheWarmer) return
-        this.#lastBodyRect = newSize
+        if (this._isCacheWarmer) return
+        this._lastBodyRect = newSize
         if (inExpand) {
             // Buffer the last resize that arrives while expand is running so we can replay it afterwards.
-            this.#pendingResizeAfterExpand = newSize
+            this._pendingResizeAfterExpand = newSize
             logEBookResize('iframe-resize-buffered', {
                 newSize,
                 inExpand,
-                isCacheWarmer: this.#isCacheWarmer,
+                isCacheWarmer: this._isCacheWarmer,
             })
             console.log('[paginator] handleResize buffered during expand', { newSize, inExpand })
             return
@@ -1626,7 +1626,7 @@ class View {
         logEBookResize('iframe-resize-apply', {
             newSize,
             inExpand,
-            isCacheWarmer: this.#isCacheWarmer,
+            isCacheWarmer: this._isCacheWarmer,
         })
         console.log('[paginator] handleResize apply', { newSize, inExpand })
         this.cachedViewSize = null
@@ -1639,20 +1639,20 @@ class View {
             this.expand().catch(() => {})
         }
     }
-    #element = document.createElement('div')
-    #iframe = document.createElement('iframe')
-    #iframeShownForBake = false
-    #contentRange = document.createRange()
-    #overlayer
-    #vertical = null
-    #verticalRTL = null
-    #rtl = null
-    #directionReadyResolve = null;
-    #directionReady = new Promise(r => (this.#directionReadyResolve = r));
-    #column = true
-    #size
-    #lastElementStyleHeight = null
-    #elementStyleObserver = null
+    _element = document.createElement('div')
+    _iframe = document.createElement('iframe')
+    _iframeShownForBake = false
+    _contentRange = document.createRange()
+    _overlayer
+    _vertical = null
+    _verticalRTL = null
+    _rtl = null
+    _directionReadyResolve = null;
+    _directionReady = new Promise(r => (this._directionReadyResolve = r));
+    _column = true
+    _size
+    _lastElementStyleHeight = null
+    _elementStyleObserver = null
     layout = {}
     constructor({
         container,
@@ -1661,17 +1661,17 @@ class View {
         isCacheWarmer
     }) {
         this.container = container
-        this.#isCacheWarmer = isCacheWarmer
-        this.#sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED && !isCacheWarmer
-        this.#debouncedExpand = debounce(this.expand.bind(this), 999)
+        this._isCacheWarmer = isCacheWarmer
+        this._sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED && !isCacheWarmer
+        this._debouncedExpand = debounce(this.expand.bind(this), 999)
         this.onBeforeExpand = onBeforeExpand
         this.onExpand = onExpand
-        if (this.#sameDocumentMode) {
-            this.#iframe = document.createElement('div')
+        if (this._sameDocumentMode) {
+            this._iframe = document.createElement('div')
         }
-        //        this.#iframe.setAttribute('part', 'filter')
-        this.#element.append(this.#iframe)
-        Object.assign(this.#element.style, {
+        //        this._iframe.setAttribute('part', 'filter')
+        this._element.append(this._iframe)
+        Object.assign(this._element.style, {
             boxSizing: 'content-box',
             position: 'relative',
             overflow: 'hidden',
@@ -1682,34 +1682,34 @@ class View {
             justifyContent: 'center',
             alignItems: 'center',
         })
-        if (this.#sameDocumentMode) {
-            this.#element.style.justifyContent = 'flex-start'
-            this.#element.style.alignItems = 'flex-start'
+        if (this._sameDocumentMode) {
+            this._element.style.justifyContent = 'flex-start'
+            this._element.style.alignItems = 'flex-start'
         }
         // Watch for unexpected inline height mutations on the view wrapper, which can cause page spikes.
-        this.#lastElementStyleHeight = this.#element.style.height || null
-        this.#elementStyleObserver = new MutationObserver(mutations => {
+        this._lastElementStyleHeight = this._element.style.height || null
+        this._elementStyleObserver = new MutationObserver(mutations => {
             for (const m of mutations) {
                 if (m.attributeName !== 'style') continue
-                const current = this.#element.style.height || null
-                if (current === this.#lastElementStyleHeight) continue
-                const prevNumeric = parseFloat(this.#lastElementStyleHeight ?? 'NaN')
+                const current = this._element.style.height || null
+                if (current === this._lastElementStyleHeight) continue
+                const prevNumeric = parseFloat(this._lastElementStyleHeight ?? 'NaN')
                 const currentNumeric = parseFloat(current ?? 'NaN')
                 const isSpike = Number.isFinite(currentNumeric) && currentNumeric > 4000
-                if (isSpike || current !== this.#lastElementStyleHeight) {
+                if (isSpike || current !== this._lastElementStyleHeight) {
                     logEBookPageNumLimited('element-style-height', {
-                        previous: this.#lastElementStyleHeight,
+                        previous: this._lastElementStyleHeight,
                         next: current,
                         isSpike,
                     })
                 }
-                this.#lastElementStyleHeight = current
+                this._lastElementStyleHeight = current
             }
         })
         try {
-            this.#elementStyleObserver.observe(this.#element, { attributes: true, attributeFilter: ['style'] })
+            this._elementStyleObserver.observe(this._element, { attributes: true, attributeFilter: ['style'] })
         } catch (_) {}
-        Object.assign(this.#iframe.style, {
+        Object.assign(this._iframe.style, {
             overflow: 'hidden',
             border: '0',
             //            display: 'none',
@@ -1717,43 +1717,43 @@ class View {
             width: '100%',
             height: '100%',
         })
-        if (this.#sameDocumentMode) {
-            this.#iframe.id = 'manabi-same-document-mount'
-            this.#iframe.className = 'manabi-same-document-mount'
-            this.#iframe.style.position = 'relative'
-            this.#iframe.style.boxSizing = 'border-box'
+        if (this._sameDocumentMode) {
+            this._iframe.id = 'manabi-same-document-mount'
+            this._iframe.className = 'manabi-same-document-mount'
+            this._iframe.style.position = 'relative'
+            this._iframe.style.boxSizing = 'border-box'
         } else {
             // `allow-scripts` is needed for events because of WebKit bug
             // https://bugs.webkit.org/show_bug.cgi?id=218086
-            //        this.#iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-downloads')
-            //this.#iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts') // Breaks font-src data: blobs...
-            this.#iframe.setAttribute('scrolling', 'no')
+            //        this._iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-downloads')
+            //this._iframe.setAttribute('sandbox', 'allow-same-origin allow-scripts') // Breaks font-src data: blobs...
+            this._iframe.setAttribute('scrolling', 'no')
         }
 
-        this.#resizeObserver = new ResizeObserver(entries => {
-            if (this.#isCacheWarmer) return;
+        this._resizeObserver = new ResizeObserver(entries => {
+            if (this._isCacheWarmer) return;
             const entry = entries[0];
             if (!entry) return;
             const rect = entry.contentRect;
-            this.#pendingResizeRect = {
+            this._pendingResizeRect = {
                 width: Math.round(rect.width),
                 height: Math.round(rect.height),
                 top: Math.round(rect.top),
                 left: Math.round(rect.left),
             }
-            if (this.#resizeObserverFrame !== null) cancelAnimationFrame(this.#resizeObserverFrame)
-            this.#resizeObserverFrame = requestAnimationFrame(() => {
-                this.#resizeObserverFrame = null
-                this.#handleResize(this.#pendingResizeRect)
+            if (this._resizeObserverFrame !== null) cancelAnimationFrame(this._resizeObserverFrame)
+            this._resizeObserverFrame = requestAnimationFrame(() => {
+                this._resizeObserverFrame = null
+                this._handleResize(this._pendingResizeRect)
             })
         })
     }
 
     revealIframeForBake(reason) {
-        if (this.#iframeShownForBake) return
-        if (this.#iframe?.style?.display === 'none') {
-            this.#iframe.style.display = 'block'
-            this.#iframeShownForBake = true
+        if (this._iframeShownForBake) return
+        if (this._iframe?.style?.display === 'none') {
+            this._iframe.style.display = 'block'
+            this._iframeShownForBake = true
             logEBookPerf('iframe-display-set', { state: 'shown-for-bake', reason })
             logEBookPageNumLimited('bake:iframe-reveal', {
                 reason,
@@ -1766,10 +1766,10 @@ class View {
         }
     }
     get element() {
-        return this.#element
+        return this._element
     }
     reconcileSameDocumentExpandedWidth() {
-        if (!this.#sameDocumentMode || !this.#column || !Number.isFinite(this.#size) || this.#size <= 0) {
+        if (!this._sameDocumentMode || !this._column || !Number.isFinite(this._size) || this._size <= 0) {
             return null
         }
         try {
@@ -1794,31 +1794,31 @@ class View {
                 1,
                 livePageCount,
                 Number.parseInt(String(layoutController?.pageCount?.() ?? 1), 10) || 1,
-                this.#getSameDocumentResolvedPageCountSync() || 1
+                this._getSameDocumentResolvedPageCountSync() || 1
             )
-            const side = this.#vertical ? 'height' : 'width'
-            const otherSide = this.#vertical ? 'width' : 'height'
+            const side = this._vertical ? 'height' : 'width'
+            const otherSide = this._vertical ? 'width' : 'height'
             const layoutExpandedSize = Math.max(
-                this.#size,
+                this._size,
                 livePageExtent,
-                layoutPageCount * this.#size,
+                layoutPageCount * this._size,
             )
-            this.#iframe.style[side] = `${layoutExpandedSize}px`
-            this.#element.style[side] = `${layoutExpandedSize + this.#size * 2}px`
-            this.#container.style[side] = `${layoutExpandedSize + this.#size * 2}px`
-            this.#iframe.style[otherSide] = '100%'
-            this.#element.style[otherSide] = '100%'
-            this.#container.style[otherSide] = '100%'
+            this._iframe.style[side] = `${layoutExpandedSize}px`
+            this._element.style[side] = `${layoutExpandedSize + this._size * 2}px`
+            this._container.style[side] = `${layoutExpandedSize + this._size * 2}px`
+            this._iframe.style[otherSide] = '100%'
+            this._element.style[otherSide] = '100%'
+            this._container.style[otherSide] = '100%'
             logEBookPageNumLimited('expand:same-document-reconcile', {
                 side,
-                size: this.#size,
+                size: this._size,
                 layoutPageCount,
                 livePageCount,
                 livePageExtent,
                 layoutExpandedSize,
-                iframe: this.#iframe?.style?.[side] || null,
-                element: this.#element?.style?.[side] || null,
-                container: this.#container?.style?.[side] || null,
+                iframe: this._iframe?.style?.[side] || null,
+                element: this._element?.style?.[side] || null,
+                container: this._container?.style?.[side] || null,
             })
             return {
                 layoutPageCount,
@@ -1829,41 +1829,41 @@ class View {
         }
     }
     get document() {
-        if (this.#sameDocumentMode) return document
-        return this.#iframe.contentDocument
+        if (this._sameDocumentMode) return document
+        return this._iframe.contentDocument
     }
-    #getContentRoot() {
-        if (this.#sameDocumentMode) {
-            return this.#iframe.querySelector('#reader-content') || this.#iframe
+    _getContentRoot() {
+        if (this._sameDocumentMode) {
+            return this._iframe.querySelector('#reader-content') || this._iframe
         }
         return this.document?.getElementById?.('reader-content') || this.document?.body || null
     }
-    #removeSameDocumentStyles() {
-        for (const node of this.#sameDocumentStyleNodes) node?.remove?.()
-        this.#sameDocumentStyleNodes = []
+    _removeSameDocumentStyles() {
+        for (const node of this._sameDocumentStyleNodes) node?.remove?.()
+        this._sameDocumentStyleNodes = []
     }
-    #clearSameDocumentBodyState() {
+    _clearSameDocumentBodyState() {
         if (document?.body) {
-            for (const className of this.#sameDocumentAppliedBodyClasses) {
+            for (const className of this._sameDocumentAppliedBodyClasses) {
                 document.body.classList.remove(className)
             }
             document.body.removeAttribute('data-is-ebook')
         }
-        this.#sameDocumentAppliedBodyClasses = []
+        this._sameDocumentAppliedBodyClasses = []
     }
-    #resetSameDocumentState() {
-        this.#removeSameDocumentStyles()
-        this.#clearSameDocumentBodyState()
-        this.#iframe.replaceChildren()
-        this.#sameDocumentSourceURL = null
+    _resetSameDocumentState() {
+        this._removeSameDocumentStyles()
+        this._clearSameDocumentBodyState()
+        this._iframe.replaceChildren()
+        this._sameDocumentSourceURL = null
     }
-    async #loadSameDocument(src, afterLoad, beforeRender, sectionIndex = null, sectionLocation = null) {
-        this.#iframeShownForBake = true
-        this.#sameDocumentSourceURL = src
-        this.#vertical = this.#verticalRTL = this.#rtl = null;
-        this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
-        this.#resetSameDocumentState()
-        this.#sameDocumentSourceURL = src
+    async _loadSameDocument(src, afterLoad, beforeRender, sectionIndex = null, sectionLocation = null) {
+        this._iframeShownForBake = true
+        this._sameDocumentSourceURL = src
+        this._vertical = this._verticalRTL = this._rtl = null;
+        this._directionReady = new Promise(r => (this._directionReadyResolve = r));
+        this._resetSameDocumentState()
+        this._sameDocumentSourceURL = src
 
         const html = await fetch(src).then(r => r.text())
         const sourceDoc = new DOMParser().parseFromString(html, 'text/html')
@@ -1875,31 +1875,31 @@ class View {
             const clone = node.cloneNode(true)
             clone.dataset.manabiSameDocumentSectionStyle = 'true'
             document.head.append(clone)
-            this.#sameDocumentStyleNodes.push(clone)
+            this._sameDocumentStyleNodes.push(clone)
         }
 
         if (document?.body) {
             document.body.dataset.isEbook = sourceDoc.body?.dataset?.isEbook || 'true'
             const applied = Array.from(sourceDoc.body?.classList || []).filter(Boolean)
             for (const className of applied) document.body.classList.add(className)
-            this.#sameDocumentAppliedBodyClasses = applied
+            this._sameDocumentAppliedBodyClasses = applied
         }
 
         for (const child of Array.from(sourceDoc.body?.childNodes || [])) {
-            this.#iframe.append(child.cloneNode(true))
+            this._iframe.append(child.cloneNode(true))
         }
-        if (!this.#iframe.querySelector('#reader-content')) {
+        if (!this._iframe.querySelector('#reader-content')) {
             const readerContent = document.createElement('div')
             readerContent.id = 'reader-content'
             const page = document.createElement('div')
             page.className = 'page'
             const article = document.createElement('article')
-            while (this.#iframe.firstChild) {
-                article.append(this.#iframe.firstChild)
+            while (this._iframe.firstChild) {
+                article.append(this._iframe.firstChild)
             }
             page.append(article)
             readerContent.append(page)
-            this.#iframe.append(readerContent)
+            this._iframe.append(readerContent)
         }
         try {
             document.defaultView.manabiCurrentContentURL = sectionLocation || src
@@ -1913,65 +1913,65 @@ class View {
         const sourceDir = sourceDoc.body?.getAttribute?.('dir')
             || sourceDoc.documentElement?.getAttribute?.('dir')
             || 'ltr'
-        this.#rtl = sourceDir === 'rtl'
+        this._rtl = sourceDir === 'rtl'
         if (writingDirectionOverride === 'vertical') {
-            this.#vertical = true
-            this.#verticalRTL = true
+            this._vertical = true
+            this._verticalRTL = true
         } else {
-            this.#vertical = false
-            this.#verticalRTL = false
+            this._vertical = false
+            this._verticalRTL = false
         }
-        applyVerticalWritingClass(document, this.#vertical)
-        applyTategakiDisplayTransform(document, this.#vertical)
-        globalThis.manabiTrackingVertical = this.#vertical
-        globalThis.manabiTrackingVerticalRTL = this.#verticalRTL
-        globalThis.manabiTrackingRTL = this.#rtl
-        globalThis.manabiTrackingWritingMode = this.#vertical
-            ? (this.#verticalRTL ? 'vertical-rl' : 'vertical-lr')
-            : (this.#rtl ? 'horizontal-rtl' : 'horizontal-ltr')
-        this.#directionReadyResolve?.();
+        applyVerticalWritingClass(document, this._vertical)
+        applyTategakiDisplayTransform(document, this._vertical)
+        globalThis.manabiTrackingVertical = this._vertical
+        globalThis.manabiTrackingVerticalRTL = this._verticalRTL
+        globalThis.manabiTrackingRTL = this._rtl
+        globalThis.manabiTrackingWritingMode = this._vertical
+            ? (this._verticalRTL ? 'vertical-rl' : 'vertical-lr')
+            : (this._rtl ? 'horizontal-rtl' : 'horizontal-ltr')
+        this._directionReadyResolve?.();
 
-        const contentRoot = this.#getContentRoot()
+        const contentRoot = this._getContentRoot()
         if (contentRoot) {
-            this.#contentRange.selectNodeContents(contentRoot)
+            this._contentRange.selectNodeContents(contentRoot)
         }
 
         const layout = await beforeRender?.({
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+            vertical: this._vertical,
+            rtl: this._rtl,
         })
 
         revealDocumentContentForBake(document)
-        this.#sameDocumentObservedElement = contentRoot || this.#iframe
-        if (this.#sameDocumentObservedElement) {
-            this.#resizeObserver.observe(this.#sameDocumentObservedElement)
+        this._sameDocumentObservedElement = contentRoot || this._iframe
+        if (this._sameDocumentObservedElement) {
+            this._resizeObserver.observe(this._sameDocumentObservedElement)
         }
         await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex, layout)
     }
     async load(src, afterLoad, beforeRender, sectionIndex = null, sectionLocation = null) {
         if (typeof src !== 'string') throw new Error(`${src} is not string`)
-        if (this.#sameDocumentMode) {
+        if (this._sameDocumentMode) {
             globalThis.manabiLoadEBookLastState = 'paginator-load-same-document-begin'
-            return await this.#loadSameDocument(src, afterLoad, beforeRender, sectionIndex, sectionLocation)
+            return await this._loadSameDocument(src, afterLoad, beforeRender, sectionIndex, sectionLocation)
         }
         globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-begin'
-        this.#iframeShownForBake = false
+        this._iframeShownForBake = false
         // Reset direction flags and promise before loading a new section
-        this.#vertical = this.#verticalRTL = this.#rtl = null;
-        this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+        this._vertical = this._verticalRTL = this._rtl = null;
+        this._directionReady = new Promise(r => (this._directionReadyResolve = r));
         // When size baking is enabled, keep the iframe hidden until we're ready to bake/reveal.
         if (MANABI_TRACKING_SIZE_BAKE_ENABLED) {
-            this.#iframe.style.display = 'none'
+            this._iframe.style.display = 'none'
             logEBookPerf('iframe-display-set', { state: 'hidden-before-src', src })
         } else {
-            this.#iframe.style.display = 'block'
+            this._iframe.style.display = 'block'
         }
         return new Promise(async (resolve) => {
-            if (this.#isCacheWarmer) {
+            if (this._isCacheWarmer) {
                 console.log("Don't create View for cache warmers")
                 resolve()
             } else {
-                this.#iframe.addEventListener('load', async () => {
+                this._iframe.addEventListener('load', async () => {
                     globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-load-event'
                     try { await globalThis.manabiWaitForFontCSS?.() } catch {}
                     const doc = this.document
@@ -1982,30 +1982,30 @@ class View {
                     await afterLoad?.(doc)
                     globalThis.manabiLoadEBookLastState = 'paginator-load-after-afterLoad'
 
-                    //                    this.#iframe.style.display = 'none'
+                    //                    this._iframe.style.display = 'none'
 
                     const { bodylessStyle, bodylessDoc } = await getBodylessComputedStyle(doc)
                     const direction = await getDirection({ bodylessStyle, bodylessDoc });
-                    this.#vertical = direction.vertical;
-                    this.#verticalRTL = direction.verticalRTL;
-                    this.#rtl = direction.rtl;
-                    applyVerticalWritingClass(doc, this.#vertical)
-                    applyTategakiDisplayTransform(doc, this.#vertical)
-                    globalThis.manabiTrackingVertical = this.#vertical
-                    globalThis.manabiTrackingVerticalRTL = this.#verticalRTL
-                    globalThis.manabiTrackingRTL = this.#rtl
-                    globalThis.manabiTrackingWritingMode = this.#vertical
-                        ? (this.#verticalRTL ? 'vertical-rl' : 'vertical-lr')
-                        : (this.#rtl ? 'horizontal-rtl' : 'horizontal-ltr')
-                    this.#directionReadyResolve?.();
+                    this._vertical = direction.vertical;
+                    this._verticalRTL = direction.verticalRTL;
+                    this._rtl = direction.rtl;
+                    applyVerticalWritingClass(doc, this._vertical)
+                    applyTategakiDisplayTransform(doc, this._vertical)
+                    globalThis.manabiTrackingVertical = this._vertical
+                    globalThis.manabiTrackingVerticalRTL = this._verticalRTL
+                    globalThis.manabiTrackingRTL = this._rtl
+                    globalThis.manabiTrackingWritingMode = this._vertical
+                        ? (this._verticalRTL ? 'vertical-rl' : 'vertical-lr')
+                        : (this._rtl ? 'horizontal-rtl' : 'horizontal-ltr')
+                    this._directionReadyResolve?.();
 
-                    const contentRoot = this.#getContentRoot() || doc.body
-                    this.#contentRange.selectNodeContents(contentRoot)
+                    const contentRoot = this._getContentRoot() || doc.body
+                    this._contentRange.selectNodeContents(contentRoot)
 
                     globalThis.manabiLoadEBookLastState = 'paginator-load-before-beforeRender'
                     const layout = await beforeRender?.({
-                        vertical: this.#vertical,
-                        rtl: this.#rtl,
+                        vertical: this._vertical,
+                        rtl: this._rtl,
                     })
                     globalThis.manabiLoadEBookLastState = 'paginator-load-after-beforeRender'
 
@@ -2018,8 +2018,8 @@ class View {
                     await this.container?.performInitialBakeFromView?.(sectionIndex ?? this.container?.currentIndex, layout)
                     globalThis.manabiLoadEBookLastState = 'paginator-load-after-initial-bake'
 
-                    this.#sameDocumentObservedElement = doc.body
-                    this.#resizeObserver.observe(doc.body)
+                    this._sameDocumentObservedElement = doc.body
+                    this._resizeObserver.observe(doc.body)
 
                     globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-resolve'
                     resolve()
@@ -2027,7 +2027,7 @@ class View {
                     once: true
                 })
                 globalThis.manabiLoadEBookLastState = 'paginator-load-iframe-set-src'
-                this.#iframe.src = src
+                this._iframe.src = src
             }
         })
     }
@@ -2041,8 +2041,8 @@ class View {
         logEBookPerf('render-start', {
             flow: layout.flow,
             column: layout.flow !== 'scrolled',
-            vertical: this.#vertical,
-            isCacheWarmer: this.#isCacheWarmer,
+            vertical: this._vertical,
+            isCacheWarmer: this._isCacheWarmer,
         })
         logEBookPerf('EXPAND.render-start', {
             flow: layout.flow,
@@ -2050,16 +2050,16 @@ class View {
             source,
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
-            inExpand: this.#inExpand || false,
+            inExpand: this._inExpand || false,
         })
         layout.usePaginate = false // disable Paginate integration for now
-        this.#column = layout.flow !== 'scrolled'
+        this._column = layout.flow !== 'scrolled'
         this.layout = layout
 
-        applyVerticalWritingClass(this.document, this.#vertical)
-        applyTategakiDisplayTransform(this.document, this.#vertical)
+        applyVerticalWritingClass(this.document, this._vertical)
+        applyTategakiDisplayTransform(this.document, this._vertical)
 
-        if (this.#column) {
+        if (this._column) {
             //            console.log("render(layout)... await columnize(layout)")
             await this.columnize(layout, { skipExpand })
             //            console.log("render(layout)... await'd columnize(layout)")
@@ -2070,8 +2070,8 @@ class View {
         }
         logEBookPerf('render-complete', {
             flow: layout.flow,
-            column: this.#column,
-            vertical: this.#vertical,
+            column: this._column,
+            vertical: this._vertical,
         })
         logEBookPerf('EXPAND.render-complete', {
             flow: layout.flow,
@@ -2079,7 +2079,7 @@ class View {
             source,
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
-            inExpand: this.#inExpand || false,
+            inExpand: this._inExpand || false,
         })
     }
     async scrolled({
@@ -2087,10 +2087,10 @@ class View {
         columnWidth,
         shouldColumnizeForThreshold = true
     }, { skipExpand = false } = {}) {
-        await this.#awaitDirection();
-        const vertical = this.#vertical
+        await this._awaitDirection();
+        const vertical = this._vertical
         const doc = this.document
-        const layoutRoot = this.#getContentRoot() || doc.documentElement
+        const layoutRoot = this._getContentRoot() || doc.documentElement
         const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
         const constrainedSize = shouldColumnizeForThreshold
             ? `${columnWidth}px`
@@ -2144,7 +2144,7 @@ class View {
         }
         setStylesImportant(layoutRoot, layoutRootStyles)
         // columnize parity
-        setStylesImportant(this.#getContentRoot() || doc.body, {
+        setStylesImportant(this._getContentRoot() || doc.body, {
             [vertical ? 'max-height' : 'max-width']: constrainedSize,
             'margin': margin,
         })
@@ -2167,22 +2167,22 @@ class View {
         divisor,
     }, { skipExpand = false } = {}) {
         //        console.log("columnize...")
-        await this.#awaitDirection();
+        await this._awaitDirection();
         //        console.log("columnize... await'd direction")
-        const vertical = this.#vertical
-        this.#size = vertical ? height : width
+        const vertical = this._vertical
+        this._size = vertical ? height : width
         logEBookPerf('EXPAND.columnize-entry', {
             skipExpand,
-            size: this.#size,
+            size: this._size,
             width,
             height,
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
         })
-        //        console.log("columnize #size = ", this.#size)
+        //        console.log("columnize #size = ", this._size)
 
         const doc = this.document
-        const layoutRoot = this.#getContentRoot() || doc.documentElement
+        const layoutRoot = this._getContentRoot() || doc.documentElement
         const columnizeStyles = {
             'box-sizing': 'border-box',
             'column-width': `${Math.trunc(columnWidth)}px`,
@@ -2213,7 +2213,7 @@ class View {
         setStylesImportant(layoutRoot, columnizeStyles)
         const bottomMarginPx = CSS_DEFAULTS.bottomMarginPx;
         layoutRoot.style.setProperty('--paginator-margin', `${bottomMarginPx}px`)
-        setStylesImportant(this.#getContentRoot() || doc.body, {
+        setStylesImportant(this._getContentRoot() || doc.body, {
             'max-height': 'none',
             'max-width': 'none',
             'margin': '0',
@@ -2232,42 +2232,42 @@ class View {
             })
         }
         //        console.log("columnize... await'd expand")
-        //            //            this.#debouncedExpand()
+        //            //            this._debouncedExpand()
         //        }
     }
-    async #awaitDirection() {
-        if (this.#vertical === null) await this.#directionReady;
+    async _awaitDirection() {
+        if (this._vertical === null) await this._directionReady;
     }
     async expand() {
         logEBookPerf('expand-request', {
-            column: this.#column,
-            vertical: this.#vertical,
-            size: this.#size,
-            cacheWarmer: this.#isCacheWarmer,
+            column: this._column,
+            vertical: this._vertical,
+            size: this._size,
+            cacheWarmer: this._isCacheWarmer,
         })
         logEBookPerf('EXPAND.expand-entry', {
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
             pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
-            inExpand: this.#inExpand || false,
+            inExpand: this._inExpand || false,
         })
         logEBookPageNumLimited('expand:entry', {
-            column: this.#column,
-            vertical: this.#vertical,
-            size: this.#size,
-            cacheWarmer: this.#isCacheWarmer,
+            column: this._column,
+            vertical: this._vertical,
+            size: this._size,
+            cacheWarmer: this._isCacheWarmer,
             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
             trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
             pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
-            inExpand: this.#inExpand || false,
+            inExpand: this._inExpand || false,
         })
         // Reset per-expand retry state; invalid measurements schedule a single retry.
-        this.#expandRetryScheduled = false
-        this.#inExpand = true
+        this._expandRetryScheduled = false
+        this._inExpand = true
         try {
             await this.onBeforeExpand()
         } catch (error) {
-            this.#inExpand = false
+            this._inExpand = false
             throw error
         }
         //        console.log("expand...")
@@ -2275,14 +2275,14 @@ class View {
             requestAnimationFrame(async () => {
                 try {
                     //                console.log("expand... inside 0")
-                    const documentElement = this.#getContentRoot() || this.document?.documentElement
-                    const side = this.#vertical ? 'height' : 'width'
-                    const otherSide = this.#vertical ? 'width' : 'height'
+                    const documentElement = this._getContentRoot() || this.document?.documentElement
+                    const side = this._vertical ? 'height' : 'width'
+                    const otherSide = this._vertical ? 'width' : 'height'
                     const scrollProp = side === 'width' ? 'scrollWidth' : 'scrollHeight'
                     //                let contentSize = documentElement?.[scrollProp] ?? 0;
 
-                    if (this.#column) {
-                        const contentRect = this.#contentRange.getBoundingClientRect()
+                    if (this._column) {
+                        const contentRect = this._contentRange.getBoundingClientRect()
                         const rootRect = documentElement.getBoundingClientRect()
                         logEBookPerf('RECT.expand-content', {
                             contentRect: { width: contentRect?.width ?? null, height: contentRect?.height ?? null, left: contentRect?.left ?? null, right: contentRect?.right ?? null },
@@ -2290,19 +2290,19 @@ class View {
                         })
                         // offset caused by column break at the start of the page
                         // which seem to be supported only by WebKit and only for horizontal writing
-                        const contentStart = this.#vertical ? 0
-                            : this.#rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
+                        const contentStart = this._vertical ? 0
+                            : this._rtl ? rootRect.right - contentRect.right : contentRect.left - rootRect.left
                         const contentRectSide = contentRect?.[side] ?? 0
                         const contentSize = contentStart + contentRectSide
-                        const sizeValid = Number.isFinite(this.#size) && this.#size > 0
+                        const sizeValid = Number.isFinite(this._size) && this._size > 0
                         const contentRectValid = Number.isFinite(contentRectSide) && contentRectSide > 0
                         const contentSizeValid = Number.isFinite(contentSize) && contentSize > 0
                         const pageCount = (sizeValid && contentSizeValid)
-                            ? Math.ceil(contentSize / this.#size)
+                            ? Math.ceil(contentSize / this._size)
                             : null
                         const invalidMeasurement = !sizeValid || !contentRectValid || !contentSizeValid || !pageCount || pageCount <= 0
                         console.log('[paginator] expand measure', {
-                            size: this.#size,
+                            size: this._size,
                             side,
                             contentRectSide,
                             contentStart,
@@ -2314,7 +2314,7 @@ class View {
                             logEBookPageNumLimited('expand:invalid-measurement', {
                                 mode: 'column',
                                 side,
-                                size: this.#size,
+                                size: this._size,
                                 contentRectSide,
                                 contentStart,
                                 contentSize,
@@ -2323,22 +2323,22 @@ class View {
                             logEBookBake('expand:invalid-measurement', {
                                 mode: 'column',
                                 side,
-                                size: this.#size,
+                                size: this._size,
                                 contentRectSide,
                                 contentStart,
                                 contentSize,
                                 pageCount,
-                                column: this.#column,
-                                vertical: this.#vertical,
+                                column: this._column,
+                                vertical: this._vertical,
                                 readyFlag: this.container?.trackingSizeBakeReadyPublic ?? null,
                                 suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                             })
                             // Defer a retry so we don't lock in a bogus 0/1 page count; often fonts/images finish after this.
-                            if (!this.#expandRetryScheduled) {
-                                this.#expandRetryScheduled = true
+                            if (!this._expandRetryScheduled) {
+                                this._expandRetryScheduled = true
                                 requestAnimationFrame(() => {
-                                    this.#expandRetryScheduled = false
-                                    if (!this.#inExpand) this.expand().catch(() => {})
+                                    this._expandRetryScheduled = false
+                                    if (!this._inExpand) this.expand().catch(() => {})
                                 })
                             }
                             return
@@ -2346,7 +2346,7 @@ class View {
                         logEBookPerf('EXPAND.metrics', {
                             mode: 'column',
                             side,
-                            size: this.#size,
+                            size: this._size,
                             contentSize,
                             pageCount,
                             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
@@ -2355,29 +2355,29 @@ class View {
                         logEBookPageNumLimited('expand:metrics', {
                             mode: 'column',
                             side,
-                            size: this.#size,
+                            size: this._size,
                             contentSize,
                             pageCount,
-                            expandedSize: pageCount * this.#size,
+                            expandedSize: pageCount * this._size,
                             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
                         })
-                        const expandedSize = pageCount * this.#size
+                        const expandedSize = pageCount * this._size
 
-                        this.#element.style.padding = '0'
-                        this.#iframe.style[side] = `${expandedSize}px`
-                        this.#element.style[side] = `${expandedSize + this.#size * 2}px`
-                        this.#iframe.style[otherSide] = '100%'
-                        this.#element.style[otherSide] = '100%'
+                        this._element.style.padding = '0'
+                        this._iframe.style[side] = `${expandedSize}px`
+                        this._element.style[side] = `${expandedSize + this._size * 2}px`
+                        this._iframe.style[otherSide] = '100%'
+                        this._element.style[otherSide] = '100%'
                         if (documentElement) {
-                            documentElement.style[side] = `${this.#size}px`
+                            documentElement.style[side] = `${this._size}px`
                         }
-                        if (this.#overlayer) {
-                            this.#overlayer.element.style.margin = '0'
-                            this.#overlayer.element.style.left = this.#vertical ? '0' : `${this.#size}px`
-                            this.#overlayer.element.style.top = this.#vertical ? `${this.#size}px` : '0'
-                            this.#overlayer.element.style[side] = `${expandedSize}px`
-                            this.#overlayer.redraw()
+                        if (this._overlayer) {
+                            this._overlayer.element.style.margin = '0'
+                            this._overlayer.element.style.left = this._vertical ? '0' : `${this._size}px`
+                            this._overlayer.element.style.top = this._vertical ? `${this._size}px` : '0'
+                            this._overlayer.element.style[side] = `${expandedSize}px`
+                            this._overlayer.redraw()
                         }
                     } else {
                         const docRect = documentElement.getBoundingClientRect()
@@ -2394,7 +2394,7 @@ class View {
                         logEBookPerf('EXPAND.metrics', {
                             mode: 'scrolled',
                             side,
-                            size: this.#size,
+                            size: this._size,
                             contentSize,
                             suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                             ready: this.container?.trackingSizeBakeReadyPublic ?? null,
@@ -2402,7 +2402,7 @@ class View {
                         logEBookPageNumLimited('expand:metrics', {
                             mode: 'scrolled',
                             side,
-                            size: this.#size,
+                            size: this._size,
                             contentSize,
                             pageCount: null,
                             expandedSize,
@@ -2413,85 +2413,85 @@ class View {
                         //                    const paddingBottom = `${marginBottom}px`
                         const paddingTop = `${topMargin}px`
                         const paddingBottom = `${bottomMargin}px`
-                        if (this.#vertical) {
-                            this.#element.style.paddingLeft = paddingTop
-                            this.#element.style.paddingRight = paddingBottom
-                            this.#element.style.paddingTop = '0'
-                            this.#element.style.paddingBottom = '0'
+                        if (this._vertical) {
+                            this._element.style.paddingLeft = paddingTop
+                            this._element.style.paddingRight = paddingBottom
+                            this._element.style.paddingTop = '0'
+                            this._element.style.paddingBottom = '0'
                         } else {
-                            this.#element.style.paddingLeft = '0'
-                            this.#element.style.paddingRight = '0'
-                            this.#element.style.paddingTop = paddingTop
-                            this.#element.style.paddingBottom = paddingBottom
+                            this._element.style.paddingLeft = '0'
+                            this._element.style.paddingRight = '0'
+                            this._element.style.paddingTop = paddingTop
+                            this._element.style.paddingBottom = paddingBottom
                         }
-                        this.#iframe.style[side] = `${expandedSize}px`
-                        this.#element.style[side] = `${expandedSize}px`
-                        this.#iframe.style[otherSide] = '100%'
-                        this.#element.style[otherSide] = '100%'
-                        if (this.#overlayer) {
-                            if (this.#vertical) {
-                                this.#overlayer.element.style.marginLeft = paddingTop
-                                this.#overlayer.element.style.marginRight = paddingBottom
-                                this.#overlayer.element.style.marginTop = '0'
-                                this.#overlayer.element.style.marginBottom = '0'
+                        this._iframe.style[side] = `${expandedSize}px`
+                        this._element.style[side] = `${expandedSize}px`
+                        this._iframe.style[otherSide] = '100%'
+                        this._element.style[otherSide] = '100%'
+                        if (this._overlayer) {
+                            if (this._vertical) {
+                                this._overlayer.element.style.marginLeft = paddingTop
+                                this._overlayer.element.style.marginRight = paddingBottom
+                                this._overlayer.element.style.marginTop = '0'
+                                this._overlayer.element.style.marginBottom = '0'
                             } else {
-                                this.#overlayer.element.style.marginLeft = '0'
-                                this.#overlayer.element.style.marginRight = '0'
-                                this.#overlayer.element.style.marginTop = paddingTop
-                                this.#overlayer.element.style.marginBottom = paddingBottom
+                                this._overlayer.element.style.marginLeft = '0'
+                                this._overlayer.element.style.marginRight = '0'
+                                this._overlayer.element.style.marginTop = paddingTop
+                                this._overlayer.element.style.marginBottom = paddingBottom
                             }
-                            this.#overlayer.element.style.left = '0'
-                            this.#overlayer.element.style.top = '0'
-                            this.#overlayer.element.style[side] = `${expandedSize}px`
-                            this.#overlayer.redraw()
+                            this._overlayer.element.style.left = '0'
+                            this._overlayer.element.style.top = '0'
+                            this._overlayer.element.style[side] = `${expandedSize}px`
+                            this._overlayer.redraw()
                         }
                     }
                     //                console.log("expand... call onexpand")
                     logEBookPerf('expand-before-onexpand', {
-                        column: this.#column,
-                        vertical: this.#vertical,
+                        column: this._column,
+                        vertical: this._vertical,
                         side,
-                        expandedSize: this.#iframe?.style?.[side] || null,
+                        expandedSize: this._iframe?.style?.[side] || null,
                     })
                     logEBookPageNumLimited('expand:set-styles', {
-                        column: this.#column,
-                        vertical: this.#vertical,
+                        column: this._column,
+                        vertical: this._vertical,
                         side,
-                        iframe: this.#iframe?.style?.[side] || null,
-                        element: this.#element?.style?.[side] || null,
+                        iframe: this._iframe?.style?.[side] || null,
+                        element: this._element?.style?.[side] || null,
                         otherSide,
-                        iframeOther: this.#iframe?.style?.[otherSide] || null,
-                        elementOther: this.#element?.style?.[otherSide] || null,
+                        iframeOther: this._iframe?.style?.[otherSide] || null,
+                        elementOther: this._element?.style?.[otherSide] || null,
                     })
                 await this.onExpand()
                     this.reconcileSameDocumentExpandedWidth()
                 logEBookPerf('expand-complete', {
-                    column: this.#column,
-                    vertical: this.#vertical,
-                    size: this.#size,
+                    column: this._column,
+                    vertical: this._vertical,
+                    size: this._size,
                 })
                 logEBookPerf('EXPAND.expand-complete', {
                     suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                     trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
                     pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
-                    inExpand: this.#inExpand || false,
+                    inExpand: this._inExpand || false,
                 })
                     logEBookPageNumLimited('expand:complete', {
-                        column: this.#column,
-                        vertical: this.#vertical,
-                        size: this.#size,
+                        column: this._column,
+                        vertical: this._vertical,
+                        size: this._size,
                         suppressBakeOnExpand: this.container?.suppressBakeOnExpandPublic ?? null,
                         trackingReady: this.container?.trackingSizeBakeReadyPublic ?? null,
                         pendingReason: this.container?.pendingTrackingSizeBakeReasonPublic ?? null,
                     })
                     //                console.log("expand... call'd onexpand")
                 } finally {
-                    const bufferedResize = this.#pendingResizeAfterExpand
-                    this.#pendingResizeAfterExpand = null
-                    this.#inExpand = false
+                    const bufferedResize = this._pendingResizeAfterExpand
+                    this._pendingResizeAfterExpand = null
+                    this._inExpand = false
                     if (bufferedResize) {
                         console.log('[paginator] expand: replay buffered resize after expand', bufferedResize)
-                        this.#handleResize(bufferedResize)
+                        this._handleResize(bufferedResize)
                     }
                     resolve()
                 }
@@ -2499,25 +2499,25 @@ class View {
         })
     }
     set overlayer(overlayer) {
-        this.#overlayer = overlayer
+        this._overlayer = overlayer
         if (overlayer?.element) {
-            this.#element.append(overlayer.element)
+            this._element.append(overlayer.element)
         }
     }
     get overlayer() {
-        return this.#overlayer
+        return this._overlayer
     }
     destroy() {
-        if (this.#sameDocumentObservedElement) {
-            this.#resizeObserver.unobserve(this.#sameDocumentObservedElement)
-            this.#sameDocumentObservedElement = null
+        if (this._sameDocumentObservedElement) {
+            this._resizeObserver.unobserve(this._sameDocumentObservedElement)
+            this._sameDocumentObservedElement = null
         } else if (this.document?.body) {
-            this.#resizeObserver.unobserve(this.document.body)
+            this._resizeObserver.unobserve(this.document.body)
         }
-        if (this.#sameDocumentMode) {
-            this.#resetSameDocumentState()
+        if (this._sameDocumentMode) {
+            this._resetSameDocumentState()
         }
-        //        if (this.document) this.#mutationObserver.disconnect()
+        //        if (this.document) this._mutationObserver.disconnect()
     }
 }
 
@@ -2527,22 +2527,22 @@ export class Paginator extends HTMLElement {
         'flow', 'gap', 'marginTop', 'marginBottom',
         'max-inline-size', 'max-block-size', 'max-column-count',
     ]
-    #logChevronDispatch(_event, _payload = {}) {}
-    #emitChevronOpacity(detail, source) {
+    _logChevronDispatch(_event, _payload = {}) {}
+    _emitChevronOpacity(detail, source) {
         if (!CHEVRON_VISUALS_ENABLED) return;
         const nextLeft = detail?.leftOpacity ?? null;
         const nextRight = detail?.rightOpacity ?? null;
-        if (this.#lastChevronEmit.left === nextLeft && this.#lastChevronEmit.right === nextRight) {
-            this.#logChevronDispatch('sideNavChevronOpacity:ignoredDuplicate', {
+        if (this._lastChevronEmit.left === nextLeft && this._lastChevronEmit.right === nextRight) {
+            this._logChevronDispatch('sideNavChevronOpacity:ignoredDuplicate', {
                 source: source ?? null,
                 leftOpacity: nextLeft,
                 rightOpacity: nextRight,
                 bookDir: this.bookDir ?? null,
-                rtl: this.#rtl,
+                rtl: this._rtl,
             });
             return;
         }
-        this.#lastChevronEmit = { left: nextLeft, right: nextRight };
+        this._lastChevronEmit = { left: nextLeft, right: nextRight };
         const payload = { ...detail };
         if (source !== undefined) payload.source = source;
         const shouldLog = (
@@ -2553,16 +2553,16 @@ export class Paginator extends HTMLElement {
             (typeof source === 'string' && source.includes('reset'))
         );
         if (shouldLog) {
-            this.#logChevronDispatch('sideNavChevronOpacity:emit', {
+            this._logChevronDispatch('sideNavChevronOpacity:emit', {
                 source: payload?.source ?? null,
                 leftOpacity: payload?.leftOpacity ?? null,
                 rightOpacity: payload?.rightOpacity ?? null,
                 bookDir: this.bookDir ?? null,
-                rtl: this.#rtl,
-                touchTriggeredNav: this.#touchTriggeredNav,
-                touchHasShownChevron: this.#touchHasShownChevron,
-                maxLeft: this.#maxChevronLeft,
-                maxRight: this.#maxChevronRight,
+                rtl: this._rtl,
+                touchTriggeredNav: this._touchTriggeredNav,
+                touchHasShownChevron: this._touchHasShownChevron,
+                maxLeft: this._maxChevronLeft,
+                maxRight: this._maxChevronRight,
             });
         }
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
@@ -2571,38 +2571,38 @@ export class Paginator extends HTMLElement {
             detail: payload,
         }));
     }
-    #root = this.attachShadow({
+    _root = this.attachShadow({
         mode: 'closed'
     })
-    #debouncedRender = debounce(() => {
+    _debouncedRender = debounce(() => {
         if (!this.layout) return
         // Explicit source so diagnostics can attribute resize-triggered renders.
         this.render(this.layout, { source: 'resize' })
     }, 333)
-    #lastResizerRect = null
-    #resizeObserverFrame = null
-    #pendingResizeRect = null
-    #resizeObserver = new ResizeObserver(entries => {
-        if (this.#isCacheWarmer) return;
+    _lastResizerRect = null
+    _resizeObserverFrame = null
+    _pendingResizeRect = null
+    _resizeObserver = new ResizeObserver(entries => {
+        if (this._isCacheWarmer) return;
         const entry = entries[0];
         if (!entry) return;
         const rect = entry.contentRect;
-        this.#pendingResizeRect = {
+        this._pendingResizeRect = {
             width: Math.round(rect.width),
             height: Math.round(rect.height),
             top: Math.round(rect.top),
             left: Math.round(rect.left),
         }
-        if (this.#resizeObserverFrame !== null) cancelAnimationFrame(this.#resizeObserverFrame)
-        this.#resizeObserverFrame = requestAnimationFrame(() => {
-            this.#resizeObserverFrame = null
-            this.#handleContainerResize(this.#pendingResizeRect)
+        if (this._resizeObserverFrame !== null) cancelAnimationFrame(this._resizeObserverFrame)
+        this._resizeObserverFrame = requestAnimationFrame(() => {
+            this._resizeObserverFrame = null
+            this._handleContainerResize(this._pendingResizeRect)
         })
     })
-    #suppressBakeOnExpand = false
-    #handleContainerResize(newSize) {
+    _suppressBakeOnExpand = false
+    _handleContainerResize(newSize) {
         if (!newSize) return
-        const old = this.#lastResizerRect
+        const old = this._lastResizerRect
         const changed =
             !old ||
             newSize.width !== old.width ||
@@ -2618,21 +2618,21 @@ export class Paginator extends HTMLElement {
             return
         }
 
-        this.#lastResizerRect = newSize
-        this.#cachedSizes = null
-        this.#cachedStart = null
+        this._lastResizerRect = newSize
+        this._cachedSizes = null
+        this._cachedStart = null
 
         logEBookResize('container-resize-change', {
             newSize,
             old,
         })
 
-        this.#debouncedRender();
+        this._debouncedRender();
 
         // Wait one frame to ensure the container size has settled before rebaking sizes.
         if (MANABI_TRACKING_SIZE_BAKING_OPTIMIZED && MANABI_TRACKING_SIZE_RESIZE_TRIGGERS_ENABLED) {
             requestAnimationFrame(() => {
-                const r = this.#container?.getBoundingClientRect?.()
+                const r = this._container?.getBoundingClientRect?.()
                 logEBookPerf('RECT.container-resize-check', {
                     rect: r ? {
                         width: Math.round(r.width),
@@ -2640,7 +2640,7 @@ export class Paginator extends HTMLElement {
                         top: Math.round(r.top),
                         left: Math.round(r.left),
                     } : null,
-                    last: this.#lastResizerRect,
+                    last: this._lastResizerRect,
                 })
                 if (!r) return
                 const stable = {
@@ -2650,13 +2650,13 @@ export class Paginator extends HTMLElement {
                     left: Math.round(r.left),
                 }
                 const still =
-                    stable.width === this.#lastResizerRect?.width &&
-                    stable.height === this.#lastResizerRect?.height
+                    stable.width === this._lastResizerRect?.width &&
+                    stable.height === this._lastResizerRect?.height
 
                 if (!still) {
                     logEBookResize('container-resize-unstable', {
                         stable,
-                        last: this.#lastResizerRect,
+                        last: this._lastResizerRect,
                         compareTopLeft: true,
                     })
                     return
@@ -2684,82 +2684,82 @@ export class Paginator extends HTMLElement {
             })
         }
     }
-    #top
-    #transitioning = false;
+    _top
+    _transitioning = false;
     //    #background
-    #container
-    #defaultContainer
-    #header
-    #footer
-    #view
-    #ebookSectionLayout = new EbookSectionLayout()
-    #ebookLayoutEventTarget = null
-    #vertical = null
-    #verticalRTL = null
-    #rtl = null
-    #directionReadyResolve = null;
-    #directionReady = new Promise(r => (this.#directionReadyResolve = r));
-    #column = true
-    #topMargin = 0
-    #bottomMargin = 0
-    #index = -1
-    #loadingReason = null
-    #hasExpandedOnce = false
-    #activeBakeCount = 0
-    #sizeBakeDebounceTimer = null
-    #sizeBakeDebounceArgs = null
-    #trackingSizeBakeQueuedRect = null
-    get currentIndex() { return this.#index }
-    #anchor = 0 // anchor view to a fraction (0-1), Range, or Element
-    #justAnchored = false
-    #isLoading = false
-    #locked = false // while true, prevent any further navigation
-    #lockTimestamp = 0
-    #styles
-    #styleMap = new WeakMap()
-    #scrollBounds
-    #touchState
-    #touchScrolled
-    #isCacheWarmer = false
-    #prefetchTimer = null
-    #prefetchCache = new Map()
-    #schedulePrefetchLoad(index) {
+    _container
+    _defaultContainer
+    _header
+    _footer
+    _view
+    _ebookSectionLayout = new EbookSectionLayout()
+    _ebookLayoutEventTarget = null
+    _vertical = null
+    _verticalRTL = null
+    _rtl = null
+    _directionReadyResolve = null;
+    _directionReady = new Promise(r => (this._directionReadyResolve = r));
+    _column = true
+    _topMargin = 0
+    _bottomMargin = 0
+    _index = -1
+    _loadingReason = null
+    _hasExpandedOnce = false
+    _activeBakeCount = 0
+    _sizeBakeDebounceTimer = null
+    _sizeBakeDebounceArgs = null
+    _trackingSizeBakeQueuedRect = null
+    get currentIndex() { return this._index }
+    _anchor = 0 // anchor view to a fraction (0-1), Range, or Element
+    _justAnchored = false
+    _isLoading = false
+    _locked = false // while true, prevent any further navigation
+    _lockTimestamp = 0
+    _styles
+    _styleMap = new WeakMap()
+    _scrollBounds
+    _touchState
+    _touchScrolled
+    _isCacheWarmer = false
+    _prefetchTimer = null
+    _prefetchCache = new Map()
+    _schedulePrefetchLoad(index) {
         const start = () => this.sections[index].load().catch(() => { });
         const ric = globalThis.requestIdleCallback;
         const promise = typeof ric === 'function'
             ? new Promise(resolve => ric(() => resolve(start()), { timeout: 500 }))
             : new Promise(resolve => setTimeout(() => resolve(start()), 50));
-        this.#prefetchCache.set(index, promise);
+        this._prefetchCache.set(index, promise);
     }
-    #skipTouchEndOpacity = false
-    #isAdjustingSelectionHandle = false
-    #trackingGeometryRebakeTimer = null
-    #trackingGeometryPendingReason = null
-    #trackingGeometryPendingRestoreLocation = false
-    #trackingGeometryBakeInFlight = null
-    #trackingGeometryBakeNeedsRerun = false
-    #trackingGeometryBakeQueuedRestoreLocation = false
-    #trackingGeometryBakeQueuedReason = null
-    #wheelArmed = true // Hysteresis-based horizontal wheel paging
-    #scrolledToAnchorOnLoad = false
-    #trackingSizeBakeTimer = null
-    #trackingSizeBakeInFlight = null
-    #trackingSizeBakeNeedsRerun = false
-    #trackingSizeBakeQueuedReason = null
-    #skipNextExpandBake = false
+    _skipTouchEndOpacity = false
+    _isAdjustingSelectionHandle = false
+    _trackingGeometryRebakeTimer = null
+    _trackingGeometryPendingReason = null
+    _trackingGeometryPendingRestoreLocation = false
+    _trackingGeometryBakeInFlight = null
+    _trackingGeometryBakeNeedsRerun = false
+    _trackingGeometryBakeQueuedRestoreLocation = false
+    _trackingGeometryBakeQueuedReason = null
+    _wheelArmed = true // Hysteresis-based horizontal wheel paging
+    _scrolledToAnchorOnLoad = false
+    _trackingSizeBakeTimer = null
+    _trackingSizeBakeInFlight = null
+    _trackingSizeBakeNeedsRerun = false
+    _trackingSizeBakeQueuedReason = null
+    _skipNextExpandBake = false
     requestTrackingSectionSizeBakeDebounced = (args) => {
         logEBookResize('size-bake-requested', {
             reason: args?.reason ?? 'unspecified',
             rectProvided: !!args?.rect,
         })
-        if (this.#sizeBakeDebounceTimer) {
-            clearTimeout(this.#sizeBakeDebounceTimer)
+        if (this._sizeBakeDebounceTimer) {
+            clearTimeout(this._sizeBakeDebounceTimer)
         }
-        this.#sizeBakeDebounceArgs = args
-        this.#sizeBakeDebounceTimer = setTimeout(() => {
-            const pending = this.#sizeBakeDebounceArgs
-            this.#sizeBakeDebounceTimer = null
-            this.#sizeBakeDebounceArgs = null
+        this._sizeBakeDebounceArgs = args
+        this._sizeBakeDebounceTimer = setTimeout(() => {
+            const pending = this._sizeBakeDebounceArgs
+            this._sizeBakeDebounceTimer = null
+            this._sizeBakeDebounceArgs = null
             logEBookResize('size-bake-debounced-fire', {
                 reason: pending?.reason ?? 'unspecified',
                 rectProvided: !!pending?.rect,
@@ -2768,44 +2768,44 @@ export class Paginator extends HTMLElement {
         }, 240)
         return true
     }
-    #trackingSizeBakeReady = false
-    #trackingSizeLastObservedRect = null
-    #pendingTrackingSizeBakeReason = null
-    #lastTrackingSizeBakedRect = null
-    #relocateGeneration = 0
+    _trackingSizeBakeReady = false
+    _trackingSizeLastObservedRect = null
+    _pendingTrackingSizeBakeReason = null
+    _lastTrackingSizeBakedRect = null
+    _relocateGeneration = 0
 
     // Expose selected private state for logging/debug from View.
-    get trackingSizeBakeReadyPublic() { return this.#trackingSizeBakeReady }
-    get suppressBakeOnExpandPublic() { return this.#suppressBakeOnExpand }
-    get pendingTrackingSizeBakeReasonPublic() { return this.#pendingTrackingSizeBakeReason }
+    get trackingSizeBakeReadyPublic() { return this._trackingSizeBakeReady }
+    get suppressBakeOnExpandPublic() { return this._suppressBakeOnExpand }
+    get pendingTrackingSizeBakeReasonPublic() { return this._pendingTrackingSizeBakeReason }
 
-    #cachedSizes = null
-    #cachedStart = null
+    _cachedSizes = null
+    _cachedStart = null
 
-    #cachedSentinelDoc = null
-    #cachedSentinelElements = []
-    #cachedTrackingSections = []
-    #cachedTrackingContainer = null
-    #sentinelGroups = []
-    #sentinelGroupsDoc = null
-    #sentinelGroupsTotal = 0
-    #sentinelGroupSize = 50
-    #visibleSentinelElements = new Set()
-    #sentinelElementIndex = new WeakMap()
-    #activeSentinelGroupRange = {
+    _cachedSentinelDoc = null
+    _cachedSentinelElements = []
+    _cachedTrackingSections = []
+    _cachedTrackingContainer = null
+    _sentinelGroups = []
+    _sentinelGroupsDoc = null
+    _sentinelGroupsTotal = 0
+    _sentinelGroupSize = 50
+    _visibleSentinelElements = new Set()
+    _sentinelElementIndex = new WeakMap()
+    _activeSentinelGroupRange = {
         start: null,
         end: null,
     }
-    #sentinelsInitialized = false
-    #hasSentinels = false
-    #lastSizesSnapshot = null
-    #lastViewSizeSnapshot = null
+    _sentinelsInitialized = false
+    _hasSentinels = false
+    _lastSizesSnapshot = null
+    _lastViewSizeSnapshot = null
 
-    #elementVisibilityObserver = null
-    #elementMutationObserver = null
-    #sameDocumentViewport = null
-    #sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED
-    #sameDocumentCurrentPageIndex = 0
+    _elementVisibilityObserver = null
+    _elementMutationObserver = null
+    _sameDocumentViewport = null
+    _sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED
+    _sameDocumentCurrentPageIndex = 0
 
     constructor() {
         super()
@@ -2820,7 +2820,7 @@ export class Paginator extends HTMLElement {
             maxColumnCount,
             maxColumnCountPortrait
         } = CSS_DEFAULTS;
-        this.#root.innerHTML = `<style>
+        this._root.innerHTML = `<style>
             :host {
                 display: block;
                 container-type: size;
@@ -2950,26 +2950,26 @@ export class Paginator extends HTMLElement {
         </div>
         `
 
-        this.#top = this.#root.getElementById('top')
-        //        this.#background = this.#root.getElementById('background')
-        this.#container = this.#root.getElementById('container')
-        this.#defaultContainer = this.#container
-        this.#header = this.#root.getElementById('header')
-        this.#footer = this.#root.getElementById('footer')
+        this._top = this._root.getElementById('top')
+        //        this._background = this._root.getElementById('background')
+        this._container = this._root.getElementById('container')
+        this._defaultContainer = this._container
+        this._header = this._root.getElementById('header')
+        this._footer = this._root.getElementById('footer')
 
-        this.#resizeObserver.observe(this.#container)
-        this.#attachContainerListeners(this.#container)
+        this._resizeObserver.observe(this._container)
+        this._attachContainerListeners(this._container)
     }
-    #attachContainerListeners(container) {
+    _attachContainerListeners(container) {
         if (!container || container.dataset.manabiPaginatorListenersAttached === 'true') return
         container.dataset.manabiPaginatorListenersAttached = 'true'
         container.addEventListener('scroll', () => this.dispatchEvent(new Event('scroll')))
 
         container.addEventListener('scroll', debounce(async () => {
-            if (this.#view?.isLoading) return;
-            if (this.scrolled && !this.#isCacheWarmer) {
-                const range = await this.#getVisibleRange();
-                const index = this.#index;
+            if (this._view?.isLoading) return;
+            if (this.scrolled && !this._isCacheWarmer) {
+                const range = await this._getVisibleRange();
+                const index = this._index;
                 let fraction = 0;
                 if (this.scrolled) {
                     fraction = (await this.start()) / (await this.viewSize());
@@ -2993,17 +2993,17 @@ export class Paginator extends HTMLElement {
 
         container.addEventListener('scroll', debounce(async () => {
             if (this.scrolled) {
-                if (this.#justAnchored) {
-                    this.#justAnchored = false
+                if (this._justAnchored) {
+                    this._justAnchored = false
                 } else {
-                    await this.#afterScroll('scroll')
+                    await this._afterScroll('scroll')
                 }
             }
         }, 450))
     }
-    #ensureSameDocumentViewport() {
-        if (!this.#sameDocumentMode || this.#isCacheWarmer) return
-        if (this.#sameDocumentViewport) return
+    _ensureSameDocumentViewport() {
+        if (!this._sameDocumentMode || this._isCacheWarmer) return
+        if (this._sameDocumentViewport) return
         const viewportHost = document.getElementById('reader-stage') || document.body
         const viewport = document.createElement('div')
         viewport.id = 'manabi-same-document-viewport'
@@ -3032,22 +3032,22 @@ export class Paginator extends HTMLElement {
         container.style.direction = 'ltr'
         viewport.append(container)
         viewportHost.append(viewport)
-        this.#resizeObserver.unobserve(this.#container)
-        this.#sameDocumentViewport = viewport
-        this.#container = container
-        this.#attachContainerListeners(this.#container)
-        this.#resizeObserver.observe(this.#container)
-        this.#top.style.display = 'none'
+        this._resizeObserver.unobserve(this._container)
+        this._sameDocumentViewport = viewport
+        this._container = container
+        this._attachContainerListeners(this._container)
+        this._resizeObserver.observe(this._container)
+        this._top.style.display = 'none'
     }
-    #teardownSameDocumentViewport() {
-        if (!this.#sameDocumentViewport) return
-        this.#resizeObserver.unobserve(this.#container)
-        this.#sameDocumentViewport.remove()
-        this.#sameDocumentViewport = null
-        this.#container = this.#defaultContainer
-        this.#top.style.display = ''
-        this.#attachContainerListeners(this.#container)
-        this.#resizeObserver.observe(this.#container)
+    _teardownSameDocumentViewport() {
+        if (!this._sameDocumentViewport) return
+        this._resizeObserver.unobserve(this._container)
+        this._sameDocumentViewport.remove()
+        this._sameDocumentViewport = null
+        this._container = this._defaultContainer
+        this._top.style.display = ''
+        this._attachContainerListeners(this._container)
+        this._resizeObserver.observe(this._container)
     }
 
     // NOTE: In this foliate-js fork, currently paginator can only open a book once
@@ -3055,88 +3055,88 @@ export class Paginator extends HTMLElement {
         // hide the view until final relocate needs
         this.style.display = 'none'
 
-        this.#isCacheWarmer = isCacheWarmer
-        this.#sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED && !isCacheWarmer
-        if (this.#sameDocumentMode) {
-            this.#ensureSameDocumentViewport()
+        this._isCacheWarmer = isCacheWarmer
+        this._sameDocumentMode = MANABI_SAME_DOCUMENT_RENDERER_ENABLED && !isCacheWarmer
+        if (this._sameDocumentMode) {
+            this._ensureSameDocumentViewport()
         } else {
-            this.#teardownSameDocumentViewport()
+            this._teardownSameDocumentViewport()
         }
         this.bookDir = book.dir
         this.sections = book.sections
 
         // Keep chevron emitter state aligned with any external resets
-        document.removeEventListener('resetSideNavChevrons', this.#handleChevronResetEvent);
-        document.addEventListener('resetSideNavChevrons', this.#handleChevronResetEvent);
+        document.removeEventListener('resetSideNavChevrons', this._handleChevronResetEvent);
+        document.addEventListener('resetSideNavChevrons', this._handleChevronResetEvent);
 
-        if (!this.#isCacheWarmer) {
+        if (!this._isCacheWarmer) {
             const opts = {
                 passive: false
             }
-            this.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
-            this.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
-            this.addEventListener('touchend', this.#onTouchEnd.bind(this))
-            this.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
+            this.addEventListener('touchstart', this._onTouchStart.bind(this), opts)
+            this.addEventListener('touchmove', this._onTouchMove.bind(this), opts)
+            this.addEventListener('touchend', this._onTouchEnd.bind(this))
+            this.addEventListener('touchcancel', this._onTouchCancel.bind(this))
             this.addEventListener('load', ({
                 detail: {
                     doc
                 }
             }) => {
-                doc.addEventListener('touchstart', this.#onTouchStart.bind(this), opts)
-                doc.addEventListener('touchmove', this.#onTouchMove.bind(this), opts)
-                doc.addEventListener('touchend', this.#onTouchEnd.bind(this))
-                doc.addEventListener('touchcancel', this.#onTouchCancel.bind(this))
+                doc.addEventListener('touchstart', this._onTouchStart.bind(this), opts)
+                doc.addEventListener('touchmove', this._onTouchMove.bind(this), opts)
+                doc.addEventListener('touchend', this._onTouchEnd.bind(this))
+                doc.addEventListener('touchcancel', this._onTouchCancel.bind(this))
             })
-            this.addEventListener('wheel', this.#onWheel.bind(this), opts);
+            this.addEventListener('wheel', this._onWheel.bind(this), opts);
         }
     }
     setSideNavWidth(widthPx) {
-        this.#top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
+        this._top?.style?.setProperty('--side-nav-width', typeof widthPx === 'number' ? `${widthPx}px` : widthPx);
     }
-    #createView() {
-        this.#cancelTrackingGeometryBakeSchedule()
-        this.#resetTrackingSectionSizeState()
-        this.#hasExpandedOnce = false
-        if (this.#view) {
-            this.#view.destroy()
-            this.#container.removeChild(this.#view.element)
+    _createView() {
+        this._cancelTrackingGeometryBakeSchedule()
+        this._resetTrackingSectionSizeState()
+        this._hasExpandedOnce = false
+        if (this._view) {
+            this._view.destroy()
+            this._container.removeChild(this._view.element)
         }
-        this.#view = new View({
+        this._view = new View({
             container: this,
-            onBeforeExpand: this.#onBeforeExpand.bind(this),
-            onExpand: this.#onExpand.bind(this),
-            isCacheWarmer: this.#isCacheWarmer,
-            //            onExpand: debounce(() => this.#onExpand.bind(this), 500),
+            onBeforeExpand: this._onBeforeExpand.bind(this),
+            onExpand: this._onExpand.bind(this),
+            isCacheWarmer: this._isCacheWarmer,
+            //            onExpand: debounce(() => this._onExpand.bind(this), 500),
         })
-        this.#container.append(this.#view.element)
-        return this.#view
+        this._container.append(this._view.element)
+        return this._view
     }
-    #setLoading(isLoading, reason = 'unspecified') {
+    _setLoading(isLoading, reason = 'unspecified') {
         const isExpand = reason === 'expand'
-        if (isLoading && isExpand && this.#hasExpandedOnce && !this.#isLoading) {
-            this.#loadingReason = reason || this.#loadingReason || 'unspecified'
+        if (isLoading && isExpand && this._hasExpandedOnce && !this._isLoading) {
+            this._loadingReason = reason || this._loadingReason || 'unspecified'
             logEBookFlash('loading-skip', {
-                sectionIndex: this.#index,
-                reason: this.#loadingReason,
-                hasExpandedOnce: this.#hasExpandedOnce,
-                isCacheWarmer: this.#isCacheWarmer,
+                sectionIndex: this._index,
+                reason: this._loadingReason,
+                hasExpandedOnce: this._hasExpandedOnce,
+                isCacheWarmer: this._isCacheWarmer,
             })
             return
         }
-        if (this.#isLoading === isLoading) return
-        this.#isLoading = isLoading;
-        this.#loadingReason = reason || this.#loadingReason || 'unspecified'
+        if (this._isLoading === isLoading) return
+        this._isLoading = isLoading;
+        this._loadingReason = reason || this._loadingReason || 'unspecified'
         if (isLoading) {
-            this.#top.classList.add('reader-loading');
+            this._top.classList.add('reader-loading');
             logEBookFlash('loading-start', {
-                sectionIndex: this.#index,
-                reason: this.#loadingReason,
+                sectionIndex: this._index,
+                reason: this._loadingReason,
             })
         } else {
-            this.#top.classList.remove('reader-loading');
+            this._top.classList.remove('reader-loading');
             logEBookFlash('loading-stop', {
-                sectionIndex: this.#index,
-                reason: this.#loadingReason,
+                sectionIndex: this._index,
+                reason: this._loadingReason,
             })
         }
     }
@@ -3156,49 +3156,49 @@ export class Paginator extends HTMLElement {
         sectionIndex = null,
         skipPostBakeRefresh = false,
     } = {}) {
-        if (reason === 'styles-applied' && !this.#trackingSizeBakeReady) {
+        if (reason === 'styles-applied' && !this._trackingSizeBakeReady) {
             logEBookPerf('tracking-size-bake-request', {
                 reason,
-                sectionIndex: sectionIndex ?? this.#index,
+                sectionIndex: sectionIndex ?? this._index,
                 status: 'skip-not-ready-styles-applied'
             })
             logEBookResize('size-bake-skip', {
                 reason,
-                sectionIndex: sectionIndex ?? this.#index,
+                sectionIndex: sectionIndex ?? this._index,
                 status: 'skip-not-ready-styles-applied',
-                ready: this.#trackingSizeBakeReady,
+                ready: this._trackingSizeBakeReady,
             })
             return false
         }
         const ctxBase = {
             reason,
-            sectionIndex: sectionIndex ?? this.#index,
-            hasDoc: !!this.#view?.document,
-            ready: this.#trackingSizeBakeReady,
-            inFlight: !!this.#trackingSizeBakeInFlight,
-            pendingReason: this.#pendingTrackingSizeBakeReason || null,
+            sectionIndex: sectionIndex ?? this._index,
+            hasDoc: !!this._view?.document,
+            ready: this._trackingSizeBakeReady,
+            inFlight: !!this._trackingSizeBakeInFlight,
+            pendingReason: this._pendingTrackingSizeBakeReason || null,
         }
         if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'disabled' })
-            this.#setLoading(false, 'size-bake-disabled')
+            this._setLoading(false, 'size-bake-disabled')
             return false
         }
-        if (this.#isCacheWarmer) return false
-        if (!this.#view?.document) {
+        if (this._isCacheWarmer) return false
+        if (!this._view?.document) {
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'no-document' })
             logEBookResize('size-bake-skip', { ...ctxBase, status: 'no-document' })
-            this.#pendingTrackingSizeBakeReason = reason
+            this._pendingTrackingSizeBakeReason = reason
             return false
         }
-        if (!this.#trackingSizeBakeReady) {
+        if (!this._trackingSizeBakeReady) {
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'not-ready' })
             logEBookResize('size-bake-skip', { ...ctxBase, status: 'not-ready' })
-            this.#pendingTrackingSizeBakeReason = reason
+            this._pendingTrackingSizeBakeReason = reason
             return false
         }
 
         if (rect) {
-            const last = this.#trackingSizeLastObservedRect
+            const last = this._trackingSizeLastObservedRect
             const unchanged =
                 last &&
                 rect.width === last.width &&
@@ -3210,10 +3210,10 @@ export class Paginator extends HTMLElement {
                 logEBookResize('size-bake-skip', { ...ctxBase, status: 'unchanged-rect', rect })
                 return false
             }
-            this.#trackingSizeLastObservedRect = rect
+            this._trackingSizeLastObservedRect = rect
         } else {
             // Only respond to rects captured elsewhere (e.g., resize observer cache); avoid new layout reads here.
-            const cachedBodyRect = this.#view?.getLastBodyRect?.()
+            const cachedBodyRect = this._view?.getLastBodyRect?.()
             if (!cachedBodyRect) {
                 logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'no-cached-rect' })
                 logEBookResize('size-bake-skip', { ...ctxBase, status: 'no-cached-rect' })
@@ -3225,7 +3225,7 @@ export class Paginator extends HTMLElement {
                 top: Math.round(cachedBodyRect.top),
                 left: Math.round(cachedBodyRect.left),
             }
-            const lastBaked = this.#lastTrackingSizeBakedRect
+            const lastBaked = this._lastTrackingSizeBakedRect
             if (lastBaked &&
                 derived.width === lastBaked.width &&
                 derived.height === lastBaked.height &&
@@ -3235,41 +3235,41 @@ export class Paginator extends HTMLElement {
                 logEBookResize('size-bake-skip', { ...ctxBase, status: 'unchanged-derived', derived })
                 return false
             }
-            this.#trackingSizeLastObservedRect = derived
+            this._trackingSizeLastObservedRect = derived
         }
 
-        if (this.#trackingSizeBakeInFlight) {
-            const sameQueuedReason = this.#trackingSizeBakeQueuedReason === reason
-            const sameQueuedRect = rect && this.#trackingSizeBakeQueuedRect &&
-                rect.width === this.#trackingSizeBakeQueuedRect.width &&
-                rect.height === this.#trackingSizeBakeQueuedRect.height &&
-                rect.top === this.#trackingSizeBakeQueuedRect.top &&
-                rect.left === this.#trackingSizeBakeQueuedRect.left
+        if (this._trackingSizeBakeInFlight) {
+            const sameQueuedReason = this._trackingSizeBakeQueuedReason === reason
+            const sameQueuedRect = rect && this._trackingSizeBakeQueuedRect &&
+                rect.width === this._trackingSizeBakeQueuedRect.width &&
+                rect.height === this._trackingSizeBakeQueuedRect.height &&
+                rect.top === this._trackingSizeBakeQueuedRect.top &&
+                rect.left === this._trackingSizeBakeQueuedRect.left
 
             if (sameQueuedReason && sameQueuedRect) {
                 logEBookResize('size-bake-queued-skip-same', { ...ctxBase, rectProvided: !!rect })
                 return true
             }
 
-            this.#trackingSizeBakeNeedsRerun = true
-            this.#trackingSizeBakeQueuedReason = reason
-            this.#trackingSizeBakeQueuedRect = rect || this.#trackingSizeBakeQueuedRect
+            this._trackingSizeBakeNeedsRerun = true
+            this._trackingSizeBakeQueuedReason = reason
+            this._trackingSizeBakeQueuedRect = rect || this._trackingSizeBakeQueuedRect
             logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'queued-rerun' })
             logEBookPageNumLimited('bake:request', { ...ctxBase, status: 'queued-rerun' })
             logEBookResize('size-bake-queued-rerun', { ...ctxBase, rectProvided: !!rect, rect })
             return true
         }
 
-        this.#trackingSizeBakeQueuedReason = null
-        this.#trackingSizeBakeNeedsRerun = false
-        this.#trackingSizeBakeQueuedRect = null
+        this._trackingSizeBakeQueuedReason = null
+        this._trackingSizeBakeNeedsRerun = false
+        this._trackingSizeBakeQueuedRect = null
 
         logEBookPerf('tracking-size-bake-request', { ...ctxBase, status: 'start' })
         logEBookPageNumLimited('bake:request', { ...ctxBase, status: 'start', rectProvided: !!rect })
         logEBookResize('size-bake-start', { ...ctxBase, rectProvided: !!rect, rect })
-        this.#trackingSizeBakeInFlight = this.#performTrackingSectionSizeBake({
+        this._trackingSizeBakeInFlight = this._performTrackingSectionSizeBake({
             reason,
-            sectionIndex: sectionIndex ?? this.#index,
+            sectionIndex: sectionIndex ?? this._index,
             skipPostBakeRefresh,
         }).catch(error => {
             // swallow bake errors after reporting if needed
@@ -3277,10 +3277,10 @@ export class Paginator extends HTMLElement {
             logEBookPageNumLimited('bake:error', { ...ctxBase, error: String(error) })
             logEBookResize('size-bake-error', { ...ctxBase, error: String(error) })
         }).finally(() => {
-            this.#trackingSizeBakeInFlight = null
-            if (this.#trackingSizeBakeNeedsRerun) {
-                const queuedReason = this.#trackingSizeBakeQueuedReason || 'rerun'
-                this.#trackingSizeBakeNeedsRerun = false
+            this._trackingSizeBakeInFlight = null
+            if (this._trackingSizeBakeNeedsRerun) {
+                const queuedReason = this._trackingSizeBakeQueuedReason || 'rerun'
+                this._trackingSizeBakeNeedsRerun = false
                 this.requestTrackingSectionSizeBake({ reason: queuedReason })
             }
         })
@@ -3288,35 +3288,35 @@ export class Paginator extends HTMLElement {
         return true
     }
 
-    #resetTrackingSectionSizeState() {
-        if (this.#trackingSizeBakeTimer) {
-            clearTimeout(this.#trackingSizeBakeTimer)
-            this.#trackingSizeBakeTimer = null
+    _resetTrackingSectionSizeState() {
+        if (this._trackingSizeBakeTimer) {
+            clearTimeout(this._trackingSizeBakeTimer)
+            this._trackingSizeBakeTimer = null
         }
-        this.#trackingSizeBakeInFlight = null
-        this.#trackingSizeBakeNeedsRerun = false
-        this.#trackingSizeBakeQueuedReason = null
-        this.#trackingSizeLastObservedRect = null
-        this.#pendingTrackingSizeBakeReason = null
-        this.#trackingSizeBakeReady = false
-        this.#lastTrackingSizeBakedRect = null
-        this.#skipNextExpandBake = false
-        this.#loadingReason = null
+        this._trackingSizeBakeInFlight = null
+        this._trackingSizeBakeNeedsRerun = false
+        this._trackingSizeBakeQueuedReason = null
+        this._trackingSizeLastObservedRect = null
+        this._pendingTrackingSizeBakeReason = null
+        this._trackingSizeBakeReady = false
+        this._lastTrackingSizeBakedRect = null
+        this._skipNextExpandBake = false
+        this._loadingReason = null
 
-        this.#cachedSentinelDoc = null
-        this.#cachedSentinelElements = []
-        this.#cachedTrackingSections = []
+        this._cachedSentinelDoc = null
+        this._cachedSentinelElements = []
+        this._cachedTrackingSections = []
 
         logEBookPageNumLimited('bake:reset-state', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
         })
     }
 
-    #revealPreBakeContent() {
-        if (!this.#view?.document) return
-        revealDocumentContentForBake(this.#view.document)
+    _revealPreBakeContent() {
+        if (!this._view?.document) return
+        revealDocumentContentForBake(this._view.document)
         logEBookPageNumLimited('bake:reveal-prebake-content', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
         })
     }
 
@@ -3324,67 +3324,67 @@ export class Paginator extends HTMLElement {
     async performInitialBakeFromView(sectionIndex, layout) {
         if (!MANABI_TRACKING_SIZE_BAKE_ENABLED) {
             // When baking is off, we still need a first render+expand so pagination works.
-            this.#suppressBakeOnExpand = false
-            this.#trackingSizeBakeReady = true
+            this._suppressBakeOnExpand = false
+            this._trackingSizeBakeReady = true
             logEBookPageNumLimited('bake:initial:skipped', {
                 sectionIndex,
-                suppressBakeOnExpand: this.#suppressBakeOnExpand,
-                readyFlag: this.#trackingSizeBakeReady,
+                suppressBakeOnExpand: this._suppressBakeOnExpand,
+                readyFlag: this._trackingSizeBakeReady,
             })
-            await this.#view?.render(layout, { source: 'initial-bake-disabled' })
+            await this._view?.render(layout, { source: 'initial-bake-disabled' })
             return
         }
         // Lock expands and reset readiness before pre-bake render.
-        this.#suppressBakeOnExpand = true
-        this.#trackingSizeBakeReady = false
+        this._suppressBakeOnExpand = true
+        this._trackingSizeBakeReady = false
         logEBookBake('initial-bake:start', {
             sectionIndex,
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
         })
         logEBookPageNumLimited('bake:initial:start', {
             sectionIndex,
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
-            readyFlag: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
+            readyFlag: this._trackingSizeBakeReady,
         })
 
         // Apply layout styles (without expanding) so bake measures correct flow.
-        await this.#view?.render(layout, { skipExpand: true, source: 'initial-bake-pre-render' })
+        await this._view?.render(layout, { skipExpand: true, source: 'initial-bake-pre-render' })
         logEBookPerf('tracking-size-bake-initial-from-view', {
             sectionIndex,
-            ready: this.#trackingSizeBakeReady,
+            ready: this._trackingSizeBakeReady,
         })
-        const hasTrackingSections = !!this.#view?.document?.querySelector?.(MANABI_TRACKING_SECTION_SELECTOR)
+        const hasTrackingSections = !!this._view?.document?.querySelector?.(MANABI_TRACKING_SECTION_SELECTOR)
         if (!hasTrackingSections) {
-            this.#trackingSizeBakeReady = true
-            this.#suppressBakeOnExpand = false
-            this.#skipNextExpandBake = true
+            this._trackingSizeBakeReady = true
+            this._suppressBakeOnExpand = false
+            this._skipNextExpandBake = true
             logEBookBake('initial-bake:skip-no-tracking-sections', {
                 sectionIndex,
-                ready: this.#trackingSizeBakeReady,
-                suppressBakeOnExpand: this.#suppressBakeOnExpand,
+                ready: this._trackingSizeBakeReady,
+                suppressBakeOnExpand: this._suppressBakeOnExpand,
             })
             logEBookBake('initial-bake:done-no-tracking-sections', {
                 sectionIndex,
-                ready: this.#trackingSizeBakeReady,
-                suppressBakeOnExpand: this.#suppressBakeOnExpand,
+                ready: this._trackingSizeBakeReady,
+                suppressBakeOnExpand: this._suppressBakeOnExpand,
             })
             return
         }
         logEBookPerf('EXPAND.callsite', {
             source: 'initial-bake-start',
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
-            ready: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
+            ready: this._trackingSizeBakeReady,
         })
         try {
-            await this.#performTrackingSectionSizeBake({
+            await this._performTrackingSectionSizeBake({
                 reason: 'initial-load',
                 sectionIndex,
                 skipPostBakeRefresh: true,
             })
             logEBookBake('initial-bake:after-perform', {
                 sectionIndex,
-                ready: this.#trackingSizeBakeReady,
-                suppressBakeOnExpand: this.#suppressBakeOnExpand,
+                ready: this._trackingSizeBakeReady,
+                suppressBakeOnExpand: this._suppressBakeOnExpand,
             })
         } finally {
             // Keep suppressBakeOnExpand true through the first post-bake render/expand
@@ -3393,39 +3393,39 @@ export class Paginator extends HTMLElement {
 
         logEBookPerf('EXPAND.callsite', {
             source: 'initial-bake-after-bake',
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
-            ready: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
+            ready: this._trackingSizeBakeReady,
             bodyHidden: this.view?.document?.body?.classList?.contains?.(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS) ?? null,
         })
 
         // Post-bake render/expand with fresh measurements; allow expand to bake if needed.
-        this.#suppressBakeOnExpand = false
-        this.#skipNextExpandBake = true
+        this._suppressBakeOnExpand = false
+        this._skipNextExpandBake = true
         logEBookBake('initial-bake:post-render-begin', {
             sectionIndex,
-            ready: this.#trackingSizeBakeReady,
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            ready: this._trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
         })
-        await this.#view?.render(layout, { source: 'initial-bake-post-render' })
+        await this._view?.render(layout, { source: 'initial-bake-post-render' })
         logEBookPerf('EXPAND.callsite', {
             source: 'initial-bake-after-render',
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
-            ready: this.#trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
+            ready: this._trackingSizeBakeReady,
             bodyHidden: this.view?.document?.body?.classList?.contains?.(MANABI_TRACKING_SIZE_BAKING_BODY_CLASS) ?? null,
         })
         logEBookPageNumLimited('bake:initial:done', {
             sectionIndex,
-            ready: this.#trackingSizeBakeReady,
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            ready: this._trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
         })
         logEBookBake('initial-bake:done', {
             sectionIndex,
-            ready: this.#trackingSizeBakeReady,
-            suppressBakeOnExpand: this.#suppressBakeOnExpand,
+            ready: this._trackingSizeBakeReady,
+            suppressBakeOnExpand: this._suppressBakeOnExpand,
         })
     }
 
-    async #performTrackingSectionSizeBake({
+    async _performTrackingSectionSizeBake({
         reason = 'unspecified',
         sectionIndex = null,
         skipPostBakeRefresh = false,
@@ -3436,11 +3436,11 @@ export class Paginator extends HTMLElement {
                 sectionIndex,
                 status: 'disabled',
             })
-            this.#setLoading(false, 'size-bake-disabled')
+            this._setLoading(false, 'size-bake-disabled')
             return
         }
         const perfStart = performance?.now?.() ?? null
-        const doc = this.#view?.document
+        const doc = this._view?.document
         if (!doc) {
             logEBookPerf('tracking-size-bake-begin', {
                 reason,
@@ -3452,63 +3452,63 @@ export class Paginator extends HTMLElement {
                 sectionIndex,
                 status: 'no-doc',
             })
-            this.#setLoading(false, 'size-bake-no-doc')
+            this._setLoading(false, 'size-bake-no-doc')
             return
         }
 
         // Reveal iframe itself right as we begin baking; body stays hidden until reveal step below.
-        this.#view?.revealIframeForBake(reason)
+        this._view?.revealIframeForBake(reason)
 
         logEBookPerf('tracking-size-bake-begin', {
             reason,
             sectionIndex,
-            isCacheWarmer: this.#isCacheWarmer,
+            isCacheWarmer: this._isCacheWarmer,
             hasDoc: !!doc,
         })
         logEBookPageNumLimited('bake:begin', {
             reason,
             sectionIndex,
-            isCacheWarmer: this.#isCacheWarmer,
+            isCacheWarmer: this._isCacheWarmer,
             hasDoc: !!doc,
-            readyFlag: this.#trackingSizeBakeReady,
-            pendingReason: this.#pendingTrackingSizeBakeReason ?? null,
+            readyFlag: this._trackingSizeBakeReady,
+            pendingReason: this._pendingTrackingSizeBakeReason ?? null,
         })
         logEBookBake('bake:begin', {
             reason,
             sectionIndex,
-            isCacheWarmer: this.#isCacheWarmer,
-            readyFlag: this.#trackingSizeBakeReady,
-            pendingReason: this.#pendingTrackingSizeBakeReason ?? null,
+            isCacheWarmer: this._isCacheWarmer,
+            readyFlag: this._trackingSizeBakeReady,
+            pendingReason: this._pendingTrackingSizeBakeReason ?? null,
         })
         logEBookFlash('size-bake-begin', {
-            sectionIndex: sectionIndex ?? this.#index,
+            sectionIndex: sectionIndex ?? this._index,
             reason,
-            activeBakeCount: this.#activeBakeCount,
-            hasExpandedOnce: this.#hasExpandedOnce,
-            loadingReason: this.#loadingReason,
-            isLoading: this.#isLoading,
+            activeBakeCount: this._activeBakeCount,
+            hasExpandedOnce: this._hasExpandedOnce,
+            loadingReason: this._loadingReason,
+            isLoading: this._isLoading,
         })
 
-        const activeView = this.#view
+        const activeView = this._view
 
-        this.#activeBakeCount += 1
-        if (this.#activeBakeCount === 1) {
-            const shouldShowLoading = !(this.#hasExpandedOnce && reason !== 'initial-load')
+        this._activeBakeCount += 1
+        if (this._activeBakeCount === 1) {
+            const shouldShowLoading = !(this._hasExpandedOnce && reason !== 'initial-load')
             if (shouldShowLoading) {
-                this.#setLoading(true, 'size-bake')
+                this._setLoading(true, 'size-bake')
             } else {
                 // Avoid reapplying the loading opacity mask on post-expand resize bakes; it causes a visible flash.
                 logEBookFlash('loading-skip', {
-                    sectionIndex: sectionIndex ?? this.#index,
+                    sectionIndex: sectionIndex ?? this._index,
                     reason: 'size-bake',
                     bakeReason: reason,
-                    hasExpandedOnce: this.#hasExpandedOnce,
-                    isCacheWarmer: this.#isCacheWarmer,
+                    hasExpandedOnce: this._hasExpandedOnce,
+                    isCacheWarmer: this._isCacheWarmer,
                 })
             }
         }
         hideDocumentContentForPreBake(doc)
-        this.#trackingSizeBakeReady = false
+        this._trackingSizeBakeReady = false
         logEBookPageNumLimited('bake:flag-reset-false', {
             reason,
             sectionIndex,
@@ -3520,19 +3520,19 @@ export class Paginator extends HTMLElement {
         try {
             await nextFrame()
             await bakeTrackingSectionSizes(doc, {
-                vertical: this.#vertical,
+                vertical: this._vertical,
                 reason,
                 sectionIndex,
                 bookId: this.bookDir,
-                sectionHref: this.sections?.[this.#index]?.href || this.sections?.[this.#index]?.url || null,
+                sectionHref: this.sections?.[this._index]?.href || this.sections?.[this._index]?.url || null,
             })
             try {
-                await this.#getSentinelVisibilities()
+                await this._getSentinelVisibilities()
             } catch (error) {
             }
-            const cachedBodyRect = this.#view?.getLastBodyRect?.()
+            const cachedBodyRect = this._view?.getLastBodyRect?.()
             if (cachedBodyRect) {
-                this.#lastTrackingSizeBakedRect = {
+                this._lastTrackingSizeBakedRect = {
                     width: Math.round(cachedBodyRect.width),
                     height: Math.round(cachedBodyRect.height),
                     top: Math.round(cachedBodyRect.top),
@@ -3540,64 +3540,64 @@ export class Paginator extends HTMLElement {
                 }
             logEBookPageNumLimited('bake:last-baked-rect', {
                 sectionIndex,
-                rect: this.#lastTrackingSizeBakedRect,
+                rect: this._lastTrackingSizeBakedRect,
             })
         }
 
         // Clear any queued rect once a bake starts; new requests will set it again if needed.
-        this.#trackingSizeBakeQueuedRect = null
+        this._trackingSizeBakeQueuedRect = null
 
             // After bake completes, refresh layout & relocate once the full layout is known.
             // Guard against races where the user navigated away.
-            if (!skipPostBakeRefresh && !this.#isCacheWarmer && this.#view === activeView && sectionIndex === this.#index) {
+            if (!skipPostBakeRefresh && !this._isCacheWarmer && this._view === activeView && sectionIndex === this._index) {
                 try {
                     // Re-render (columnize + expand) with the newly baked sizes without
                     // kicking off another bake loop from onExpand.
                     logEBookPerf('EXPAND.callsite', {
                         source: 'post-bake-refresh',
-                        suppressBakeOnExpand: this.#suppressBakeOnExpand,
-                        ready: this.#trackingSizeBakeReady,
+                        suppressBakeOnExpand: this._suppressBakeOnExpand,
+                        ready: this._trackingSizeBakeReady,
                     })
-                    this.#suppressBakeOnExpand = true
+                    this._suppressBakeOnExpand = true
                     if (typeof this.render === 'function') {
                         await this.render(this.layout, { source: 'post-bake-refresh' })
                     } else {
                     }
-                    this.#suppressBakeOnExpand = false
+                    this._suppressBakeOnExpand = false
 
                     // Now recompute pagination/nav state.
-                    await this.#afterScroll('bake')
+                    await this._afterScroll('bake')
                 } catch (error) {
-                    this.#suppressBakeOnExpand = false
+                    this._suppressBakeOnExpand = false
                 }
             }
         } finally {
-            this.#revealPreBakeContent()
-            if (this.#view === activeView) {
-                this.#activeBakeCount = Math.max(0, this.#activeBakeCount - 1)
+            this._revealPreBakeContent()
+            if (this._view === activeView) {
+                this._activeBakeCount = Math.max(0, this._activeBakeCount - 1)
                 const keepLoading =
-                    this.#activeBakeCount > 0 ||
-                    !!this.#sizeBakeDebounceTimer ||
-                    !!this.#trackingSizeBakeNeedsRerun
+                    this._activeBakeCount > 0 ||
+                    !!this._sizeBakeDebounceTimer ||
+                    !!this._trackingSizeBakeNeedsRerun
 
                 if (keepLoading) {
                     logEBookFlash('loading-keep', {
-                        sectionIndex: this.#index,
+                        sectionIndex: this._index,
                         reason: 'size-bake-pending',
-                        activeBakeCount: this.#activeBakeCount,
-                        debouncePending: !!this.#sizeBakeDebounceTimer,
-                        rerunQueued: !!this.#trackingSizeBakeNeedsRerun,
+                        activeBakeCount: this._activeBakeCount,
+                        debouncePending: !!this._sizeBakeDebounceTimer,
+                        rerunQueued: !!this._trackingSizeBakeNeedsRerun,
                     })
                 } else {
-                    this.#setLoading(false, 'size-bake-complete')
+                    this._setLoading(false, 'size-bake-complete')
                 }
                 logEBookFlash('size-bake-finish', {
-                    sectionIndex: this.#index,
+                    sectionIndex: this._index,
                     reason,
                     keepLoading,
-                    activeBakeCount: this.#activeBakeCount,
-                    debouncePending: !!this.#sizeBakeDebounceTimer,
-                    rerunQueued: !!this.#trackingSizeBakeNeedsRerun,
+                    activeBakeCount: this._activeBakeCount,
+                    debouncePending: !!this._sizeBakeDebounceTimer,
+                    rerunQueued: !!this._trackingSizeBakeNeedsRerun,
                 })
             }
             const durationMs = perfStart !== null && typeof performance !== 'undefined' && typeof performance.now === 'function'
@@ -3607,52 +3607,52 @@ export class Paginator extends HTMLElement {
                 reason,
                 sectionIndex,
                 durationMs,
-                stillActiveView: this.#view === activeView,
+                stillActiveView: this._view === activeView,
             })
             // Ready flag must be explicitly re-enabled by callers after bake completes.
             logEBookPerf('tracking-size-bake-ready-reset', {
                 reason,
                 sectionIndex,
-                ready: this.#trackingSizeBakeReady,
+                ready: this._trackingSizeBakeReady,
             })
-            if (this.#view === activeView) {
-                this.#trackingSizeBakeReady = true
+            if (this._view === activeView) {
+                this._trackingSizeBakeReady = true
                 logEBookPerf('tracking-size-bake-ready-set', {
                     reason,
                     sectionIndex,
-                    ready: this.#trackingSizeBakeReady,
+                    ready: this._trackingSizeBakeReady,
                 })
                 logEBookBake('bake:ready-set', {
                     reason,
                     sectionIndex,
                     durationMs,
-                    stillActiveView: this.#view === activeView,
-                    lastBakedRect: this.#lastTrackingSizeBakedRect ?? null,
-                    lastObservedRect: this.#trackingSizeLastObservedRect ?? null,
+                    stillActiveView: this._view === activeView,
+                    lastBakedRect: this._lastTrackingSizeBakedRect ?? null,
+                    lastObservedRect: this._trackingSizeLastObservedRect ?? null,
                 })
                 logEBookPageNumLimited('bake:ready-set', {
                     reason,
                     sectionIndex,
                     durationMs,
-                    stillActiveView: this.#view === activeView,
-                    lastBakedRect: this.#lastTrackingSizeBakedRect ?? null,
-                    lastObservedRect: this.#trackingSizeLastObservedRect ?? null,
-                    readyFlag: this.#trackingSizeBakeReady,
+                    stillActiveView: this._view === activeView,
+                    lastBakedRect: this._lastTrackingSizeBakedRect ?? null,
+                    lastObservedRect: this._trackingSizeLastObservedRect ?? null,
+                    readyFlag: this._trackingSizeBakeReady,
                 })
             }
         }
     }
 
-    #cancelTrackingGeometryBakeSchedule() {
-        if (this.#trackingGeometryRebakeTimer) {
-            clearTimeout(this.#trackingGeometryRebakeTimer)
-            this.#trackingGeometryRebakeTimer = null
+    _cancelTrackingGeometryBakeSchedule() {
+        if (this._trackingGeometryRebakeTimer) {
+            clearTimeout(this._trackingGeometryRebakeTimer)
+            this._trackingGeometryRebakeTimer = null
         }
-        this.#trackingGeometryPendingReason = null
-        this.#trackingGeometryPendingRestoreLocation = false
+        this._trackingGeometryPendingReason = null
+        this._trackingGeometryPendingRestoreLocation = false
     }
 
-    async #performTrackingSectionGeometryBake({
+    async _performTrackingSectionGeometryBake({
         reason = 'unspecified',
         restoreLocation = false,
     } = {}) {
@@ -3660,9 +3660,9 @@ export class Paginator extends HTMLElement {
         return
     }
 
-    async #safeCaptureVisibleRange() {
+    async _safeCaptureVisibleRange() {
         try {
-            const range = await this.#getVisibleRange()
+            const range = await this._getVisibleRange()
             if (!range) return null
             if (typeof range.cloneRange === 'function') return range.cloneRange()
             return range
@@ -3671,7 +3671,7 @@ export class Paginator extends HTMLElement {
             return null
         }
     }
-    async #calculateSentinelGroupSize(totalSentinels) {
+    async _calculateSentinelGroupSize(totalSentinels) {
         const defaultSize = 50
         if (!Number.isFinite(totalSentinels) || totalSentinels <= 0) return defaultSize
         let pages = null
@@ -3682,47 +3682,47 @@ export class Paginator extends HTMLElement {
         if (!Number.isFinite(targetGroups) || targetGroups <= 0) return defaultSize
         return Math.max(1, Math.ceil(totalSentinels / targetGroups))
     }
-    #resetSentinelObservers() {
-        for (const group of this.#sentinelGroups) {
+    _resetSentinelObservers() {
+        for (const group of this._sentinelGroups) {
             try {
                 group?.observer?.disconnect?.()
             } catch {}
         }
-        this.#sentinelGroups = []
-        this.#sentinelGroupsDoc = null
-        this.#sentinelGroupsTotal = 0
-        this.#sentinelGroupSize = 50
-        this.#visibleSentinelElements = new Set()
-        this.#sentinelElementIndex = new WeakMap()
-        this.#activeSentinelGroupRange = {
+        this._sentinelGroups = []
+        this._sentinelGroupsDoc = null
+        this._sentinelGroupsTotal = 0
+        this._sentinelGroupSize = 50
+        this._visibleSentinelElements = new Set()
+        this._sentinelElementIndex = new WeakMap()
+        this._activeSentinelGroupRange = {
             start: null,
             end: null,
         }
-        this.#sentinelsInitialized = false
+        this._sentinelsInitialized = false
     }
-    #makeSentinelObserver(groupIndex) {
+    _makeSentinelObserver(groupIndex) {
         return new IntersectionObserver(entries => {
-            this.#handleSentinelIntersections(groupIndex, entries)
+            this._handleSentinelIntersections(groupIndex, entries)
         }, {
-            root: this.#container ?? null,
+            root: this._container ?? null,
             rootMargin: `${MANABI_SENTINEL_ROOT_MARGIN_PX}px`,
             threshold: [0],
         })
     }
-    #createSentinelGroup(groupIndex) {
+    _createSentinelGroup(groupIndex) {
         const visible = new Set()
         return {
             index: groupIndex,
             observer: null,
             elements: [],
             visible,
-            startIndex: groupIndex * this.#sentinelGroupSize,
-            endIndex: (groupIndex * this.#sentinelGroupSize) - 1,
+            startIndex: groupIndex * this._sentinelGroupSize,
+            endIndex: (groupIndex * this._sentinelGroupSize) - 1,
             active: false,
         }
     }
-    #handleSentinelIntersections(groupIndex, entries) {
-        const group = this.#sentinelGroups?.[groupIndex]
+    _handleSentinelIntersections(groupIndex, entries) {
+        const group = this._sentinelGroups?.[groupIndex]
         if (!group) return
         for (const entry of entries || []) {
             const el = entry.target
@@ -3730,62 +3730,62 @@ export class Paginator extends HTMLElement {
             const isVisible = entry.isIntersecting || (entry.intersectionRatio ?? 0) > 0
             if (isVisible) {
                 group.visible.add(el)
-                this.#visibleSentinelElements.add(el)
+                this._visibleSentinelElements.add(el)
             } else {
                 group.visible.delete(el)
-                this.#visibleSentinelElements.delete(el)
+                this._visibleSentinelElements.delete(el)
             }
         }
     }
-    #deactivateSentinelGroup(group) {
+    _deactivateSentinelGroup(group) {
         if (!group || !group.active) return
         for (const el of group.elements) {
             try {
                 group.observer?.unobserve?.(el)
             } catch {}
             group.visible.delete(el)
-            this.#visibleSentinelElements.delete(el)
+            this._visibleSentinelElements.delete(el)
         }
         group.active = false
     }
-    #activateSentinelGroup(group) {
+    _activateSentinelGroup(group) {
         if (!group || group.active) return
         if (!group.observer) {
-            group.observer = this.#makeSentinelObserver(group.index ?? 0)
+            group.observer = this._makeSentinelObserver(group.index ?? 0)
         }
         for (const el of group.elements) {
             group.observer.observe(el)
         }
         group.active = true
     }
-    #syncSentinelGroups(doc, sentinelElements, groupSize) {
+    _syncSentinelGroups(doc, sentinelElements, groupSize) {
         const total = sentinelElements?.length ?? 0
-        this.#hasSentinels = total > 0
-        if (this.#sentinelGroupsDoc !== doc || this.#sentinelGroupsTotal !== total) {
-            this.#resetSentinelObservers()
-            this.#sentinelGroupsDoc = doc
-            this.#sentinelGroupsTotal = total
+        this._hasSentinels = total > 0
+        if (this._sentinelGroupsDoc !== doc || this._sentinelGroupsTotal !== total) {
+            this._resetSentinelObservers()
+            this._sentinelGroupsDoc = doc
+            this._sentinelGroupsTotal = total
         }
 
         if (!Number.isFinite(groupSize) || groupSize <= 0) groupSize = 50
-        this.#sentinelGroupSize = groupSize
+        this._sentinelGroupSize = groupSize
 
-        const requiredGroups = Math.max(0, Math.ceil(total / this.#sentinelGroupSize))
-        while (this.#sentinelGroups.length < requiredGroups) {
-            this.#sentinelGroups.push(this.#createSentinelGroup(this.#sentinelGroups.length))
+        const requiredGroups = Math.max(0, Math.ceil(total / this._sentinelGroupSize))
+        while (this._sentinelGroups.length < requiredGroups) {
+            this._sentinelGroups.push(this._createSentinelGroup(this._sentinelGroups.length))
         }
-        while (this.#sentinelGroups.length > requiredGroups) {
-            const group = this.#sentinelGroups.pop()
+        while (this._sentinelGroups.length > requiredGroups) {
+            const group = this._sentinelGroups.pop()
             try {
                 group?.observer?.disconnect?.()
             } catch {}
         }
 
         for (let groupIndex = 0; groupIndex < requiredGroups; groupIndex++) {
-            const start = groupIndex * this.#sentinelGroupSize
-            const end = Math.min(total, start + this.#sentinelGroupSize)
+            const start = groupIndex * this._sentinelGroupSize
+            const end = Math.min(total, start + this._sentinelGroupSize)
             const slice = sentinelElements.slice(start, end)
-            const group = this.#sentinelGroups[groupIndex]
+            const group = this._sentinelGroups[groupIndex]
 
             const unchanged = group.elements.length === slice.length &&
                 group.elements.every((el, idx) => el === slice[idx])
@@ -3800,7 +3800,7 @@ export class Paginator extends HTMLElement {
                 }
                 for (const el of group.elements) {
                     group.visible.delete(el)
-                    this.#visibleSentinelElements.delete(el)
+                    this._visibleSentinelElements.delete(el)
                 }
                 group.elements = slice
                 group.visible.clear()
@@ -3809,37 +3809,37 @@ export class Paginator extends HTMLElement {
 
             group.startIndex = start
             group.endIndex = end - 1
-            slice.forEach((el, idx) => this.#sentinelElementIndex.set(el, start + idx))
+            slice.forEach((el, idx) => this._sentinelElementIndex.set(el, start + idx))
         }
     }
-    #updateSentinelGroupActivation(startGroup, endGroup) {
-        if (!Array.isArray(this.#sentinelGroups) || this.#sentinelGroups.length === 0) return
-        for (let i = 0; i < this.#sentinelGroups.length; i++) {
-            const group = this.#sentinelGroups[i]
+    _updateSentinelGroupActivation(startGroup, endGroup) {
+        if (!Array.isArray(this._sentinelGroups) || this._sentinelGroups.length === 0) return
+        for (let i = 0; i < this._sentinelGroups.length; i++) {
+            const group = this._sentinelGroups[i]
             const withinRange = startGroup !== null &&
                 endGroup !== null &&
                 i >= startGroup &&
                 i <= endGroup
-            if (withinRange) this.#activateSentinelGroup(group)
-            else this.#deactivateSentinelGroup(group)
+            if (withinRange) this._activateSentinelGroup(group)
+            else this._deactivateSentinelGroup(group)
         }
-        this.#activeSentinelGroupRange = {
+        this._activeSentinelGroupRange = {
             start: startGroup,
             end: endGroup,
         }
     }
-    #flushSentinelRecords(startGroup = 0, endGroup = this.#sentinelGroups.length - 1) {
-        if (!Array.isArray(this.#sentinelGroups) || this.#sentinelGroups.length === 0) return
+    _flushSentinelRecords(startGroup = 0, endGroup = this._sentinelGroups.length - 1) {
+        if (!Array.isArray(this._sentinelGroups) || this._sentinelGroups.length === 0) return
         const start = Math.max(0, startGroup)
-        const end = Math.min(this.#sentinelGroups.length - 1, endGroup)
+        const end = Math.min(this._sentinelGroups.length - 1, endGroup)
         for (let i = start; i <= end; i++) {
-            const group = this.#sentinelGroups[i]
+            const group = this._sentinelGroups[i]
             const records = group?.observer?.takeRecords?.() ?? []
-            if (records.length) this.#handleSentinelIntersections(i, records)
+            if (records.length) this._handleSentinelIntersections(i, records)
         }
     }
-    #collectVisibleSentinelSnapshot() {
-        if (!this.#visibleSentinelElements || this.#visibleSentinelElements.size === 0) {
+    _collectVisibleSentinelSnapshot() {
+        if (!this._visibleSentinelElements || this._visibleSentinelElements.size === 0) {
             return {
                 visibleIds: [],
                 minIndex: null,
@@ -3849,8 +3849,8 @@ export class Paginator extends HTMLElement {
         const indexed = []
         let minIndex = null
         let maxIndex = null
-        for (const el of this.#visibleSentinelElements) {
-            const idx = this.#sentinelElementIndex.get(el)
+        for (const el of this._visibleSentinelElements) {
+            const idx = this._sentinelElementIndex.get(el)
             if (typeof idx === 'number') {
                 if (minIndex === null || idx < minIndex) minIndex = idx
                 if (maxIndex === null || idx > maxIndex) maxIndex = idx
@@ -3868,64 +3868,64 @@ export class Paginator extends HTMLElement {
             maxIndex,
         }
     }
-    async #onBeforeExpand() {
+    async _onBeforeExpand() {
 //        console.log("#onBeforeExpand...", this.style.display)
         logEBookPerf('on-before-expand', {
-            pendingBakeReason: this.#pendingTrackingSizeBakeReason || null,
-            vertical: this.#vertical,
-            column: this.#column,
+            pendingBakeReason: this._pendingTrackingSizeBakeReason || null,
+            vertical: this._vertical,
+            column: this._column,
         })
-        this.#revealPreBakeContent()
-        this.#view.cachedViewSize = null;
-        this.#view.cachedSizes = null;
-        this.#cachedStart = null;
-        this.#setLoading(true, 'expand')
-        this.#cachedStart = null
-        this.#trackingSizeBakeReady = false
-        this.#trackingSizeLastObservedRect = null
+        this._revealPreBakeContent()
+        this._view.cachedViewSize = null;
+        this._view.cachedSizes = null;
+        this._cachedStart = null;
+        this._setLoading(true, 'expand')
+        this._cachedStart = null
+        this._trackingSizeBakeReady = false
+        this._trackingSizeLastObservedRect = null
     }
-    async #onExpand() {
+    async _onExpand() {
 //        console.log("#onExpand...", this.style.display)
-        this.#view.cachedViewSize = null;
-        this.#view.cachedSizes = null;
-        this.#cachedStart = null;
+        this._view.cachedViewSize = null;
+        this._view.cachedSizes = null;
+        this._cachedStart = null;
 
-        const layoutSync = await this.#syncEbookSectionLayout({
+        const layoutSync = await this._syncEbookSectionLayout({
             reason: 'expand',
         })
 
-        if (this.#scrolledToAnchorOnLoad) {
+        if (this._scrolledToAnchorOnLoad) {
             // wait a frame to ensure layout has settled before scrolling
             await new Promise(resolve => requestAnimationFrame(resolve));
-            await this.#scrollToAnchor(layoutSync?.restoreAnchor ?? this.#anchor);
+            await this._scrollToAnchor(layoutSync?.restoreAnchor ?? this._anchor);
         }
 
-        this.#trackingSizeBakeReady = true
-        const pendingReason = this.#pendingTrackingSizeBakeReason
-        this.#pendingTrackingSizeBakeReason = null
+        this._trackingSizeBakeReady = true
+        const pendingReason = this._pendingTrackingSizeBakeReason
+        this._pendingTrackingSizeBakeReason = null
 
-        this.#hasExpandedOnce = true
+        this._hasExpandedOnce = true
 
         // Avoid clearing loading if a size-bake is currently driving the spinner; let bake completion stop it.
-        if (!(this.#isLoading && this.#loadingReason === 'size-bake')) {
-            this.#setLoading(false, 'expand')
+        if (!(this._isLoading && this._loadingReason === 'size-bake')) {
+            this._setLoading(false, 'expand')
         }
-        const skipNextExpandBake = this.#skipNextExpandBake
-        const shouldBake = !this.#suppressBakeOnExpand && !skipNextExpandBake
-        this.#skipNextExpandBake = false
+        const skipNextExpandBake = this._skipNextExpandBake
+        const shouldBake = !this._suppressBakeOnExpand && !skipNextExpandBake
+        this._skipNextExpandBake = false
         logEBookPerf('on-expand', {
             pendingReason: pendingReason || null,
-            suppressBake: this.#suppressBakeOnExpand,
+            suppressBake: this._suppressBakeOnExpand,
             skipNext: skipNextExpandBake,
-            hasDoc: !!this.#view?.document,
-            vertical: this.#vertical,
-            column: this.#column,
+            hasDoc: !!this._view?.document,
+            vertical: this._vertical,
+            column: this._column,
         })
         logEBookPageNumLimited('bake:on-expand', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             pendingReason: pendingReason || null,
-            suppressBake: this.#suppressBakeOnExpand,
-            readyFlag: this.#trackingSizeBakeReady,
+            suppressBake: this._suppressBakeOnExpand,
+            readyFlag: this._trackingSizeBakeReady,
             skipNext: skipNextExpandBake,
         })
         if (shouldBake) {
@@ -3933,82 +3933,209 @@ export class Paginator extends HTMLElement {
         }
     }
 
-    #getActiveEbookSectionLayout() {
-        const doc = this.#view?.document
+    _getActiveEbookSectionLayout() {
+        const doc = this._view?.document
         if (!(doc instanceof Document)) return null
         if (this.scrolled || doc.body?.dataset?.isEbook !== 'true') return null
-        return this.#ebookSectionLayout.getSourceDocument() ? this.#ebookSectionLayout : null
+        return this._ebookSectionLayout.getSourceDocument() ? this._ebookSectionLayout : null
     }
 
-    #getLiveChunkPageCount() {
-        return this.#getActiveEbookSectionLayout()?.pageCount() || getLiveChunkPageCount(this.#view?.document)
+    _getLiveChunkPageCount() {
+        const activeLayoutPageCount = this._getActiveEbookSectionLayout()?.pageCount?.()
+        if (Number.isFinite(activeLayoutPageCount) && activeLayoutPageCount > 0) {
+            return activeLayoutPageCount
+        }
+        const cachedLayoutPageCount = this._ebookSectionLayout?.pageCount?.()
+        if (Number.isFinite(cachedLayoutPageCount) && cachedLayoutPageCount > 0) {
+            return cachedLayoutPageCount
+        }
+        return getLiveChunkPageCount(this._view?.document)
     }
 
-    #getSameDocumentLiveRoot() {
-        const doc = this.#view?.document
+    _getSameDocumentLiveRoot() {
+        const doc = this._view?.document
         if (!(doc instanceof Document)) return null
         const contentRoot = doc.getElementById?.('reader-content') || doc.body || null
         return contentRoot?.querySelector?.('.manabi-page-root') || null
     }
 
-    #getSameDocumentResolvedPageCountSync() {
-        const livePageCount = this.#getLiveChunkPageCount()
-        if (Number.isFinite(livePageCount) && livePageCount > 0) return livePageCount
-        const liveRoot = this.#getSameDocumentLiveRoot()
+    _usesSameDocumentPagePositioningSync() {
+        return !!this._sameDocumentMode && !this.scrolled && this._getSameDocumentLiveRoot() instanceof HTMLElement
+    }
+
+    _isSameDocumentVerticalAxisSync() {
+        const layoutDiagnostics = this._ebookSectionLayout?.layoutDiagnostics?.() ?? null
+        if (layoutDiagnostics?.vertical === true) return true
+        if (layoutDiagnostics?.writingMode === 'vertical-rl' || layoutDiagnostics?.writingMode === 'vertical-lr') {
+            return true
+        }
+        const doc = this._view?.document
+        return doc?.body?.classList?.contains?.('reader-vertical-writing') === true
+    }
+
+    _getSameDocumentResolvedPageCountSync() {
+        const livePageCount = this._getLiveChunkPageCount()
+        const layoutPageRecordCount = this._ebookSectionLayout?.layoutDiagnostics?.()?.pageRecordCount
+        const liveRoot = this._getSameDocumentLiveRoot()
         const domPageCount = liveRoot?.querySelectorAll?.(':scope > .manabi-page')?.length ?? 0
-        return Math.max(0, domPageCount)
+        return Math.max(
+            0,
+            Number.isFinite(livePageCount) ? livePageCount : 0,
+            Number.isFinite(layoutPageRecordCount) ? layoutPageRecordCount : 0,
+            domPageCount
+        )
     }
 
-    async #getSameDocumentResolvedPageCount() {
-        return this.#getSameDocumentResolvedPageCountSync()
+    _getSameDocumentResolvedNavigationStateSync() {
+        const layoutDiagnostics = this._ebookSectionLayout?.layoutDiagnostics?.() ?? null
+        const liveRoot = this._getSameDocumentLiveRoot()
+        const datasetPageIndex = Number.isFinite(Number.parseInt(liveRoot?.dataset?.manabiCurrentPageIndex ?? '', 10))
+            ? Number.parseInt(liveRoot?.dataset?.manabiCurrentPageIndex ?? '', 10)
+            : null
+        const layoutPageIndex = Number.isFinite(layoutDiagnostics?.currentPageIndex)
+            && layoutDiagnostics.currentPageIndex >= 0
+            ? layoutDiagnostics.currentPageIndex
+            : null
+        const layoutPageCount = Number.isFinite(layoutDiagnostics?.pageRecordCount)
+            ? layoutDiagnostics.pageRecordCount
+            : (Number.isFinite(layoutDiagnostics?.pageCount) ? layoutDiagnostics.pageCount : null)
+        const resolvedPageCount = Math.max(
+            this._getSameDocumentResolvedPageCountSync(),
+            Number.isFinite(layoutPageCount) ? layoutPageCount : 0
+        )
+        const sameDocumentPageIndex = Number.isFinite(this._sameDocumentCurrentPageIndex)
+            && this._sameDocumentCurrentPageIndex >= 0
+            ? this._sameDocumentCurrentPageIndex
+            : null
+        const preferredPageIndex = this._usesSameDocumentPagePositioningSync()
+            ? (datasetPageIndex ?? sameDocumentPageIndex ?? layoutPageIndex)
+            : (layoutPageIndex ?? datasetPageIndex ?? sameDocumentPageIndex)
+        const resolvedPageIndex = this._getSameDocumentClampedPageIndexSync(
+            preferredPageIndex,
+            resolvedPageCount
+        )
+        return {
+            pageIndex: resolvedPageIndex,
+            pageCount: resolvedPageCount,
+        }
     }
 
-    #getSameDocumentClampedPageIndexSync(pageIndex = this.#sameDocumentCurrentPageIndex) {
-        const pageCount = this.#getSameDocumentResolvedPageCountSync()
+    async _getSameDocumentPreparedNavigationState(targetPageIndex, reason = 'same-document-navigation') {
+        const target = Number.isFinite(targetPageIndex) ? Math.max(0, Math.floor(targetPageIndex)) : null
+        const activeLayout = this._getActiveEbookSectionLayout()
+        if (target != null && typeof activeLayout?.ensurePageBuilt === 'function') {
+            try {
+                activeLayout.ensurePageBuilt(target, { reason })
+            } catch (_error) {}
+        }
+        let resolved = this._getSameDocumentResolvedNavigationStateSync()
+        if (
+            target != null
+            && resolved.pageCount <= 1
+            && typeof activeLayout?.layoutDiagnostics === 'function'
+        ) {
+            await nextFrame()
+            resolved = this._getSameDocumentResolvedNavigationStateSync()
+        }
+        return resolved
+    }
+
+    async _getSameDocumentResolvedPageCount() {
+        return this._getSameDocumentResolvedPageCountSync()
+    }
+
+    _getSameDocumentClampedPageIndexSync(pageIndex = this._sameDocumentCurrentPageIndex, resolvedPageCountOverride = null) {
+        const pageCount = Number.isFinite(resolvedPageCountOverride)
+            ? resolvedPageCountOverride
+            : this._getSameDocumentResolvedPageCountSync()
         if (!(pageCount > 0)) return 0
         const numericPageIndex = Number.isFinite(pageIndex)
             ? Math.floor(pageIndex)
-            : this.#sameDocumentCurrentPageIndex
+            : this._sameDocumentCurrentPageIndex
         return Math.max(0, Math.min(pageCount - 1, numericPageIndex))
     }
 
-    async #getSameDocumentClampedPageIndex(pageIndex = this.#sameDocumentCurrentPageIndex) {
-        return this.#getSameDocumentClampedPageIndexSync(pageIndex)
+    async _getSameDocumentClampedPageIndex(pageIndex = this._sameDocumentCurrentPageIndex, resolvedPageCountOverride = null) {
+        return this._getSameDocumentClampedPageIndexSync(pageIndex, resolvedPageCountOverride)
     }
 
-    #applySameDocumentPagePositionSync(pageIndex, { reason = 'same-document', smooth = false } = {}) {
-        const liveRoot = this.#getSameDocumentLiveRoot()
+    _applySameDocumentPagePositionSync(pageIndex, {
+        reason = 'same-document',
+        smooth = false,
+        resolvedPageCountOverride = null,
+    } = {}) {
+        const liveRoot = this._getSameDocumentLiveRoot()
         if (!(liveRoot instanceof HTMLElement)) return false
-        const resolvedPageIndex = this.#getSameDocumentClampedPageIndexSync(pageIndex)
+        const activeLayout = this._getActiveEbookSectionLayout()
+        const resolvedPageIndex = this._getSameDocumentClampedPageIndexSync(
+            pageIndex,
+            resolvedPageCountOverride
+        )
         const targetPageNode = liveRoot.querySelector(`:scope > .manabi-page[data-manabi-page-index="${resolvedPageIndex}"]`)
             || liveRoot.querySelector(`.manabi-page[data-manabi-page-index="${resolvedPageIndex}"]`)
             || null
-        const fallbackPageWidth = Number.isFinite(targetPageNode?.offsetWidth) && targetPageNode.offsetWidth > 0
-            ? targetPageNode.offsetWidth
-            : (liveRoot.firstElementChild?.getBoundingClientRect?.().width || this.getBoundingClientRect?.().width || 0)
-        const fallbackOffset = resolvedPageIndex * fallbackPageWidth
-        const targetOffset = Number.isFinite(targetPageNode?.offsetLeft) ? targetPageNode.offsetLeft : fallbackOffset
+        const verticalAxis = this._isSameDocumentVerticalAxisSync()
+        const fallbackPageSpan = verticalAxis
+            ? (
+                Number.isFinite(targetPageNode?.offsetHeight) && targetPageNode.offsetHeight > 0
+                    ? targetPageNode.offsetHeight
+                    : (liveRoot.firstElementChild?.getBoundingClientRect?.().height || this.getBoundingClientRect?.().height || 0)
+            )
+            : (
+                Number.isFinite(targetPageNode?.offsetWidth) && targetPageNode.offsetWidth > 0
+                    ? targetPageNode.offsetWidth
+                    : (liveRoot.firstElementChild?.getBoundingClientRect?.().width || this.getBoundingClientRect?.().width || 0)
+            )
+        const fallbackOffset = resolvedPageIndex * fallbackPageSpan
+        const targetOffset = verticalAxis
+            ? (Number.isFinite(targetPageNode?.offsetTop) ? targetPageNode.offsetTop : fallbackOffset)
+            : (Number.isFinite(targetPageNode?.offsetLeft) ? targetPageNode.offsetLeft : fallbackOffset)
         const sameDocumentContainer = document.getElementById('manabi-same-document-container')
         const sameDocumentViewport = document.getElementById('manabi-same-document-viewport')
         liveRoot.style.willChange = 'transform'
         liveRoot.style.transition = smooth ? 'transform 220ms ease-out' : 'none'
-        liveRoot.style.transform = `translate3d(${-targetOffset}px, 0, 0)`
+        liveRoot.style.transform = verticalAxis
+            ? `translate3d(0, ${-targetOffset}px, 0)`
+            : `translate3d(${-targetOffset}px, 0, 0)`
         liveRoot.dataset.manabiCurrentPageIndex = String(resolvedPageIndex)
         if (sameDocumentContainer instanceof HTMLElement) {
-            sameDocumentContainer.scrollLeft = targetOffset
+            if (verticalAxis) {
+                sameDocumentContainer.scrollTop = targetOffset
+            } else {
+                sameDocumentContainer.scrollLeft = targetOffset
+            }
         }
         if (sameDocumentViewport instanceof HTMLElement) {
-            sameDocumentViewport.scrollLeft = targetOffset
+            if (verticalAxis) {
+                sameDocumentViewport.scrollTop = targetOffset
+            } else {
+                sameDocumentViewport.scrollLeft = targetOffset
+            }
         }
-        if (this.#container instanceof HTMLElement) {
-            this.#container.scrollLeft = targetOffset
+        if (this._container instanceof HTMLElement) {
+            if (verticalAxis) {
+                this._container.scrollTop = targetOffset
+            } else {
+                this._container.scrollLeft = targetOffset
+            }
         }
-        this.#sameDocumentCurrentPageIndex = resolvedPageIndex
+        this._sameDocumentCurrentPageIndex = resolvedPageIndex
+        if (activeLayout && typeof activeLayout.setCurrentSourceAnchor === 'function') {
+            try {
+                const sourceAnchor = typeof activeLayout.sourceRangeForPage === 'function'
+                    ? activeLayout.sourceRangeForPage(resolvedPageIndex)
+                    : null
+                if (sourceAnchor) {
+                    activeLayout.setCurrentSourceAnchor(sourceAnchor)
+                }
+            } catch (_error) {}
+        }
         setSameDocumentHostTurnDiagnostics({
             phase: 'applied-position',
             reason,
             targetPageIndex: resolvedPageIndex,
             targetOffset,
+            axis: verticalAxis ? 'vertical' : 'horizontal',
             appliedTransform: liveRoot.style.transform,
             datasetCurrentPageIndex: liveRoot.dataset.manabiCurrentPageIndex ?? null,
         })
@@ -4018,77 +4145,86 @@ export class Paginator extends HTMLElement {
             targetPage: resolvedPageIndex,
             targetOffset,
             fallbackOffset,
-            livePageCount: this.#getSameDocumentResolvedPageCountSync(),
+            axis: verticalAxis ? 'vertical' : 'horizontal',
+            livePageCount: this._getSameDocumentResolvedPageCountSync(),
         })
         return true
     }
 
-    async #applySameDocumentPagePosition(pageIndex, { reason = 'same-document', smooth = false } = {}) {
-        return this.#applySameDocumentPagePositionSync(pageIndex, { reason, smooth })
+    async _applySameDocumentPagePosition(pageIndex, {
+        reason = 'same-document',
+        smooth = false,
+        resolvedPageCountOverride = null,
+    } = {}) {
+        return this._applySameDocumentPagePositionSync(pageIndex, {
+            reason,
+            smooth,
+            resolvedPageCountOverride,
+        })
     }
 
-    async #captureEbookRebuildLocation() {
-        const activeLayout = this.#getActiveEbookSectionLayout()
+    async _captureEbookRebuildLocation() {
+        const activeLayout = this._getActiveEbookSectionLayout()
         if (!activeLayout) return null
         return activeLayout.captureLocationForPage(await this.page())
     }
 
-    #handleEbookLayoutComplete = async () => {
-        if (this.#ebookLayoutEventTarget !== this.#view?.document?.defaultView) return
-        if (this.scrolled || !this.#view) return
+    _handleEbookLayoutComplete = async () => {
+        if (this._ebookLayoutEventTarget !== this._view?.document?.defaultView) return
+        if (this.scrolled || !this._view) return
         try {
-            this.#view.reconcileSameDocumentExpandedWidth?.()
-            if (this.#sameDocumentMode && !this.#vertical) {
-                await this.#applySameDocumentPagePosition(this.#sameDocumentCurrentPageIndex, {
+            this._view.reconcileSameDocumentExpandedWidth?.()
+            if (this._usesSameDocumentPagePositioningSync()) {
+                await this._applySameDocumentPagePosition(this._sameDocumentCurrentPageIndex, {
                     reason: 'layout-complete',
                     smooth: false,
                 })
             }
-            await this.#afterScroll('layout-complete')
+            await this._afterScroll('layout-complete')
         } catch (error) {
             console.error(error)
         }
     }
 
-    #bindEbookLayoutEvents(doc) {
+    _bindEbookLayoutEvents(doc) {
         const nextTarget = doc?.defaultView ?? null
-        if (this.#ebookLayoutEventTarget === nextTarget) return
-        this.#ebookLayoutEventTarget?.removeEventListener?.(
+        if (this._ebookLayoutEventTarget === nextTarget) return
+        this._ebookLayoutEventTarget?.removeEventListener?.(
             'manabi-ebook-layout-complete',
-            this.#handleEbookLayoutComplete
+            this._handleEbookLayoutComplete
         )
-        this.#ebookLayoutEventTarget = nextTarget
-        this.#ebookLayoutEventTarget?.addEventListener?.(
+        this._ebookLayoutEventTarget = nextTarget
+        this._ebookLayoutEventTarget?.addEventListener?.(
             'manabi-ebook-layout-complete',
-            this.#handleEbookLayoutComplete
+            this._handleEbookLayoutComplete
         )
     }
 
-    async #syncEbookSectionLayout({ reason = 'unknown', anchor = null } = {}) {
-        const doc = this.#view?.document
+    async _syncEbookSectionLayout({ reason = 'unknown', anchor = null } = {}) {
+        const doc = this._view?.document
         if (!(doc instanceof Document)) {
-            this.#bindEbookLayoutEvents(null)
-            this.#ebookSectionLayout.destroy()
+            this._bindEbookLayoutEvents(null)
+            this._ebookSectionLayout.destroy()
             return null
         }
         if (this.scrolled || doc.body?.dataset?.isEbook !== 'true') {
-            this.#bindEbookLayoutEvents(null)
-            this.#ebookSectionLayout.destroy()
+            this._bindEbookLayoutEvents(null)
+            this._ebookSectionLayout.destroy()
             return null
         }
-        this.#ebookSectionLayout.attach(doc)
-        this.#bindEbookLayoutEvents(doc)
+        this._ebookSectionLayout.attach(doc)
+        this._bindEbookLayoutEvents(doc)
         const rebuildLocation = anchor == null
-            ? await this.#captureEbookRebuildLocation()
+            ? await this._captureEbookRebuildLocation()
             : null
-        const result = await this.#ebookSectionLayout.build({
+        const result = await this._ebookSectionLayout.build({
             reason,
             anchor: typeof anchor === 'function' ? null : anchor,
             anchorResolver: typeof anchor === 'function' ? anchor : null,
             location: rebuildLocation,
         })
         const restoreAnchor = rebuildLocation
-            ? this.#ebookSectionLayout.sourceRangeForLocation(rebuildLocation)
+            ? this._ebookSectionLayout.sourceRangeForLocation(rebuildLocation)
             : null
         return {
             result,
@@ -4096,11 +4232,11 @@ export class Paginator extends HTMLElement {
         }
     }
 
-    #resolveAnchorAgainstActiveLayout(anchor) {
+    _resolveAnchorAgainstActiveLayout(anchor) {
         if (typeof anchor !== 'function') return anchor
-        const activeLayout = this.#getActiveEbookSectionLayout()
+        const activeLayout = this._getActiveEbookSectionLayout()
         const sourceDoc = activeLayout?.getSourceDocument()
-        const liveDoc = this.#view?.document
+        const liveDoc = this._view?.document
         const preferredDoc = sourceDoc ?? liveDoc
         let resolvedAnchor = preferredDoc ? anchor(preferredDoc) : anchor
         if (resolvedAnchor == null && sourceDoc && liveDoc && sourceDoc !== liveDoc) {
@@ -4109,47 +4245,47 @@ export class Paginator extends HTMLElement {
         return resolvedAnchor
     }
 
-    async #awaitDirection() {
-        if (this.#vertical === null) await this.#directionReady;
+    async _awaitDirection() {
+        if (this._vertical === null) await this._directionReady;
     }
-    async #getSentinelVisibilities({ allowRetry = true } = {}) {
+    async _getSentinelVisibilities({ allowRetry = true } = {}) {
         await nextFrame()
 
         const perfStart = typeof performance !== 'undefined' && typeof performance.now === 'function'
             ? performance.now()
             : null
 
-        const doc = this.#view?.document
+        const doc = this._view?.document
         if (!doc?.body) return []
 
-        if (this.#cachedSentinelDoc !== doc) {
-            this.#cachedSentinelDoc = doc
-            this.#cachedSentinelElements = Array.from(doc.body.getElementsByTagName('reader-sentinel'))
-            this.#cachedTrackingSections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
-            this.#sentinelsInitialized = false
-        } else if (!Array.isArray(this.#cachedSentinelElements) || this.#cachedSentinelElements.length === 0) {
-            this.#cachedSentinelElements = Array.from(doc.body.getElementsByTagName('reader-sentinel'))
+        if (this._cachedSentinelDoc !== doc) {
+            this._cachedSentinelDoc = doc
+            this._cachedSentinelElements = Array.from(doc.body.getElementsByTagName('reader-sentinel'))
+            this._cachedTrackingSections = Array.from(doc.querySelectorAll(MANABI_TRACKING_SECTION_SELECTOR))
+            this._sentinelsInitialized = false
+        } else if (!Array.isArray(this._cachedSentinelElements) || this._cachedSentinelElements.length === 0) {
+            this._cachedSentinelElements = Array.from(doc.body.getElementsByTagName('reader-sentinel'))
         }
 
-        const sentinelElements = this.#cachedSentinelElements
+        const sentinelElements = this._cachedSentinelElements
         logEBookPageNumLimited('bake:sentinels:init', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             sentinelCount: sentinelElements.length,
-            trackingSections: this.#cachedTrackingSections?.length ?? null,
+            trackingSections: this._cachedTrackingSections?.length ?? null,
             allowRetry,
-            containerClientWidth: this.#container?.clientWidth ?? null,
-            containerClientHeight: this.#container?.clientHeight ?? null,
-            containerScrollWidth: this.#container?.scrollWidth ?? null,
-            containerScrollHeight: this.#container?.scrollHeight ?? null,
+            containerClientWidth: this._container?.clientWidth ?? null,
+            containerClientHeight: this._container?.clientHeight ?? null,
+            containerScrollWidth: this._container?.scrollWidth ?? null,
+            containerScrollHeight: this._container?.scrollHeight ?? null,
         })
 
         const applyVisibility = reason => {
-            if (this.#cachedTrackingSections.length === 0) return
+            if (this._cachedTrackingSections.length === 0) return
             applySentinelVisibilityToTrackingSections(doc, {
-                visibleSentinels: this.#visibleSentinelElements,
+                visibleSentinels: this._visibleSentinelElements,
                 logReason: reason,
-                container: this.#container,
-                sectionsCache: this.#cachedTrackingSections,
+                container: this._container,
+                sectionsCache: this._cachedTrackingSections,
             })
         }
 
@@ -4158,29 +4294,29 @@ export class Paginator extends HTMLElement {
             bodyClasses.includes(MANABI_TRACKING_PREBAKE_HIDDEN_CLASS)
 
         if (sentinelElements.length === 0) {
-            if (isBakingHidden && allowRetry && this.#trackingSizeBakeInFlight) {
-                try { await this.#trackingSizeBakeInFlight } catch {}
+            if (isBakingHidden && allowRetry && this._trackingSizeBakeInFlight) {
+                try { await this._trackingSizeBakeInFlight } catch {}
                 // Retry once to avoid infinite loops
-                return await this.#getSentinelVisibilities({ allowRetry: false })
+                return await this._getSentinelVisibilities({ allowRetry: false })
             }
             applyVisibility('sentinel-visibility:none')
-            this.#resetSentinelObservers()
+            this._resetSentinelObservers()
             return []
         }
 
         // Clear any prior snapshot (in case a previous call bailed early).
-        this.#visibleSentinelElements.clear?.()
+        this._visibleSentinelElements.clear?.()
 
-        const docChanged = this.#sentinelGroupsDoc !== doc
-        const needsSync = docChanged || !this.#sentinelsInitialized
+        const docChanged = this._sentinelGroupsDoc !== doc
+        const needsSync = docChanged || !this._sentinelsInitialized
 
         if (needsSync) {
-            const groupSize = await this.#calculateSentinelGroupSize(sentinelElements.length)
-            this.#syncSentinelGroups(doc, sentinelElements, groupSize)
-            this.#sentinelsInitialized = true
+            const groupSize = await this._calculateSentinelGroupSize(sentinelElements.length)
+            this._syncSentinelGroups(doc, sentinelElements, groupSize)
+            this._sentinelsInitialized = true
         }
 
-        const groupCount = this.#sentinelGroups.length
+        const groupCount = this._sentinelGroups.length
         if (groupCount === 0) {
             applyVisibility('sentinel-visibility:none')
             return []
@@ -4219,39 +4355,39 @@ export class Paginator extends HTMLElement {
 
         for (let i = 0; i < activationOrder.length; i++) {
             const groupIndex = activationOrder[i]
-            const group = this.#sentinelGroups[groupIndex]
+            const group = this._sentinelGroups[groupIndex]
             if (!group) continue
 
-            this.#activateSentinelGroup(group)
+            this._activateSentinelGroup(group)
             observedThisCall += group.elements.length
-            this.#flushSentinelRecords(groupIndex, groupIndex)
+            this._flushSentinelRecords(groupIndex, groupIndex)
 
             minActive = Math.min(minActive, groupIndex)
             maxActive = Math.max(maxActive, groupIndex)
 
-            snapshot = this.#collectVisibleSentinelSnapshot()
+            snapshot = this._collectVisibleSentinelSnapshot()
             if (snapshot.visibleIds.length === 0) continue
 
-            const minGroup = Math.floor(snapshot.minIndex / this.#sentinelGroupSize)
-            const maxGroup = Math.floor(snapshot.maxIndex / this.#sentinelGroupSize)
-            const minOnEdge = snapshot.minIndex === (this.#sentinelGroups[minGroup]?.startIndex ?? snapshot.minIndex + 1)
-            const maxOnEdge = snapshot.maxIndex === (this.#sentinelGroups[maxGroup]?.endIndex ?? snapshot.maxIndex - 1)
+            const minGroup = Math.floor(snapshot.minIndex / this._sentinelGroupSize)
+            const maxGroup = Math.floor(snapshot.maxIndex / this._sentinelGroupSize)
+            const minOnEdge = snapshot.minIndex === (this._sentinelGroups[minGroup]?.startIndex ?? snapshot.minIndex + 1)
+            const maxOnEdge = snapshot.maxIndex === (this._sentinelGroups[maxGroup]?.endIndex ?? snapshot.maxIndex - 1)
 
             if (!minOnEdge && !maxOnEdge) break
         }
 
         // Ensure the observers reflect the final active window (ring span).
-        this.#updateSentinelGroupActivation(minActive, maxActive)
-        this.#flushSentinelRecords(minActive, maxActive)
+        this._updateSentinelGroupActivation(minActive, maxActive)
+        this._flushSentinelRecords(minActive, maxActive)
 
-        snapshot = this.#collectVisibleSentinelSnapshot()
+        snapshot = this._collectVisibleSentinelSnapshot()
 
         // Fallback: if still nothing, observe everything.
-        if (snapshot.visibleIds.length === 0 && this.#sentinelGroups.length > 0) {
-            this.#updateSentinelGroupActivation(0, this.#sentinelGroups.length - 1)
+        if (snapshot.visibleIds.length === 0 && this._sentinelGroups.length > 0) {
+            this._updateSentinelGroupActivation(0, this._sentinelGroups.length - 1)
             observedThisCall = sentinelElements.length
-            this.#flushSentinelRecords(0, this.#sentinelGroups.length - 1)
-            snapshot = this.#collectVisibleSentinelSnapshot()
+            this._flushSentinelRecords(0, this._sentinelGroups.length - 1)
+            snapshot = this._collectVisibleSentinelSnapshot()
         }
 
         const { visibleIds, minIndex, maxIndex } = snapshot
@@ -4262,31 +4398,31 @@ export class Paginator extends HTMLElement {
         const logEnd = snapshot.visibleIds.length > 0 ? maxActive : Math.max(0, groupCount - 1)
 
         // Stop observing after snapshot to avoid persistent overhead; groups will be reactivated on next call.
-        this.#updateSentinelGroupActivation(null, null)
-        this.#visibleSentinelElements.clear?.()
+        this._updateSentinelGroupActivation(null, null)
+        this._visibleSentinelElements.clear?.()
 
         logEBookPageNumLimited('bake:sentinels:snapshot', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             visibleCount: visibleIds.length,
             minIndex,
             maxIndex,
             observedThisCall,
-            totalGroups: this.#sentinelGroups?.length ?? null,
+            totalGroups: this._sentinelGroups?.length ?? null,
         })
         return visibleIds
     }
-    #disconnectElementVisibilityObserver() {
-        if (this.#elementVisibilityObserver) {
-            this.#elementVisibilityObserver.disconnect();
-            this.#elementVisibilityObserver = null;
+    _disconnectElementVisibilityObserver() {
+        if (this._elementVisibilityObserver) {
+            this._elementVisibilityObserver.disconnect();
+            this._elementVisibilityObserver = null;
         }
-        if (this.#elementMutationObserver) {
-            this.#elementMutationObserver.disconnect();
-            this.#elementMutationObserver = null;
+        if (this._elementMutationObserver) {
+            this._elementMutationObserver.disconnect();
+            this._elementMutationObserver = null;
         }
     }
-    #isSingleMediaElementWithoutText() {
-        const container = this.#view.document.getElementById('reader-content');
+    _isSingleMediaElementWithoutText() {
+        const container = this._view.document.getElementById('reader-content');
         if (!container) return false;
         const mediaTags = ['img', 'image', 'svg', 'video', 'picture', 'object', 'iframe', 'canvas', 'embed'];
         const selector = mediaTags.join(',');
@@ -4297,21 +4433,21 @@ export class Paginator extends HTMLElement {
         if (container.textContent.trim() !== '') return false;
         return true;
     }
-    async #beforeRender({
+    async _beforeRender({
         vertical,
         verticalRTL,
         rtl,
         //        background
     }) {
-        this.#vertical = vertical
-        this.#verticalRTL = verticalRTL
-        this.#rtl = typeof rtl === 'boolean' ? rtl : (this.bookDir === 'rtl')
-        this.#top.classList.toggle('vertical', vertical)
-        this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+        this._vertical = vertical
+        this._verticalRTL = verticalRTL
+        this._rtl = typeof rtl === 'boolean' ? rtl : (this.bookDir === 'rtl')
+        this._top.classList.toggle('vertical', vertical)
+        this._directionReady = new Promise(r => (this._directionReadyResolve = r));
 
         // set background to `doc` background
         // this is needed because the iframe does not fill the whole element
-        //        this.#background.style.background = background
+        //        this._background.style.background = background
 
         this.style.display = 'block'
 
@@ -4325,7 +4461,7 @@ export class Paginator extends HTMLElement {
             fullWidthCharacterThreshold,
             columnizationThresholdPx,
         } = resolveColumnizationThreshold({
-            doc: this.#view.document,
+            doc: this._view.document,
             vertical,
         })
         const shouldColumnizeForThreshold = size > columnizationThresholdPx
@@ -4358,7 +4494,7 @@ export class Paginator extends HTMLElement {
         const bottomMargin = bottomMarginPx;
 
         // retro way:
-        //                const style = getComputedStyle(this.#top)
+        //                const style = getComputedStyle(this._top)
         //                const maxInlineSize = parseFloat(style.getPropertyValue('--_max-inline-size'))
         //                const maxColumnCount = parseInt(style.getPropertyValue('--_max-column-count-spread'))
         //                const topMargin = parseFloat(style.getPropertyValue('--_top-margin'))
@@ -4368,9 +4504,9 @@ export class Paginator extends HTMLElement {
         //                console.log("top marg", topMargin, topMargin)
         //                console.log("bot marg", bottomMargin, bottomMargin)
 
-        this.#topMargin = topMargin
-        this.#bottomMargin = bottomMargin
-        this.#view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
+        this._topMargin = topMargin
+        this._bottomMargin = bottomMargin
+        this._view.document.documentElement.style.setProperty('--_max-inline-size', maxInlineSize)
 
         // retro way:
         //                        const g = parseFloat(style.getPropertyValue('--_gap')) / 100
@@ -4400,27 +4536,27 @@ export class Paginator extends HTMLElement {
         const flow = this.getAttribute('flow') || 'paginated'
         const writingMode = vertical ? (verticalRTL ? 'vertical-rl' : 'vertical-lr') : 'horizontal-tb'
         const resolvedDir = this.bookDir || (rtl ? 'rtl' : 'ltr')
-        this.#column = flow !== 'scrolled'
-        if (this.#sameDocumentMode) {
-            this.#view?.element?.style?.setProperty?.('direction', 'ltr')
-            this.#view?.document?.documentElement?.style?.setProperty?.('direction', 'ltr')
-            this.#view?.document?.body?.style?.setProperty?.('direction', 'ltr')
-            this.#sameDocumentViewport?.style?.setProperty?.('direction', 'ltr')
-            this.#container?.style?.setProperty?.('direction', 'ltr')
+        this._column = flow !== 'scrolled'
+        if (this._sameDocumentMode) {
+            this._view?.element?.style?.setProperty?.('direction', 'ltr')
+            this._view?.document?.documentElement?.style?.setProperty?.('direction', 'ltr')
+            this._view?.document?.body?.style?.setProperty?.('direction', 'ltr')
+            this._sameDocumentViewport?.style?.setProperty?.('direction', 'ltr')
+            this._container?.style?.setProperty?.('direction', 'ltr')
         }
 
         if (flow === 'scrolled') {
             // FIXME: vertical-rl only, not -lr
             //this.setAttribute('dir', vertical ? 'rtl' : 'ltr')
-            this.#top.style.padding = '0'
+            this._top.style.padding = '0'
             const columnWidth = shouldColumnizeForThreshold
                 ? columnizationThresholdPx
                 : size
 
             this.heads = null
             this.feet = null
-            this.#header.replaceChildren()
-            this.#footer.replaceChildren()
+            this._header.replaceChildren()
+            this._footer.replaceChildren()
 
             return {
                 flow,
@@ -4439,12 +4575,12 @@ export class Paginator extends HTMLElement {
         }
 
         let divisor, columnWidth
-        const isSingleMediaElementWithoutText = this.#isSingleMediaElementWithoutText()
+        const isSingleMediaElementWithoutText = this._isSingleMediaElementWithoutText()
         if (isSingleMediaElementWithoutText) {
             columnWidth = maxInlineSize
-            this.#view.document.body?.classList.add('reader-is-single-media-element-without-text')
+            this._view.document.body?.classList.add('reader-is-single-media-element-without-text')
         } else {
-            this.#view.document.body?.classList.remove('reader-is-single-media-element-without-text')
+            this._view.document.body?.classList.remove('reader-is-single-media-element-without-text')
             if (!shouldColumnizeForThreshold) {
                 divisor = 1
                 columnWidth = size - gap
@@ -4467,14 +4603,14 @@ export class Paginator extends HTMLElement {
             gap: `${gap}px`,
             direction: this.bookDir === 'rtl' ? 'rtl' : 'ltr',
         }
-        Object.assign(this.#header.style, marginalStyle)
-        Object.assign(this.#footer.style, marginalStyle)
+        Object.assign(this._header.style, marginalStyle)
+        Object.assign(this._footer.style, marginalStyle)
         const heads = makeMarginals(marginalDivisor, 'head')
         const feet = makeMarginals(marginalDivisor, 'foot')
         this.heads = heads.map(el => el.children[0])
         this.feet = feet.map(el => el.children[0])
-        this.#header.replaceChildren(...heads)
-        this.#footer.replaceChildren(...feet)
+        this._header.replaceChildren(...heads)
+        this._footer.replaceChildren(...feet)
 
         return {
             height,
@@ -4494,70 +4630,70 @@ export class Paginator extends HTMLElement {
         }
     }
     async render() {
-        if (!this.#view) {
+        if (!this._view) {
             return
         }
 
         // avoid unwanted triggers
-        //        this.#hasResizeObserverTriggered = false
-        //        this.#resizeObserver.observe(this.#container);
+        //        this._hasResizeObserverTriggered = false
+        //        this._resizeObserver.observe(this._container);
 
-        await this.#view.render(await this.#beforeRender({
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+        await this._view.render(await this._beforeRender({
+            vertical: this._vertical,
+            rtl: this._rtl,
         }))
-        //            await this.#scrollToAnchor(this.#anchor) // already called via render -> ... -> expand -> onExpand
+        //            await this._scrollToAnchor(this._anchor) // already called via render -> ... -> expand -> onExpand
     }
 
     get scrolled() {
         return this.getAttribute('flow') === 'scrolled'
     }
     async scrollProp() {
-        await this.#awaitDirection();
+        await this._awaitDirection();
         const {
             scrolled
         } = this
-        return this.#vertical ? (scrolled ? 'scrollLeft' : 'scrollTop') :
+        return this._vertical ? (scrolled ? 'scrollLeft' : 'scrollTop') :
             scrolled ? 'scrollTop' : 'scrollLeft'
     }
     async sideProp() {
-        await this.#awaitDirection();
+        await this._awaitDirection();
         const {
             scrolled
         } = this
-        return this.#vertical ? (scrolled ? 'width' : 'height') :
+        return this._vertical ? (scrolled ? 'width' : 'height') :
             scrolled ? 'height' : 'width'
     }
     async sizes() {
         // Avoid cached measurements; the iframe can be hidden during load which would
         // record zeros and break pagination. Always read current client sizes.
         const sizes = {
-            width: this.#container.clientWidth,
-            height: this.#container.clientHeight,
+            width: this._container.clientWidth,
+            height: this._container.clientHeight,
         }
-        this.#logSizesOnce({
+        this._logSizesOnce({
             event: 'sizes',
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             width: sizes.width,
             height: sizes.height,
-            scrollWidth: this.#container.scrollWidth,
-            scrollHeight: this.#container.scrollHeight,
+            scrollWidth: this._container.scrollWidth,
+            scrollHeight: this._container.scrollHeight,
             scrolled: this.scrolled,
-            vertical: this.#vertical,
-            rtl: this.#rtl,
-            rect: this.#container.getBoundingClientRect ? {
-                width: Math.round(this.#container.getBoundingClientRect().width),
-                height: Math.round(this.#container.getBoundingClientRect().height),
-                top: Math.round(this.#container.getBoundingClientRect().top),
-                left: Math.round(this.#container.getBoundingClientRect().left),
+            vertical: this._vertical,
+            rtl: this._rtl,
+            rect: this._container.getBoundingClientRect ? {
+                width: Math.round(this._container.getBoundingClientRect().width),
+                height: Math.round(this._container.getBoundingClientRect().height),
+                top: Math.round(this._container.getBoundingClientRect().top),
+                left: Math.round(this._container.getBoundingClientRect().left),
             } : null,
-            styleHeight: this.#container?.style?.height ?? null,
+            styleHeight: this._container?.style?.height ?? null,
             overflow: typeof getComputedStyle === 'function'
-                ? getComputedStyle(this.#container).overflow
+                ? getComputedStyle(this._container).overflow
                 : null,
-            bakeReady: this.#trackingSizeBakeReady,
-            pendingBakeReason: this.#pendingTrackingSizeBakeReason ?? null,
-            bakeInFlight: !!this.#trackingSizeBakeInFlight,
+            bakeReady: this._trackingSizeBakeReady,
+            pendingBakeReason: this._pendingTrackingSizeBakeReason ?? null,
+            bakeInFlight: !!this._trackingSizeBakeInFlight,
             usingCache: false,
         })
         return sizes
@@ -4565,28 +4701,28 @@ export class Paginator extends HTMLElement {
     async size() {
         const s = (await this.sizes())[await this.sideProp()]
         logEBookPageNumLimited('size', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             size: s,
             scrolled: this.scrolled,
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+            vertical: this._vertical,
+            rtl: this._rtl,
         })
         // Detect collapses or missing layout that can cascade into bogus page counts.
-        const container = this.#container
+        const container = this._container
         const containerClientW = container?.clientWidth ?? null
         const containerClientH = container?.clientHeight ?? null
         if (!Number.isFinite(s) || s === 0 || containerClientW === 0 || containerClientH === 0) {
             const rect = container?.getBoundingClientRect?.()
             logEBookPageNumLimited('size:anomaly', {
-                sectionIndex: this.#index ?? null,
+                sectionIndex: this._index ?? null,
                 size: s,
                 clientWidth: containerClientW,
                 clientHeight: containerClientH,
                 scrollWidth: container?.scrollWidth ?? null,
                 scrollHeight: container?.scrollHeight ?? null,
                 scrolled: this.scrolled,
-                vertical: this.#vertical,
-                rtl: this.#rtl,
+                vertical: this._vertical,
+                rtl: this._rtl,
                 rect: rect ? {
                     width: Math.round(rect.width),
                     height: Math.round(rect.height),
@@ -4598,33 +4734,33 @@ export class Paginator extends HTMLElement {
         return s
     }
     async viewSize() {
-        if (this.#isCacheWarmer) return 0
-        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
+        if (this._isCacheWarmer) return 0
+        if (this._usesSameDocumentPagePositioningSync()) {
             const [pageCount, size] = await Promise.all([
-                this.#getSameDocumentResolvedPageCount(),
+                this._getSameDocumentResolvedPageCount(),
                 this.size(),
             ])
             const val = pageCount * size
-            this.#logViewSizeOnce({
+            this._logViewSizeOnce({
                 event: 'viewSize:same-document',
-                sectionIndex: this.#index ?? null,
+                sectionIndex: this._index ?? null,
                 side: await this.sideProp(),
-                clientWidth: this.#container?.clientWidth ?? null,
-                clientHeight: this.#container?.clientHeight ?? null,
-                scrollWidth: this.#container?.scrollWidth ?? null,
-                scrollHeight: this.#container?.scrollHeight ?? null,
+                clientWidth: this._container?.clientWidth ?? null,
+                clientHeight: this._container?.clientHeight ?? null,
+                scrollWidth: this._container?.scrollWidth ?? null,
+                scrollHeight: this._container?.scrollHeight ?? null,
                 returned: val,
                 scrolled: this.scrolled,
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-                bakeReady: this.#trackingSizeBakeReady,
-                pendingBakeReason: this.#pendingTrackingSizeBakeReason ?? null,
-                bakeInFlight: !!this.#trackingSizeBakeInFlight,
+                vertical: this._vertical,
+                rtl: this._rtl,
+                bakeReady: this._trackingSizeBakeReady,
+                pendingBakeReason: this._pendingTrackingSizeBakeReason ?? null,
+                bakeInFlight: !!this._trackingSizeBakeInFlight,
                 usingCache: false,
             })
             return val
         }
-        const view = this.#view
+        const view = this._view
         if (!view || !view.element) return 0
         const element = view.element
         const side = await this.sideProp()
@@ -4634,9 +4770,9 @@ export class Paginator extends HTMLElement {
             ? (side === 'width' ? scrollWidth : scrollHeight)
             : (side === 'width' ? element.clientWidth : element.clientHeight)
 
-        this.#logViewSizeOnce({
+        this._logViewSizeOnce({
             event: 'viewSize',
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             side,
             clientWidth: element.clientWidth,
             clientHeight: element.clientHeight,
@@ -4644,35 +4780,35 @@ export class Paginator extends HTMLElement {
             scrollHeight,
             returned: val,
             scrolled: this.scrolled,
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+            vertical: this._vertical,
+            rtl: this._rtl,
             elemRect: element.getBoundingClientRect ? {
                 width: Math.round(element.getBoundingClientRect().width),
                 height: Math.round(element.getBoundingClientRect().height),
                 top: Math.round(element.getBoundingClientRect().top),
                 left: Math.round(element.getBoundingClientRect().left),
             } : null,
-            parentRect: this.#container?.getBoundingClientRect ? {
-                width: Math.round(this.#container.getBoundingClientRect().width),
-                height: Math.round(this.#container.getBoundingClientRect().height),
-                top: Math.round(this.#container.getBoundingClientRect().top),
-                left: Math.round(this.#container.getBoundingClientRect().left),
+            parentRect: this._container?.getBoundingClientRect ? {
+                width: Math.round(this._container.getBoundingClientRect().width),
+                height: Math.round(this._container.getBoundingClientRect().height),
+                top: Math.round(this._container.getBoundingClientRect().top),
+                left: Math.round(this._container.getBoundingClientRect().left),
             } : null,
             elemStyleHeight: element?.style?.height ?? null,
             elemStyleDisplay: element?.style?.display ?? null,
-            parentStyleHeight: this.#container?.style?.height ?? null,
+            parentStyleHeight: this._container?.style?.height ?? null,
             parentOverflow: typeof getComputedStyle === 'function'
-                ? getComputedStyle(this.#container).overflow
+                ? getComputedStyle(this._container).overflow
                 : null,
-            bakeReady: this.#trackingSizeBakeReady,
-            pendingBakeReason: this.#pendingTrackingSizeBakeReason ?? null,
-            bakeInFlight: !!this.#trackingSizeBakeInFlight,
+            bakeReady: this._trackingSizeBakeReady,
+            pendingBakeReason: this._pendingTrackingSizeBakeReason ?? null,
+            bakeInFlight: !!this._trackingSizeBakeInFlight,
             usingCache: false,
         })
 
         return val
     }
-    #logSizesOnce(payload) {
+    _logSizesOnce(payload) {
         const key = JSON.stringify({
             width: payload.width,
             height: payload.height,
@@ -4683,12 +4819,12 @@ export class Paginator extends HTMLElement {
             usingCache: payload.usingCache,
             pending: payload.pendingBakeReason ?? null,
         })
-        if (this.#lastSizesSnapshot === key) return
-        this.#lastSizesSnapshot = key
+        if (this._lastSizesSnapshot === key) return
+        this._lastSizesSnapshot = key
         logEBookPageNumLimited(payload.event, payload)
     }
 
-    #logViewSizeOnce(payload) {
+    _logViewSizeOnce(payload) {
         const key = JSON.stringify({
             side: payload.side,
             width: payload.cachedWidth ?? payload.clientWidth,
@@ -4700,17 +4836,17 @@ export class Paginator extends HTMLElement {
             usingCache: payload.usingCache,
             pending: payload.pendingBakeReason ?? null,
         })
-        if (this.#lastViewSizeSnapshot === key) return
-        this.#lastViewSizeSnapshot = key
+        if (this._lastViewSizeSnapshot === key) return
+        this._lastViewSizeSnapshot = key
         logEBookPageNumLimited(payload.event, payload)
     }
     async start() {
-        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
-            const pageIndex = await this.#getSameDocumentClampedPageIndex()
+        if (this._usesSameDocumentPagePositioningSync()) {
+            const pageIndex = await this._getSameDocumentClampedPageIndex()
             const size = await this.size()
             const start = pageIndex * size
             logEBookPageNumLimited('start:same-document', {
-                sectionIndex: this.#index ?? null,
+                sectionIndex: this._index ?? null,
                 start,
                 size,
                 pageIndex,
@@ -4718,28 +4854,28 @@ export class Paginator extends HTMLElement {
             return start
         }
         const scrollProp = await this.scrollProp()
-        const raw = this.#container[scrollProp]
+        const raw = this._container[scrollProp]
         const start = Math.abs(raw)
         logEBookPageNumLimited('start', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             scrollProp,
             rawScrollValue: raw,
             start,
             scrolled: this.scrolled,
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+            vertical: this._vertical,
+            rtl: this._rtl,
         })
         return start
     }
     async end() {
-        //        await this.#awaitDirection();
+        //        await this._awaitDirection();
         return (await this.start()) + (await this.size())
     }
     async page() {
-        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
-            const page = await this.#getSameDocumentClampedPageIndex()
+        if (this._usesSameDocumentPagePositioningSync()) {
+            const page = this._getSameDocumentResolvedNavigationStateSync().pageIndex
             logEBookPageNumLimited('page:same-document', {
-                sectionIndex: this.#index ?? null,
+                sectionIndex: this._index ?? null,
                 page,
             })
             return page
@@ -4750,38 +4886,38 @@ export class Paginator extends HTMLElement {
         const raw = (start + end) / 2
         const page = Math.floor(raw / size)
         logEBookPageNumLimited('page', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             start,
             end,
             rawMidpoint: raw,
             size,
             page,
             scrolled: this.scrolled,
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+            vertical: this._vertical,
+            rtl: this._rtl,
         })
         return page
     }
     async pages() {
-        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
-            const livePageCount = await this.#getSameDocumentResolvedPageCount()
+        if (this._usesSameDocumentPagePositioningSync()) {
+            const livePageCount = this._getSameDocumentResolvedNavigationStateSync().pageCount
             logEBookPageNumLimited('pages:same-document', {
-                sectionIndex: this.#index ?? null,
+                sectionIndex: this._index ?? null,
                 pages: livePageCount,
                 scrolled: this.scrolled,
-                vertical: this.#vertical,
-                rtl: this.#rtl,
+                vertical: this._vertical,
+                rtl: this._rtl,
             })
             return livePageCount
         }
-        const livePageCount = this.#getLiveChunkPageCount()
+        const livePageCount = this._getLiveChunkPageCount()
         if (livePageCount != null && !this.scrolled) {
             logEBookPageNumLimited('pages:live-chunk', {
-                sectionIndex: this.#index ?? null,
+                sectionIndex: this._index ?? null,
                 pages: livePageCount,
                 scrolled: this.scrolled,
-                vertical: this.#vertical,
-                rtl: this.#rtl,
+                vertical: this._vertical,
+                rtl: this._rtl,
             })
             return livePageCount
         }
@@ -4789,41 +4925,41 @@ export class Paginator extends HTMLElement {
         const size = await this.size()
         const pages = Math.round(viewSize / size)
         const sentinelAdjusted = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
-            && this.#hasSentinels
+            && this._hasSentinels
             && !this.scrolled
-            && !this.#vertical
+            && !this._vertical
             && pages > 2;
         const textPages = sentinelAdjusted ? Math.max(1, pages - 2) : pages
         logEBookPageNumLimited('pages', {
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             viewSize,
             size,
             pages,
             textPages,
             sentinelAdjusted,
             scrolled: this.scrolled,
-            vertical: this.#vertical,
-            rtl: this.#rtl,
+            vertical: this._vertical,
+            rtl: this._rtl,
         })
         // If we ever report a single page while text pages likely exceed 1, log extra context.
-        if (pages === 1 && this.#index !== null) {
+        if (pages === 1 && this._index !== null) {
             logEBookPageNumLimited('pages:single-page', {
-                sectionIndex: this.#index,
+                sectionIndex: this._index,
                 viewSize,
                 size,
                 scrolled: this.scrolled,
-                vertical: this.#vertical,
-                rtl: this.#rtl,
-                containerClientWidth: this.#container?.clientWidth ?? null,
-                containerClientHeight: this.#container?.clientHeight ?? null,
-                containerScrollHeight: this.#container?.scrollHeight ?? null,
-                containerScrollWidth: this.#container?.scrollWidth ?? null,
-                viewCachedWidth: this.#view?.cachedViewSize?.width ?? null,
-                viewCachedHeight: this.#view?.cachedViewSize?.height ?? null,
-                cachedSizes: this.#cachedSizes ? { ...this.#cachedSizes } : null,
-                viewClientHeight: this.#view?.element?.clientHeight ?? null,
-                viewScrollHeight: this.#view?.element?.scrollHeight ?? null,
-                scrollHeightEqualsClientHeight: this.#view?.element ? this.#view.element.scrollHeight === this.#view.element.clientHeight : null,
+                vertical: this._vertical,
+                rtl: this._rtl,
+                containerClientWidth: this._container?.clientWidth ?? null,
+                containerClientHeight: this._container?.clientHeight ?? null,
+                containerScrollHeight: this._container?.scrollHeight ?? null,
+                containerScrollWidth: this._container?.scrollWidth ?? null,
+                viewCachedWidth: this._view?.cachedViewSize?.width ?? null,
+                viewCachedHeight: this._view?.cachedViewSize?.height ?? null,
+                cachedSizes: this._cachedSizes ? { ...this._cachedSizes } : null,
+                viewClientHeight: this._view?.element?.clientHeight ?? null,
+                viewScrollHeight: this._view?.element?.scrollHeight ?? null,
+                scrollHeightEqualsClientHeight: this._view?.element ? this._view.element.scrollHeight === this._view.element.clientHeight : null,
             })
         }
         return pages
@@ -4831,59 +4967,59 @@ export class Paginator extends HTMLElement {
     async scrollBy(dx, dy) {
         await new Promise(resolve => {
             requestAnimationFrame(async () => {
-                const delta = this.#vertical ? dy : dx
-                const element = this.#container
+                const delta = this._vertical ? dy : dx
+                const element = this._container
                 const scrollProp = await this.scrollProp()
-                const [offset, a, b] = this.#scrollBounds
-                const rtl = this.#rtl
+                const [offset, a, b] = this._scrollBounds
+                const rtl = this._rtl
                 const min = rtl ? offset - b : offset - a
                 const max = rtl ? offset + a : offset + b
                 element[scrollProp] = Math.max(min, Math.min(max,
                     element[scrollProp] + delta))
-                this.#cachedStart = null; // TODO: Needed here?
+                this._cachedStart = null; // TODO: Needed here?
                 resolve()
             })
         })
     }
     async snap(vx, vy) {
-        const velocity = this.#vertical ? vy : vx
-        const [offset, a, b] = this.#scrollBounds
+        const velocity = this._vertical ? vy : vx
+        const [offset, a, b] = this._scrollBounds
         const start = await this.start()
         const end = await this.end()
         const pages = await this.pages()
         const size = await this.size()
         const min = Math.abs(offset) - a
         const max = Math.abs(offset) + b
-        const d = velocity * (this.#rtl ? -size : size)
+        const d = velocity * (this._rtl ? -size : size)
         const page = Math.floor(
             Math.max(min, Math.min(max, (start + end) / 2 +
                 (isNaN(d) ? 0 : d))) / size)
 
-        await this.#scrollToPage(page, 'snap').then(async () => {
+        await this._scrollToPage(page, 'snap').then(async () => {
             const dir = page <= 0 ? -1 : page >= pages - 1 ? 1 : null
-            if (dir) return await this.#goTo({
-                index: this.#adjacentIndex(dir),
+            if (dir) return await this._goTo({
+                index: this._adjacentIndex(dir),
                 anchor: dir < 0 ? () => 1 : () => 0,
                 reason: 'page',
             })
         })
     }
-    #onTouchStart(e) {
+    _onTouchStart(e) {
         const touch = e.changedTouches[0];
         // Determine if touch began in host container or inside the iframe’s document
         const target = touch.target;
-        const inHost = this.#container.contains(target);
-        const inIframe = this.#view?.document && target.ownerDocument === this.#view.document;
+        const inHost = this._container.contains(target);
+        const inIframe = this._view?.document && target.ownerDocument === this._view.document;
         if (!inHost && !inIframe) {
-            this.#touchState = null;
+            this._touchState = null;
             return;
         }
-        this.#clearPendingChevronReset();
-        this.#touchHasShownChevron = false;
-        this.#touchTriggeredNav = false;
-        this.#maxChevronLeft = 0;
-        this.#maxChevronRight = 0;
-        this.#touchState = {
+        this._clearPendingChevronReset();
+        this._touchHasShownChevron = false;
+        this._touchTriggeredNav = false;
+        this._maxChevronLeft = 0;
+        this._maxChevronRight = 0;
+        this._touchState = {
             startX: touch?.screenX,
             startY: touch?.screenY,
             x: touch?.screenX,
@@ -4896,7 +5032,7 @@ export class Paginator extends HTMLElement {
         };
         // Only block in paginated mode (not 'scrolled')
         if (!this.scrolled) {
-            const sel = this.#view?.document?.getSelection?.();
+            const sel = this._view?.document?.getSelection?.();
             if (sel && !sel.isCollapsed && sel.rangeCount) {
                 const range = sel.getRangeAt(0);
                 const rect = range.getBoundingClientRect();
@@ -4918,20 +5054,20 @@ export class Paginator extends HTMLElement {
                     y >= rect.top - hitTolerance && y <= rect.bottom + hitTolerance
                 );
                 if (nearStart || nearEnd) {
-                    this.#isAdjustingSelectionHandle = true;
+                    this._isAdjustingSelectionHandle = true;
                     return;
                 }
             }
         }
-        this.#isAdjustingSelectionHandle = false;
+        this._isAdjustingSelectionHandle = false;
     }
-    async #onTouchMove(e) {
+    async _onTouchMove(e) {
         // If touchStart was ignored or missing, do nothing
-        if (!this.#touchState) return;
-        if (this.#isAdjustingSelectionHandle) return;
+        if (!this._touchState) return;
+        if (this._isAdjustingSelectionHandle) return;
         e.preventDefault();
         const touch = e.changedTouches[0];
-        const state = this.#touchState;
+        const state = this._touchState;
         if (state.triggered) return;
         state.x = touch.screenX;
         state.y = touch.screenY;
@@ -4953,106 +5089,106 @@ export class Paginator extends HTMLElement {
                 navigate: this.bookDir === 'rtl' ? () => this.next() : () => this.prev(),
             };
 
-            this.#lastSwipeNavAt = Date.now();
-            this.#lastSwipeNavDirection = navDetail.direction;
-            this.#touchTriggeredNav = true;
-            this.#emitChevronOpacity({
+            this._lastSwipeNavAt = Date.now();
+            this._lastSwipeNavDirection = navDetail.direction;
+            this._touchTriggeredNav = true;
+            this._emitChevronOpacity({
                 leftOpacity: navDetail.leftOpacity,
                 rightOpacity: navDetail.rightOpacity,
-                holdMs: this.#chevronTriggerHoldMs,
-                fadeMs: this.#chevronFadeMs,
+                holdMs: this._chevronTriggerHoldMs,
+                fadeMs: this._chevronFadeMs,
             }, 'swipe:navImmediate');
-            this.#logChevronDispatch('swipeNav:trigger', {
+            this._logChevronDispatch('swipeNav:trigger', {
                 dx,
                 dy,
                 direction: navDetail.direction,
                 bookDir: this.bookDir ?? null,
-                rtl: this.#rtl,
+                rtl: this._rtl,
             });
             await navDetail.navigate();
-            this.#scheduleChevronHide(this.#chevronTriggerHoldMs + 80);
+            this._scheduleChevronHide(this._chevronTriggerHoldMs + 80);
             // After navigation triggered via swipe, proactively reset any stale chevron state.
-            this.#logResetNeed('postSwipeNav');
-            this.#emitChevronReset('reset:postSwipeNav');
+            this._logResetNeed('postSwipeNav');
+            this._emitChevronReset('reset:postSwipeNav');
         } else {
             if (CHEVRON_SWIPE_PREVIEW_ENABLED) {
-                this.#updateSwipeChevron(dx, minSwipe, 'swipe');
+                this._updateSwipeChevron(dx, minSwipe, 'swipe');
             }
         }
     }
-    #onTouchEnd(e) {
-        const hadNav = this.#touchTriggeredNav;
-        const hadChevron = this.#touchHasShownChevron;
+    _onTouchEnd(e) {
+        const hadNav = this._touchTriggeredNav;
+        const hadChevron = this._touchHasShownChevron;
 
-        this.#touchState = null;
+        this._touchState = null;
 
         // If we just loaded a new section, skip the opacity reset for non-nav touches
-        if (this.#skipTouchEndOpacity && !hadNav) {
-            this.#logChevronDispatch('sideNavChevronOpacity:touchEnd:skipReset', { reason: 'skipTouchEndOpacity' });
-            this.#skipTouchEndOpacity = false
-            this.#touchHasShownChevron = false;
-            this.#touchTriggeredNav = false;
-            this.#maxChevronLeft = 0;
-            this.#maxChevronRight = 0;
+        if (this._skipTouchEndOpacity && !hadNav) {
+            this._logChevronDispatch('sideNavChevronOpacity:touchEnd:skipReset', { reason: 'skipTouchEndOpacity' });
+            this._skipTouchEndOpacity = false
+            this._touchHasShownChevron = false;
+            this._touchTriggeredNav = false;
+            this._maxChevronLeft = 0;
+            this._maxChevronRight = 0;
             return
         }
 
         // Always clear any outstanding reset timers once the finger lifts
-        this.#clearPendingChevronReset();
+        this._clearPendingChevronReset();
 
         if (hadNav) {
             // Navigation already occurred; force a full chevron reset so UI controls re-enable
-            this.#logResetNeed('touchEnd:nav');
-            this.#emitChevronReset('reset:touchEndNav');
+            this._logResetNeed('touchEnd:nav');
+            this._emitChevronReset('reset:touchEndNav');
         } else if (hadChevron) {
             // If swipe never triggered navigation but showed the chevron, fade it out now.
-            this.#logResetNeed('touchEnd:noNav');
-            this.#scheduleChevronHide(0);
+            this._logResetNeed('touchEnd:noNav');
+            this._scheduleChevronHide(0);
         }
 
-        this.#touchHasShownChevron = false;
-        this.#touchTriggeredNav = false;
-        this.#maxChevronLeft = 0;
-        this.#maxChevronRight = 0;
-        this.#skipTouchEndOpacity = false;
+        this._touchHasShownChevron = false;
+        this._touchTriggeredNav = false;
+        this._maxChevronLeft = 0;
+        this._maxChevronRight = 0;
+        this._skipTouchEndOpacity = false;
     }
 
-    #forceEndTouchGesture(source = 'unknown') {
+    _forceEndTouchGesture(source = 'unknown') {
         // Safety net: clear lingering swipe state after navigation/display completes.
-        this.#logResetNeed('forceEndTouchGesture', { source });
-        this.#clearPendingChevronReset();
-        this.#touchState = null;
-        this.#touchHasShownChevron = false;
-        this.#touchTriggeredNav = false;
-        this.#maxChevronLeft = 0;
-        this.#maxChevronRight = 0;
-        this.#skipTouchEndOpacity = false;
-        this.#emitChevronReset('reset:forceEndTouchGesture');
+        this._logResetNeed('forceEndTouchGesture', { source });
+        this._clearPendingChevronReset();
+        this._touchState = null;
+        this._touchHasShownChevron = false;
+        this._touchTriggeredNav = false;
+        this._maxChevronLeft = 0;
+        this._maxChevronRight = 0;
+        this._skipTouchEndOpacity = false;
+        this._emitChevronReset('reset:forceEndTouchGesture');
     }
 
-    #onTouchCancel(e) {
+    _onTouchCancel(e) {
         // Treat cancellation as an end-of-gesture and force-reset chevrons/state.
-        const hadGesture = this.#touchHasShownChevron || this.#touchTriggeredNav;
-        this.#touchState = null;
-        this.#clearPendingChevronReset();
+        const hadGesture = this._touchHasShownChevron || this._touchTriggeredNav;
+        this._touchState = null;
+        this._clearPendingChevronReset();
         if (hadGesture) {
-            this.#logResetNeed('touchCancel');
-            this.#emitChevronReset('reset:touchCancel');
+            this._logResetNeed('touchCancel');
+            this._emitChevronReset('reset:touchCancel');
         }
-        this.#touchHasShownChevron = false;
-        this.#touchTriggeredNav = false;
-        this.#maxChevronLeft = 0;
-        this.#maxChevronRight = 0;
-        this.#skipTouchEndOpacity = false;
+        this._touchHasShownChevron = false;
+        this._touchTriggeredNav = false;
+        this._maxChevronLeft = 0;
+        this._maxChevronRight = 0;
+        this._skipTouchEndOpacity = false;
     }
     // allows one to process rects as if they were LTR and horizontal
-    async #getRectMapper() {
-        await this.#awaitDirection();
+    async _getRectMapper() {
+        await this._awaitDirection();
         if (this.scrolled) {
             const size = await this.viewSize()
-            const topMargin = this.#topMargin
-            const bottomMargin = this.#bottomMargin
-            return this.#vertical ?
+            const topMargin = this._topMargin
+            const bottomMargin = this._bottomMargin
+            return this._vertical ?
                 ({
                     left,
                     right
@@ -5070,7 +5206,7 @@ export class Paginator extends HTMLElement {
                 })
         }
         const pxSize = (await this.pages()) * (await this.size())
-        return this.#rtl ?
+        return this._rtl ?
             ({
                 left,
                 right
@@ -5079,7 +5215,7 @@ export class Paginator extends HTMLElement {
                 left: pxSize - right,
                 right: pxSize - left
             }) :
-            this.#vertical ?
+            this._vertical ?
                 ({
                     top,
                     bottom
@@ -5089,40 +5225,40 @@ export class Paginator extends HTMLElement {
                 }) :
                 f => f
     }
-    #wheelCooldown = false;
-    #lastWheelDeltaX = 0;
-    #lastSwipeNavAt = null;
-    #lastSwipeNavDirection = null; // 'forward' | 'backward'
-    #touchHasShownChevron = false;
-    #touchTriggeredNav = false;
-    #maxChevronLeft = 0;
-    #maxChevronRight = 0;
-    #lastChevronEmit = { left: null, right: null };
-    #chevronTriggerHoldMs = 420;
-    #chevronFadeMs = 180;
-    #pendingChevronResetTimer = null;
-    #resetLoopGuard = false;
-    #logResetNeed(reason, extra = {}) {
+    _wheelCooldown = false;
+    _lastWheelDeltaX = 0;
+    _lastSwipeNavAt = null;
+    _lastSwipeNavDirection = null; // 'forward' | 'backward'
+    _touchHasShownChevron = false;
+    _touchTriggeredNav = false;
+    _maxChevronLeft = 0;
+    _maxChevronRight = 0;
+    _lastChevronEmit = { left: null, right: null };
+    _chevronTriggerHoldMs = 420;
+    _chevronFadeMs = 180;
+    _pendingChevronResetTimer = null;
+    _resetLoopGuard = false;
+    _logResetNeed(reason, extra = {}) {
         try {
             const line = `# EBOOK CHEVRESET NEED ${JSON.stringify({ reason, ...extra })}`;
             window.webkit?.messageHandlers?.print?.postMessage?.(line);
             console.log(line);
         } catch (_err) {}
     }
-    #handleChevronResetEvent = () => {
-        if (this.#resetLoopGuard) return;
-        this.#logResetNeed('external-resetSideNavChevrons');
-        this.#emitChevronReset('reset:event');
+    _handleChevronResetEvent = () => {
+        if (this._resetLoopGuard) return;
+        this._logResetNeed('external-resetSideNavChevrons');
+        this._emitChevronReset('reset:event');
     };
-    #emitChevronReset(source = 'reset:auto') {
+    _emitChevronReset(source = 'reset:auto') {
         // Stop any in-flight auto-hide timers before fanning out a reset.
-        this.#clearPendingChevronReset();
+        this._clearPendingChevronReset();
         try {
             const line = `# EBOOK CHEVRESET ${JSON.stringify({ source })}`;
             window.webkit?.messageHandlers?.print?.postMessage?.(line);
             console.log(line);
         } catch (_err) {}
-        this.#lastChevronEmit = { left: null, right: null };
+        this._lastChevronEmit = { left: null, right: null };
         this.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
             bubbles: true,
             composed: true,
@@ -5133,32 +5269,32 @@ export class Paginator extends HTMLElement {
             },
         }));
         // Fan out to outer shell while preventing self-reentry
-        this.#resetLoopGuard = true;
+        this._resetLoopGuard = true;
         try {
             document.dispatchEvent(new CustomEvent('resetSideNavChevrons', { detail: { source } }));
         } finally {
-            setTimeout(() => { this.#resetLoopGuard = false; }, 0);
+            setTimeout(() => { this._resetLoopGuard = false; }, 0);
         }
     }
-    #clearPendingChevronReset() {
-        if (!this.#pendingChevronResetTimer) return;
-        clearTimeout(this.#pendingChevronResetTimer);
-        this.#pendingChevronResetTimer = null;
+    _clearPendingChevronReset() {
+        if (!this._pendingChevronResetTimer) return;
+        clearTimeout(this._pendingChevronResetTimer);
+        this._pendingChevronResetTimer = null;
     }
-    #scheduleChevronHide(delayMs = this.#chevronTriggerHoldMs) {
-        this.#clearPendingChevronReset();
-        this.#logResetNeed('scheduleHide', { delayMs });
-        this.#pendingChevronResetTimer = setTimeout(() => {
-            this.#pendingChevronResetTimer = null;
-            this.#emitChevronOpacity({
+    _scheduleChevronHide(delayMs = this._chevronTriggerHoldMs) {
+        this._clearPendingChevronReset();
+        this._logResetNeed('scheduleHide', { delayMs });
+        this._pendingChevronResetTimer = setTimeout(() => {
+            this._pendingChevronResetTimer = null;
+            this._emitChevronOpacity({
                 leftOpacity: '',
                 rightOpacity: '',
-                fadeMs: this.#chevronFadeMs,
+                fadeMs: this._chevronFadeMs,
             }, 'chevron:autoHide');
-            this.#emitChevronReset('reset:autoHide');
+            this._emitChevronReset('reset:autoHide');
         }, delayMs);
     }
-    async #onWheel(e) {
+    async _onWheel(e) {
         if (this.scrolled) return;
         e.preventDefault();
         if (Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
@@ -5169,91 +5305,91 @@ export class Paginator extends HTMLElement {
 
         // Early exit for "momentum falling" (hide chevrons if armed, deltaX dropping, and below threshold)
         if (
-            this.#wheelArmed &&
-            Math.abs(e.deltaX) < Math.abs(this.#lastWheelDeltaX) &&
+            this._wheelArmed &&
+            Math.abs(e.deltaX) < Math.abs(this._lastWheelDeltaX) &&
             Math.abs(e.deltaX) < TRIGGER_THRESHOLD
         ) {
-            this.#emitChevronOpacity({
+            this._emitChevronOpacity({
                 leftOpacity: '',
                 rightOpacity: ''
             }, 'wheel:momentumFalling');
-            this.#lastWheelDeltaX = e.deltaX;
+            this._lastWheelDeltaX = e.deltaX;
             return;
         }
 
-        if (this.#wheelArmed) {
+        if (this._wheelArmed) {
             if (Math.abs(e.deltaX) > REVEAL_CHEVRON_THRESHOLD) {
-                this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:reveal');
+                this._updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:reveal');
             } else {
-                this.#updateSwipeChevron(0, TRIGGER_THRESHOLD, 'wheel:resetReveal');
+                this._updateSwipeChevron(0, TRIGGER_THRESHOLD, 'wheel:resetReveal');
             }
         }
 
-        if (this.#wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
-            this.#wheelArmed = false;
-            this.#wheelCooldown = true;
+        if (this._wheelArmed && Math.abs(e.deltaX) > TRIGGER_THRESHOLD) {
+            this._wheelArmed = false;
+            this._wheelCooldown = true;
             if (e.deltaX > 0) {
                 await this.prev();
             } else {
                 await this.next();
             }
-            this.#updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:triggered')
+            this._updateSwipeChevron(-e.deltaX, TRIGGER_THRESHOLD, 'wheel:triggered')
             setTimeout(() => {
-                this.#wheelCooldown = false;
+                this._wheelCooldown = false;
             }, 100);
-        } else if (!this.#wheelArmed && !this.#wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
-            this.#wheelArmed = true;
+        } else if (!this._wheelArmed && !this._wheelCooldown && Math.abs(e.deltaX) < RESET_THRESHOLD) {
+            this._wheelArmed = true;
         }
-        this.#lastWheelDeltaX = e.deltaX;
+        this._lastWheelDeltaX = e.deltaX;
     }
-    async #scrollToRect(rect, reason) {
+    async _scrollToRect(rect, reason) {
         if (this.scrolled) {
-            const rectMapper = await this.#getRectMapper();
-            const offset = rectMapper(rect).left - this.#topMargin
-            return await this.#scrollTo(offset, reason)
+            const rectMapper = await this._getRectMapper();
+            const offset = rectMapper(rect).left - this._topMargin
+            return await this._scrollTo(offset, reason)
         }
-        const rectMapper = await this.#getRectMapper();
+        const rectMapper = await this._getRectMapper();
         const offset = rectMapper(rect).left
-        return await this.#scrollToPage(Math.floor(offset / (await this.size())) + (this.#rtl ? -1 : 1), reason)
+        return await this._scrollToPage(Math.floor(offset / (await this.size())) + (this._rtl ? -1 : 1), reason)
     }
-    async #scrollTo(offset, reason, smooth) {
-        await this.#awaitDirection();
+    async _scrollTo(offset, reason, smooth) {
+        await this._awaitDirection();
         const scroll = async () => {
-            this.#cachedStart = null;
-            const element = this.#container
+            this._cachedStart = null;
+            const element = this._container
             const scrollProp = await this.scrollProp()
             const size = await this.size()
             const atStart = await this.atStart()
             const atEnd = await this.atEnd()
             if (element[scrollProp] === offset) {
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
+                this._scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                await this._afterScroll(reason)
                 return
             }
             // FIXME: vertical-rl only, not -lr
-            if (this.scrolled && this.#vertical) offset = -offset
+            if (this.scrolled && this._vertical) offset = -offset
             if ((reason === 'snap' || smooth) && this.hasAttribute('animated')) return animate(
                 element[scrollProp], offset, 300, easeOutQuad,
                 x => element[scrollProp] = x,
             ).then(async () => {
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
+                this._scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                await this._afterScroll(reason)
             })
             else {
                 element[scrollProp] = offset
-                this.#scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
-                await this.#afterScroll(reason)
+                this._scrollBounds = [offset, atStart ? 0 : size, atEnd ? 0 : size]
+                await this._afterScroll(reason)
             }
         }
 
         //            // Prevent new transitions while one is running
-        //            if (this.#transitioning) {
+        //            if (this._transitioning) {
         //                await scroll();
         //                return;
         //            }
 
         //            if (
-        //                !this.#view ||
+        //                !this._view ||
         //                document.visibilityState !== 'visible' ||
         //                (reason === 'snap' || reason === 'anchor' || reason === 'selection') ||
         //                typeof document.startViewTransition !== 'function'
@@ -5263,66 +5399,85 @@ export class Paginator extends HTMLElement {
                 if (reason === 'snap' || reason === 'anchor' || reason === 'selection' || reason === 'navigation') {
                     await scroll()
                 } else {
-                    this.#container.classList.add('view-fade')
+                    this._container.classList.add('view-fade')
                     // Allow the browser to paint the fade
                     /*await new Promise(r => setTimeout(r, 65));
-                     this.#container.classList.add('view-faded')*/
+                     this._container.classList.add('view-faded')*/
                     await scroll()
-                    this.#container.classList.remove('view-faded')
-                    this.#container.classList.remove('view-fade')
+                    this._container.classList.remove('view-faded')
+                    this._container.classList.remove('view-fade')
                 }
                 resolve()
             })
         })
     }
-    async #scrollToPage(page, reason, smooth) {
-        const activeLayout = this.#getActiveEbookSectionLayout()
+    async _scrollToPage(page, reason, smooth) {
+        const activeLayout = this._getActiveEbookSectionLayout()
         if (activeLayout?.hasPendingWarmup?.()) {
             activeLayout.ensurePageBuilt?.(page, {
                 reason: reason ?? 'scrollToPage',
             })
         }
-        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
-            await this.#applySameDocumentPagePosition(page, {
+        if (this._usesSameDocumentPagePositioningSync()) {
+            const { pageIndex, pageCount } = await this._getSameDocumentPreparedNavigationState(
+                page,
+                reason ?? 'scrollToPage'
+            )
+            setSameDocumentHostTurnDiagnostics({
+                phase: 'scroll-to-page-begin',
+                reason: reason ?? 'scrollToPage',
+                currentPageIndex: pageIndex,
+                pageCount,
+                targetPageIndex: page,
+            })
+            await this._applySameDocumentPagePosition(page, {
                 reason: reason ?? 'scrollToPage',
                 smooth: !!smooth,
+                resolvedPageCountOverride: pageCount,
             })
-            await this.#afterScroll(reason ?? 'scrollToPage')
+            await this._afterScroll(reason ?? 'scrollToPage')
+            setSameDocumentHostTurnDiagnostics({
+                phase: 'scroll-to-page-complete',
+                reason: reason ?? 'scrollToPage',
+                currentPageIndex: await this.page().catch(() => null),
+                pageCount: await this.pages().catch(() => null),
+                targetPageIndex: page,
+            })
             return
         }
-        this.#view?.reconcileSameDocumentExpandedWidth?.()
+        this._view?.reconcileSameDocumentExpandedWidth?.()
         const size = await this.size()
-        const shouldUsePositiveRTLPageOffset = this.#sameDocumentMode
+        const shouldUsePositiveRTLPageOffset = this._sameDocumentMode
             && !this.scrolled
-            && !this.#vertical
-            && this.#rtl
-        const offset = size * (shouldUsePositiveRTLPageOffset ? page : (this.#rtl ? -page : page))
-        const alternateRTLOffset = this.#rtl ? size * -page : offset
+            && !this._vertical
+            && this._rtl
+        const offset = size * (shouldUsePositiveRTLPageOffset ? page : (this._rtl ? -page : page))
+        const alternateRTLOffset = this._rtl ? size * -page : offset
         const scrollProp = await this.scrollProp()
         const beforePage = await this.page().catch(() => null)
-        const beforeScrollValue = this.#container?.[scrollProp] ?? null
+        const beforeScrollValue = this._container?.[scrollProp] ?? null
         logEBookPageNumLimited('scrollToPage', {
             targetPage: page,
             reason,
             smooth: !!smooth,
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             size,
             offset,
             positiveRTLPageOffset: shouldUsePositiveRTLPageOffset,
-            rtl: this.#rtl,
-            vertical: this.#vertical,
+            rtl: this._rtl,
+            vertical: this._vertical,
         })
-        await this.#scrollTo(offset, reason, smooth)
+        await this._scrollTo(offset, reason, smooth)
         if (
-            this.#sameDocumentMode
+            this._sameDocumentMode
             && !this.scrolled
-            && !this.#vertical
-            && this.#rtl
+            && !this._vertical
+            && this._rtl
             && alternateRTLOffset !== offset
         ) {
-            this.#cachedStart = null
+            this._cachedStart = null
             const afterPrimaryPage = await this.page().catch(() => null)
-            const afterPrimaryScrollValue = this.#container?.[scrollProp] ?? null
+            const afterPrimaryScrollValue = this._container?.[scrollProp] ?? null
             const targetDidAdvance = Number.isFinite(afterPrimaryPage) && Number.isFinite(beforePage)
                 ? afterPrimaryPage > beforePage
                 : Number.isFinite(afterPrimaryPage) && afterPrimaryPage > 0
@@ -5334,7 +5489,7 @@ export class Paginator extends HTMLElement {
                     targetPage: page,
                     reason,
                     smooth: !!smooth,
-                    sectionIndex: this.#index ?? null,
+                    sectionIndex: this._index ?? null,
                     size,
                     primaryOffset: offset,
                     alternateOffset: alternateRTLOffset,
@@ -5343,37 +5498,37 @@ export class Paginator extends HTMLElement {
                     beforeScrollValue,
                     afterPrimaryScrollValue,
                 })
-                await this.#scrollTo(alternateRTLOffset, reason, smooth)
+                await this._scrollTo(alternateRTLOffset, reason, smooth)
             }
         }
     }
     async scrollToAnchor(anchor, select, reasonOverride) {
         //            await new Promise(resolve => requestAnimationFrame(resolve));
         const reason = reasonOverride || (select ? 'selection' : 'navigation');
-        await this.#scrollToAnchor(anchor, reason)
+        await this._scrollToAnchor(anchor, reason)
     }
     // TODO: Fix newer way and stop using this one that calculates getClientRects
-    async #scrollToAnchor(anchor, reason = 'anchor') {
+    async _scrollToAnchor(anchor, reason = 'anchor') {
         //        console.log('#scrollToAnchor0...', anchor)
-        this.#anchor = anchor
+        this._anchor = anchor
         try {
         } catch (_error) {
             // diagnostics best-effort
         }
         logEBookPageNumLimited('scrollToAnchor:start', {
             reason,
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             anchorType: anchor?.nodeType ?? (typeof anchor),
-            containerHeight: this.#container?.clientHeight ?? null,
-            containerWidth: this.#container?.clientWidth ?? null,
+            containerHeight: this._container?.clientHeight ?? null,
+            containerWidth: this._container?.clientWidth ?? null,
         })
-        const activeLayout = this.#getActiveEbookSectionLayout()
+        const activeLayout = this._getActiveEbookSectionLayout()
         const sourceDoc = activeLayout?.getSourceDocument()
         const anchorDoc = anchor?.startContainer?.getRootNode?.() ?? anchor?.ownerDocument ?? null
         if (activeLayout && sourceDoc && anchorDoc === sourceDoc) {
             const pageIndex = activeLayout.pageIndexForAnchor(anchor)
             if (pageIndex != null) {
-                await this.#scrollToPage(pageIndex, reason)
+                await this._scrollToPage(pageIndex, reason)
                 return
             }
         }
@@ -5385,40 +5540,40 @@ export class Paginator extends HTMLElement {
             const rect = Array.from(rects)
                 .find(r => r.width > 0 && r.height > 0) || rects[0]
             if (!rect) return
-            await this.#scrollToRect(rect, reason)
+            await this._scrollToRect(rect, reason)
             return
         }
         // if anchor is a fraction
         if (this.scrolled) {
             const viewSize = await this.viewSize()
-            await this.#scrollTo(anchor * (await this.viewSize()), reason)
+            await this._scrollTo(anchor * (await this.viewSize()), reason)
             return
         }
         const pageCount = await this.pages()
         if (!pageCount) return
-        const livePageCount = this.#getLiveChunkPageCount()
+        const livePageCount = this._getLiveChunkPageCount()
         const textPages = livePageCount != null
             ? livePageCount
             : pageCount - 2
         const newPage = Math.max(0, Math.round(anchor * Math.max(0, textPages - 1)))
         logEBookPageNumLimited('scrollToAnchor:fraction', {
             reason,
-            sectionIndex: this.#index ?? null,
+            sectionIndex: this._index ?? null,
             anchorFraction: anchor,
             textPages,
             targetPage: livePageCount != null ? newPage : newPage + 1,
             viewSize: await this.viewSize(),
         })
-        await this.#scrollToPage(livePageCount != null ? newPage : newPage + 1, reason)
+        await this._scrollToPage(livePageCount != null ? newPage : newPage + 1, reason)
     }
-    async #NscrollToAnchor(anchor, reason = 'anchor') {
-        //        console.log("#scrollToAnchor...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
-        await this.#awaitDirection();
+    async _NscrollToAnchor(anchor, reason = 'anchor') {
+        //        console.log("#scrollToAnchor...cached sizes:", this._cachedSizes, "real sizes: ", await this.sizes())
+        await this._awaitDirection();
 
         return new Promise(resolve => {
             requestAnimationFrame(async () => {
-                //                console.log("#scrollToAnchor...frames...cached sizes:", this.#cachedSizes, "real sizes: ", await this.sizes())
-                this.#anchor = anchor;
+                //                console.log("#scrollToAnchor...frames...cached sizes:", this._cachedSizes, "real sizes: ", await this.sizes())
+                this._anchor = anchor;
                 //                console.log('scrollToAnchor: anchor=', anchor);
                 // Determine anchor target (could be Range or Element)
                 const anchorNode = uncollapse(anchor);
@@ -5429,7 +5584,7 @@ export class Paginator extends HTMLElement {
                 //                if (rects && rects.length > 0) {
                 //                    const ogRect = Array.from(rects).find(r => r.width > 0 && r.height > 0) || rects[0];
                 ////                    console.log('OG rect chosen:', ogRect);
-                //                    //                        await this.#scrollToRect(ogRect, reason);
+                //                    //                        await this._scrollToRect(ogRect, reason);
                 //                    //                        resolve();
                 //                    //                        return;
                 //                }
@@ -5449,7 +5604,7 @@ export class Paginator extends HTMLElement {
                         let current = el;
                         let doc = el.ownerDocument;
                         // Traverse offsetParent chain (and iframe chain)
-                        while (current && current !== this.#container) {
+                        while (current && current !== this._container) {
                             const parent = current.offsetParent;
                             if (!parent) {
                                 const frame = doc?.defaultView?.frameElement;
@@ -5463,7 +5618,7 @@ export class Paginator extends HTMLElement {
                                 break;
                             }
                             current = parent;
-                            if (current !== this.#container) {
+                            if (current !== this._container) {
                                 left += current.offsetLeft;
                                 top += current.offsetTop;
                             }
@@ -5483,19 +5638,19 @@ export class Paginator extends HTMLElement {
                             height
                         };
                         //                        console.log('syntheticRect=', syntheticRect);
-                        const rectMapper = await this.#getRectMapper();
+                        const rectMapper = await this._getRectMapper();
                         const mapped = rectMapper(syntheticRect);
                         //                        console.log('mappedRect=', mapped);
                         // Use the same helper that the slow path relies on so we keep
                         // consistent behaviour between modes.
-                        await this.#scrollToRect(syntheticRect, reason);
+                        await this._scrollToRect(syntheticRect, reason);
                         resolve();
                         return;
                     }
                 }
                 // Fraction fallback
                 if (this.scrolled) {
-                    await this.#scrollTo(anchor * (await this.viewSize()), reason);
+                    await this._scrollTo(anchor * (await this.viewSize()), reason);
                     resolve();
                     return;
                 }
@@ -5506,15 +5661,15 @@ export class Paginator extends HTMLElement {
                 }
                 const textPages = _pages - 2;
                 const newPage = Math.round(anchor * (textPages - 1));
-                await this.#scrollToPage(newPage + 1, reason);
+                await this._scrollToPage(newPage + 1, reason);
                 resolve();
             });
         });
     }
-    async #getVisibleRange() {
+    async _getVisibleRange() {
         //            console.log("getVisibleRange...")
-        await this.#awaitDirection();
-        const activeLayout = this.#getActiveEbookSectionLayout()
+        await this._awaitDirection();
+        const activeLayout = this._getActiveEbookSectionLayout()
         if (activeLayout) {
             const range = activeLayout.visibleSourceRange(await this.page())
             if (range) {
@@ -5522,15 +5677,15 @@ export class Paginator extends HTMLElement {
             }
         }
         //            console.log("getVisibleRange... await refreshElementVisibilityObserver..")
-        const visibleSentinelIDs = await this.#getSentinelVisibilities()
+        const visibleSentinelIDs = await this._getSentinelVisibilities()
         //            await new Promise(r => requestAnimationFrame(r));
 
         //            console.log("getVisibleRange... awaited refreshElementVisibilityObserver")
-        //            console.log("getVisibleRange... sentinels", this.#visibleSentinelIDs.size)
+        //            console.log("getVisibleRange... sentinels", this._visibleSentinelIDs.size)
 
         // Find the first and last visible content node, skipping <reader-sentinel> and manabi-* elements
 
-        const doc = this.#view.document
+        const doc = this._view.document
 
         if (visibleSentinelIDs.length === 0) {
             const range = doc.createRange();
@@ -5579,9 +5734,9 @@ export class Paginator extends HTMLElement {
         }
         return range;
     }
-    async #dispatchSyntheticRelocate(reason = 'display', originalError = null) {
+    async _dispatchSyntheticRelocate(reason = 'display', originalError = null) {
         try {
-            const index = this.#index
+            const index = this._index
             const detail = {
                 reason,
                 index,
@@ -5611,7 +5766,7 @@ export class Paginator extends HTMLElement {
             }
 
             try {
-                const activeLayout = this.#getActiveEbookSectionLayout()
+                const activeLayout = this._getActiveEbookSectionLayout()
                 const range = activeLayout?.visibleSourceRange?.(currentPage ?? 0) ?? null
                 if (range) detail.range = range
             } catch (_) {}
@@ -5628,7 +5783,7 @@ export class Paginator extends HTMLElement {
                 originalError: originalError ? String(originalError) : null,
             })
 
-            this.#relocateGeneration += 1
+            this._relocateGeneration += 1
             this.dispatchEvent(new CustomEvent('relocate', {
                 detail
             }))
@@ -5637,18 +5792,33 @@ export class Paginator extends HTMLElement {
             return false
         }
     }
-    async #afterScroll(reason) {
-        if (this.#isCacheWarmer) {
+    async _afterScroll(reason) {
+        if (this._isCacheWarmer) {
             return;
         }
         //            console.log("#afterScroll...")
 
-        this.#cachedStart = null;
+        this._cachedStart = null;
 
-        const range = await this.#getVisibleRange()
-        const activeLayout = this.#getActiveEbookSectionLayout()
+        const activeLayout = this._getActiveEbookSectionLayout()
+        const sameDocumentNavigationState = this._usesSameDocumentPagePositioningSync()
+            ? this._getSameDocumentResolvedNavigationStateSync()
+            : null
+        let range = await this._getVisibleRange()
+        if (
+            sameDocumentNavigationState
+            && activeLayout
+            && typeof activeLayout.sourceRangeForPage === 'function'
+        ) {
+            try {
+                const sameDocumentRange = activeLayout.sourceRangeForPage(sameDocumentNavigationState.pageIndex)
+                if (sameDocumentRange) {
+                    range = sameDocumentRange
+                }
+            } catch (_error) {}
+        }
 
-        const index = this.#index
+        const index = this._index
         const detail = {
             reason,
             range,
@@ -5680,12 +5850,12 @@ export class Paginator extends HTMLElement {
                     this.size(),
                     this.start(),
                 ])
-                const livePageCount = this.#getLiveChunkPageCount()
+                const livePageCount = this._getLiveChunkPageCount()
                 const adjustForSentinels = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
                     && livePageCount == null
-                    && this.#hasSentinels
+                    && this._hasSentinels
                     && !this.scrolled
-                    && !this.#vertical
+                    && !this._vertical
                     && pages > 2
                 const textPages = adjustForSentinels ? Math.max(1, pages - 2) : pages
                 const normalizedOffset = adjustForSentinels
@@ -5713,13 +5883,13 @@ export class Paginator extends HTMLElement {
             }
 
             let pagedDetail = await computePaginatedDetail()
-            this.#header.style.visibility = pagedDetail.rawPage > 1 ? 'visible' : 'hidden'
+            this._header.style.visibility = pagedDetail.rawPage > 1 ? 'visible' : 'hidden'
 
             // If layout wasn’t settled yet (common when iframe was hidden pre‑bake),
             // force one re-measure to pick up the real page count.
             if (!this.scrolled && pagedDetail.textPages <= 1) {
-                if (this.#view) {
-                    this.#view.cachedViewSize = null
+                if (this._view) {
+                    this._view.cachedViewSize = null
                 }
                 await new Promise(resolve => requestAnimationFrame(resolve))
                 const retryDetail = await computePaginatedDetail()
@@ -5765,14 +5935,14 @@ export class Paginator extends HTMLElement {
         if (activeLayout) {
             activeLayout.setCurrentSourceAnchor?.(range)
             if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor') {
-                this.#anchor = range
+                this._anchor = range
             } else {
-                this.#justAnchored = true
+                this._justAnchored = true
             }
         } else if (reason !== 'selection' && reason !== 'navigation' && reason !== 'anchor') {
-            this.#anchor = range
+            this._anchor = range
         } else {
-            this.#justAnchored = true
+            this._justAnchored = true
         }
 
         const detailForLog = {
@@ -5786,7 +5956,7 @@ export class Paginator extends HTMLElement {
         }
         logEBookPageNumLimited('relocate:detail', detailForLog)
 
-        this.#relocateGeneration += 1
+        this._relocateGeneration += 1
         this.dispatchEvent(new CustomEvent('relocate', {
             detail
         }))
@@ -5799,11 +5969,11 @@ export class Paginator extends HTMLElement {
                 this.size(),
                 this.viewSize(),
             ])
-            const livePageCount = this.#getLiveChunkPageCount()
+            const livePageCount = this._getLiveChunkPageCount()
             const sentinelAdjusted = MANABI_RENDERER_SENTINEL_ADJUST_ENABLED
                 && livePageCount == null
                 && !this.scrolled
-                && !this.#vertical
+                && !this._vertical
                 && pageCountRaw > 2;
             const pageCountText = sentinelAdjusted ? Math.max(1, pageCountRaw - 2) : pageCountRaw;
             const pageNumberText = sentinelAdjusted
@@ -5830,15 +6000,15 @@ export class Paginator extends HTMLElement {
 
         // Force chevron visible at start of sections (now handled here, not in ebook-viewer.js)
         if (await this.isAtSectionStart()) {
-            if (this.#touchTriggeredNav) {
-                this.#logChevronDispatch('sideNavChevronOpacity:startOfSection:skip', {
+            if (this._touchTriggeredNav) {
+                this._logChevronDispatch('sideNavChevronOpacity:startOfSection:skip', {
                     reason: 'navTriggered',
                     bookDir: this.bookDir ?? null,
-                    rtl: this.#rtl,
+                    rtl: this._rtl,
                 });
             } else {
-                this.#skipTouchEndOpacity = true
-                this.#emitChevronOpacity({
+                this._skipTouchEndOpacity = true
+                this._emitChevronOpacity({
                     leftOpacity: this.bookDir === 'rtl' ? 0.999 : 0,
                     rightOpacity: this.bookDir === 'rtl' ? 0 : 0.999,
                 }, 'afterScroll:startOfSection');
@@ -5846,25 +6016,25 @@ export class Paginator extends HTMLElement {
         }
     }
 
-    #updateSwipeChevron(dx, minSwipe, source = 'swipe') {
+    _updateSwipeChevron(dx, minSwipe, source = 'swipe') {
         let leftOpacity = 0,
             rightOpacity = 0;
         if (dx > 0) leftOpacity = Math.min(1, dx / minSwipe);
         else if (dx < 0) rightOpacity = Math.min(1, -dx / minSwipe);
         if (leftOpacity > 0 || rightOpacity > 0) {
-            this.#touchHasShownChevron = true;
+            this._touchHasShownChevron = true;
         }
-        this.#maxChevronLeft = Math.max(this.#maxChevronLeft, Number(leftOpacity) || 0);
-        this.#maxChevronRight = Math.max(this.#maxChevronRight, Number(rightOpacity) || 0);
-        this.#emitChevronOpacity({
+        this._maxChevronLeft = Math.max(this._maxChevronLeft, Number(leftOpacity) || 0);
+        this._maxChevronRight = Math.max(this._maxChevronRight, Number(rightOpacity) || 0);
+        this._emitChevronOpacity({
             leftOpacity,
             rightOpacity,
-            fadeMs: this.#chevronFadeMs,
+            fadeMs: this._chevronFadeMs,
         }, source);
     }
-    async #display(promise) {
+    async _display(promise) {
         //            console.log("#display...")
-        this.#setLoading(true, 'display')
+        this._setLoading(true, 'display')
         const {
             index,
             src,
@@ -5876,7 +6046,7 @@ export class Paginator extends HTMLElement {
         } = await promise
 
         //            console.log("#display...awaited promise")
-        this.#index = index
+        this._index = index
         logBug?.('paginator:display:index', {
             index,
             src: src ?? null,
@@ -5886,14 +6056,14 @@ export class Paginator extends HTMLElement {
         });
         if (src) {
             const afterLoad = async (doc) => {
-                if (this.#isCacheWarmer) {
+                if (this._isCacheWarmer) {
                     await onLoad?.({
                         location: sectionLocation ?? src,
                     })
                 } else {
                     hideDocumentContentForPreBake(doc)
                     if (doc.head) {
-                        const existingStyles = this.#styleMap.get(doc)
+                        const existingStyles = this._styleMap.get(doc)
                         if (existingStyles) {
                             for (const styleNode of existingStyles) styleNode?.remove?.()
                         }
@@ -5901,7 +6071,7 @@ export class Paginator extends HTMLElement {
                         doc.head.prepend($styleBefore)
                         const $style = doc.createElement('style')
                         doc.head.append($style)
-                        this.#styleMap.set(doc, [$styleBefore, $style])
+                        this._styleMap.set(doc, [$styleBefore, $style])
                         if (MANABI_TRACKING_SIZE_BAKE_ENABLED) ensureTrackingSizeBakeStyles(doc)
                     }
                     await onLoad?.({
@@ -5909,7 +6079,7 @@ export class Paginator extends HTMLElement {
                         location: sectionLocation ?? src,
                         index,
                     })
-                    await this.#performTrackingSectionGeometryBake({
+                    await this._performTrackingSectionGeometryBake({
                         reason: 'initial-load',
                         restoreLocation: false,
                     })
@@ -5917,23 +6087,23 @@ export class Paginator extends HTMLElement {
                 }
             }
 
-            if (this.#isCacheWarmer) {
+            if (this._isCacheWarmer) {
                 await fetch(src).then(r => r.text())
                 await afterLoad()
             } else {
-                this.#skipTouchEndOpacity = true
-                const view = this.#createView()
-                const beforeRender = this.#beforeRender.bind(this)
+                this._skipTouchEndOpacity = true
+                const view = this._createView()
+                const beforeRender = this._beforeRender.bind(this)
 
-                this.#cachedSizes = null
-                this.#cachedStart = null
+                this._cachedSizes = null
+                this._cachedStart = null
                 //                console.log("#display... scrolledToAnchorOnLoad = false")
-                this.#scrolledToAnchorOnLoad = false
+                this._scrolledToAnchorOnLoad = false
 
                 //                console.log("#display... await load")
                 await view.load(src, afterLoad, beforeRender, index, sectionLocation)
                 //                console.log("#display... awaited load")
-                this.#view = view
+                this._view = view
 
                 // Reset chevrons when loading new section
                 document.dispatchEvent(new CustomEvent('resetSideNavChevrons'));
@@ -5950,16 +6120,16 @@ export class Paginator extends HTMLElement {
 
         //            console.log("#display... call scroll to anchor")
 
-        const layoutSync = await this.#syncEbookSectionLayout({
+        const layoutSync = await this._syncEbookSectionLayout({
             reason: reason ?? 'display',
             anchor,
         })
 
-        const relocateGenerationBeforeScroll = this.#relocateGeneration
+        const relocateGenerationBeforeScroll = this._relocateGeneration
         let scrollToAnchorError = null
         try {
             await this.scrollToAnchor(
-                (layoutSync?.restoreAnchor ?? this.#resolveAnchorAgainstActiveLayout(anchor)) ?? 0,
+                (layoutSync?.restoreAnchor ?? this._resolveAnchorAgainstActiveLayout(anchor)) ?? 0,
                 select,
                 reason
             )
@@ -5967,15 +6137,15 @@ export class Paginator extends HTMLElement {
             scrollToAnchorError = error
         }
         const shouldDispatchSyntheticRelocate =
-            !this.#isCacheWarmer && this.#relocateGeneration === relocateGenerationBeforeScroll
+            !this._isCacheWarmer && this._relocateGeneration === relocateGenerationBeforeScroll
         const didDispatchSyntheticRelocate = shouldDispatchSyntheticRelocate
-            ? await this.#dispatchSyntheticRelocate(reason ?? 'display', scrollToAnchorError)
+            ? await this._dispatchSyntheticRelocate(reason ?? 'display', scrollToAnchorError)
             : false
         logBug?.('paginator:display:post-scroll', {
             index,
             reason: reason ?? null,
             relocateGenerationBeforeScroll,
-            relocateGenerationAfterScroll: this.#relocateGeneration,
+            relocateGenerationAfterScroll: this._relocateGeneration,
             shouldDispatchSyntheticRelocate,
             didDispatchSyntheticRelocate,
             scrollToAnchorError: scrollToAnchorError ? String(scrollToAnchorError) : null,
@@ -6012,17 +6182,17 @@ export class Paginator extends HTMLElement {
             // best-effort; keep display flow unhindered
         }
         //            console.log("#display... scrolledToAnchorOnLoad = true")
-        this.#scrolledToAnchorOnLoad = true
-        this.#setLoading(false, 'display-complete')
-        this.#forceEndTouchGesture('didDisplay')
+        this._scrolledToAnchorOnLoad = true
+        this._setLoading(false, 'display-complete')
+        this._forceEndTouchGesture('didDisplay')
         this.dispatchEvent(new CustomEvent('didDisplay', {}))
         //            console.log("#display... fin")
         return true
     }
-    #canGoToIndex(index) {
+    _canGoToIndex(index) {
         return index >= 0 && index <= this.sections.length - 1
     }
-    async #goTo({
+    async _goTo({
         index,
         anchor,
         select,
@@ -6030,10 +6200,10 @@ export class Paginator extends HTMLElement {
     }) {
         //        console.log("#goTo...", this.style.display, index, anchor)
         const navigationReason = reason ?? (select ? 'selection' : 'navigation');
-        const willLoadNewIndex = index !== this.#index;
+        const willLoadNewIndex = index !== this._index;
         logBug?.('paginator:goTo:start', {
             index,
-            currentIndex: this.#index,
+            currentIndex: this._index,
             willLoadNewIndex,
             reason: navigationReason,
             anchor: summarizeAnchor(anchor),
@@ -6043,7 +6213,7 @@ export class Paginator extends HTMLElement {
             willLoadNewIndex: willLoadNewIndex
         }))
         if (!willLoadNewIndex) {
-            await this.#display({
+            await this._display({
                 index,
                 anchor,
                 select,
@@ -6053,15 +6223,15 @@ export class Paginator extends HTMLElement {
             // hide the view until final relocate needs
             this.style.display = 'none'
  
-            const oldIndex = this.#index
+            const oldIndex = this._index
             // Reset direction flags and promise before loading a new section
-            this.#vertical = this.#verticalRTL = this.#rtl = null;
-            this.#directionReady = new Promise(r => (this.#directionReadyResolve = r));
+            this._vertical = this._verticalRTL = this._rtl = null;
+            this._directionReady = new Promise(r => (this._directionReadyResolve = r));
             const onLoad = async (detail) => {
                 this.sections[oldIndex]?.unload?.()
 
-                if (!this.#isCacheWarmer) {
-                    this.setStyles(this.#styles)
+                if (!this._isCacheWarmer) {
+                    this.setStyles(this._styles)
                 }
 
                 this.dispatchEvent(new CustomEvent('load', {
@@ -6070,13 +6240,13 @@ export class Paginator extends HTMLElement {
             }
 
             let loadPromise;
-            if (this.#prefetchCache.has(index)) {
-                loadPromise = this.#prefetchCache.get(index);
+            if (this._prefetchCache.has(index)) {
+                loadPromise = this._prefetchCache.get(index);
             } else {
                 loadPromise = this.sections[index].load();
-                this.#prefetchCache.set(index, loadPromise);
+                this._prefetchCache.set(index, loadPromise);
             }
-            await this.#display(Promise.resolve(loadPromise)
+            await this._display(Promise.resolve(loadPromise)
                 .then(src => ({
                     index,
                     src,
@@ -6092,15 +6262,15 @@ export class Paginator extends HTMLElement {
                     return {};
                 }));
 
-            clearTimeout(this.#prefetchTimer);
-            this.#prefetchTimer = setTimeout(() => {
-                if (this.#index !== index) return; // bail if user has moved on
+            clearTimeout(this._prefetchTimer);
+            this._prefetchTimer = setTimeout(() => {
+                if (this._index !== index) return; // bail if user has moved on
 
                 const wanted = [index - 1, index + 1];
                 // Keep any already cached of these two
-                const keep = new Set(wanted.filter(i => this.#prefetchCache.has(i)));
-                this.#prefetchCache = new Map(
-                    [...this.#prefetchCache].filter(([i]) => keep.has(i))
+                const keep = new Set(wanted.filter(i => this._prefetchCache.has(i)));
+                this._prefetchCache = new Map(
+                    [...this._prefetchCache].filter(([i]) => keep.has(i))
                 );
 
                 // Now prefetch any neighbor not already cached
@@ -6109,20 +6279,20 @@ export class Paginator extends HTMLElement {
                         i >= 0 &&
                         i < this.sections.length &&
                         this.sections[i].linear !== 'no' &&
-                        !this.#prefetchCache.has(i)
+                        !this._prefetchCache.has(i)
                     ) {
-                        this.#schedulePrefetchLoad(i)
+                        this._schedulePrefetchLoad(i)
                     }
                 });
             }, 500);
         }
     }
     async goTo(target) {
-        if (this.#locked) {
+        if (this._locked) {
             const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-            const elapsed = now - this.#lockTimestamp;
+            const elapsed = now - this._lockTimestamp;
             if (elapsed > 400) {
-                this.#locked = false;
+                this._locked = false;
                 logBug?.('paginator:watchdog-unlock-goTo', { elapsedMs: elapsed });
             } else {
                 logBug?.('paginator:locked-goTo', { elapsedMs: elapsed });
@@ -6130,72 +6300,102 @@ export class Paginator extends HTMLElement {
             }
         }
         const resolved = await target
-        if (this.#canGoToIndex(resolved.index)) return await this.#goTo(resolved)
+        if (this._canGoToIndex(resolved.index)) return await this._goTo(resolved)
         return false
     }
-    async #scrollPrev(distance) {
-        if (!this.#view) return true
-        const livePageCount = this.#getLiveChunkPageCount()
-        if (!this.scrolled && livePageCount != null && livePageCount <= 1 && this.#adjacentIndex(-1) != null) {
+    async _scrollPrev(distance) {
+        if (!this._view) return true
+        const livePageCount = this._getLiveChunkPageCount()
+        if (!this.scrolled && livePageCount != null && livePageCount <= 1 && this._adjacentIndex(-1) != null) {
             return true
         }
+        if (this._usesSameDocumentPagePositioningSync()) {
+            let { pageIndex, pageCount } = this._getSameDocumentResolvedNavigationStateSync()
+            if (!(pageCount > 0)) return true
+            let page = Math.max(0, pageIndex - 1)
+            ;({ pageIndex, pageCount } = await this._getSameDocumentPreparedNavigationState(
+                page,
+                'scrollPrev'
+            ))
+            page = Math.max(0, pageIndex - 1)
+            if (page === pageIndex) return this._adjacentIndex(-1) != null
+            return await this._scrollToPage(page, 'page', true).then(() => page <= 0)
+        }
         if (this.scrolled) {
-            const style = getComputedStyle(this.#container);
-            const lineAdvance = this.#vertical ?
+            const style = getComputedStyle(this._container);
+            const lineAdvance = this._vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
             const scrollDistance = distance ?? (this.size - lineAdvance);
             if ((await this.start()) > 0) {
-                return await this.#scrollTo(Math.max(0, this.start - scrollDistance), null, true);
+                return await this._scrollTo(Math.max(0, this.start - scrollDistance), null, true);
             }
             return true;
         }
         if (await this.atStart()) return
         const page = await this.page() - 1
-        return await this.#scrollToPage(page, 'page', true).then(() => page <= 0)
+        return await this._scrollToPage(page, 'page', true).then(() => page <= 0)
     }
-    async #scrollNext(distance) {
-        if (!this.#view) return true
-        const livePageCount = this.#getLiveChunkPageCount()
-        if (!this.scrolled && livePageCount != null && livePageCount <= 1 && this.#adjacentIndex(1) != null) {
+    async _scrollNext(distance) {
+        if (!this._view) return true
+        const livePageCount = this._getLiveChunkPageCount()
+        if (!this.scrolled && livePageCount != null && livePageCount <= 1 && this._adjacentIndex(1) != null) {
             return true
         }
+        if (this._usesSameDocumentPagePositioningSync()) {
+            let { pageIndex, pageCount } = this._getSameDocumentResolvedNavigationStateSync()
+            if (!(pageCount > 0)) return true
+            let page = Math.min(pageCount - 1, pageIndex + 1)
+            ;({ pageIndex, pageCount } = await this._getSameDocumentPreparedNavigationState(
+                page,
+                'scrollNext'
+            ))
+            page = Math.min(pageCount - 1, pageIndex + 1)
+            setSameDocumentHostTurnDiagnostics({
+                phase: 'scroll-next-resolved',
+                currentPageIndex: pageIndex,
+                pageCount,
+                targetPageIndex: page,
+            })
+            if (page === pageIndex) return this._adjacentIndex(1) != null
+            return await this._scrollToPage(page, 'page', true).then(() => page >= pageCount - 1)
+        }
         if (this.scrolled) {
-            const style = getComputedStyle(this.#container);
-            const lineAdvance = this.#vertical ?
+            const style = getComputedStyle(this._container);
+            const lineAdvance = this._vertical ?
                 parseFloat(style.fontSize) || 20 :
                 parseFloat(style.lineHeight) || 20;
             const scrollDistance = distance ?? (this.size - lineAdvance);
             if ((await this.viewSize()) - (await this.end()) > 2) {
-                return await this.#scrollTo(Math.min(await this.viewSize(), (await this.start()) + scrollDistance), null, true);
+                return await this._scrollTo(Math.min(await this.viewSize(), (await this.start()) + scrollDistance), null, true);
             }
             return true;
         }
         if (await this.atEnd()) return
         const page = await this.page() + 1
         const pages = await this.pages()
-        return await this.#scrollToPage(page, 'page', true).then(() => page >= pages - 1)
+        return await this._scrollToPage(page, 'page', true).then(() => page >= pages - 1)
     }
     async atStart() {
-        const livePageCount = this.#getLiveChunkPageCount()
+        const livePageCount = this._getLiveChunkPageCount()
         const edgePage = livePageCount != null ? 0 : 1
-        return this.#adjacentIndex(-1) == null && (await this.page()) <= edgePage
+        return this._adjacentIndex(-1) == null && (await this.page()) <= edgePage
     }
     async atEnd() {
-        const livePageCount = this.#getLiveChunkPageCount()
+        const livePageCount = this._getLiveChunkPageCount()
         const edgeOffset = livePageCount != null ? 1 : 2
-        return this.#adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - edgeOffset
+        return this._adjacentIndex(1) == null && (await this.page()) >= (await this.pages()) - edgeOffset
     }
-    #adjacentIndex(dir) {
-        for (let index = this.#index + dir; this.#canGoToIndex(index); index += dir)
+    _adjacentIndex(dir) {
+        for (let index = this._index + dir; this._canGoToIndex(index); index += dir)
             if (this.sections[index]?.linear !== 'no') return index
     }
-    async #turnPage(dir, distance) {
-        if (this.#locked) {
+    async _turnPage(dir, distance) {
+        if (this._locked) {
             const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-            const elapsed = now - this.#lockTimestamp;
+            const elapsed = now - this._lockTimestamp;
             if (elapsed > 400) {
-                this.#locked = false;
+                this._locked = false;
                 logBug?.('paginator:watchdog-unlock-turnPage', { dir, elapsedMs: elapsed });
             } else {
                 logBug?.('paginator:locked-turnPage', { dir, elapsedMs: elapsed });
@@ -6203,12 +6403,12 @@ export class Paginator extends HTMLElement {
             }
         }
 
-        this.#locked = true
-        this.#lockTimestamp = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        const beforeIndex = this.#index
+        this._locked = true
+        this._lockTimestamp = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const beforeIndex = this._index
         const beforePage = await this.page().catch(() => null)
         const beforePages = await this.pages().catch(() => null)
-        const adjacentIndex = this.#adjacentIndex(dir)
+        const adjacentIndex = this._adjacentIndex(dir)
         logBug?.('paginator:turnPage:start', {
             dir,
             distance,
@@ -6219,21 +6419,21 @@ export class Paginator extends HTMLElement {
         });
         try {
             const prev = dir === -1
-            const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+            const shouldGo = await (prev ? await this._scrollPrev(distance) : await this._scrollNext(distance))
             logBug?.('paginator:turnPage:shouldGo', {
                 dir,
                 shouldGo,
-                currentIndex: this.#index,
+                currentIndex: this._index,
                 adjacentIndex,
             });
             let didNavigate = false
             if (shouldGo) {
                 logBug?.('paginator:turnPage:cross-section', {
                     dir,
-                    currentIndex: this.#index,
+                    currentIndex: this._index,
                     targetIndex: adjacentIndex,
                 });
-                didNavigate = await this.#goTo({
+                didNavigate = await this._goTo({
                     index: adjacentIndex,
                     anchor: prev ? () => 1 : () => 0,
                     reason: 'page',
@@ -6245,92 +6445,97 @@ export class Paginator extends HTMLElement {
             const afterPage = await this.page().catch(() => null)
             const afterPages = await this.pages().catch(() => null)
             const resolved = didNavigate
-                || this.#index !== beforeIndex
+                || this._index !== beforeIndex
                 || beforePage !== afterPage
                 || beforePages !== afterPages
             return resolved
         } finally {
             // Never leave the paginator locked if navigation threw/cancelled.
-            this.#locked = false
+            this._locked = false
             const afterPage = await this.page().catch(() => null)
             const afterPages = await this.pages().catch(() => null)
             logBug?.('paginator:turnPage:end', {
                 dir,
-                currentIndex: this.#index,
+                currentIndex: this._index,
                 afterPage,
                 afterPages,
             });
         }
     }
     async prev(distance) {
-        return await this.#turnPage(-1, distance)
+        return await this._turnPage(-1, distance)
     }
     async next(distance) {
-        return await this.#turnPage(1, distance)
+        return await this._turnPage(1, distance)
     }
     hostTurn(direction) {
         const dir = direction === 'backward' ? -1 : 1
-        if (this.#sameDocumentMode && !this.scrolled && !this.#vertical) {
-            const currentPage = this.#getSameDocumentClampedPageIndexSync()
-            const pageCount = this.#getSameDocumentResolvedPageCountSync()
-            const targetPage = currentPage + dir
-            setSameDocumentHostTurnDiagnostics({
-                phase: 'host-turn-begin',
-                direction,
-                currentPageIndex: currentPage,
-                pageCount,
-                targetPageIndex: targetPage,
-            })
-            if (targetPage >= 0 && targetPage < pageCount) {
-                this.#applySameDocumentPagePositionSync(targetPage, {
-                    reason: 'host-turn',
-                    smooth: true,
-                })
-                void Promise.resolve(this.#afterScroll('host-turn')).catch(() => {})
+        if (this._usesSameDocumentPagePositioningSync()) {
+            return Promise.resolve().then(async () => {
+                let { pageIndex: currentPage, pageCount } = this._getSameDocumentResolvedNavigationStateSync()
+                let targetPage = currentPage + dir
+                ;({ pageIndex: currentPage, pageCount } = await this._getSameDocumentPreparedNavigationState(
+                    targetPage,
+                    'host-turn'
+                ))
+                targetPage = currentPage + dir
                 setSameDocumentHostTurnDiagnostics({
-                    phase: 'host-turn-complete',
+                    phase: 'host-turn-begin',
                     direction,
                     currentPageIndex: currentPage,
                     pageCount,
                     targetPageIndex: targetPage,
-                    result: 'page',
                 })
-                return true
-            }
-            const adjacentIndex = this.#adjacentIndex(dir)
-            if (adjacentIndex != null) {
+                if (targetPage >= 0 && targetPage < pageCount) {
+                    await this._scrollToPage(targetPage, 'host-turn', false)
+                    const settledState = this._getSameDocumentResolvedNavigationStateSync()
+                    const settledPageIndex = settledState.pageIndex
+                    const settledPageCount = settledState.pageCount
+                    setSameDocumentHostTurnDiagnostics({
+                        phase: settledPageIndex === targetPage ? 'host-turn-complete' : 'host-turn-stalled',
+                        direction,
+                        currentPageIndex: settledPageIndex,
+                        pageCount: settledPageCount,
+                        targetPageIndex: targetPage,
+                        result: settledPageIndex === targetPage ? 'page' : 'stalled',
+                    })
+                    return settledPageIndex === targetPage
+                }
+                const adjacentIndex = this._adjacentIndex(dir)
+                if (adjacentIndex != null) {
+                    setSameDocumentHostTurnDiagnostics({
+                        phase: 'host-turn-section',
+                        direction,
+                        currentPageIndex: currentPage,
+                        pageCount,
+                        adjacentSectionIndex: adjacentIndex,
+                        result: 'section',
+                    })
+                    return this._goTo({
+                        index: adjacentIndex,
+                        anchor: dir < 0 ? () => 1 : () => 0,
+                        reason: 'page',
+                    })
+                }
                 setSameDocumentHostTurnDiagnostics({
-                    phase: 'host-turn-section',
+                    phase: 'host-turn-unavailable',
                     direction,
                     currentPageIndex: currentPage,
                     pageCount,
-                    adjacentSectionIndex: adjacentIndex,
-                    result: 'section',
+                    targetPageIndex: targetPage,
+                    result: 'unavailable',
                 })
-                return this.#goTo({
-                    index: adjacentIndex,
-                    anchor: dir < 0 ? () => 1 : () => 0,
-                    reason: 'page',
-                })
-            }
-            setSameDocumentHostTurnDiagnostics({
-                phase: 'host-turn-unavailable',
-                direction,
-                currentPageIndex: currentPage,
-                pageCount,
-                targetPageIndex: targetPage,
-                result: 'unavailable',
+                return false
             })
-            return false
         }
         return dir < 0
             ? this.prev()
             : this.next()
     }
     async prevSection() {
-        const targetIndex = this.#adjacentIndex(-1)
+        const targetIndex = this._adjacentIndex(-1)
         logBug?.('paginator:prevSection', {
-            currentIndex: this.#index,
+            currentIndex: this._index,
             targetIndex,
         });
         return await this.goTo({
@@ -6339,9 +6544,9 @@ export class Paginator extends HTMLElement {
         })
     }
     async nextSection() {
-        const targetIndex = this.#adjacentIndex(1)
+        const targetIndex = this._adjacentIndex(1)
         logBug?.('paginator:nextSection', {
-            currentIndex: this.#index,
+            currentIndex: this._index,
             targetIndex,
         });
         return await this.goTo({
@@ -6362,16 +6567,16 @@ export class Paginator extends HTMLElement {
         })
     }
     getContents() {
-        if (this.#view) return [{
-            index: this.#index,
-            overlayer: this.#view.overlayer,
-            doc: this.#view.document,
+        if (this._view) return [{
+            index: this._index,
+            overlayer: this._view.overlayer,
+            doc: this._view.document,
         }]
         return []
     }
     setStyles(styles) {
-        this.#styles = styles
-        const $$styles = this.#styleMap.get(this.#view?.document)
+        this._styles = styles
+        const $$styles = this._styleMap.get(this._view?.document)
         if (!$$styles) return
         const [$beforeStyle, $style] = $$styles
         if (Array.isArray(styles)) {
@@ -6382,45 +6587,45 @@ export class Paginator extends HTMLElement {
 
         //        // NOTE: needs `requestAnimationFrame` in Chromium
         //        requestAnimationFrame(() =>
-        //            this.#background.style.background = getBackground(this.#view.document))
+        //            this._background.style.background = getBackground(this._view.document))
 
         // needed because the resize observer doesn't work in Firefox
-        //            this.#view?.document?.fonts?.ready?.then(async () => { await this.#view.expand() })
+        //            this._view?.document?.fonts?.ready?.then(async () => { await this._view.expand() })
 
         this.requestTrackingSectionSizeBake({ reason: 'styles-applied' })
     }
     destroy() {
-        this.#disconnectElementVisibilityObserver()
-        this.#resizeObserver.unobserve(this)
-        this.#resetTrackingSectionSizeState()
-        this.#bindEbookLayoutEvents(null)
-        this.#ebookSectionLayout.destroy()
-        this.#view.destroy()
-        this.#view = null
-        this.#teardownSameDocumentViewport()
-        this.sections[this.#index]?.unload?.()
+        this._disconnectElementVisibilityObserver()
+        this._resizeObserver.unobserve(this)
+        this._resetTrackingSectionSizeState()
+        this._bindEbookLayoutEvents(null)
+        this._ebookSectionLayout.destroy()
+        this._view.destroy()
+        this._view = null
+        this._teardownSameDocumentViewport()
+        this.sections[this._index]?.unload?.()
     }
     // Public navigation edge detection methods
     async canTurnPrev() {
-        if (!this.#view) return false;
+        if (!this._view) return false;
         if (this.scrolled) {
             return this.start > 0;
         }
         // If at the start page and no previous section, cannot turn
-        const livePageCount = this.#getLiveChunkPageCount();
+        const livePageCount = this._getLiveChunkPageCount();
         const edgePage = livePageCount != null ? 0 : 1;
-        if ((await this.page()) <= edgePage && this.#adjacentIndex(-1) == null) return false;
+        if ((await this.page()) <= edgePage && this._adjacentIndex(-1) == null) return false;
         return true;
     }
     async canTurnNext() {
-        if (!this.#view) return false;
+        if (!this._view) return false;
         if (this.scrolled) {
             return this.viewSize - this.end > 2;
         }
         // If at the end page and no next section, cannot turn
-        const livePageCount = this.#getLiveChunkPageCount();
+        const livePageCount = this._getLiveChunkPageCount();
         const edgeOffset = livePageCount != null ? 1 : 2;
-        if ((await this.page()) >= (await this.pages()) - edgeOffset && this.#adjacentIndex(1) == null) return false;
+        if ((await this.page()) >= (await this.pages()) - edgeOffset && this._adjacentIndex(1) == null) return false;
         return true;
     }
 
@@ -6444,12 +6649,12 @@ export class Paginator extends HTMLElement {
             id: node?.id ?? null,
             className: typeof node?.className === 'string' ? node.className : null,
         })
-        const doc = this.#view?.document ?? null
+        const doc = this._view?.document ?? null
         const stage = document.getElementById('reader-stage')
         const viewport = document.getElementById('manabi-same-document-viewport')
         const viewportContainer = document.getElementById('manabi-same-document-container')
-        const contentRoot = this.#view?.document
-            ? (this.#view.document.getElementById?.('reader-content') || this.#view.document.body || null)
+        const contentRoot = this._view?.document
+            ? (this._view.document.getElementById?.('reader-content') || this._view.document.body || null)
             : null
         const liveRoot = contentRoot?.querySelector?.('.manabi-page-root') || null
         const livePages = liveRoot ? Array.from(liveRoot.querySelectorAll(':scope > .manabi-page')) : []
@@ -6475,23 +6680,23 @@ export class Paginator extends HTMLElement {
             }
         }
         return {
-            sameDocumentMode: this.#sameDocumentMode,
+            sameDocumentMode: this._sameDocumentMode,
             hostDisplay: styleValue(this, 'display'),
             hostVisibility: styleValue(this, 'visibility'),
             hostOpacity: styleValue(this, 'opacity'),
             hostRect: roundRect(this.getBoundingClientRect?.()),
-            topDisplay: styleValue(this.#top, 'display'),
-            topVisibility: styleValue(this.#top, 'visibility'),
-            topOpacity: styleValue(this.#top, 'opacity'),
-            topRect: roundRect(this.#top?.getBoundingClientRect?.()),
-            containerDisplay: styleValue(this.#container, 'display'),
-            containerVisibility: styleValue(this.#container, 'visibility'),
-            containerOpacity: styleValue(this.#container, 'opacity'),
-            containerRect: roundRect(this.#container?.getBoundingClientRect?.()),
-            containerClientWidth: this.#container?.clientWidth ?? null,
-            containerClientHeight: this.#container?.clientHeight ?? null,
-            containerScrollWidth: this.#container?.scrollWidth ?? null,
-            containerScrollHeight: this.#container?.scrollHeight ?? null,
+            topDisplay: styleValue(this._top, 'display'),
+            topVisibility: styleValue(this._top, 'visibility'),
+            topOpacity: styleValue(this._top, 'opacity'),
+            topRect: roundRect(this._top?.getBoundingClientRect?.()),
+            containerDisplay: styleValue(this._container, 'display'),
+            containerVisibility: styleValue(this._container, 'visibility'),
+            containerOpacity: styleValue(this._container, 'opacity'),
+            containerRect: roundRect(this._container?.getBoundingClientRect?.()),
+            containerClientWidth: this._container?.clientWidth ?? null,
+            containerClientHeight: this._container?.clientHeight ?? null,
+            containerScrollWidth: this._container?.scrollWidth ?? null,
+            containerScrollHeight: this._container?.scrollHeight ?? null,
             sameDocumentViewportExists: !!viewport,
             sameDocumentViewportRect: roundRect(viewport?.getBoundingClientRect?.()),
             sameDocumentViewportDisplay: styleValue(viewport, 'display'),
@@ -6506,20 +6711,20 @@ export class Paginator extends HTMLElement {
             sameDocumentContainerDisplay: styleValue(viewportContainer, 'display'),
             sameDocumentContainerVisibility: styleValue(viewportContainer, 'visibility'),
             sameDocumentContainerOpacity: styleValue(viewportContainer, 'opacity'),
-            mountRect: roundRect(this.#view?.element?.getBoundingClientRect?.()),
-            mountDisplay: styleValue(this.#view?.element, 'display'),
-            mountVisibility: styleValue(this.#view?.element, 'visibility'),
-            mountOpacity: styleValue(this.#view?.element, 'opacity'),
-            mountBackgroundColor: styleValue(this.#view?.element, 'backgroundColor'),
+            mountRect: roundRect(this._view?.element?.getBoundingClientRect?.()),
+            mountDisplay: styleValue(this._view?.element, 'display'),
+            mountVisibility: styleValue(this._view?.element, 'visibility'),
+            mountOpacity: styleValue(this._view?.element, 'opacity'),
+            mountBackgroundColor: styleValue(this._view?.element, 'backgroundColor'),
             stageRect: roundRect(stage?.getBoundingClientRect?.()),
             stageDisplay: styleValue(stage, 'display'),
             stageVisibility: styleValue(stage, 'visibility'),
             stageOpacity: styleValue(stage, 'opacity'),
             stageZIndex: styleValue(stage, 'zIndex'),
             stageBackgroundColor: styleValue(stage, 'backgroundColor'),
-            shellCenterElementTag: infoFor(elementCenter(stage || viewport || this.#container)).tag,
-            shellCenterElementId: infoFor(elementCenter(stage || viewport || this.#container)).id,
-            shellCenterElementClassName: infoFor(elementCenter(stage || viewport || this.#container)).className,
+            shellCenterElementTag: infoFor(elementCenter(stage || viewport || this._container)).tag,
+            shellCenterElementId: infoFor(elementCenter(stage || viewport || this._container)).id,
+            shellCenterElementClassName: infoFor(elementCenter(stage || viewport || this._container)).className,
             documentURL: doc?.URL ?? null,
             documentReadyState: doc?.readyState ?? null,
             documentBodyTextLength: doc?.body?.innerText?.trim?.().length ?? null,
@@ -6568,20 +6773,20 @@ export class Paginator extends HTMLElement {
 
     // Public helpers for adjacent sections
     getHasPrevSection() {
-        return this.#adjacentIndex(-1) != null;
+        return this._adjacentIndex(-1) != null;
     }
     getHasNextSection() {
-        return this.#adjacentIndex(1) != null;
+        return this._adjacentIndex(1) != null;
     }
 
     // Public: At first page of current section
     async isAtSectionStart() {
-        const livePageCount = this.#getLiveChunkPageCount()
+        const livePageCount = this._getLiveChunkPageCount()
         return (await this.page()) <= (livePageCount != null ? 0 : 1);
     }
     // Public: At last page of current section
     async isAtSectionEnd() {
-        const livePageCount = this.#getLiveChunkPageCount()
+        const livePageCount = this._getLiveChunkPageCount()
         const edgeOffset = livePageCount != null ? 1 : 2
         return (await this.page()) >= (await this.pages()) - edgeOffset;
     }

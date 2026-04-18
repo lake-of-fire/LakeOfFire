@@ -64,91 +64,91 @@ const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) 
 }
 
 class History extends EventTarget {
-    #arr = []
-    #index = -1
-    #pendingReplaceStateSuppressionCount = 0
-    #activeReplaceStateSuppressionCount = 0
-    #suppressedReplaceStateCount = 0
-    #lastSuppressedReplaceStateReason = null
+    _arr = []
+    _index = -1
+    _pendingReplaceStateSuppressionCount = 0
+    _activeReplaceStateSuppressionCount = 0
+    _suppressedReplaceStateCount = 0
+    _lastSuppressedReplaceStateReason = null
     pushState(x) {
-        const last = this.#arr[this.#index]
+        const last = this._arr[this._index]
         if (last === x || last?.fraction && last.fraction === x.fraction) return
-            this.#arr[++this.#index] = x
-            this.#arr.length = this.#index + 1
+            this._arr[++this._index] = x
+            this._arr.length = this._index + 1
             this.dispatchEvent(new Event('index-change'))
             }
     replaceState(x) {
-        if (this.#pendingReplaceStateSuppressionCount > 0) {
-            this.#pendingReplaceStateSuppressionCount -= 1
-            this.#suppressedReplaceStateCount += 1
+        if (this._pendingReplaceStateSuppressionCount > 0) {
+            this._pendingReplaceStateSuppressionCount -= 1
+            this._suppressedReplaceStateCount += 1
             return
         }
-        if (this.#activeReplaceStateSuppressionCount > 0) {
-            this.#suppressedReplaceStateCount += 1
+        if (this._activeReplaceStateSuppressionCount > 0) {
+            this._suppressedReplaceStateCount += 1
             return
         }
-        const index = this.#index
-        this.#arr[index] = x
+        const index = this._index
+        this._arr[index] = x
     }
     back() {
-        const index = this.#index
+        const index = this._index
         if (index <= 0) return
-            const detail = { state: this.#arr[index - 1] }
-        this.#index = index - 1
+            const detail = { state: this._arr[index - 1] }
+        this._index = index - 1
         this.dispatchEvent(new CustomEvent('popstate', { detail }))
         this.dispatchEvent(new Event('index-change'))
     }
     forward() {
-        const index = this.#index
-        if (index >= this.#arr.length - 1) return
-            const detail = { state: this.#arr[index + 1] }
-        this.#index = index + 1
+        const index = this._index
+        if (index >= this._arr.length - 1) return
+            const detail = { state: this._arr[index + 1] }
+        this._index = index + 1
         this.dispatchEvent(new CustomEvent('popstate', { detail }))
         this.dispatchEvent(new Event('index-change'))
     }
     get canGoBack() {
-        return this.#index > 0
+        return this._index > 0
     }
     get canGoForward() {
-        return this.#index < this.#arr.length - 1
+        return this._index < this._arr.length - 1
     }
     get index() {
-        return this.#index
+        return this._index
     }
     get length() {
-        return this.#arr.length
+        return this._arr.length
     }
     get pendingReplaceStateSuppressionCount() {
-        return this.#pendingReplaceStateSuppressionCount + this.#activeReplaceStateSuppressionCount
+        return this._pendingReplaceStateSuppressionCount + this._activeReplaceStateSuppressionCount
     }
     get suppressedReplaceStateCount() {
-        return this.#suppressedReplaceStateCount
+        return this._suppressedReplaceStateCount
     }
     get lastSuppressedReplaceStateReason() {
-        return this.#lastSuppressedReplaceStateReason
+        return this._lastSuppressedReplaceStateReason
     }
     suppressNextReplaceState(reason = 'internal') {
-        this.#pendingReplaceStateSuppressionCount += 1
-        this.#lastSuppressedReplaceStateReason = reason ?? null
+        this._pendingReplaceStateSuppressionCount += 1
+        this._lastSuppressedReplaceStateReason = reason ?? null
     }
     beginReplaceStateSuppression(reason = 'internal') {
-        this.#activeReplaceStateSuppressionCount += 1
-        this.#lastSuppressedReplaceStateReason = reason ?? null
+        this._activeReplaceStateSuppressionCount += 1
+        this._lastSuppressedReplaceStateReason = reason ?? null
     }
     endReplaceStateSuppression() {
-        this.#activeReplaceStateSuppressionCount = Math.max(0, this.#activeReplaceStateSuppressionCount - 1)
+        this._activeReplaceStateSuppressionCount = Math.max(0, this._activeReplaceStateSuppressionCount - 1)
     }
     clearPendingReplaceStateSuppression() {
-        this.#pendingReplaceStateSuppressionCount = 0
-        this.#activeReplaceStateSuppressionCount = 0
+        this._pendingReplaceStateSuppressionCount = 0
+        this._activeReplaceStateSuppressionCount = 0
     }
     clear() {
-        this.#arr = []
-        this.#index = -1
-        this.#pendingReplaceStateSuppressionCount = 0
-        this.#activeReplaceStateSuppressionCount = 0
-        this.#suppressedReplaceStateCount = 0
-        this.#lastSuppressedReplaceStateReason = null
+        this._arr = []
+        this._index = -1
+        this._pendingReplaceStateSuppressionCount = 0
+        this._activeReplaceStateSuppressionCount = 0
+        this._suppressedReplaceStateCount = 0
+        this._lastSuppressedReplaceStateReason = null
     }
 }
 
@@ -191,12 +191,12 @@ const languageInfo = lang => {
 }
 
 export class View extends HTMLElement {
-    #root = this.attachShadow({ mode: 'closed' })
-    #sectionProgress
-    #tocProgress
-    #pageProgress
-    #isCacheWarmer
-    #searchResults = new Map()
+    _root = this.attachShadow({ mode: 'closed' })
+    _sectionProgress
+    _tocProgress
+    _pageProgress
+    _isCacheWarmer
+    _searchResults = new Map()
     isFixedLayout = false
     lastLocation
     history = new History()
@@ -210,16 +210,16 @@ export class View extends HTMLElement {
     async open(book, isCacheWarmer) {
         this.book = book
         this.language = languageInfo(book.metadata?.language)
-        this.#isCacheWarmer = isCacheWarmer
+        this._isCacheWarmer = isCacheWarmer
         
         if (book.splitTOCHref && book.getTOCFragment) {
             const ids = book.sections.map(s => s.id)
-            this.#sectionProgress = new SectionProgress(book.sections, 1500, 1600)
+            this._sectionProgress = new SectionProgress(book.sections, 1500, 1600)
             const splitHref = book.splitTOCHref.bind(book)
             const getFragment = book.getTOCFragment.bind(book)
-            this.#tocProgress = new TOCProgress({
+            this._tocProgress = new TOCProgress({
                 toc: book.toc ?? [], ids, splitHref, getFragment })
-            this.#pageProgress = new TOCProgress({
+            this._pageProgress = new TOCProgress({
                 toc: book.pageList ?? [], ids, splitHref, getFragment })
         }
         
@@ -235,14 +235,14 @@ export class View extends HTMLElement {
         }
         globalThis.manabiLoadEBookLastState = 'view-open-renderer-created'
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
-        this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
-        this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
+        this.renderer.addEventListener('load', e => this._onLoad(e.detail))
+        this.renderer.addEventListener('relocate', e => this._onRelocate(e.detail))
         // Overlayer support removed
         
         globalThis.manabiLoadEBookLastState = 'view-open-renderer-open-called'
         this.renderer.open(book, isCacheWarmer)
         globalThis.manabiLoadEBookLastState = 'view-open-renderer-pre-append'
-        this.#root.append(this.renderer)
+        this._root.append(this.renderer)
         globalThis.manabiLoadEBookLastState = 'view-open-renderer-appended'
         const rendererLoadPromise = new Promise(resolve => {
             const onLoad = () => {
@@ -265,10 +265,10 @@ export class View extends HTMLElement {
     close() {
         this.renderer?.destroy()
         this.renderer?.remove()
-        this.#sectionProgress = null
-        this.#tocProgress = null
-        this.#pageProgress = null
-        this.#searchResults = new Map()
+        this._sectionProgress = null
+        this._tocProgress = null
+        this._pageProgress = null
+        this._searchResults = new Map()
         this.lastLocation = null
         this.history.clear()
     }
@@ -291,10 +291,10 @@ export class View extends HTMLElement {
             await this.next()
         }
     }
-    #emit(name, detail, cancelable) {
+    _emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
-    #onRelocate(detail) {
+    _onRelocate(detail) {
         if (!detail) return
         const {
             reason,
@@ -310,9 +310,9 @@ export class View extends HTMLElement {
             pageSize,
             viewSize,
         } = detail
-        const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
-        const tocItem = this.#tocProgress?.getProgress(index, range)
-        const pageItem = this.#pageProgress?.getProgress(index, range)
+        const progress = this._sectionProgress?.getProgress(index, fraction, size) ?? {}
+        const tocItem = this._tocProgress?.getProgress(index, range)
+        const pageItem = this._pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
 
         // Preserve the original relocate payload so downstream consumers (NavigationHUD, native layer)
@@ -338,20 +338,20 @@ export class View extends HTMLElement {
         if (reason === 'snap' || reason === 'page' || reason === 'scroll') {
             this.history.replaceState(cfi)
         }
-        this.#emit('relocate', this.lastLocation)
+        this._emit('relocate', this.lastLocation)
     }
-    #onLoad({ doc, location, index }) {
-        if (!this.#isCacheWarmer) {
+    _onLoad({ doc, location, index }) {
+        if (!this._isCacheWarmer) {
             // set language and dir if not already set
             doc.documentElement.lang ||= this.language.canonical ?? ''
             if (!this.language.isCJK)
                 doc.documentElement.dir ||= this.language.direction ?? ''
                 
-                this.#handleLinks(doc, index)
+                this._handleLinks(doc, index)
                 }
-        this.#emit('load', { doc, location, index })
+        this._emit('load', { doc, location, index })
     }
-    #handleLinks(doc, index) {
+    _handleLinks(doc, index) {
         const { book } = this
         const section = book.sections[index]
         const linkRoot = doc.getElementById?.('reader-content') || doc
@@ -361,10 +361,10 @@ export class View extends HTMLElement {
                 const href_ = a.getAttribute('href')
                 const href = section?.resolveHref?.(href_) ?? href_
                 if (book?.isExternal?.(href))
-                    Promise.resolve(this.#emit('external-link', { a, href }, true))
+                    Promise.resolve(this._emit('external-link', { a, href }, true))
                     .then(x => x ? globalThis.open(href, '_blank') : null)
                     .catch(e => console.error(e))
-                    else Promise.resolve(this.#emit('link', { a, href }, true))
+                    else Promise.resolve(this._emit('link', { a, href }, true))
                         .then(async x => x ? await this.goTo(href) : null)
                         .catch(e => console.error(e))
                         })
@@ -373,16 +373,16 @@ export class View extends HTMLElement {
         const { value } = annotation
         const resolved = await this.resolveNavigation(value.startsWith?.(SEARCH_PREFIX) ? value.replace(SEARCH_PREFIX, '') : value)
         const index = resolved?.index
-        const label = typeof index === 'number' ? (this.#tocProgress?.getProgress(index)?.label ?? '') : ''
+        const label = typeof index === 'number' ? (this._tocProgress?.getProgress(index)?.label ?? '') : ''
         return { index, label }
     }
     deleteAnnotation(annotation) {
         return this.addAnnotation(annotation, true)
     }
-    #getOverlayer(_index) {
+    _getOverlayer(_index) {
         return null
     }
-    #createOverlayer(_detail) {
+    _createOverlayer(_detail) {
         return null
     }
     async showAnnotation(_annotation) {
@@ -409,7 +409,7 @@ export class View extends HTMLElement {
                 return { index: target }
             }
             if (typeof target.fraction === 'number') {
-                const [index, anchor] = this.#sectionProgress.getSection(target.fraction)
+                const [index, anchor] = this._sectionProgress.getSection(target.fraction)
                 return { index, anchor }
             }
             if (CFI.isCFI.test(target)) {
@@ -422,7 +422,7 @@ export class View extends HTMLElement {
         }
     }
     async goTo(target) {
-        //        this.#emit('is-loading', true)
+        //        this._emit('is-loading', true)
         const resolved = this.resolveNavigation(target)
         try {
             await this.renderer.goTo(resolved)
@@ -434,11 +434,11 @@ export class View extends HTMLElement {
             throw e
             //            return
         }
-        //        this.#emit('is-loading', false)
+        //        this._emit('is-loading', false)
         //        return resolved
     }
     async goToFraction(frac) {
-        const [index, anchor] = this.#sectionProgress.getSection(frac)
+        const [index, anchor] = this._sectionProgress.getSection(frac)
         await this.renderer.goTo({ index, anchor })
         this.history.pushState({ fraction: frac })
     }
@@ -464,7 +464,7 @@ export class View extends HTMLElement {
             const isRange = frag instanceof Range
             const range = isRange ? frag : doc.createRange()
             if (!isRange) range.selectNodeContents(frag)
-                return this.#tocProgress.getProgress(index, range)
+                return this._tocProgress.getProgress(index, range)
                 } catch(e) {
                     console.error(e)
                     console.error(`Could not get ${target}`)
@@ -518,7 +518,7 @@ export class View extends HTMLElement {
     }
     async goLeft() {
         const isForward = this.book.dir === 'rtl'
-        if (!this.#isCacheWarmer) {
+        if (!this._isCacheWarmer) {
             postNavigationChromeVisibility(isForward, {
                 source: 'swipe-left',
                 direction: isForward ? 'forward' : 'backward'
@@ -527,18 +527,18 @@ export class View extends HTMLElement {
         logNavHide('view:goLeft', {
             dir: this.book.dir,
             requestedHide: isForward,
-            cacheWarmer: this.#isCacheWarmer,
+            cacheWarmer: this._isCacheWarmer,
             navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
         })
         logBug?.('view:goLeft', {
             dir: this.book.dir,
-            cacheWarmer: this.#isCacheWarmer,
+            cacheWarmer: this._isCacheWarmer,
         });
         return this.book.dir === 'rtl' ? await this.next() : await this.prev()
     }
     async goRight() {
         const isForward = this.book.dir !== 'rtl'
-        if (!this.#isCacheWarmer) {
+        if (!this._isCacheWarmer) {
             postNavigationChromeVisibility(isForward, {
                 source: 'swipe-right',
                 direction: isForward ? 'forward' : 'backward'
@@ -547,21 +547,21 @@ export class View extends HTMLElement {
         logNavHide('view:goRight', {
             dir: this.book.dir,
             requestedHide: isForward,
-            cacheWarmer: this.#isCacheWarmer,
+            cacheWarmer: this._isCacheWarmer,
             navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
         })
         logBug?.('view:goRight', {
             dir: this.book.dir,
-            cacheWarmer: this.#isCacheWarmer,
+            cacheWarmer: this._isCacheWarmer,
         });
         return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
-    async * #searchSection(matcher, query, index) {
+    async * _searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()
         for (const { range, excerpt } of matcher(doc, query))
             yield { cfi: this.getCFI(index, range), excerpt }
     }
-    async * #searchBook(matcher, query) {
+    async * _searchBook(matcher, query) {
         const { sections } = this.book
         for (const [index, { createDocument }] of sections.entries()) {
             if (!createDocument) continue
@@ -580,20 +580,20 @@ export class View extends HTMLElement {
         const matcher = searchMatcher(textWalker,
                                       { defaultLocale: this.language, ...opts })
         const iter = index != null
-        ? this.#searchSection(matcher, query, index)
-        : this.#searchBook(matcher, query)
+        ? this._searchSection(matcher, query, index)
+        : this._searchBook(matcher, query)
         
         const list = []
-        this.#searchResults.set(index, list)
+        this._searchResults.set(index, list)
         
         for await (const result of iter) {
             if (result.subitems){
                 const list = result.subitems
                 .map(({ cfi }) => ({ value: SEARCH_PREFIX + cfi }))
-                this.#searchResults.set(result.index, list)
+                this._searchResults.set(result.index, list)
                 for (const item of list) this.addAnnotation(item)
                     yield {
-                        label: this.#tocProgress.getProgress(result.index)?.label ?? '',
+                        label: this._tocProgress.getProgress(result.index)?.label ?? '',
                         subitems: result.subitems,
                     }
             }
@@ -609,9 +609,9 @@ export class View extends HTMLElement {
         yield 'done'
     }
     clearSearch() {
-        for (const list of this.#searchResults.values())
+        for (const list of this._searchResults.values())
             for (const item of list) this.deleteAnnotation(item)
-                this.#searchResults.clear()
+                this._searchResults.clear()
                 }
 }
 

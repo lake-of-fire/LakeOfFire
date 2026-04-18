@@ -1129,14 +1129,33 @@
         <script>
             window.manabiViewerModuleStatus = 'loading-script';
             window.manabiViewerModuleURL = new URL('/load/viewer-assets/foliate-js/ebook-viewer.js', window.location.href).href;
-            window.manabiViewerModuleFetchStatus = 'module-script';
+            window.manabiViewerModuleFetchStatus = 'module-script:requested';
+            window.manabiViewerModuleImportPromise = null;
         </script>
         <script
-            id="ebook-viewer-module-script"
             type="module"
             src="/load/viewer-assets/foliate-js/ebook-viewer.js"
-            onload="window.manabiViewerModuleStatus='loaded-script';"
-            onerror="window.manabiViewerModuleStatus='error:script-load'; window.manabiViewerModuleFetchStatus='error:script-load';"
+            onload="
+                window.manabiViewerModuleStatus = 'loaded-script';
+                window.manabiViewerModuleFetchStatus = 'module-script:loaded';
+            "
+            onerror="
+                (function (scriptElement) {
+                    const errorDetail = 'module-script:error:' + String(window.manabiViewerModuleURL || scriptElement?.src || 'unknown');
+                    window.manabiViewerModuleStatus = 'error:module-script';
+                    window.manabiViewerModuleFetchStatus = errorDetail;
+                    window.manabiViewerModuleLoadError = errorDetail;
+                    try {
+                        window.webkit?.messageHandlers?.readerOnError?.postMessage?.({
+                            message: 'ebook-viewer module script failed',
+                            source: window.manabiViewerModuleURL || scriptElement?.src || null,
+                            lineno: null,
+                            colno: null,
+                            error: errorDetail,
+                        });
+                    } catch (_error) {}
+                })(this);
+            "
         ></script>
     </body>
 </html>

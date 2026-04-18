@@ -7,6 +7,10 @@ import LakeOfFireFiles
 
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public var sharedReaderFontAsset: SharedReaderFontAsset?
+    private static let readerLoaderStartedAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.startedAt."
+    private static let readerLoaderResponseAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.responseAt."
+    private static let readerLoaderDataAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.dataAt."
+    private static let readerLoaderFinishedAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.finishedAt."
 
     enum CustomSchemeHandlerError: Error {
         case notFound
@@ -117,6 +121,15 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     private func handleReaderLoaderRequest(url: URL, task urlSchemeTask: WKURLSchemeTask) {
+        let requestStartedAt = Date()
+        UserDefaults.standard.set(
+            requestStartedAt.timeIntervalSince1970,
+            forKey: Self.readerLoaderStartedAtKeyPrefix + url.absoluteString
+        )
+        debugPrint(
+            "# READERLOAD stage=internalScheme.readerLoader.begin",
+            "url=\(url.absoluteString)"
+        )
         let html = """
         <!doctype html>
         <html>
@@ -145,9 +158,40 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             expectedContentLength: data.count,
             textEncodingName: "utf-8"
         )
+        let responseAt = Date()
+        UserDefaults.standard.set(
+            responseAt.timeIntervalSince1970,
+            forKey: Self.readerLoaderResponseAtKeyPrefix + url.absoluteString
+        )
         urlSchemeTask.didReceive(response)
+        debugPrint(
+            "# READERLOAD stage=internalScheme.readerLoader.didReceiveResponse",
+            "url=\(url.absoluteString)",
+            "elapsed=\(String(format: "%.3f", responseAt.timeIntervalSince(requestStartedAt)))s"
+        )
+        let dataAt = Date()
+        UserDefaults.standard.set(
+            dataAt.timeIntervalSince1970,
+            forKey: Self.readerLoaderDataAtKeyPrefix + url.absoluteString
+        )
         urlSchemeTask.didReceive(data)
+        debugPrint(
+            "# READERLOAD stage=internalScheme.readerLoader.didReceiveData",
+            "url=\(url.absoluteString)",
+            "bytes=\(data.count)",
+            "elapsed=\(String(format: "%.3f", dataAt.timeIntervalSince(requestStartedAt)))s"
+        )
+        let finishAt = Date()
         urlSchemeTask.didFinish()
+        UserDefaults.standard.set(
+            finishAt.timeIntervalSince1970,
+            forKey: Self.readerLoaderFinishedAtKeyPrefix + url.absoluteString
+        )
+        debugPrint(
+            "# READERLOAD stage=internalScheme.readerLoader.didFinish",
+            "url=\(url.absoluteString)",
+            "elapsed=\(String(format: "%.3f", finishAt.timeIntervalSince(requestStartedAt)))s"
+        )
     }
 
 }

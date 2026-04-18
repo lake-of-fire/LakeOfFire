@@ -85,6 +85,12 @@ public class Feed: Object, UnownedSyncableObject, ObjectKeyIdentifiable, Codable
     @Persisted public var explicitlyModifiedAt: Date?
     @Persisted public var createdAt = Date()
     @Persisted public var modifiedAt = Date()
+    @Persisted public var lastViewedAt: Date?
+    @Persisted public var lastSeenFeedEntriesAt: Date?
+    @Persisted public var lastRefreshedEntriesAt: Date?
+    @Persisted public var lastFetchedETag: String?
+    @Persisted public var lastFetchedModifiedAt: Date?
+    @Persisted public var showsUnseenBadge = true
     @Persisted public var isDeleted = false
     
     public enum CodingKeys: String, CodingKey, CaseIterable {
@@ -423,24 +429,150 @@ public enum FeedError: Error {
     case jsonFeedsUnsupported
 }
 
-fileprivate func getRssData(rssUrl: URL) async throws -> Data? {
+fileprivate struct FeedFetchMetadata {
+    let etag: String?
+    let lastModifiedAt: Date?
+
+    func merged(with newer: FeedFetchMetadata) -> FeedFetchMetadata {
+        FeedFetchMetadata(
+            etag: newer.etag ?? etag,
+            lastModifiedAt: newer.lastModifiedAt ?? lastModifiedAt
+        )
+    }
+}
+
+fileprivate enum FeedFetchResult {
+    case notModified(metadata: FeedFetchMetadata)
+    case fetched(Data, metadata: FeedFetchMetadata)
+}
+
+fileprivate let feedHTTPDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+    return formatter
+}()
+
+fileprivate func makeFeedSession() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
-    debugPrint("# FeedRequest start url=\(rssUrl.absoluteString)")
-    do {
-        let (data, response) = try await URLSession(configuration: configuration).data(from: rssUrl)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            debugPrint("# FeedRequest missingHTTPResponse url=\(rssUrl.absoluteString)")
-            throw FeedError.downloadFailed
+    configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    return URLSession(configuration: configuration)
+}
+
+fileprivate func makeFeedRequest(
+    url: URL,
+    method: String,
+    lastFetchedETag: String?,
+    lastFetchedModifiedAt: Date?
+) -> URLRequest {
+    var request = URLRequest(
+        url: url,
+        cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
+        timeoutInterval: 30
+    )
+    request.httpMethod = method
+    if let lastFetchedETag, !lastFetchedETag.isEmpty {
+        request.setValue(lastFetchedETag, forHTTPHeaderField: "If-None-Match")
+    }
+    if let lastFetchedModifiedAt {
+        request.setValue(
+            feedHTTPDateFormatter.string(from: lastFetchedModifiedAt),
+            forHTTPHeaderField: "If-Modified-Since"
+        )
+    }
+    return request
+}
+
+fileprivate func feedFetchMetadata(from response: URLResponse) -> FeedFetchMetadata {
+    guard let httpResponse = response as? HTTPURLResponse else {
+        return FeedFetchMetadata(etag: nil, lastModifiedAt: nil)
+    }
+    let etag = httpResponse.value(forHTTPHeaderField: "Etag")
+        ?? httpResponse.value(forHTTPHeaderField: "ETag")
+    let lastModifiedAt = httpResponse.value(forHTTPHeaderField: "Last-Modified")
+        .flatMap { feedHTTPDateFormatter.date(from: $0) }
+    return FeedFetchMetadata(etag: etag, lastModifiedAt: lastModifiedAt)
+}
+
+fileprivate func isFeedUnchanged(
+    remoteMetadata: FeedFetchMetadata,
+    lastFetchedETag: String?,
+    lastFetchedModifiedAt: Date?
+) -> Bool {
+    if let remoteETag = remoteMetadata.etag,
+       let lastFetchedETag,
+       remoteETag == lastFetchedETag {
+        return true
+    }
+
+    if let remoteLastModifiedAt = remoteMetadata.lastModifiedAt,
+       let lastFetchedModifiedAt,
+       remoteLastModifiedAt <= lastFetchedModifiedAt {
+        return true
+    }
+
+    return false
+}
+
+fileprivate func isSuccessfulFeedRefreshStatus(_ statusCode: Int) -> Bool {
+    (200..<400).contains(statusCode)
+}
+
+fileprivate func getRssData(
+    rssUrl: URL,
+    lastFetchedETag: String?,
+    lastFetchedModifiedAt: Date?
+) async throws -> FeedFetchResult {
+    let session = makeFeedSession()
+    let headRequest = makeFeedRequest(
+        url: rssUrl,
+        method: "HEAD",
+        lastFetchedETag: lastFetchedETag,
+        lastFetchedModifiedAt: lastFetchedModifiedAt
+    )
+    let (_, headResponse) = try await session.data(for: headRequest)
+    guard let headHTTPResponse = headResponse as? HTTPURLResponse else {
+        throw FeedError.downloadFailed
+    }
+
+    let headMetadata = feedFetchMetadata(from: headHTTPResponse)
+    switch headHTTPResponse.statusCode {
+    case 304:
+        return .notModified(metadata: headMetadata)
+    case let statusCode where isSuccessfulFeedRefreshStatus(statusCode):
+        if isFeedUnchanged(
+            remoteMetadata: headMetadata,
+            lastFetchedETag: lastFetchedETag,
+            lastFetchedModifiedAt: lastFetchedModifiedAt
+        ) {
+            return .notModified(metadata: headMetadata)
         }
-        debugPrint("# FeedRequest response url=\(rssUrl.absoluteString) status=\(httpResponse.statusCode) bytes=\(data.count)")
-        guard httpResponse.statusCode == 200 else {
-            debugPrint("# FeedRequest nonSuccess url=\(rssUrl.absoluteString) status=\(httpResponse.statusCode)")
-            throw FeedError.downloadFailed
-        }
-        return data
-    } catch {
-        debugPrint("# FeedRequest error url=\(rssUrl.absoluteString) \(error)")
-        throw error
+    default:
+        throw FeedError.downloadFailed
+    }
+
+    let getRequest = makeFeedRequest(
+        url: rssUrl,
+        method: "GET",
+        lastFetchedETag: lastFetchedETag,
+        lastFetchedModifiedAt: lastFetchedModifiedAt
+    )
+    let (data, getResponse) = try await session.data(for: getRequest)
+    guard let getHTTPResponse = getResponse as? HTTPURLResponse else {
+        throw FeedError.downloadFailed
+    }
+
+    let getMetadata = headMetadata.merged(with: feedFetchMetadata(from: getHTTPResponse))
+    switch getHTTPResponse.statusCode {
+    case 304:
+        return .notModified(metadata: getMetadata)
+    case 200..<300:
+        return .fetched(data, metadata: getMetadata)
+    case 300..<400:
+        return .notModified(metadata: getMetadata)
+    default:
+        throw FeedError.downloadFailed
     }
 }
 
@@ -462,6 +594,24 @@ fileprivate func collapseRubyTags(doc: SwiftSoup.Document, restrictToReaderConte
 fileprivate let entryImageExtensions = ["jpg", "jpeg", "png", "webp", "gif"]
 
 public extension Feed {
+    @MainActor
+    private func persistFetchMetadata(
+        _ metadata: FeedFetchMetadata,
+        realmConfiguration: Realm.Configuration
+    ) async throws {
+        let feedID = id
+        try await { @RealmBackgroundActor in
+            let realm = try await RealmBackgroundActor.shared.cachedRealm(for: realmConfiguration)
+            await realm.asyncRefresh()
+            try await realm.asyncWrite {
+                guard let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) else { return }
+                feed.lastRefreshedEntriesAt = Date()
+                feed.lastFetchedETag = metadata.etag ?? feed.lastFetchedETag
+                feed.lastFetchedModifiedAt = metadata.lastModifiedAt ?? feed.lastFetchedModifiedAt
+            }
+        }()
+    }
+
     @MainActor
     private func persist(rssItems: [RSSFeedItem], realmConfiguration: Realm.Configuration, deleteOrphans: Bool) async throws {
         let feedID = id
@@ -669,75 +819,66 @@ public extension Feed {
     
     @MainActor
     func fetch(realmConfiguration: Realm.Configuration) async throws {
-        debugPrint("# Feed.fetch start feedID=\(id) title=\(title)")
-        guard var rssData = try await getRssData(rssUrl: rssUrl) else {
-            debugPrint("# Feed.fetch noData feedID=\(id)")
-            throw FeedError.downloadFailed
-        }
-        debugPrint("# Feed.fetch cleaningData feedID=\(id) bytes=\(rssData.count)")
-        rssData = cleanRssData(rssData)
-        let parser = FeedKit.FeedParser(data: rssData)
-        return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
-            parser.parseAsync { [weak self] parserResult in
-                let feedIDString = self?.id.uuidString ?? "unknown"
-                switch parserResult {
-                case .success(let feed):
-                    debugPrint("# Feed.fetch parseSuccess feedID=\(feedIDString)")
-                    switch feed {
-                    case .rss(let rssFeed):
-                        debugPrint("# Feed.fetch rssParsed feedID=\(feedIDString) rawItems=\(rssFeed.items?.count ?? 0)")
-                        guard let items = rssFeed.items else {
-                            debugPrint("# Feed.fetch rssNoItems feedID=\(feedIDString)")
+        let fetchResult = try await getRssData(
+            rssUrl: rssUrl,
+            lastFetchedETag: lastFetchedETag,
+            lastFetchedModifiedAt: lastFetchedModifiedAt
+        )
+        switch fetchResult {
+        case .notModified(let metadata):
+            try await persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+            return
+        case .fetched(var rssData, let metadata):
+            rssData = cleanRssData(rssData)
+            let parser = FeedKit.FeedParser(data: rssData)
+            return try await withCheckedThrowingContinuation({ [weak self] (continuation: CheckedContinuation<(), Error>) in
+                parser.parseAsync { [weak self] parserResult in
+                    switch parserResult {
+                    case .success(let feed):
+                        switch feed {
+                        case .rss(let rssFeed):
+                            guard let items = rssFeed.items else {
+                                continuation.resume(throwing: FeedError.parserFailed)
+                                return
+                            }
+                            Task { @MainActor [weak self] in
+                                guard let self = self else { return }
+                                do {
+                                    try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                    try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    continuation.resume(returning: ())
+                                } catch {
+                                    continuation.resume(throwing: error)
+                                }
+                            }
+                            return
+                        case .atom(let atomFeed):
+                            guard let items = atomFeed.entries else {
+                                continuation.resume(throwing: FeedError.parserFailed)
+                                return
+                            }
+                            Task { @MainActor [weak self] in
+                                guard let self = self else { return }
+                                do {
+                                    try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
+                                    try await self.persistFetchMetadata(metadata, realmConfiguration: realmConfiguration)
+                                    continuation.resume(returning: ())
+                                } catch {
+                                    continuation.resume(throwing: error)
+                                }
+                            }
+                            return
+                        case .json:
                             continuation.resume(throwing: FeedError.parserFailed)
                             return
                         }
-                        Task { @MainActor [weak self] in
-                            guard let self = self else { return }
-                            let resolvedFeedIDString = self.id.uuidString
-                            do {
-                                debugPrint("# Feed.fetch persistRSS feedID=\(resolvedFeedIDString) items=\(items.count)")
-                                try await self.persist(rssItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-                                debugPrint("# Feed.fetch persistRSSFinished feedID=\(resolvedFeedIDString)")
-                                continuation.resume(returning: ())
-                            } catch {
-                                debugPrint("# Feed.fetch persistRSSFailed feedID=\(resolvedFeedIDString) \(error)")
-                                continuation.resume(throwing: error)
-                            }
-                        }
-                        return
-                    case .atom(let atomFeed):
-                        debugPrint("# Feed.fetch atomParsed feedID=\(feedIDString) rawEntries=\(atomFeed.entries?.count ?? 0)")
-                        guard let items = atomFeed.entries else {
-                            debugPrint("# Feed.fetch atomNoEntries feedID=\(feedIDString)")
-                            continuation.resume(throwing: FeedError.parserFailed)
-                            return
-                        }
-                        Task { @MainActor [weak self] in
-                            guard let self = self else { return }
-                            let resolvedFeedIDString = self.id.uuidString
-                            do {
-                                debugPrint("# Feed.fetch persistAtom feedID=\(resolvedFeedIDString) entries=\(items.count)")
-                                try await self.persist(atomItems: items, realmConfiguration: realmConfiguration, deleteOrphans: deleteOrphans)
-                                debugPrint("# Feed.fetch persistAtomFinished feedID=\(resolvedFeedIDString)")
-                                continuation.resume(returning: ())
-                            } catch {
-                                debugPrint("# Feed.fetch persistAtomFailed feedID=\(resolvedFeedIDString) \(error)")
-                                continuation.resume(throwing: error)
-                            }
-                        }
-                        return
-                    case .json(let jsonFeed):
-                        debugPrint("# Feed.fetch jsonUnsupported feedID=\(feedIDString)")
+                    case .failure:
                         continuation.resume(throwing: FeedError.parserFailed)
                         return
                     }
-                case .failure(let error):
-                    debugPrint("# Feed.fetch parseFailed feedID=\(feedIDString) \(error)")
-                    continuation.resume(throwing: FeedError.parserFailed)
-                    return
                 }
-            }
-        })
+            })
+        }
     }
 }
 

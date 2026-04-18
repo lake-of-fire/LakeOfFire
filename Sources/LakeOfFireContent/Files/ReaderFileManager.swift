@@ -31,6 +31,12 @@ public enum CloudDriveSyncStatus {
 }
 
 public class ReaderFileManager: ObservableObject, @unchecked Sendable {
+    private enum ContentFileIndexDecision {
+        case skipArtifact
+        case skipUnsupported(mimeType: String?)
+        case index(reason: String, mimeType: String?)
+    }
+
     // TODO: Migrate to a 'plugin registry' architecture instead of all these callbacks
     nonisolated(unsafe) public static var fileDestinationProcessors = [(URL) async throws -> RootRelativePath?]()
     nonisolated(unsafe) public static var readerFileURLProcessors = [@RealmBackgroundActor (URL, String) async throws -> URL?]()
@@ -87,6 +93,13 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     }
     
     private var refreshAllFilesMetadataTask: Task<Void, Never>?
+
+    private static let internalStorageRootPrefixes: Set<String> = [
+        "manabi-caches",
+        "manabi-dictionaries",
+        "manabi-dictionary-assets",
+        "manabi-fonts",
+    ]
     
     public init() { }
     
@@ -161,6 +174,9 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
     
     @RealmBackgroundActor
     public static func contentFilePrimaryKey(for fileURL: URL) async throws -> String? {
+        if isInternalStorageReaderFileURL(fileURL) {
+            return nil
+        }
         let realm = try await RealmBackgroundActor.shared.cachedRealm(for: ReaderContentLoader.historyRealmConfiguration)
         return realm.objects(ContentFile.self)
             .filter(NSPredicate(format: "isDeleted == %@ AND url == %@", NSNumber(booleanLiteral: false), fileURL.absoluteString as CVarArg))
@@ -409,10 +425,15 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                 if let relativePath, !relativePath.path.isEmpty {
                     tryRelativePath.path = relativePath.path + "/" + tryRelativePath.path
                 }
-                let lastPathComponent = url.lastPathComponent.lowercased()
-                if lastPathComponent.hasSuffix(".realm") || lastPathComponent.hasSuffix(".realm.lock") || lastPathComponent.hasSuffix(".realm.management") || lastPathComponent.hasSuffix(".realm.note") || lastPathComponent == "manabireaderlogs.zip" {
+                if Self.shouldSkipDiscoveredRelativePath(tryRelativePath.path) {
+                    Self.logContentFileDecision(
+                        stage: "discovery.skipInternalRoot",
+                        path: tryRelativePath.path,
+                        reason: "internalStorageRoot"
+                    )
                     continue
                 }
+                let lastPathComponent = url.lastPathComponent.lowercased()
                 if !url.isFilePackage(),
                    !Self.additionalFilePackageSuffixesToAvoidDescendingInto.contains(where: { lastPathComponent.hasSuffix($0) }),
                    try await drive.directoryExists(at: tryRelativePath) {
@@ -420,6 +441,33 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                     files.append(contentsOf: discoveredFiles ?? [])
                 } else {
                     let absoluteFileURL = try tryRelativePath.fileURL(forRoot: drive.rootDirectory)
+                    let indexDecision = Self.contentFileIndexDecision(at: absoluteFileURL)
+                    switch indexDecision {
+                    case .skipArtifact:
+                        Self.logContentFileDecision(
+                            stage: "discovery.skipArtifact",
+                            path: tryRelativePath.path,
+                            reason: "managedArtifact"
+                        )
+                        continue
+                    case .skipUnsupported(let mimeType):
+                        Self.logContentFileDecision(
+                            stage: "discovery.skipUnsupported",
+                            path: tryRelativePath.path,
+                            pathExtension: absoluteFileURL.pathExtension,
+                            mimeType: mimeType,
+                            reason: "unsupportedType"
+                        )
+                        continue
+                    case .index(let reason, let mimeType):
+                        Self.logContentFileDecision(
+                            stage: "discovery.index",
+                            path: tryRelativePath.path,
+                            pathExtension: absoluteFileURL.pathExtension,
+                            mimeType: mimeType,
+                            reason: reason
+                        )
+                    }
                     if let readerFileURL = try await readerFileURL(for: absoluteFileURL, drive: drive) {
                         filesToUpdate.append((readerFileURL, absoluteFileURL))
                     }
@@ -454,8 +502,10 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                             try Task.checkCancellation()
                             if Self.setMetadata(readerFileURL: readerFileURL, absoluteFileURL: absoluteFileURL, contentFile: contentFile) {
                                 contentFile.updateCompoundKey()
-                                let format = ReaderContentLoader.detectFileFormat(mimeType: contentFile.mimeType, pathExtension: readerFileURL.pathExtension)
-                                contentFile.isReaderModeByDefault = format == .html || format == .markdown || format == .plainText
+                                contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
+                                    mimeType: contentFile.mimeType,
+                                    pathExtension: readerFileURL.pathExtension
+                                )
                                 realm.add(contentFile, update: .modified)
                                 updatedFiles.append(contentFile)
                             }
@@ -559,6 +609,81 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         let trimmedRelativePath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         
         return trimmedRelativePath
+    }
+
+    private static func contentFileIndexDecision(at absoluteFileURL: URL) -> ContentFileIndexDecision {
+        if shouldSkipDiscoveredFile(at: absoluteFileURL) {
+            return .skipArtifact
+        }
+
+        let pathExtension = absoluteFileURL.pathExtension.lowercased()
+        let mimeType = UTType(filenameExtension: pathExtension)?.preferredMIMEType
+
+        if ReaderContentLoader.supportsReaderContent(mimeType: mimeType, pathExtension: pathExtension) {
+            return .index(reason: "readerContent", mimeType: mimeType)
+        }
+
+        guard let fileType = UTType(filenameExtension: pathExtension) else {
+            return .skipUnsupported(mimeType: mimeType)
+        }
+
+        if ReaderFileManager.shared.readerContentMimeTypes.contains(where: { fileType.conforms(to: $0) }) {
+            return .index(reason: "libraryType", mimeType: mimeType)
+        }
+
+        return .skipUnsupported(mimeType: mimeType)
+    }
+
+    private static func shouldSkipDiscoveredFile(at absoluteFileURL: URL) -> Bool {
+        let lastPathComponent = absoluteFileURL.lastPathComponent.lowercased()
+        if lastPathComponent.hasSuffix(".realm")
+            || lastPathComponent.hasSuffix(".realm.lock")
+            || lastPathComponent.hasSuffix(".realm.management")
+            || lastPathComponent.hasSuffix(".realm.note")
+            || lastPathComponent == "manabireaderlogs.zip" {
+            return true
+        }
+        return false
+    }
+
+    static func shouldSkipDiscoveredRelativePath(_ path: String) -> Bool {
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let rootComponent = normalizedPath.split(separator: "/", maxSplits: 1).first.map(String.init),
+              !rootComponent.isEmpty else {
+            return false
+        }
+        return internalStorageRootPrefixes.contains(rootComponent)
+    }
+
+    public static func isInternalStorageReaderFileURL(_ fileURL: URL) -> Bool {
+        guard let relativePath = try? extractRelativePath(fileURL: fileURL) else {
+            return false
+        }
+        return shouldSkipDiscoveredRelativePath(relativePath.path)
+    }
+
+    private static func logContentFileDecision(
+        stage: String,
+        path: String,
+        pathExtension: String? = nil,
+        mimeType: String? = nil,
+        reason: String? = nil
+    ) {
+        var components = [
+            "# CONTENTFILE",
+            "stage=\(stage)",
+            "path=\(path)",
+        ]
+        if let pathExtension, !pathExtension.isEmpty {
+            components.append("ext=\(pathExtension)")
+        }
+        if let mimeType, !mimeType.isEmpty {
+            components.append("mime=\(mimeType)")
+        }
+        if let reason, !reason.isEmpty {
+            components.append("reason=\(reason)")
+        }
+        debugPrint(components.joined(separator: " "))
     }
 }
 

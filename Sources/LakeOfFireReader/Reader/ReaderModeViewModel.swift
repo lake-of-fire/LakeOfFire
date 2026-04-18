@@ -939,11 +939,18 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
     func startRenderTaskIfNeeded(
         for url: URL,
         reason: String,
-        operation: @escaping @MainActor (_ generation: UUID) async -> Void
+        operation: @escaping (_ generation: UUID) async -> Void
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURL()
         let key = canonicalRenderKey(canonicalURL)
+        let scheduleStartedAt = Date()
         cancelOtherActiveRenders(except: key, requestedURL: canonicalURL, reason: reason)
+        debugPrint(
+            "# READERLOAD stage=readerMode.render.singleFlight.afterCancelOthers",
+            "url=\(canonicalURL.absoluteString)",
+            "reason=\(reason)",
+            "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(scheduleStartedAt)))s"
+        )
 
         if let existingTask = activeRenderTaskByURL[key], !existingTask.isCancelled {
             debugPrint(
@@ -973,15 +980,26 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "isReaderMode=\(isReaderMode)"
         )
 
-        let task = Task { @MainActor [weak self] in
+        let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
-            defer {
-                self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
-            }
+            debugPrint(
+                "# READERLOAD stage=readerMode.render.singleFlight.operationBegin",
+                "url=\(canonicalURL.absoluteString)",
+                "reason=\(reason)",
+                "generation=\(generation.uuidString)",
+                "elapsedSinceSchedule=\(String(format: "%.3f", Date().timeIntervalSince(scheduleStartedAt)))s"
+            )
             await operation(generation)
+            await self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
         }
 
         activeRenderTaskByURL[key] = task
+        debugPrint(
+            "# READERLOAD stage=readerMode.render.singleFlight.taskStored",
+            "url=\(canonicalURL.absoluteString)",
+            "reason=\(reason)",
+            "generation=\(generation.uuidString)"
+        )
         return true
     }
 
@@ -1891,6 +1909,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         scriptCaller: WebViewScriptCaller
     ) {
         let contentURL = readerContent.pageURL
+        let renderScheduledAt = Date()
         guard let readabilityContent else {
             debugPrint("# READER renderPreparedReadabilityView.missingReadability", readerContent.pageURL)
             return
@@ -1903,44 +1922,83 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "bytes=\(readabilityBytes)",
             "preview=\(readabilityPreview)"
         )
+        let beginLoadStartedAt = Date()
         beginReaderModeLoad(
             for: contentURL,
             suppressSpinner: false,
             reason: "showReaderView"
         )
-        _ = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
+        debugPrint(
+            "# READERLOAD stage=readerMode.showReaderView.afterBeginLoad",
+            "contentURL=\(contentURL.absoluteString)",
+            "elapsedSinceSchedule=\(String(format: "%.3f", Date().timeIntervalSince(renderScheduledAt)))s",
+            "beginLoadElapsed=\(String(format: "%.3f", Date().timeIntervalSince(beginLoadStartedAt)))s",
+            "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
+            "renderedURL=\(lastRenderedURL?.absoluteString ?? "nil")"
+        )
+        let renderToSelector = readabilityContainerSelector
+        let frameInfo = readabilityContainerFrameInfo
+        let taskSetupStartedAt = Date()
+        let startedRenderTask = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
             guard let self else { return }
-            guard urlsMatchWithoutHash(contentURL, readerContent.pageURL) else {
-                debugPrint("# READER readerMode.showReaderView.urlMismatch", contentURL, readerContent.pageURL)
-                cancelReaderModeLoad(for: contentURL, reason: "showReaderView.urlMismatch")
+            debugPrint(
+                "# READERLOAD stage=readerMode.render.singleFlight.beforeOperation",
+                "url=\(contentURL.absoluteString)",
+                "reason=showReaderView",
+                "generation=\(generation.uuidString)",
+                "elapsedSinceSchedule=\(String(format: "%.3f", Date().timeIntervalSince(renderScheduledAt)))s"
+            )
+            let currentPageURL = await MainActor.run { readerContent.pageURL }
+            guard urlsMatchWithoutHash(contentURL, currentPageURL) else {
+                await MainActor.run {
+                    debugPrint("# READER readerMode.showReaderView.urlMismatch", contentURL, currentPageURL)
+                }
+                await self.cancelReaderModeLoad(for: contentURL, reason: "showReaderView.urlMismatch")
                 return
             }
             do {
-                try await showReadabilityContent(
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReaderView.renderStart",
+                    "contentURL=\(contentURL.absoluteString)",
+                    "generation=\(generation.uuidString)",
+                    "elapsedSinceSchedule=\(String(format: "%.3f", Date().timeIntervalSince(renderScheduledAt)))s"
+                )
+                try await self.showReadabilityContent(
                     readerContent: readerContent,
                     readabilityContent: readabilityContent,
-                    renderToSelector: readabilityContainerSelector,
-                    in: readabilityContainerFrameInfo,
+                    renderToSelector: renderToSelector,
+                    in: frameInfo,
                     scriptCaller: scriptCaller,
                     renderGeneration: generation
                 )
             } catch is CancellationError {
-                logReaderLoadAbort(reason: "showReaderView.cancelled", url: contentURL)
-                debugPrint(
-                    "# READERPERF readerMode.render.singleFlight.cancel",
-                    "url=\(contentURL.absoluteString)",
-                    "reason=showReaderView.taskCancelled",
-                    "generation=\(generation.uuidString)",
-                    "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-                    "isReaderModeLoading=\(isReaderModeLoading)",
-                    "isReaderMode=\(isReaderMode)"
-                )
+                await MainActor.run {
+                    self.logReaderLoadAbort(reason: "showReaderView.cancelled", url: contentURL)
+                    debugPrint(
+                        "# READERPERF readerMode.render.singleFlight.cancel",
+                        "url=\(contentURL.absoluteString)",
+                        "reason=showReaderView.taskCancelled",
+                        "generation=\(generation.uuidString)",
+                        "pending=\(self.pendingReaderModeURL?.absoluteString ?? "nil")",
+                        "isReaderModeLoading=\(self.isReaderModeLoading)",
+                        "isReaderMode=\(self.isReaderMode)"
+                    )
+                }
             } catch {
-                debugPrint("# READER readerMode.showReaderView.loadFailed", error.localizedDescription)
-                print(error)
-                cancelReaderModeLoad(for: contentURL, reason: "showReaderView.loadFailed")
+                await MainActor.run {
+                    debugPrint("# READER readerMode.showReaderView.loadFailed", error.localizedDescription)
+                    print(error)
+                }
+                await self.cancelReaderModeLoad(for: contentURL, reason: "showReaderView.loadFailed")
             }
         }
+        debugPrint(
+            "# READERLOAD stage=readerMode.showReaderView.afterStartRenderTask",
+            "contentURL=\(contentURL.absoluteString)",
+            "startedRenderTask=\(startedRenderTask)",
+            "elapsedSinceSchedule=\(String(format: "%.3f", Date().timeIntervalSince(renderScheduledAt)))s",
+            "taskSetupElapsed=\(String(format: "%.3f", Date().timeIntervalSince(taskSetupStartedAt)))s"
+        )
     }
 
     private func processSnippetReaderHTMLIfNeeded(
@@ -2676,6 +2734,7 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             )
 
             let transformedContent = html
+            let transformedHTMLData = transformedContent.data(using: .utf8)
             let transformedBytes = transformedContent.utf8.count
             let shouldPersistCanonicalSnippetHTML =
                 url.isSnippetURL
@@ -2767,126 +2826,167 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     "body=\(bodySummary)"
                 )
             }
-            try await { @MainActor in
+            let transformedPreview = Self.snippetPreview(transformedContent, maxLength: 240)
+            let snippetLoaderPreview = url.isSnippetURL ? (transformedPreview ?? "<empty>") : nil
+            let mainActorSnapshotStartedAt = Date()
+            let mainActorSnapshot = await MainActor.run { () -> (pageURL: URL, frameIsMain: Bool, hostDocumentURL: URL, hostDocumentIsLoader: Bool, navigator: WebViewNavigator?) in
                 let pageURL = readerContent.pageURL
-                let urlsMatch = url.matchesReaderURL(pageURL)
-                debugPrint(
-                    "# READERRELOAD showReadabilityContent.enter",
-                    "contentURL=\(url.absoluteString)",
-                    "pageURL=\(pageURL.absoluteString)",
-                    "matches=\(urlsMatch)",
-                    "frameIsMain=\(frameInfo?.isMainFrame ?? true)"
+                let hostDocumentURL = resolvedFrameInfo?.request.url ?? pageURL
+                return (
+                    pageURL: pageURL,
+                    frameIsMain: frameInfo?.isMainFrame ?? true,
+                    hostDocumentURL: hostDocumentURL,
+                    hostDocumentIsLoader: hostDocumentURL.isReaderURLLoaderURL,
+                    navigator: navigator
                 )
-                if ProcessInfo.processInfo.environment["MANABI_LOOKUP_READER_ROUTE_DEBUG"] == "1" {
-                    debugPrint(
-                        "# LOOKUPSMAR10",
-                        [
-                            "stage": "readerMode.showReadabilityContent.enter",
-                            "targetContentURL": url.absoluteString,
-                            "readerStateURL": pageURL.absoluteString,
-                            "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
-                            "renderMode": "navigatorLoad",
-                            "frameIsMain": frameInfo?.isMainFrame ?? true,
-                            "matches": urlsMatch
-                        ] as [String: Any]
-                    )
-                    debugPrint(
-                        "# LOOKUPSMAR10",
-                        [
-                            "stage": "readerMode.showReadabilityContent.decision",
-                            "targetContentURL": url.absoluteString,
-                            "readerStateURL": pageURL.absoluteString,
-                            "hostDocumentURL": (resolvedFrameInfo?.request.url ?? pageURL).absoluteString,
-                            "readerStateIsLoader": pageURL.isReaderURLLoaderURL,
-                            "hostDocumentIsLoader": (resolvedFrameInfo?.request.url ?? pageURL).isReaderURLLoaderURL,
-                            "renderMode": "navigatorLoad"
-                        ] as [String: Any]
-                    )
-                }
-                guard urlsMatch else {
-                    debugPrint("# READER readability.readerURLMismatch", url, pageURL)
-                    print("Readability content URL mismatch", url, pageURL)
+            }
+            let mainActorSnapshotElapsed = Date().timeIntervalSince(mainActorSnapshotStartedAt)
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.mainActorSnapshot",
+                "contentURL=\(url.absoluteString)",
+                "elapsed=\(String(format: "%.3f", mainActorSnapshotElapsed))s",
+                "frameIsMain=\(mainActorSnapshot.frameIsMain)",
+                "hasNavigator=\(mainActorSnapshot.navigator != nil)"
+            )
+            let urlsMatch = url.matchesReaderURL(mainActorSnapshot.pageURL)
+            debugPrint(
+                "# READERRELOAD showReadabilityContent.enter",
+                "contentURL=\(url.absoluteString)",
+                "pageURL=\(mainActorSnapshot.pageURL.absoluteString)",
+                "matches=\(urlsMatch)",
+                "frameIsMain=\(mainActorSnapshot.frameIsMain)"
+            )
+            if ProcessInfo.processInfo.environment["MANABI_LOOKUP_READER_ROUTE_DEBUG"] == "1" {
+                debugPrint(
+                    "# LOOKUPSMAR10",
+                    [
+                        "stage": "readerMode.showReadabilityContent.enter",
+                        "targetContentURL": url.absoluteString,
+                        "readerStateURL": mainActorSnapshot.pageURL.absoluteString,
+                        "hostDocumentURL": mainActorSnapshot.hostDocumentURL.absoluteString,
+                        "renderMode": "navigatorLoad",
+                        "frameIsMain": mainActorSnapshot.frameIsMain,
+                        "matches": urlsMatch
+                    ] as [String: Any]
+                )
+                debugPrint(
+                    "# LOOKUPSMAR10",
+                    [
+                        "stage": "readerMode.showReadabilityContent.decision",
+                        "targetContentURL": url.absoluteString,
+                        "readerStateURL": mainActorSnapshot.pageURL.absoluteString,
+                        "hostDocumentURL": mainActorSnapshot.hostDocumentURL.absoluteString,
+                        "readerStateIsLoader": mainActorSnapshot.pageURL.isReaderURLLoaderURL,
+                        "hostDocumentIsLoader": mainActorSnapshot.hostDocumentIsLoader,
+                        "renderMode": "navigatorLoad"
+                    ] as [String: Any]
+                )
+            }
+            guard urlsMatch else {
+                await MainActor.run {
+                    debugPrint("# READER readability.readerURLMismatch", url, mainActorSnapshot.pageURL)
+                    print("Readability content URL mismatch", url, mainActorSnapshot.pageURL)
                     cancelReaderModeLoad(for: url, reason: "showReadabilityContent.urlMismatch")
-                    return
                 }
-                if let htmlData = transformedContent.data(using: .utf8) {
-                    guard let navigator else {
-                        print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
-                        cancelReaderModeLoad(for: url, reason: "showReadabilityContent.navigatorMissing")
-                        return
-                    }
-                    let transformedBytes = transformedContent.utf8.count
-                    let transformedPreview = Self.snippetPreview(transformedContent, maxLength: 240)
-                    debugPrint(
-                        "# READER readability.navigatorLoad",
-                        "url=\(url.absoluteString)",
-                        "base=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedBytes)"
-                    )
-                    debugPrint(
-                        "# READER readability.navigatorLoad.preview",
-                        "url=\(url.absoluteString)",
-                        "bytes=\(transformedBytes)",
-                        "preview=\(transformedPreview)"
-                    )
-                    logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedBytes)")
-                    expectSyntheticReaderLoaderCommit(for: renderBaseURL)
-                    let loadDispatch = Date()
-                    navigator.load(
-                        htmlData,
-                        mimeType: "text/html",
-                        characterEncodingName: "UTF-8",
-                        baseURL: renderBaseURL
-                    )
-                    debugPrint(
-                        "# FLASH readability.navigator.load",
-                        "url=\(flashURLDescription(url))",
-                        "base=\(flashURLDescription(renderBaseURL))",
-                        "bytes=\(transformedBytes)",
-                        "frameIsMain=\(resolvedFrameInfo?.isMainFrame ?? true)"
-                    )
-                    debugPrint(
-                        "# READER readability.navigatorLoad.dispatched",
-                        "url=\(url.absoluteString)",
-                        "base=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedBytes)",
-                        "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadDispatch)))s"
-                    )
-                    debugPrint(
-                        "# READERRELOAD showReadabilityContent.navigatorLoad",
-                        "contentURL=\(url.absoluteString)",
-                        "baseURL=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedBytes)",
-                        "frameIsMain=\(resolvedFrameInfo?.isMainFrame ?? true)"
-                    )
-                    debugPrint(
-                        "# READERPERF readerMode.navigatorLoad.readability",
-                        "ts=\(Date().timeIntervalSince1970)",
-                        "url=\(url.absoluteString)",
-                        "base=\(renderBaseURL.absoluteString)",
-                        "bytes=\(transformedBytes)"
-                    )
-                    if url.isSnippetURL {
-                        let preview = Self.snippetPreview(transformedContent, maxLength: 240) ?? "<empty>"
-                        debugPrint(
-                            "# READER snippetLoader.navigatorLoad",
-                            "contentURL=\(url.absoluteString)",
-                            "base=\(renderBaseURL.absoluteString)",
-                            "bytes=\(transformedContent.utf8.count)",
-                            "preview=\(preview)"
-                        )
-                        injectSnippetLoaderProbe(scriptCaller: scriptCaller, baseURL: renderBaseURL)
-                    }
-                } else {
+                return shouldPersistCanonicalSnippetHTML ? transformedContent : nil
+            }
+            guard let htmlData = transformedHTMLData else {
+                await MainActor.run {
                     print("ReaderModeViewModel: readability HTML data missing for", url.absoluteString)
                     debugPrint("# READER readability.navigatorLoad missingData", "url=\(url.absoluteString)")
                     cancelReaderModeLoad(for: url, reason: "showReadabilityContent.missingHTMLData")
                 }
+                return shouldPersistCanonicalSnippetHTML ? transformedContent : nil
+            }
+            guard let navigator = mainActorSnapshot.navigator else {
+                await MainActor.run {
+                    print("ReaderModeViewModel: navigator missing while loading readability content for", url.absoluteString)
+                    cancelReaderModeLoad(for: url, reason: "showReadabilityContent.navigatorMissing")
+                }
+                return shouldPersistCanonicalSnippetHTML ? transformedContent : nil
+            }
 
-                //                try await { @MainActor in
-                //                    readerModeLoading(false)
-                //                }()
-            }()
+            debugPrint(
+                "# READER readability.navigatorLoad",
+                "url=\(url.absoluteString)",
+                "base=\(renderBaseURL.absoluteString)",
+                "bytes=\(transformedBytes)"
+            )
+            debugPrint(
+                "# READER readability.navigatorLoad.preview",
+                "url=\(url.absoluteString)",
+                "bytes=\(transformedBytes)",
+                "preview=\(transformedPreview)"
+            )
+            debugPrint(
+                "# FLASH readability.navigator.load",
+                "url=\(flashURLDescription(url))",
+                "base=\(flashURLDescription(renderBaseURL))",
+                "bytes=\(transformedBytes)",
+                "frameIsMain=\(mainActorSnapshot.frameIsMain)"
+            )
+            debugPrint(
+                "# READERRELOAD showReadabilityContent.navigatorLoad",
+                "contentURL=\(url.absoluteString)",
+                "baseURL=\(renderBaseURL.absoluteString)",
+                "bytes=\(transformedBytes)",
+                "frameIsMain=\(mainActorSnapshot.frameIsMain)"
+            )
+            debugPrint(
+                "# READERPERF readerMode.navigatorLoad.readability",
+                "ts=\(Date().timeIntervalSince1970)",
+                "url=\(url.absoluteString)",
+                "base=\(renderBaseURL.absoluteString)",
+                "bytes=\(transformedBytes)"
+            )
+            if let snippetLoaderPreview {
+                debugPrint(
+                    "# READER snippetLoader.navigatorLoad",
+                    "contentURL=\(url.absoluteString)",
+                    "base=\(renderBaseURL.absoluteString)",
+                    "bytes=\(transformedBytes)",
+                    "preview=\(snippetLoaderPreview)"
+                )
+            }
+
+            let mainActorDispatchQueuedAt = Date()
+            let loadDispatch = await MainActor.run { () -> Date in
+                let mainActorDispatchStartedAt = Date()
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.mainActorDispatch.begin",
+                    "contentURL=\(url.absoluteString)",
+                    "waitElapsed=\(String(format: "%.3f", mainActorDispatchStartedAt.timeIntervalSince(mainActorDispatchQueuedAt)))s",
+                    "renderBaseURL=\(renderBaseURL.absoluteString)"
+                )
+                logTrace(.navigatorLoad, url: url, details: "mode=readability-html | bytes=\(transformedBytes)")
+                expectSyntheticReaderLoaderCommit(for: renderBaseURL)
+                let loadDispatch = Date()
+                navigator.load(
+                    htmlData,
+                    mimeType: "text/html",
+                    characterEncodingName: "UTF-8",
+                    baseURL: renderBaseURL
+                )
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.mainActorDispatch.end",
+                    "contentURL=\(url.absoluteString)",
+                    "dispatchElapsed=\(String(format: "%.3f", Date().timeIntervalSince(mainActorDispatchStartedAt)))s",
+                    "renderBaseURL=\(renderBaseURL.absoluteString)"
+                )
+                return loadDispatch
+            }
+            debugPrint(
+                "# READER readability.navigatorLoad.dispatched",
+                "url=\(url.absoluteString)",
+                "base=\(renderBaseURL.absoluteString)",
+                "bytes=\(transformedBytes)",
+                "elapsed=\(String(format: "%.3f", Date().timeIntervalSince(loadDispatch)))s"
+            )
+            if url.isSnippetURL {
+                await MainActor.run {
+                    injectSnippetLoaderProbe(scriptCaller: scriptCaller, baseURL: renderBaseURL)
+                }
+            }
             return shouldPersistCanonicalSnippetHTML ? transformedContent : nil
         }()
         if let snippetCanonicalHTMLToPersist {
@@ -5014,7 +5114,6 @@ private func invalidateReaderModeCache(
     }
 }
 
-@MainActor
 private func propagateReaderModeDefaults(
     for url: URL,
     primaryRecord: any ReaderContentProtocol,

@@ -26,6 +26,8 @@ fileprivate actor ReaderContentCellActor {
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
+    @Published var latestHistoryRecordLastVisitedAt: Date? = nil
+    @Published var feedShowsUnseenBadge = true
     @Published var forceShowBookmark = false
     @Published var title = ""
     @Published var author: String?
@@ -63,6 +65,17 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
                 let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
                 let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
+                let latestHistoryRecordLastVisitedAt: Date?
+                let feedShowsUnseenBadge: Bool
+                if item is FeedEntry {
+                    let historyRealm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                    latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: item.url, in: historyRealm)
+                    let feedEntry = item as? FeedEntry
+                    feedShowsUnseenBadge = feedEntry?.getFeed()?.showsUnseenBadge ?? true
+                } else {
+                    latestHistoryRecordLastVisitedAt = nil
+                    feedShowsUnseenBadge = true
+                }
                 try Task.checkCancellation()
 
                 let sourceURL = item.url
@@ -106,8 +119,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                         self.isFullArticleFinished = finished
                     } else {
                         self.readingProgress = nil
-                        self.isFullArticleFinished = nil
+                    self.isFullArticleFinished = nil
                     }
+                    self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
+                    self.feedShowsUnseenBadge = feedShowsUnseenBadge
                     self.totalWordCount = metadataResult?.totalWordCount
                     self.remainingTime = metadataResult?.remainingTime
                 }()
@@ -370,6 +385,28 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         fallbackTitle
     }
 
+    private var showsUnreadIndicator: Bool {
+        if let feedEntry = item as? FeedEntry {
+            guard viewModel.feedShowsUnseenBadge else { return false }
+            if let feed = feedEntry.getFeed() {
+                guard feed.showsUnseenBadge else { return false }
+                let effectiveSeenDate = [
+                    feed.lastViewedAt,
+                    feed.lastSeenFeedEntriesAt,
+                    viewModel.latestHistoryRecordLastVisitedAt,
+                ]
+                .compactMap { $0 }
+                .max()
+                if let effectiveSeenDate {
+                    return feedEntry.createdAt > effectiveSeenDate
+                }
+                return viewModel.latestHistoryRecordLastVisitedAt == nil
+            }
+            return viewModel.latestHistoryRecordLastVisitedAt == nil
+        }
+        return false
+    }
+
     private var fallbackSourceTitle: String? {
         guard appearance.includeSource else { return nil }
         if item.url.isSnippetURL {
@@ -562,7 +599,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 //        }
         if let remainingTime, remainingTime > 1 {
             if let formatted = ReaderDateFormatter.shortDurationString(from: remainingTime) {
-                parts.append("\(formatted) remaining")
+                parts.append("\(formatted) left")
             }
         }
         guard !parts.isEmpty else { return nil }
@@ -616,6 +653,33 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    @ViewBuilder
+    private var titleRow: some View {
+        (
+            unreadIndicatorTitleSegment
+            + titleText
+        )
+        .font(.headline)
+        .lineLimit(titleLineLimit)
+        .multilineTextAlignment(.leading)
+        .environment(\._lineHeightMultiple, 0.875)
+        .layoutPriority(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var unreadIndicatorTitleSegment: Text {
+        guard showsUnreadIndicator else { return Text("") }
+        return Text(Image(systemName: "circlebadge.fill"))
+            .font(.subheadline.weight(.regular))
+            .foregroundColor(.accentColor)
+            + Text("  ")
+    }
+
+    private var titleText: Text {
+        Text(displayTitle)
+            .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
     }
 
     @ViewBuilder
@@ -812,14 +876,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                                 sourceOrAuthorRow
                                 
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text(displayTitle)
-                                        .font(.headline)
-                                        .lineLimit(titleLineLimit)
-                                        .multilineTextAlignment(.leading)
-                                        .environment(\._lineHeightMultiple, 0.875)
-                                        .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .layoutPriority(1)
+                                    titleRow
                                     
                                     topStatusRow
                                 }
@@ -843,14 +900,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
                             VStack(alignment: .leading, spacing: 6) {
                                 sourceOrAuthorRow
 
-                                Text(displayTitle)
-                                    .font(.headline)
-                                    .lineLimit(titleLineLimit)
-                                    .multilineTextAlignment(.leading)
-                                    .environment(\._lineHeightMultiple, 0.875)
-                                    .foregroundColor((viewModel.isFullArticleFinished ?? false) ? Color.secondary : Color.primary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .layoutPriority(1)
+                                titleRow
 
                                 topStatusRow
                             }

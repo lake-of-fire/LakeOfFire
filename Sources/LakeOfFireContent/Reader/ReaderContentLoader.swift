@@ -278,19 +278,21 @@ public struct ReaderContentLoader {
         }
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
-        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
-        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
-        await bookmarkRealm.asyncRefresh()
-        await historyRealm.asyncRefresh()
         try Task.checkCancellation()
-        
-        var contentFile: ContentFile?
-        if !skipContentFiles {
-            contentFile = ContentFile.get(forURL: url, realm: bookmarkRealm)
+
+        let bookmarkRealm = try await RealmBackgroundActor.shared.cachedRealm(for: bookmarkRealmConfiguration)
+        await bookmarkRealm.asyncRefresh()
+        let historyRealm = try await RealmBackgroundActor.shared.cachedRealm(for: historyRealmConfiguration)
+        await historyRealm.asyncRefresh()
+
+        let contentFile: ContentFile? = if !skipContentFiles {
+            ContentFile.get(forURL: url, realm: bookmarkRealm)
+        } else {
+            nil
         }
         let history = HistoryRecord.get(forURL: url, realm: historyRealm)
         let bookmark = Bookmark.get(forURL: url, realm: bookmarkRealm)
-        
+
         var feed: FeedEntry?
         if !skipFeedEntries {
             let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
@@ -298,15 +300,14 @@ public struct ReaderContentLoader {
             let feeds = feedRealm.objects(FeedEntry.self)
                 .where { !$0.isDeleted }
                 .sorted(by: \.createdAt, ascending: false)
-            
+
             if url.scheme == "https" {
-                feed = feeds.filter("url == %@ || url == %@", url.absoluteString, url.settingScheme("http").absoluteString).first
                 feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
             } else if !url.isReaderFileURL {
                 feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
             }
         }
-        
+
             let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
             return candidates.compactMap(ContentReference.init(content:))
         }

@@ -484,37 +484,37 @@ export const isMOBI = async file => {
 }
 
 class PDB {
-    #file
-    #offsets
+    _file
+    _offsets
     pdb
     async open(file) {
-        this.#file = file
+        this._file = file
         const pdb = getStruct(PDB_HEADER, await file.slice(0, 78).arrayBuffer())
         this.pdb = pdb
         const buffer = await file.slice(78, 78 + pdb.numRecords * 8).arrayBuffer()
         // get start and end offsets for each record
-        this.#offsets = Array.from({ length: pdb.numRecords },
+        this._offsets = Array.from({ length: pdb.numRecords },
             (_, i) => getUint(buffer.slice(i * 8, i * 8 + 4)))
             .map((x, i, a) => [x, a[i + 1]])
     }
     loadRecord(index) {
-        const offsets = this.#offsets[index]
+        const offsets = this._offsets[index]
         if (!offsets) throw new RangeError('Record index out of bounds')
-        return this.#file.slice(...offsets).arrayBuffer()
+        return this._file.slice(...offsets).arrayBuffer()
     }
     async loadMagic(index) {
-        const start = this.#offsets[index][0]
-        return getString(await this.#file.slice(start, start + 4).arrayBuffer())
+        const start = this._offsets[index][0]
+        return getString(await this._file.slice(start, start + 4).arrayBuffer())
     }
 }
 
 export class MOBI extends PDB {
-    #start = 0
-    #resourceStart
-    #decoder
-    #encoder
-    #decompress
-    #removeTrailingEntries
+    _start = 0
+    _resourceStart
+    _decoder
+    _encoder
+    _decompress
+    _removeTrailingEntries
     constructor({ unzlib }) {
         super()
         this.unzlib = unzlib
@@ -522,25 +522,25 @@ export class MOBI extends PDB {
     async open(file) {
         await super.open(file)
         // TODO: if (this.pdb.type === 'TEXt')
-        this.headers = this.#getHeaders(await super.loadRecord(0))
-        this.#resourceStart = this.headers.mobi.resourceStart
+        this.headers = this._getHeaders(await super.loadRecord(0))
+        this._resourceStart = this.headers.mobi.resourceStart
         let isKF8 = this.headers.mobi.version >= 8
         if (!isKF8) {
             const boundary = this.headers.exth?.boundary
             if (boundary < 0xffffffff) try {
                 // it's a "combo" MOBI/KF8 file; try to open the KF8 part
-                this.headers = this.#getHeaders(await super.loadRecord(boundary))
-                this.#start = boundary
+                this.headers = this._getHeaders(await super.loadRecord(boundary))
+                this._start = boundary
                 isKF8 = true
             } catch (e) {
                 console.warn(e)
                 console.warn('Failed to open KF8; falling back to MOBI')
             }
         }
-        await this.#setup()
+        await this._setup()
         return isKF8 ? new KF8(this).init() : new MOBI6(this).init()
     }
-    #getHeaders(buf) {
+    _getHeaders(buf) {
         const palmdoc = getStruct(PALMDOC_HEADER, buf)
         const mobi = getStruct(MOBI_HEADER, buf)
         if (mobi.magic !== 'MOBI') throw new Error('Missing MOBI header')
@@ -555,26 +555,26 @@ export class MOBI extends PDB {
         const kf8 = mobi.version >= 8 ? getStruct(KF8_HEADER, buf) : null
         return { palmdoc, mobi, exth, kf8 }
     }
-    async #setup() {
+    async _setup() {
         const { palmdoc, mobi } = this.headers
-        this.#decoder = getDecoder(mobi.encoding)
+        this._decoder = getDecoder(mobi.encoding)
         // `TextEncoder` only supports UTF-8
         // we are only encoding ASCII anyway, so I think it's fine
-        this.#encoder = new TextEncoder()
+        this._encoder = new TextEncoder()
 
         // set up decompressor
         const { compression } = palmdoc
-        this.#decompress = compression === 1 ? f => f
+        this._decompress = compression === 1 ? f => f
             : compression === 2 ? decompressPalmDOC
             : compression === 17480 ? await huffcdic(mobi, this.loadRecord.bind(this))
             : null
-        if (!this.#decompress) throw new Error('Unknown compression type')
+        if (!this._decompress) throw new Error('Unknown compression type')
 
         // set up function for removing trailing bytes
         const { trailingFlags } = mobi
         const multibyte = trailingFlags & 1
         const numTrailingEntries = countBitsSet(trailingFlags >>> 1)
-        this.#removeTrailingEntries = array => {
+        this._removeTrailingEntries = array => {
             for (let i = 0; i < numTrailingEntries; i++) {
                 const length = getVarLenFromEnd(array)
                 array = array.subarray(0, -length)
@@ -587,25 +587,25 @@ export class MOBI extends PDB {
         }
     }
     decode(...args) {
-        return this.#decoder.decode(...args)
+        return this._decoder.decode(...args)
     }
     encode(...args) {
-        return this.#encoder.encode(...args)
+        return this._encoder.encode(...args)
     }
     loadRecord(index) {
-        return super.loadRecord(this.#start + index)
+        return super.loadRecord(this._start + index)
     }
     loadMagic(index) {
-        return super.loadMagic(this.#start + index)
+        return super.loadMagic(this._start + index)
     }
     loadText(index) {
         return this.loadRecord(index + 1)
             .then(buf => new Uint8Array(buf))
-            .then(this.#removeTrailingEntries)
-            .then(this.#decompress)
+            .then(this._removeTrailingEntries)
+            .then(this._decompress)
     }
     async loadResource(index) {
-        const buf = await super.loadRecord(this.#resourceStart + index)
+        const buf = await super.loadRecord(this._resourceStart + index)
         const magic = getString(buf.slice(0, 4))
         if (magic === 'FONT') return getFont(buf, this.unzlib)
         if (magic === 'VIDE' || magic === 'AUDI') return buf.slice(12)
@@ -646,12 +646,12 @@ const fileposRegex = /<[^<>]+filepos=['"]{0,1}(\d+)[^<>]*>/gi
 class MOBI6 {
     parser = new DOMParser()
     serializer = new XMLSerializer()
-    #resourceCache = new Map()
-    #textCache = new Map()
-    #cache = new Map()
-    #sections
-    #fileposList = []
-    #type = MIME.HTML
+    _resourceCache = new Map()
+    _textCache = new Map()
+    _cache = new Map()
+    _sections
+    _fileposList = []
+    _type = MIME.HTML
     constructor(mobi) {
         this.mobi = mobi
     }
@@ -669,7 +669,7 @@ class MOBI6 {
             c => String.fromCharCode(c)).join('')
 
         // split content into sections at each `<mbp:pagebreak>`
-        this.#sections = [0]
+        this._sections = [0]
             .concat(Array.from(str.matchAll(mbpPagebreakRegex), m => m.index))
             .map((x, i, a) => str.slice(x, a[i + 1]))
             // recover the original raw bytes
@@ -683,7 +683,7 @@ class MOBI6 {
                 return arr.concat(x)
             }, [])
 
-        this.sections = this.#sections.map((section, index) => ({
+        this.sections = this._sections.map((section, index) => ({
             id: index,
             load: () => this.loadSection(section),
             createDocument: () => this.createDocument(section),
@@ -724,7 +724,7 @@ class MOBI6 {
         // get list of all `filepos` references in the book,
         // which will be used to insert anchor elements
         // because only then can they be referenced in the DOM
-        this.#fileposList = [...new Set(fileposInNCX
+        this._fileposList = [...new Set(fileposInNCX
             .concat(Array.from(str.matchAll(fileposRegex), m => m[1])))]
             .map(filepos => ({ filepos, number: Number(filepos) }))
             .sort((a, b) => a.number - b.number)
@@ -734,7 +734,7 @@ class MOBI6 {
         return this
     }
     async getGuide() {
-        const doc = await this.createDocument(this.#sections[0])
+        const doc = await this.createDocument(this._sections[0])
         return Array.from(doc.getElementsByTagName('reference'), ref => ({
             label: ref.getAttribute('title'),
             type: ref.getAttribute('type')?.split(/\s/),
@@ -742,10 +742,10 @@ class MOBI6 {
         }))
     }
     async loadResource(index) {
-        if (this.#resourceCache.has(index)) return this.#resourceCache.get(index)
+        if (this._resourceCache.has(index)) return this._resourceCache.get(index)
         const raw = await this.mobi.loadResource(index)
         const url = URL.createObjectURL(new Blob([raw]))
-        this.#resourceCache.set(index, url)
+        this._resourceCache.set(index, url)
         return url
     }
     async loadRecindex(recindex) {
@@ -776,11 +776,11 @@ class MOBI6 {
         }
     }
     async loadText(section) {
-        if (this.#textCache.has(section)) return this.#textCache.get(section)
+        if (this._textCache.has(section)) return this._textCache.get(section)
         const { raw } = section
 
         // insert anchor elements for each `filepos`
-        const fileposList = this.#fileposList
+        const fileposList = this._fileposList
             .filter(({ number }) => number >= section.start && number < section.end)
             .map(obj => ({ ...obj, offset: obj.number - section.start }))
         let arr = raw
@@ -793,15 +793,15 @@ class MOBI6 {
             })
         }
         const str = this.mobi.decode(arr).replaceAll(mbpPagebreakRegex, '')
-        this.#textCache.set(section, str)
+        this._textCache.set(section, str)
         return str
     }
     async createDocument(section) {
         const str = await this.loadText(section)
-        return this.parser.parseFromString(str, this.#type)
+        return this.parser.parseFromString(str, this._type)
     }
     async loadSection(section) {
-        if (this.#cache.has(section)) return this.#cache.get(section)
+        if (this._cache.has(section)) return this._cache.get(section)
         const doc = await this.createDocument(section)
 
         // inject default stylesheet
@@ -819,21 +819,21 @@ class MOBI6 {
 
         await this.replaceResources(doc)
         const result = this.serializer.serializeToString(doc)
-        const url = URL.createObjectURL(new Blob([result], { type: this.#type }))
-        this.#cache.set(section, url)
+        const url = URL.createObjectURL(new Blob([result], { type: this._type }))
+        this._cache.set(section, url)
         return url
     }
     resolveHref(href) {
         const filepos = href.match(/filepos:(.*)/)[1]
         const number = Number(filepos)
-        const index = this.#sections.findIndex(section => section.end > number)
+        const index = this._sections.findIndex(section => section.end > number)
         const anchor = doc => doc.getElementById(`filepos${filepos}`)
         return { index, anchor }
     }
     splitTOCHref(href) {
         const filepos = href.match(/filepos:(.*)/)[1]
         const number = Number(filepos)
-        const index = this.#sections.findIndex(section => section.end > number)
+        const index = this._sections.findIndex(section => section.end > number)
         return [index, `filepos${filepos}`]
     }
     getTOCFragment(doc, id) {
@@ -843,8 +843,8 @@ class MOBI6 {
         return /^(?!blob|filepos)\w+:/i.test(uri)
     }
     destroy() {
-        for (const url of this.#resourceCache.values()) URL.revokeObjectURL(url)
-        for (const url of this.#cache.values()) URL.revokeObjectURL(url)
+        for (const url of this._resourceCache.values()) URL.revokeObjectURL(url)
+        for (const url of this._cache.values()) URL.revokeObjectURL(url)
     }
 }
 
@@ -884,18 +884,18 @@ const replaceSeries = async (str, regex, f) => {
 
 class KF8 {
     parser = new DOMParser()
-    #cache = new Map()
-    #fragmentOffsets = new Map()
-    #fragmentSelectors = new Map()
-    #tables = {}
-    #sections
-    #fullRawLength
-    #rawHead = new Uint8Array()
-    #rawTail = new Uint8Array()
-    #lastLoadedHead = -1
-    #lastLoadedTail = -1
-    #checkType = true
-    #type = MIME.XHTML
+    _cache = new Map()
+    _fragmentOffsets = new Map()
+    _fragmentSelectors = new Map()
+    _tables = {}
+    _sections
+    _fullRawLength
+    _rawHead = new Uint8Array()
+    _rawTail = new Uint8Array()
+    _lastLoadedHead = -1
+    _lastLoadedTail = -1
+    _checkType = true
+    _type = MIME.XHTML
     constructor(mobi) {
         this.mobi = mobi
     }
@@ -912,8 +912,8 @@ class KF8 {
                 .map(offset => [
                     getUint(fdstBuffer.slice(offset, offset + 4)),
                     getUint(fdstBuffer.slice(offset + 4, offset + 8))])
-            this.#tables.fdstTable = fdstTable
-            this.#fullRawLength = fdstTable[fdstTable.length - 1][1]
+            this._tables.fdstTable = fdstTable
+            this._fullRawLength = fdstTable[fdstTable.length - 1][1]
         } catch {}
 
         const skelTable = (await getIndexData(kf8.skel, loadRecord)).table
@@ -931,10 +931,10 @@ class KF8 {
             offset: tagMap[6][0],
             length: tagMap[6][1],
         }))
-        this.#tables.skelTable = skelTable
-        this.#tables.fragTable = fragTable
+        this._tables.skelTable = skelTable
+        this._tables.fragTable = fragTable
 
-        this.#sections = skelTable.reduce((arr, skel) => {
+        this._sections = skelTable.reduce((arr, skel) => {
             const last = arr[arr.length - 1]
             const fragStart = last?.fragEnd ?? 0, fragEnd = fragStart + skel.numFrag
             const frags = fragTable.slice(fragStart, fragEnd)
@@ -958,9 +958,9 @@ class KF8 {
         // insert cover page for CFI compatibility with KindleUnpack,
         // which will pretty much always insert a cover page;
         // it will not be accessible in any way, so just insert a dummy section
-        this.#sections.unshift({ frags: [] })
+        this._sections.unshift({ frags: [] })
 
-        this.sections = this.#sections.map((section, index) =>
+        this.sections = this._sections.map((section, index) =>
             section.frags.length ? ({
                 id: index,
                 load: () => this.loadSection(section),
@@ -973,9 +973,9 @@ class KF8 {
             const map = ({ label, pos, children }) => {
                 const [fid, off] = pos
                 const href = makePosURI(fid, off)
-                const arr = this.#fragmentOffsets.get(fid)
+                const arr = this._fragmentOffsets.get(fid)
                 if (arr) arr.push(off)
-                else this.#fragmentOffsets.set(fid, [off])
+                else this._fragmentOffsets.set(fid, [off])
                 return { label: unescapeHTML(label), href, subitems: children?.map(map) }
             }
             this.toc = ncx?.map(map)
@@ -1032,10 +1032,10 @@ class KF8 {
         return new Blob([result], { type })
     }
     async loadResource(str) {
-        if (this.#cache.has(str)) return this.#cache.get(str)
+        if (this._cache.has(str)) return this._cache.get(str)
         const blob = await this.loadResourceBlob(str)
         const url = URL.createObjectURL(blob)
-        this.#cache.set(str, url)
+        this._cache.set(str, url)
         return url
     }
     replaceResources(str) {
@@ -1048,31 +1048,31 @@ class KF8 {
     async loadRaw(start, end) {
         // here we load either from the front or back until we have reached the
         // required offsets; at worst you'd have to load half the book at once
-        const distanceHead = end - this.#rawHead.length
-        const distanceEnd = this.#fullRawLength == null ? Infinity
-            : (this.#fullRawLength - this.#rawTail.length) - start
+        const distanceHead = end - this._rawHead.length
+        const distanceEnd = this._fullRawLength == null ? Infinity
+            : (this._fullRawLength - this._rawTail.length) - start
         // load from the start
         if (distanceHead < 0 || distanceHead < distanceEnd) {
-            while (this.#rawHead.length < end) {
-                const index = ++this.#lastLoadedHead
+            while (this._rawHead.length < end) {
+                const index = ++this._lastLoadedHead
                 const data = await this.mobi.loadText(index)
-                this.#rawHead = concatTypedArray(this.#rawHead, data)
+                this._rawHead = concatTypedArray(this._rawHead, data)
             }
-            return this.#rawHead.slice(start, end)
+            return this._rawHead.slice(start, end)
         }
         // load from the end
-        while (this.#fullRawLength - this.#rawTail.length > start) {
+        while (this._fullRawLength - this._rawTail.length > start) {
             const index = this.mobi.headers.palmdoc.numTextRecords - 1
-                - (++this.#lastLoadedTail)
+                - (++this._lastLoadedTail)
             const data = await this.mobi.loadText(index)
-            this.#rawTail = concatTypedArray(data, this.#rawTail)
+            this._rawTail = concatTypedArray(data, this._rawTail)
         }
-        const rawTailStart = this.#fullRawLength - this.#rawTail.length
-        return this.#rawTail.slice(start - rawTailStart, end - rawTailStart)
+        const rawTailStart = this._fullRawLength - this._rawTail.length
+        return this._rawTail.slice(start - rawTailStart, end - rawTailStart)
     }
     loadFlow(index) {
         if (index < 0xffffffff)
-            return this.loadRaw(...this.#tables.fdstTable[index])
+            return this.loadRaw(...this._tables.fdstTable[index])
     }
     async loadText(section) {
         const { skel, frags, length } = section
@@ -1086,45 +1086,45 @@ class KF8 {
                 skeleton.slice(0, insertOffset), fragRaw,
                 skeleton.slice(insertOffset))
 
-            const offsets = this.#fragmentOffsets.get(frag.index)
+            const offsets = this._fragmentOffsets.get(frag.index)
             if (offsets) for (const offset of offsets) {
                 const str = this.mobi.decode(fragRaw).slice(offset)
                 const selector = getFragmentSelector(str)
-                this.#setFragmentSelector(frag.index, offset, selector)
+                this._setFragmentSelector(frag.index, offset, selector)
             }
         }
         return this.mobi.decode(skeleton)
     }
     async createDocument(section) {
         const str = await this.loadText(section)
-        return this.parser.parseFromString(str, this.#type)
+        return this.parser.parseFromString(str, this._type)
     }
     async loadSection(section) {
-        if (this.#cache.has(section)) return this.#cache.get(section)
+        if (this._cache.has(section)) return this._cache.get(section)
         const str = await this.loadText(section)
 
         // by default, type is XHTML; change to HTML if it's not valid XHTML
-        if (this.#checkType && this.parser
-            .parseFromString(str, this.#type)
-            .querySelector('parsererror')) this.#type = MIME.HTML
+        if (this._checkType && this.parser
+            .parseFromString(str, this._type)
+            .querySelector('parsererror')) this._type = MIME.HTML
         // let's just check it once for now
-        if (this.#checkType) this.#checkType = false
+        if (this._checkType) this._checkType = false
 
         const replaced = await this.replaceResources(str)
-        const url = URL.createObjectURL(new Blob([replaced], { type: this.#type }))
-        this.#cache.set(section, url)
+        const url = URL.createObjectURL(new Blob([replaced], { type: this._type }))
+        this._cache.set(section, url)
         return url
     }
     getIndexByFID(fid) {
-        return this.#sections.findIndex(section =>
+        return this._sections.findIndex(section =>
             section.frags.some(frag => frag.index === fid))
     }
-    #setFragmentSelector(id, offset, selector) {
-        const map = this.#fragmentSelectors.get(id)
+    _setFragmentSelector(id, offset, selector) {
+        const map = this._fragmentSelectors.get(id)
         if (map) map.set(offset, selector)
         else {
             const map = new Map()
-            this.#fragmentSelectors.set(id, map)
+            this._fragmentSelectors.set(id, map)
             map.set(offset, selector)
         }
     }
@@ -1133,16 +1133,16 @@ class KF8 {
         const index = this.getIndexByFID(fid)
         if (index < 0) return
 
-        const saved = this.#fragmentSelectors.get(fid)?.get(off)
+        const saved = this._fragmentSelectors.get(fid)?.get(off)
         if (saved) return { index, anchor: doc => doc.querySelector(saved) }
 
-        const { skel, frags } = this.#sections[index]
+        const { skel, frags } = this._sections[index]
         const frag = frags.find(frag => frag.index === fid)
         const offset = skel.offset + skel.length + frag.offset
         const fragRaw = await this.loadRaw(offset, offset + frag.length)
         const str = this.mobi.decode(fragRaw).slice(off)
         const selector = getFragmentSelector(str)
-        this.#setFragmentSelector(fid, off, selector)
+        this._setFragmentSelector(fid, off, selector)
         const anchor = doc => doc.querySelector(selector)
         return { index, anchor }
     }
@@ -1152,13 +1152,13 @@ class KF8 {
         return [index, pos]
     }
     getTOCFragment(doc, { fid, off }) {
-        const selector = this.#fragmentSelectors.get(fid)?.get(off)
+        const selector = this._fragmentSelectors.get(fid)?.get(off)
         return doc.querySelector(selector)
     }
     isExternal(uri) {
         return /^(?!blob|kindle)\w+:/i.test(uri)
     }
     destroy() {
-        for (const url of this.#cache.values()) URL.revokeObjectURL(url)
+        for (const url of this._cache.values()) URL.revokeObjectURL(url)
     }
 }

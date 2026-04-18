@@ -5,6 +5,9 @@ createTOCView
 } from './ui/tree.js'
 import { NavigationHUD } from './ebook-viewer-nav.js'
 
+globalThis.manabiViewerModuleStatus = 'module-script:evaluating';
+globalThis.manabiViewerModuleFetchStatus = globalThis.manabiViewerModuleFetchStatus ?? 'module-script:evaluating';
+
 const DEFAULT_RUBY_FONT_STACK = `'Hiragino Kaku Gothic ProN', 'Hiragino Sans', system-ui`;
 
 // pagination logger disabled for noise reduction
@@ -213,6 +216,19 @@ const ensureCustomFontsForDoc = async (doc) => {
         } catch (__error) {}
         return false;
     }
+};
+
+const waitForFontCSSReady = async (doc = document) => {
+    const targetDoc = doc || document;
+    if (!targetDoc) return false;
+    await ensureCustomFontsForDoc(targetDoc).catch(() => false);
+    try {
+        const fontSet = targetDoc.fonts;
+        if (typeof fontSet?.ready?.then === 'function') {
+            await fontSet.ready;
+        }
+    } catch (_error) {}
+    return true;
 };
 
 globalThis.manabiWaitForFontCSS = waitForFontCSSReady;
@@ -565,8 +581,29 @@ const timeoutPromise = (ms, message) =>
         setTimeout(() => reject(new Error(message)), ms)
     })
 
+const sleepPromise = ms =>
+    new Promise(resolve => setTimeout(resolve, ms))
+
 const makeNativeSourceURLQuery = sourceURL =>
     `sourceURL=${encodeURIComponent(sourceURL)}`
+
+const setActiveLoadStateForOwner = (owner, state) => {
+    if (owner && globalThis.reader === owner) {
+        globalThis.manabiLoadEBookLastState = state
+    }
+    return state
+}
+
+const nativeEntryAttemptTimeoutMs = attemptNumber =>
+    attemptNumber > 1 ? 6000 : 4000
+
+const shouldRetryNativeEntryError = error => {
+    const message = String(error?.message || error || '')
+    return message.includes('native-entry-timeout:')
+        || message.includes('native-entry-arraybuffer-timeout:')
+        || message.includes('network request failed')
+        || message.includes('Load failed')
+}
 
 const fetchNativeEntries = async sourceURL => {
     const response = await Promise.race([
@@ -595,34 +632,51 @@ const fetchNativeEntries = async sourceURL => {
     return payload
 }
 
-const fetchNativeEntryResponse = async (sourceURL, subpath) => {
+const fetchNativeEntryResponse = async (sourceURL, subpath, { attemptNumber = 1, owner = null, isCacheWarmer = false } = {}) => {
+    const timeoutMs = nativeEntryAttemptTimeoutMs(attemptNumber)
+    setActiveLoadStateForOwner(owner, `native-loader-awaiting-entry:${subpath}:attempt-${attemptNumber}`)
+    logFix('nativeEntry:fetch:start', {
+        sourceURL,
+        subpath,
+        attemptNumber,
+        timeoutMs,
+        isCacheWarmer: !!isCacheWarmer,
+    })
     const response = await Promise.race([
         fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
             headers: {
                 'X-Ebook-Source-URL': sourceURL,
             },
         }),
-        timeoutPromise(4000, `native-entry-timeout:${subpath}`),
+        timeoutPromise(timeoutMs, `native-entry-timeout:${subpath}:attempt-${attemptNumber}`),
     ])
     try {
         window.webkit?.messageHandlers?.print?.postMessage?.(
-            `# EBOOKFETCH entry status=${response.status} ok=${response.ok} subpath=${subpath} source=${sourceURL}`
+            `# EBOOKFETCH entry status=${response.status} ok=${response.ok} subpath=${subpath} attempt=${attemptNumber} source=${sourceURL}`
         )
     } catch (_err) {}
     if (!response.ok) {
+        logFix('nativeEntry:fetch:non-ok', {
+            sourceURL,
+            subpath,
+            attemptNumber,
+            status: response.status,
+            isCacheWarmer: !!isCacheWarmer,
+        })
         return null
     }
+    setActiveLoadStateForOwner(owner, `native-loader-entry-ready:${subpath}:attempt-${attemptNumber}`)
     return response
 }
 
-const readNativeEntryText = async (response, name) => {
+const readNativeEntryText = async (response, name, { attemptNumber = 1, owner = null } = {}) => {
     if (!response) return null
-    globalThis.manabiLoadEBookLastState = `native-loader-decoding-text:${name}`
+    setActiveLoadStateForOwner(owner, `native-loader-decoding-text:${name}:attempt-${attemptNumber}`)
     const arrayBuffer = await Promise.race([
         response.arrayBuffer(),
-        timeoutPromise(4000, `native-entry-arraybuffer-timeout:${name}`),
+        timeoutPromise(nativeEntryAttemptTimeoutMs(attemptNumber), `native-entry-arraybuffer-timeout:${name}:attempt-${attemptNumber}`),
     ])
-    globalThis.manabiLoadEBookLastState = `native-loader-arraybuffer-ready:${name}`
+    setActiveLoadStateForOwner(owner, `native-loader-arraybuffer-ready:${name}:attempt-${attemptNumber}`)
     const charset = response.headers?.get?.('content-type')?.match(/charset=([^;]+)/i)?.[1]?.trim() || 'utf-8'
     let decoder
     try {
@@ -631,25 +685,83 @@ const readNativeEntryText = async (response, name) => {
         decoder = new TextDecoder('utf-8')
     }
     const text = decoder.decode(arrayBuffer)
-    globalThis.manabiLoadEBookLastState = `native-loader-text-decoded:${name}`
+    setActiveLoadStateForOwner(owner, `native-loader-text-decoded:${name}:attempt-${attemptNumber}`)
     return text
 }
 
-const readNativeEntryBlob = async (response, name) => {
+const readNativeEntryBlob = async (response, name, { attemptNumber = 1, owner = null } = {}) => {
     if (!response) return null
-    globalThis.manabiLoadEBookLastState = `native-loader-decoding-blob:${name}`
+    setActiveLoadStateForOwner(owner, `native-loader-decoding-blob:${name}:attempt-${attemptNumber}`)
     const arrayBuffer = await Promise.race([
         response.arrayBuffer(),
-        timeoutPromise(4000, `native-entry-arraybuffer-timeout:${name}`),
+        timeoutPromise(nativeEntryAttemptTimeoutMs(attemptNumber), `native-entry-arraybuffer-timeout:${name}:attempt-${attemptNumber}`),
     ])
-    globalThis.manabiLoadEBookLastState = `native-loader-arraybuffer-ready:${name}`
+    setActiveLoadStateForOwner(owner, `native-loader-arraybuffer-ready:${name}:attempt-${attemptNumber}`)
     const mimeType = response.headers?.get?.('content-type') || ''
     const blob = new Blob([arrayBuffer], mimeType ? { type: mimeType } : undefined)
-    globalThis.manabiLoadEBookLastState = `native-loader-blob-decoded:${name}`
+    setActiveLoadStateForOwner(owner, `native-loader-blob-decoded:${name}:attempt-${attemptNumber}`)
     return blob
 }
 
-const makeNativeEpubLoader = async (url, isCacheWarmer) => {
+const loadNativeEntryText = async (sourceURL, name, { owner = null, isCacheWarmer = false, maxAttempts = 2 } = {}) => {
+    let lastError = null
+    for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber += 1) {
+        try {
+            setActiveLoadStateForOwner(owner, `native-loader-awaiting-text:${name}:attempt-${attemptNumber}`)
+            const response = await fetchNativeEntryResponse(sourceURL, name, { attemptNumber, owner, isCacheWarmer })
+            setActiveLoadStateForOwner(owner, `native-loader-text-ready:${name}:attempt-${attemptNumber}`)
+            return await readNativeEntryText(response, name, { attemptNumber, owner })
+        } catch (error) {
+            lastError = error
+            setActiveLoadStateForOwner(owner, `native-loader-text-error:${name}:attempt-${attemptNumber}`)
+            logFix('nativeLoader:text:error', {
+                sourceURL,
+                name,
+                attemptNumber,
+                isCacheWarmer: !!isCacheWarmer,
+                message: sanitizeErrorValue(error?.message ?? error),
+                retrying: attemptNumber < maxAttempts && shouldRetryNativeEntryError(error),
+            })
+            if (attemptNumber >= maxAttempts || !shouldRetryNativeEntryError(error)) {
+                throw error
+            }
+            await sleepPromise(150 * attemptNumber)
+        }
+    }
+    if (lastError) throw lastError
+    return null
+}
+
+const loadNativeEntryBlob = async (sourceURL, name, { owner = null, isCacheWarmer = false, maxAttempts = 2 } = {}) => {
+    let lastError = null
+    for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber += 1) {
+        try {
+            setActiveLoadStateForOwner(owner, `native-loader-awaiting-blob:${name}:attempt-${attemptNumber}`)
+            const response = await fetchNativeEntryResponse(sourceURL, name, { attemptNumber, owner, isCacheWarmer })
+            setActiveLoadStateForOwner(owner, `native-loader-blob-ready:${name}:attempt-${attemptNumber}`)
+            return await readNativeEntryBlob(response, name, { attemptNumber, owner })
+        } catch (error) {
+            lastError = error
+            setActiveLoadStateForOwner(owner, `native-loader-blob-error:${name}:attempt-${attemptNumber}`)
+            logFix('nativeLoader:blob:error', {
+                sourceURL,
+                name,
+                attemptNumber,
+                isCacheWarmer: !!isCacheWarmer,
+                message: sanitizeErrorValue(error?.message ?? error),
+                retrying: attemptNumber < maxAttempts && shouldRetryNativeEntryError(error),
+            })
+            if (attemptNumber >= maxAttempts || !shouldRetryNativeEntryError(error)) {
+                throw error
+            }
+            await sleepPromise(150 * attemptNumber)
+        }
+    }
+    if (lastError) throw lastError
+    return null
+}
+
+const makeNativeEpubLoader = async (url, isCacheWarmer, owner = null) => {
     logFix('nativeLoader:begin', {
         sourceURL: url,
         isCacheWarmer: !!isCacheWarmer,
@@ -679,10 +791,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
                 });
                 return null
             }
-            globalThis.manabiLoadEBookLastState = `native-loader-awaiting-text:${name}`
-            const response = await fetchNativeEntryResponse(url, name)
-            globalThis.manabiLoadEBookLastState = `native-loader-text-ready:${name}`
-            return readNativeEntryText(response, name)
+            return loadNativeEntryText(url, name, { owner, isCacheWarmer })
         },
         loadBlob: async name => {
             if (!entryNames.has(name)) {
@@ -693,10 +802,7 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
                 });
                 return null
             }
-            globalThis.manabiLoadEBookLastState = `native-loader-awaiting-blob:${name}`
-            const response = await fetchNativeEntryResponse(url, name)
-            globalThis.manabiLoadEBookLastState = `native-loader-blob-ready:${name}`
-            return readNativeEntryBlob(response, name)
+            return loadNativeEntryBlob(url, name, { owner, isCacheWarmer })
         },
         getSize: name => sizeMap.get(name) ?? 0,
         replaceText,
@@ -794,39 +900,50 @@ name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
 const setLoadStateForOwner = (owner, state) => {
     if (!owner || globalThis.reader === owner) {
+        if (owner && globalThis.reader === owner) {
+            globalThis.manabiActiveLoadStateOwner = owner
+        }
         globalThis.manabiLoadEBookLastState = state;
     }
     return state;
 };
 
+globalThis.manabiSetLoadEBookState = state => {
+    const owner = globalThis.manabiActiveLoadStateOwner
+    if (owner && globalThis.reader === owner) {
+        globalThis.manabiLoadEBookLastState = state
+    }
+    return state
+}
+
 const getView = async (source, isCacheWarmer, owner = null) => {
     let book
     if (source?.kind === 'native') {
-        setLoadStateForOwner(owner, 'getView-native-source');
+        setActiveLoadStateForOwner(owner, 'getView-native-source');
         logFix('getView:native-source', {
             sourceURL: source.url ?? null,
             isCacheWarmer: !!isCacheWarmer,
         });
-        setLoadStateForOwner(owner, 'getView-native-importing-epub');
+        setActiveLoadStateForOwner(owner, 'getView-native-importing-epub');
         const {
             EPUB
             } = await import('./epub.js')
-        setLoadStateForOwner(owner, 'getView-native-awaiting-loader');
+        setActiveLoadStateForOwner(owner, 'getView-native-awaiting-loader');
         const loader = await Promise.race([
-            makeNativeEpubLoader(source.url, isCacheWarmer),
+            makeNativeEpubLoader(source.url, isCacheWarmer, owner),
             new Promise((_, reject) => {
                 setTimeout(() => reject(new Error('native-loader-timeout')), 15000)
             }),
         ])
-        setLoadStateForOwner(owner, 'getView-native-loader-ready');
-        setLoadStateForOwner(owner, 'getView-native-awaiting-book-init');
+        setActiveLoadStateForOwner(owner, 'getView-native-loader-ready');
+        setActiveLoadStateForOwner(owner, 'getView-native-awaiting-book-init');
         book = await Promise.race([
             new EPUB(loader).init(),
             new Promise((_, reject) => {
                 setTimeout(() => reject(new Error('native-book-init-timeout')), 15000)
             }),
         ])
-        setLoadStateForOwner(owner, 'getView-native-book-ready');
+        setActiveLoadStateForOwner(owner, 'getView-native-book-ready');
         logFix('getView:native-book-ready', {
             sourceURL: source.url ?? null,
             isCacheWarmer: !!isCacheWarmer,
@@ -869,18 +986,18 @@ const getView = async (source, isCacheWarmer, owner = null) => {
         throw new Error('File not found')
     }
     if (!book) throw new Error('File type not supported')
-    setLoadStateForOwner(owner, 'getView-native-pre-create-view');
+    setActiveLoadStateForOwner(owner, 'getView-native-pre-create-view');
     const view = document.createElement('foliate-view')
-    setLoadStateForOwner(owner, 'getView-native-view-created');
+    setActiveLoadStateForOwner(owner, 'getView-native-view-created');
     logFix('getView:view-created', {
         isCacheWarmer: !!isCacheWarmer,
         tagName: view?.tagName ?? null,
     });
     view.dataset.isCache = isCacheWarmer;
     const readerStage = document.getElementById('reader-stage');
-    setLoadStateForOwner(owner, 'getView-native-pre-append-view');
+    setActiveLoadStateForOwner(owner, 'getView-native-pre-append-view');
     (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
-    setLoadStateForOwner(owner, 'getView-native-view-appended');
+    setActiveLoadStateForOwner(owner, 'getView-native-view-appended');
     logFix('getView:view-appended', {
         isCacheWarmer: !!isCacheWarmer,
         parentTag: view.parentElement?.tagName ?? null,
@@ -897,7 +1014,7 @@ const getView = async (source, isCacheWarmer, owner = null) => {
         view.style.pointerEvents = 'none'
     }
     await customElements.whenDefined('foliate-view')
-    setLoadStateForOwner(owner, 'getView-native-awaiting-layout');
+    setActiveLoadStateForOwner(owner, 'getView-native-awaiting-layout');
     const layoutState = isCacheWarmer
         ? await waitForViewHostLayout(view, { timeoutMs: 500, requireNonZeroSize: false })
         : await waitForViewHostLayout(view, { timeoutMs: 2500, requireNonZeroSize: true })
@@ -912,7 +1029,7 @@ const getView = async (source, isCacheWarmer, owner = null) => {
         parentWidth: Number(view.parentElement?.getBoundingClientRect?.()?.width ?? 0),
         parentHeight: Number(view.parentElement?.getBoundingClientRect?.()?.height ?? 0),
     });
-    setLoadStateForOwner(owner, 'getView-native-pre-open-view');
+    setActiveLoadStateForOwner(owner, 'getView-native-pre-open-view');
     logFix('getView:view-open-begin', {
         isCacheWarmer: !!isCacheWarmer,
         bookDir: book?.dir ?? null,
@@ -1075,37 +1192,37 @@ style: 'percent'
 })
 
 class SideNavChevronAnimator {
-    #icons = {
+    _icons = {
         l: null,
         r: null,
     };
-    #hideTimers = {
+    _hideTimers = {
         l: null,
         r: null,
     };
 
     constructor() {
-        this.#icons = {
+        this._icons = {
             l: document.querySelector('#btn-scroll-left .icon'),
             r: document.querySelector('#btn-scroll-right .icon'),
         };
     }
 
-    #normalizeKey(key) {
+    _normalizeKey(key) {
         if (key === 'l' || key === 'left') return 'l';
         if (key === 'r' || key === 'right') return 'r';
         return null;
     }
 
     isHolding(key) {
-        const k = this.#normalizeKey(key);
+        const k = this._normalizeKey(key);
         if (!k) return false;
-        return !!this.#hideTimers[k];
+        return !!this._hideTimers[k];
     }
 
     set({ leftOpacity = null, rightOpacity = null, holdMs = 0, fadeMs = 200 } = {}) {
-        this.#apply('l', leftOpacity, holdMs, fadeMs);
-        this.#apply('r', rightOpacity, holdMs, fadeMs);
+        this._apply('l', leftOpacity, holdMs, fadeMs);
+        this._apply('r', rightOpacity, holdMs, fadeMs);
     }
 
     flash(direction, { holdMs = 280, fadeMs = 200 } = {}) {
@@ -1119,21 +1236,21 @@ class SideNavChevronAnimator {
     }
 
     reset() {
-        ['l', 'r'].forEach(key => this.#fadeIcon(key, 0));
+        ['l', 'r'].forEach(key => this._fadeIcon(key, 0));
     }
 
-    #apply(key, value, holdMs, fadeMs) {
+    _apply(key, value, holdMs, fadeMs) {
         if (value == null) return;
-        const icon = this.#icons[key];
+        const icon = this._icons[key];
         if (!icon) return;
 
-        clearTimeout(this.#hideTimers[key]);
-        this.#hideTimers[key] = null;
+        clearTimeout(this._hideTimers[key]);
+        this._hideTimers[key] = null;
 
         const numeric = Number(value);
         const shouldHide = value === '' || (!Number.isNaN(numeric) && numeric <= 0);
         if (shouldHide) {
-            this.#fadeIcon(key, fadeMs);
+            this._fadeIcon(key, fadeMs);
             return;
         }
 
@@ -1148,15 +1265,15 @@ class SideNavChevronAnimator {
         }
 
         if (holdMs > 0) {
-            this.#hideTimers[key] = setTimeout(() => this.#fadeIcon(key, fadeMs), holdMs);
+            this._hideTimers[key] = setTimeout(() => this._fadeIcon(key, fadeMs), holdMs);
         }
     }
 
-    #fadeIcon(key, fadeMs = 200) {
-        const icon = this.#icons[key];
+    _fadeIcon(key, fadeMs = 200) {
+        const icon = this._icons[key];
         if (!icon) return;
-        clearTimeout(this.#hideTimers[key]);
-        this.#hideTimers[key] = null;
+        clearTimeout(this._hideTimers[key]);
+        this._hideTimers[key] = null;
         icon.style.transitionDuration = `${fadeMs}ms`;
         icon.classList.remove('chevron-visible');
         icon.style.opacity = '0';
@@ -1164,11 +1281,11 @@ class SideNavChevronAnimator {
 }
 
 class Reader {
-    #allowForwardNavHide = false;
-    #logScrubDiagnostic(_event, _payload = {}) {}
-    #logChevronDiagnostic(_event, _payload = {}) {}
-    #loadingTimeoutId = null;
-    #show(btn, show = true) {
+    _allowForwardNavHide = false;
+    _logScrubDiagnostic(_event, _payload = {}) {}
+    _logChevronDiagnostic(_event, _payload = {}) {}
+    _loadingTimeoutId = null;
+    _show(btn, show = true) {
         if (show) {
             btn.hidden = false;
             btn.style.visibility = 'visible';
@@ -1188,21 +1305,21 @@ class Reader {
         if (indicator) indicator.classList.toggle('show', !!visible);
         // Keep nav/chevrons interactive by avoiding body-level loading class.
     }
-    #tocView
-    #chevronAnimator = null;
-    #progressSlider = null
-    #tickContainer = null
-    #progressScrubState = null
-    #handleProgressSliderPointerDown = (event) => {
-    if (!this.#progressSlider) return;
+    _tocView
+    _chevronAnimator = null;
+    _progressSlider = null
+    _tickContainer = null
+    _progressScrubState = null
+    _handleProgressSliderPointerDown = (event) => {
+    if (!this._progressSlider) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    if (this.#progressScrubState) {
-    this.#finalizeProgressScrubSession({ cancel: true });
+    if (this._progressScrubState) {
+    this._finalizeProgressScrubSession({ cancel: true });
     }
     const originDescriptor = this.navHUD?.getCurrentDescriptor();
-    const originFraction = originDescriptor?.fraction ?? Number(this.#progressSlider?.value ?? NaN);
-    this.#progressSlider.setPointerCapture?.(event.pointerId);
-    this.#progressScrubState = {
+    const originFraction = originDescriptor?.fraction ?? Number(this._progressSlider ? this._progressSlider.value : NaN);
+    this._progressSlider.setPointerCapture?.(event.pointerId);
+    this._progressScrubState = {
     pointerId: event.pointerId,
     pendingEnd: false,
     cancelRequested: false,
@@ -1212,31 +1329,35 @@ class Reader {
     originFraction: Number.isFinite(originFraction) ? originFraction : null,
     };
     this.navHUD?.beginProgressScrubSession(originDescriptor);
-    this.#logScrubDiagnostic('pointer-down', {
+    this._logScrubDiagnostic('pointer-down', {
     pointerId: event.pointerId,
     pointerType: event.pointerType,
-    sliderValue: Number(this.#progressSlider?.value ?? NaN),
+    sliderValue: Number(this._progressSlider ? this._progressSlider.value : NaN),
     });
     }
-    #handleProgressSliderPointerUp = (event) => {
-    if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
-    this.#progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
-    this.#progressSlider?.releasePointerCapture?.(event.pointerId);
-    this.#logScrubDiagnostic('pointer-up', {
-    pointerId: event.pointerId,
-    sliderValue: Number(this.#progressSlider?.value ?? NaN),
-    });
-    this.#requestProgressScrubEnd(false);
+    _handleProgressSliderPointerUp = (event) => {
+    if (!this._progressScrubState || this._progressScrubState.pointerId !== event.pointerId) return;
+    this._progressScrubState.releaseFraction = Number(this._progressSlider ? this._progressSlider.value : NaN);
+    if (this._progressSlider && typeof this._progressSlider.releasePointerCapture === 'function') {
+    this._progressSlider.releasePointerCapture(event.pointerId);
     }
-    #handleProgressSliderPointerCancel = (event) => {
-    if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
-    this.#progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
-    this.#progressSlider?.releasePointerCapture?.(event.pointerId);
-    this.#logScrubDiagnostic('pointer-cancel', {
+    this._logScrubDiagnostic('pointer-up', {
     pointerId: event.pointerId,
-    sliderValue: Number(this.#progressSlider?.value ?? NaN),
+    sliderValue: Number(this._progressSlider ? this._progressSlider.value : NaN),
     });
-    this.#requestProgressScrubEnd(true);
+    this._requestProgressScrubEnd(false);
+    }
+    _handleProgressSliderPointerCancel = (event) => {
+    if (!this._progressScrubState || this._progressScrubState.pointerId !== event.pointerId) return;
+    this._progressScrubState.releaseFraction = Number(this._progressSlider ? this._progressSlider.value : NaN);
+    if (this._progressSlider && typeof this._progressSlider.releasePointerCapture === 'function') {
+    this._progressSlider.releasePointerCapture(event.pointerId);
+    }
+    this._logScrubDiagnostic('pointer-cancel', {
+    pointerId: event.pointerId,
+    sliderValue: Number(this._progressSlider ? this._progressSlider.value : NaN),
+    });
+    this._requestProgressScrubEnd(true);
     }
     hasLoadedLastPosition = false
     markedAsFinished = false;
@@ -1244,9 +1365,9 @@ class Reader {
     lastPageEstimate = null;
     lastKnownFraction = 0;
     jumpUnit = 'percent';
-    #jumpInput = null;
-    #jumpButton = null;
-    #jumpUnitSelect = null;
+    _jumpInput = null;
+    _jumpButton = null;
+    _jumpUnitSelect = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -1257,8 +1378,8 @@ class Reader {
     openSideBar() {
     $('#dimming-overlay').classList.add('show')
     $('#side-bar').classList.add('show')
-    if (this.#tocView?.setCurrentHref && this.view?.renderer?.tocItem?.href) {
-    this.#tocView.setCurrentHref(this.view.renderer.tocItem.href)
+    if (this._tocView && this._tocView.setCurrentHref && this.view?.renderer?.tocItem?.href) {
+    this._tocView.setCurrentHref(this.view.renderer.tocItem.href)
     }
     }
     closeSideBar() {
@@ -1288,23 +1409,23 @@ class Reader {
             'tap',
             'unknown',
         ]).has(source);
-        const canHide = !shouldHide || this.#allowForwardNavHide || allowSource;
+        const canHide = !shouldHide || this._allowForwardNavHide || allowSource;
         if (!canHide) {
             logNavHide('reader:set-hide-blocked', {
                 requested: !!shouldHide,
                 source,
-                allowForwardNavHide: this.#allowForwardNavHide,
+                allowForwardNavHide: this._allowForwardNavHide,
                 navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
             });
             logBug('nav-hide-blocked', { reason: 'gate', requestedHide: shouldHide, source });
             return;
         }
-        if (shouldHide && this.#allowForwardNavHide) {
-            this.#allowForwardNavHide = false; // consume gate
+        if (shouldHide && this._allowForwardNavHide) {
+            this._allowForwardNavHide = false; // consume gate
         }
         if (!shouldHide) {
             // Showing again resets the gate so a future hide is allowed.
-            this.#allowForwardNavHide = true;
+            this._allowForwardNavHide = true;
             logNavHide('reader:reset-hide-gate', {
                 source,
                 navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
@@ -1314,10 +1435,10 @@ class Reader {
             requested: !!shouldHide,
             applied: !!shouldHide,
             source,
-            gateConsumed: shouldHide ? !this.#allowForwardNavHide : null,
+            gateConsumed: shouldHide ? !this._allowForwardNavHide : null,
             navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
         });
-        logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this.#allowForwardNavHide });
+        logBug('nav-hide-apply', { shouldHide, source, gateConsumed: !this._allowForwardNavHide });
         this.navHUD?.setHideNavigationDueToScroll(shouldHide, source, this._lastRelocateContext ?? null);
         updateNavHiddenClass(shouldHide);
     }
@@ -1329,10 +1450,10 @@ class Reader {
     this.navHUD = new NavigationHUD({
     formatPercent: value => percentFormat.format(value),
     getRenderer: () => this.view?.renderer,
-    onJumpRequest: descriptor => this.#goToDescriptor(descriptor),
+    onJumpRequest: descriptor => this._goToDescriptor(descriptor),
     });
-    this.allowForwardNavHide = () => { this.#allowForwardNavHide = true; };
-    this.#chevronAnimator = new SideNavChevronAnimator();
+    this.allowForwardNavHide = () => { this._allowForwardNavHide = true; };
+    this._chevronAnimator = new SideNavChevronAnimator();
     this._lastRelocateSectionIndex = null;
     $('#side-bar-close-button').addEventListener('click', () => {
     this.closeSideBar()
@@ -1363,11 +1484,11 @@ class Reader {
     layoutMode: window.initialLayoutMode ?? null,
     });
     }
-    this.view.renderer.addEventListener('goTo', this.#onGoTo.bind(this))
-    this.view.renderer.addEventListener('didDisplay', this.#onDidDisplay.bind(this))
-    this.view.renderer.addEventListener('relocate', this.#onRendererRelocate.bind(this))
-    this.view.addEventListener('load', this.#onLoad.bind(this))
-    this.view.addEventListener('relocate', this.#onRelocate.bind(this))
+    this.view.renderer.addEventListener('goTo', this._onGoTo.bind(this))
+    this.view.renderer.addEventListener('didDisplay', this._onDidDisplay.bind(this))
+    this.view.renderer.addEventListener('relocate', this._onRendererRelocate.bind(this))
+    this.view.addEventListener('load', this._onLoad.bind(this))
+    this.view.addEventListener('relocate', this._onRelocate.bind(this))
     this._sideNavCooldownUntil = 0;
 
     const {
@@ -1457,7 +1578,7 @@ class Reader {
     }
     }
     Object.values(this.buttons).forEach(btn =>
-    btn.addEventListener('click', this.#onNavButtonClick.bind(this))
+    btn.addEventListener('click', this._onNavButtonClick.bind(this))
     );
     // Side-nav scroll handlers
     const leftSideBtn = document.getElementById('btn-scroll-left');
@@ -1569,13 +1690,13 @@ class Reader {
             const detail = e?.detail ?? {};
             const holdMs = typeof detail.holdMs === 'number' ? detail.holdMs : 0;
             const fadeMs = typeof detail.fadeMs === 'number' ? detail.fadeMs : 200;
-            this.#chevronAnimator?.set({
+            if (this._chevronAnimator) this._chevronAnimator.set({
                 leftOpacity: detail.leftOpacity,
                 rightOpacity: detail.rightOpacity,
                 holdMs,
                 fadeMs,
             });
-            this.#logChevronDiagnostic('chevron:event', {
+            this._logChevronDiagnostic('chevron:event', {
                 source: detail?.source ?? null,
                 holdMs,
                 fadeMs,
@@ -1584,7 +1705,7 @@ class Reader {
             });
         });
     // Listen for resetSideNavChevrons custom event to reset chevrons
-    document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
+    document.addEventListener('resetSideNavChevrons', () => this._resetSideNavChevrons());
 
     // Legacy layout support: reorder toolbar children only if the old stacks exist
     const navBar = document.getElementById('nav-bar');
@@ -1601,16 +1722,16 @@ class Reader {
     }
 
     const slider = $('#progress-slider')
-    this.#progressSlider = slider
-    this.#tickContainer = document.getElementById('progress-ticks')
+    this._progressSlider = slider
+    this._tickContainer = document.getElementById('progress-ticks')
     slider.dir = book.dir
     const goToFractionImmediate = e => {
         this.view.goToFraction(parseFloat(e.target.value))
     };
     slider.addEventListener('input', goToFractionImmediate)
-    slider.addEventListener('pointerdown', this.#handleProgressSliderPointerDown)
-    slider.addEventListener('pointerup', this.#handleProgressSliderPointerUp)
-    slider.addEventListener('pointercancel', this.#handleProgressSliderPointerCancel)
+    slider.addEventListener('pointerdown', this._handleProgressSliderPointerDown)
+    slider.addEventListener('pointerup', this._handleProgressSliderPointerUp)
+    slider.addEventListener('pointercancel', this._handleProgressSliderPointerCancel)
 
     this.book = book;
     // Cache-warmer section page counts are disabled; rely on live renderer counts instead.
@@ -1621,36 +1742,36 @@ class Reader {
     slider.style.setProperty('--max', slider.max == '' ? '100' : slider.max);
     slider.addEventListener('input', () => slider.style.setProperty('--value', slider.value));
 
-    const tickFractions = this.#computeSectionTicks(initialCounts);
-    this.#renderSectionTicks(initialCounts, tickFractions);
+    const tickFractions = this._computeSectionTicks(initialCounts);
+    this._renderSectionTicks(initialCounts, tickFractions);
 
     // Percent jump input/button wiring
     const percentInput = document.getElementById('percent-jump-input');
     const percentButton = document.getElementById('percent-jump-button');
     const jumpUnitSelect = document.getElementById('jump-unit-select');
-    this.#jumpInput = percentInput;
-    this.#jumpButton = percentButton;
-    this.#jumpUnitSelect = jumpUnitSelect;
+    this._jumpInput = percentInput;
+    this._jumpButton = percentButton;
+    this._jumpUnitSelect = jumpUnitSelect;
     this.jumpUnit = 'percent';
     this.lastPageEstimate = null;
-    this.#updateJumpUnitAvailability();
-    this.#syncJumpInputWithState();
+    this._updateJumpUnitAvailability();
+    this._syncJumpInputWithState();
 
     const handleJumpInputChange = () => {
     const value = parseFloat(percentInput.value);
-    percentButton.disabled = !this.#isJumpInputValueValid(value);
+    percentButton.disabled = !this._isJumpInputValueValid(value);
     };
     percentInput.addEventListener('input', handleJumpInputChange);
 
     jumpUnitSelect?.addEventListener('change', () => {
     this.jumpUnit = 'percent';
-    this.#syncJumpInputWithState();
+    this._syncJumpInputWithState();
     percentButton.disabled = true;
     });
 
     percentButton.addEventListener('click', () => {
     const value = parseFloat(percentInput.value);
-    if (!this.#isJumpInputValueValid(value)) return;
+    if (!this._isJumpInputValueValid(value)) return;
     this.lastPercentValue = value;
     this.lastKnownFraction = value / 100;
     percentButton.disabled = true;
@@ -1658,7 +1779,7 @@ class Reader {
     this.closeSideBar();
     });
 
-    document.addEventListener('keydown', this.#handleKeydown.bind(this))
+    document.addEventListener('keydown', this._handleKeydown.bind(this))
 
     const processTouchStart = function(event) {
     // Ignore touches inside foliate-js viewer iframe
@@ -1699,11 +1820,11 @@ class Reader {
 
     const toc = book.toc
     if (toc) {
-    this.#tocView = createTOCView(toc, async (href) => {
+    this._tocView = createTOCView(toc, async (href) => {
     await this.view.goTo(href).catch(e => console.error(e))
     this.closeSideBar()
     })
-    $('#toc-view').append(this.#tocView.element)
+    $('#toc-view').append(this._tocView.element)
     }
 
     // load and show highlights embedded in the file by Calibre
@@ -1788,27 +1909,27 @@ class Reader {
     const shouldShowPrev = atSectionStart && hasPrevSection;
     const shouldShowNext = atSectionEnd && hasNextSection;
 
-    this.#show(this.buttons.prev, shouldShowPrev);
+    this._show(this.buttons.prev, shouldShowPrev);
 
     if (shouldShowNext) {
-    this.#show(this.buttons.next, true);
-    this.#show(this.buttons.finish, false);
-    this.#show(this.buttons.restart, false);
+    this._show(this.buttons.next, true);
+    this._show(this.buttons.finish, false);
+    this._show(this.buttons.restart, false);
     } else if (atSectionEnd && !hasNextSection) {
-    this.#show(this.buttons.next, false);
+    this._show(this.buttons.next, false);
     if (this.markedAsFinished) {
-    this.#show(this.buttons.restart, true);
-    this.#show(this.buttons.finish, false);
+    this._show(this.buttons.restart, true);
+    this._show(this.buttons.finish, false);
     } else {
-    this.#show(this.buttons.finish, true);
-    this.#show(this.buttons.restart, false);
+    this._show(this.buttons.finish, true);
+    this._show(this.buttons.restart, false);
     }
     } else {
-    this.#show(this.buttons.next, false);
-    this.#show(this.buttons.finish, false);
-    this.#show(this.buttons.restart, false);
+    this._show(this.buttons.next, false);
+    this._show(this.buttons.finish, false);
+    this._show(this.buttons.restart, false);
     }
-    this.#setForwardChevronHint(shouldShowNext);
+    this._setForwardChevronHint(shouldShowNext);
 
     // RTL/LTR logic for disabling/hiding side chevrons
     const btnScrollLeft = document.getElementById('btn-scroll-left');
@@ -1842,24 +1963,26 @@ class Reader {
     atSectionEnd,
     hasPrevSection,
     hasNextSection,
-    showingFinish: this.#isButtonVisible(this.buttons.finish),
-    showingRestart: this.#isButtonVisible(this.buttons.restart),
+    showingFinish: this._isButtonVisible(this.buttons.finish),
+    showingRestart: this._isButtonVisible(this.buttons.restart),
     });
     }
 
-    #isButtonVisible(button) {
+    _isButtonVisible(button) {
     if (!button) return false;
     return !button.hidden && button.style.display !== 'none';
     }
-    #setForwardChevronHint(shouldShow) {
+    _setForwardChevronHint(shouldShow) {
         const forwardBtn = document.getElementById(this.isRTL ? 'btn-scroll-left' : 'btn-scroll-right');
         if (!forwardBtn) return;
         forwardBtn.classList.toggle('show-next', !!shouldShow);
         const icon = forwardBtn.querySelector('.icon');
         if (!icon) return;
         const isHovered = typeof forwardBtn.matches === 'function' ? forwardBtn.matches(':hover') : false;
-        const isHeld = this.#chevronAnimator?.isHolding(forwardBtn.id === 'btn-scroll-left' ? 'l' : 'r') ?? false;
-        this.#logChevronDiagnostic('chevron:forwardHint', {
+        const isHeld = this._chevronAnimator
+            ? this._chevronAnimator.isHolding(forwardBtn.id === 'btn-scroll-left' ? 'l' : 'r')
+            : false;
+        this._logChevronDiagnostic('chevron:forwardHint', {
         shouldShow,
         isHovered,
         isHeld,
@@ -1875,8 +1998,8 @@ class Reader {
         icon.style.opacity = '';
         }
     }
-    #flashChevron(left) {
-    this.#logChevronDiagnostic('chevron:flash', { direction: left ? 'left' : 'right' });
+    _flashChevron(left) {
+    this._logChevronDiagnostic('chevron:flash', { direction: left ? 'left' : 'right' });
     this.view.dispatchEvent(new CustomEvent('sideNavChevronOpacity', {
     detail: {
     leftOpacity: left ? 1 : 0,
@@ -1887,46 +2010,46 @@ class Reader {
     }
     }))
     }
-    #requestProgressScrubEnd(cancelRequested) {
-    if (!this.#progressScrubState) return;
-    this.#progressScrubState.pendingEnd = true;
-    this.#progressScrubState.cancelRequested = !!cancelRequested;
-    this.#progressScrubState.pendingCommit = true; // mark origin fixed for next relocate
-    if (this.#progressScrubState.timeoutId) {
-    clearTimeout(this.#progressScrubState.timeoutId);
+    _requestProgressScrubEnd(cancelRequested) {
+    if (!this._progressScrubState) return;
+    this._progressScrubState.pendingEnd = true;
+    this._progressScrubState.cancelRequested = !!cancelRequested;
+    this._progressScrubState.pendingCommit = true; // mark origin fixed for next relocate
+    if (this._progressScrubState.timeoutId) {
+    clearTimeout(this._progressScrubState.timeoutId);
     }
-    const cancel = this.#progressScrubState.cancelRequested;
-    this.#logScrubDiagnostic('schedule-scrub-end', {
+    const cancel = this._progressScrubState.cancelRequested;
+    this._logScrubDiagnostic('schedule-scrub-end', {
     cancel,
     });
-    this.#progressScrubState.timeoutId = setTimeout(() => {
-    this.#finalizeProgressScrubSession({ cancel });
+    this._progressScrubState.timeoutId = setTimeout(() => {
+    this._finalizeProgressScrubSession({ cancel });
     }, 400);
     }
-    #finalizeProgressScrubSession({ cancel } = {}) {
-    if (!this.#progressScrubState) return;
-    if (this.#progressScrubState.timeoutId) {
-    clearTimeout(this.#progressScrubState.timeoutId);
+    _finalizeProgressScrubSession({ cancel } = {}) {
+    if (!this._progressScrubState) return;
+    if (this._progressScrubState.timeoutId) {
+    clearTimeout(this._progressScrubState.timeoutId);
     }
     const descriptor = cancel ? null : this.navHUD?.getCurrentDescriptor();
     this.navHUD?.endProgressScrubSession(descriptor, {
     cancel,
-    releaseFraction: this.#progressScrubState.releaseFraction,
-    originDescriptor: this.#progressScrubState.originDescriptor ?? null,
-    originFraction: this.#progressScrubState.originFraction ?? null,
+    releaseFraction: this._progressScrubState.releaseFraction,
+    originDescriptor: this._progressScrubState.originDescriptor ?? null,
+    originFraction: this._progressScrubState.originFraction ?? null,
     });
-    this.#logScrubDiagnostic('finalize-scrub-session', {
+    this._logScrubDiagnostic('finalize-scrub-session', {
     cancel,
     });
-    this.#progressScrubState = null;
+    this._progressScrubState = null;
     }
 
-    #isJumpInputValueValid(value) {
+    _isJumpInputValueValid(value) {
     if (typeof value !== 'number' || isNaN(value)) return false;
     return value >= 0 && value <= 100 && value !== this.lastPercentValue;
     }
 
-    #computeSectionTicks(pageCountsMap) {
+    _computeSectionTicks(pageCountsMap) {
         if (!this.book || !Array.isArray(this.book.sections)) return [];
         const ticks = [];
         const counts = [];
@@ -1975,10 +2098,10 @@ class Reader {
         return ticks;
     }
 
-    #renderSectionTicks(pageCountsMap, precomputedTicks) {
-        if (!this.#tickContainer) return;
-        const ticks = precomputedTicks ?? this.#computeSectionTicks(pageCountsMap);
-        this.#tickContainer.innerHTML = '';
+    _renderSectionTicks(pageCountsMap, precomputedTicks) {
+        if (!this._tickContainer) return;
+        const ticks = precomputedTicks ?? this._computeSectionTicks(pageCountsMap);
+        this._tickContainer.innerHTML = '';
         const isRTL = this.isRTL;
         for (const tick of ticks) {
             if (!Number.isFinite(tick)) continue;
@@ -1986,11 +2109,11 @@ class Reader {
             const mark = document.createElement('div');
             mark.className = 'tick';
             mark.style[isRTL ? 'right' : 'left'] = `${pos}%`;
-            this.#tickContainer.append(mark);
+            this._tickContainer.append(mark);
         }
     }
 
-    #fractionFromLocation(locNumber, totalLocs) {
+    _fractionFromLocation(locNumber, totalLocs) {
     if (typeof locNumber !== 'number' || isNaN(locNumber)) return null;
     if (typeof totalLocs !== 'number' || totalLocs <= 0) return null;
     if (totalLocs === 1) return 0;
@@ -1998,18 +2121,18 @@ class Reader {
     return (clamped - 1) / (totalLocs - 1);
     }
 
-    #convertJumpInputValue(value, fromUnit, toUnit) {
+    _convertJumpInputValue(value, fromUnit, toUnit) {
     if (typeof value !== 'number' || isNaN(value)) return null;
     if (fromUnit === toUnit) return value;
     return fromUnit === 'percent' && toUnit === 'percent' ? value : null;
     }
 
-    #syncJumpInputWithState(convertedValue = null) {
-    const input = this.#jumpInput ?? document.getElementById('percent-jump-input');
+    _syncJumpInputWithState(convertedValue = null) {
+    const input = this._jumpInput ?? document.getElementById('percent-jump-input');
     if (!input) return;
-    const button = this.#jumpButton ?? document.getElementById('percent-jump-button');
-    if (!this.#jumpInput) this.#jumpInput = input;
-    if (!this.#jumpButton) this.#jumpButton = button;
+    const button = this._jumpButton ?? document.getElementById('percent-jump-button');
+    if (!this._jumpInput) this._jumpInput = input;
+    if (!this._jumpButton) this._jumpButton = button;
     input.min = 0;
     input.max = 100;
     input.step = 'any';
@@ -2023,14 +2146,14 @@ class Reader {
     }
     }
 
-    #updateJumpUnitAvailability() {
-    const select = this.#jumpUnitSelect ?? document.getElementById('jump-unit-select');
+    _updateJumpUnitAvailability() {
+    const select = this._jumpUnitSelect ?? document.getElementById('jump-unit-select');
     if (!select) return;
-    if (!this.#jumpUnitSelect) this.#jumpUnitSelect = select;
+    if (!this._jumpUnitSelect) this._jumpUnitSelect = select;
     select.value = 'percent';
     this.jumpUnit = 'percent';
     }
-    async #handleKeydown(event) {
+    async _handleKeydown(event) {
         const k = event.key;
         const renderer = this.view.renderer;
         const isRTL = this.isRTL;
@@ -2042,7 +2165,7 @@ class Reader {
                 this.buttons.prev.click();
             } else {
                 await this.view.goLeft();
-                this.#flashChevron(true);
+                this._flashChevron(true);
             }
         } else if (k === 'ArrowRight' || k === 'l') {
             if (isRTL && await renderer.atStart()) {
@@ -2051,19 +2174,19 @@ class Reader {
                 this.buttons.next.click();
             } else {
                 await this.view.goRight();
-                this.#flashChevron(false);
+                this._flashChevron(false);
             }
         }
     }
-    #onGoTo({
+    _onGoTo({
         willLoadNewIndex
     }) {
         this.setLoadingIndicator(true);
     }
-    #onDidDisplay({}) {
+    _onDidDisplay({}) {
         this.setLoadingIndicator(false);
     }
-    #onRendererRelocate({ detail }) {
+    _onRendererRelocate({ detail }) {
         const bodyIsLoading = document?.body?.classList?.contains?.('loading') ?? null;
         logBug('relocate:renderer', {
             reason: detail?.reason ?? null,
@@ -2073,7 +2196,7 @@ class Reader {
         // Failsafe: clear loading even if didDisplay never fires.
         this.setLoadingIndicator(false);
     }
-    async #postFallbackReadingProgressMessage({
+    async _postFallbackReadingProgressMessage({
         reason = 'load',
         sectionIndex = null,
     } = {}) {
@@ -2095,7 +2218,7 @@ class Reader {
             const fallbackCFI = boundedSectionIndex == null
                 ? ''
                 : (sections[boundedSectionIndex]?.cfi ?? '')
-            this.#postUpdateReadingProgressMessage({
+            this._postUpdateReadingProgressMessage({
                 fraction: fallbackFraction,
                 cfi: fallbackCFI,
                 reason,
@@ -2107,15 +2230,15 @@ class Reader {
         }
     }
 
-    async #onLoad({
+    async _onLoad({
         detail: {
             doc,
             location,
             index
         }
     }) {
-        doc.addEventListener('keydown', this.#handleKeydown.bind(this))
-        this.#ensureRubyFontOverride(doc)
+        doc.addEventListener('keydown', this._handleKeydown.bind(this))
+        this._ensureRubyFontOverride(doc)
         const currentPageURL = location ?? doc.location.href
         window.webkit.messageHandlers.updateCurrentContentPage.postMessage({
         topWindowURL: window.top.location.href,
@@ -2126,13 +2249,13 @@ class Reader {
             topWindowURL: window.top?.location?.href ?? null,
             currentPageURL: currentPageURL ?? null,
         });
-        await this.#postFallbackReadingProgressMessage({
+        await this._postFallbackReadingProgressMessage({
             reason: 'load',
             sectionIndex: typeof index === 'number' ? index : null,
         })
     }
 
-    #ensureRubyFontOverride(doc) {
+    _ensureRubyFontOverride(doc) {
         try {
         const hostVar = document.documentElement?.style?.getPropertyValue('--manabi-ruby-font')?.trim();
         const stack = hostVar && hostVar.length > 0 ? hostVar : DEFAULT_RUBY_FONT_STACK;
@@ -2146,11 +2269,11 @@ class Reader {
         }
     }
 
-    #resetSideNavChevrons() {
-        this.#chevronAnimator?.reset();
+    _resetSideNavChevrons() {
+        if (this._chevronAnimator) this._chevronAnimator.reset();
     }
 
-    #deriveRelocateDirection(detail, { previousFraction = null, previousPageEstimate = null } = {}) {
+    _deriveRelocateDirection(detail, { previousFraction = null, previousPageEstimate = null } = {}) {
         const explicit = detail?.navigationDirection ?? detail?.direction ?? detail?.pageTurnDirection;
         if (explicit === 'forward' || explicit === 'backward') {
             return explicit;
@@ -2175,7 +2298,7 @@ class Reader {
         return null;
     }
 
-    #postUpdateReadingProgressMessage = debounce(({
+    _postUpdateReadingProgressMessage = debounce(({
     fraction,
     cfi,
     reason,
@@ -2195,7 +2318,7 @@ class Reader {
     }
     }, 400)
 
-    async #onRelocate({ detail }) {
+    async _onRelocate({ detail }) {
         const sectionIndexFromDetail =
             typeof detail?.sectionIndex === 'number' ? detail.sectionIndex :
             (typeof detail?.index === 'number' ? detail.index : null);
@@ -2258,7 +2381,7 @@ class Reader {
         const ticks = document.getElementById('progress-ticks');
         if (ticks) ticks.style.visibility = 'visible'
         // (removed: setting tocView currentHref here)
-        const scrubbing = !!this.#progressScrubState;
+        const scrubbing = !!this._progressScrubState;
         if (scrubbing) {
             detail.reason = 'live-scroll';
             detail.liveScrollPhase = 'dragging';
@@ -2267,7 +2390,7 @@ class Reader {
         }
 
         const normalizedReason = (detail.reason || '').toLowerCase();
-        const relocateDirection = this.#deriveRelocateDirection(detail, {
+        const relocateDirection = this._deriveRelocateDirection(detail, {
             previousFraction,
             previousPageEstimate,
         });
@@ -2340,7 +2463,7 @@ class Reader {
             }
 
         if (this.hasLoadedLastPosition) {
-            this.#postUpdateReadingProgressMessage({
+            this._postUpdateReadingProgressMessage({
                 fraction,
                 cfi,
                 reason,
@@ -2373,17 +2496,17 @@ class Reader {
         }
         tooltipParts.push(percent);
         slider.title = tooltipParts.filter(Boolean).join(' · ');
-        if (scrubbing && this.#progressScrubState?.pendingEnd) {
-            this.#finalizeProgressScrubSession({ cancel: this.#progressScrubState.cancelRequested });
+        if (scrubbing && this._progressScrubState && this._progressScrubState.pendingEnd) {
+            this._finalizeProgressScrubSession({ cancel: this._progressScrubState.cancelRequested });
         }
 
         this.lastKnownFraction = percentValue;
         const pct = Math.round(percentValue * 100);
         this.lastPercentValue = pct;
-        const percentInput = this.#jumpInput ?? document.getElementById('percent-jump-input');
-        const percentButton = this.#jumpButton ?? document.getElementById('percent-jump-button');
-        if (!this.#jumpInput && percentInput) this.#jumpInput = percentInput;
-        if (!this.#jumpButton && percentButton) this.#jumpButton = percentButton;
+        const percentInput = this._jumpInput ?? document.getElementById('percent-jump-input');
+        const percentButton = this._jumpButton ?? document.getElementById('percent-jump-button');
+        if (!this._jumpInput && percentInput) this._jumpInput = percentInput;
+        if (!this._jumpButton && percentButton) this._jumpButton = percentButton;
             const pageEstimate = this.navHUD?.getPageEstimate(normalizedDetail);
             if (pageEstimate) {
                 this.lastPageEstimate = pageEstimate;
@@ -2417,8 +2540,8 @@ class Reader {
             scrubbing,
         });
         this._lastRelocateSectionIndex = sectionIndex;
-        this.#updateJumpUnitAvailability();
-        this.#syncJumpInputWithState();
+        this._updateJumpUnitAvailability();
+        this._syncJumpInputWithState();
         postRuntimePaginationReadback();
             if (percentButton) {
                 percentButton.disabled = true;
@@ -2438,7 +2561,7 @@ class Reader {
         }
     }
 
-    async #goToDescriptor(descriptor) {
+    async _goToDescriptor(descriptor) {
         if (!descriptor) return;
         const fraction = typeof descriptor.fraction === 'number' ? Number(descriptor.fraction.toFixed(6)) : null;
         // const line = fraction != null
@@ -2453,7 +2576,7 @@ class Reader {
         }
     }
 
-    async #onNavButtonClick(e) {
+    async _onNavButtonClick(e) {
         const btn = e.currentTarget;
         const type = btn.dataset.buttonType;
         // const line = `# EBOOK nav:click ${JSON.stringify({ type })}`;
@@ -2542,8 +2665,8 @@ class CacheWarmer {
     async open(source) {
     this.source = source
     this.view = await getView(source, true)
-    this.view.addEventListener('load', this.#onLoad.bind(this))
-    this.view.addEventListener('relocate', this.#onRelocate.bind(this))
+    this.view.addEventListener('load', this._onLoad.bind(this))
+    this.view.addEventListener('relocate', this._onRelocate.bind(this))
 
     const {
     book
@@ -2554,7 +2677,7 @@ class CacheWarmer {
     await this.view.renderer.firstSection()
     }
 
-    async #onLoad({
+    async _onLoad({
         detail: {
             location
         }
@@ -2573,7 +2696,7 @@ class CacheWarmer {
         }
     }
 
-    #broadcastPageCounts() {
+    _broadcastPageCounts() {
         const total = Array.from(this.pageCounts.values()).reduce((acc, v) => acc + (Number.isFinite(v) ? v : 0), 0)
         globalThis.cacheWarmerTotalPages = total
         try {
@@ -2599,14 +2722,14 @@ class CacheWarmer {
         }))
     }
 
-    #onRelocate({ detail }) {
+    _onRelocate({ detail }) {
         const sectionIndex = typeof detail?.sectionIndex === 'number'
             ? detail.sectionIndex
             : (typeof this.view?.renderer?.currentIndex === 'number' ? this.view.renderer.currentIndex : null)
         const pageCount = typeof detail?.pageCount === 'number' && detail.pageCount > 0 ? detail.pageCount : null
         if (sectionIndex == null || pageCount == null) return
         this.pageCounts.set(sectionIndex, pageCount)
-        this.#broadcastPageCounts()
+        this._broadcastPageCounts()
     }
 
     //    #postUpdateReadingProgressMessage = debounce(({ fraction, cfi }) => {
@@ -2724,14 +2847,6 @@ window.manabi_seekToSentenceIdentifierForReadAloud = (sentenceIdentifier) => {
 window.manabi_getPlaybackSyncAnchor = () => {
     const frame = resolvePrimaryReaderFrame();
     if (!frame) {
-        const sliderVisibility = (() => {
-            if (!slider || !slider.isConnected) return null;
-            const computedStyle = window.getComputedStyle?.(slider);
-            if (!computedStyle) return null;
-            return computedStyle.visibility !== 'hidden'
-                && computedStyle.display !== 'none'
-                && computedStyle.opacity !== '0';
-        })();
         return {
             sentenceIdentifier: null,
             transcriptStartSeconds: null,
@@ -3061,9 +3176,19 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
         const layoutVisibleUnitKind = typeof layoutDiagnostics?.visibleUnitKind === 'string'
             ? layoutDiagnostics.visibleUnitKind
             : null;
-        const layoutVisibleUnitAxis = typeof layoutDiagnostics?.visibleUnitAxis === 'string'
-            ? layoutDiagnostics.visibleUnitAxis
+        const chunkLayoutWritingMode = typeof chunkLayoutMetrics?.writingMode === 'string'
+            ? chunkLayoutMetrics.writingMode
             : null;
+        const chunkLayoutIsVertical = chunkLayoutMetrics?.vertical === true
+            || chunkLayoutWritingMode === 'vertical-rl'
+            || chunkLayoutWritingMode === 'vertical-lr';
+        const layoutVisibleUnitAxis = typeof layoutDiagnostics?.visibleUnitAxis === 'string'
+            ? (
+                chunkLayoutIsVertical && layoutDiagnostics.visibleUnitAxis === 'horizontal'
+                    ? 'vertical'
+                    : layoutDiagnostics.visibleUnitAxis
+            )
+            : (chunkLayoutIsVertical ? 'vertical' : null);
         const layoutVisiblePageCount = Number.isFinite(layoutDiagnostics?.visiblePageCount)
             ? layoutDiagnostics.visiblePageCount
             : null;
@@ -3089,8 +3214,12 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             ? layoutDiagnostics.spreadPagesAllowedForViewport
             : null;
         const layoutWritingMode = typeof layoutDiagnostics?.writingMode === 'string'
-            ? layoutDiagnostics.writingMode
-            : (typeof chunkLayoutMetrics?.writingMode === 'string' ? chunkLayoutMetrics.writingMode : null);
+            ? (
+                chunkLayoutIsVertical && layoutDiagnostics.writingMode === 'horizontal-tb'
+                    ? chunkLayoutWritingMode
+                    : layoutDiagnostics.writingMode
+            )
+            : chunkLayoutWritingMode;
         const layoutViewportWidth = Number.isFinite(chunkLayoutMetrics?.viewportWidth)
             ? chunkLayoutMetrics.viewportWidth
             : null;
@@ -3100,6 +3229,13 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
         const layoutMeasuredGap = Number.isFinite(chunkLayoutMetrics?.gap)
             ? chunkLayoutMetrics.gap
             : null;
+        const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
+        const derivedIsVertical = writingDirectionSnapshot?.vertical === true
+            || chunkLayoutIsVertical
+            || layoutWritingMode === 'vertical-rl'
+            || layoutWritingMode === 'vertical-lr';
+        const derivedIsVerticalRightToLeft = writingDirectionSnapshot?.verticalRTL === true
+            || layoutWritingMode === 'vertical-rl';
         const layoutMetricSize = Number.isFinite(chunkLayoutMetrics?.size)
             ? chunkLayoutMetrics.size
             : null;
@@ -3185,26 +3321,48 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             ? Math.max(0, sameDocumentDatasetPageIndex)
             : null;
         const sameDocumentPageCount = allLivePages.length > 0 ? allLivePages.length : null;
-        const rendererReportedPage = typeof renderer?.page === 'function'
-            ? await renderer.page()
-            : layoutCurrentPageIndex;
-        const rendererReportedPageCount = typeof renderer?.pages === 'function'
-            ? await renderer.pages()
-            : layoutPageCount;
+        const sameDocumentMode = typeof renderer?._sameDocumentMode === 'boolean'
+            ? renderer._sameDocumentMode
+            : null;
+        const sameDocumentUsesPagePositioning = typeof renderer?._usesSameDocumentPagePositioningSync === 'function'
+            ? !!renderer._usesSameDocumentPagePositioningSync()
+            : false;
+        const prefersSameDocumentFastProbe =
+            sameDocumentUsesPagePositioning
+            || sameDocumentPageIndex != null
+            || sameDocumentPageCount != null;
+        const rendererReportedPage = prefersSameDocumentFastProbe
+            ? (sameDocumentPageIndex ?? layoutCurrentPageIndex)
+            : (typeof renderer?.page === 'function'
+                ? await renderer.page()
+                : layoutCurrentPageIndex);
+        const rendererReportedPageCount = prefersSameDocumentFastProbe
+            ? (sameDocumentPageCount ?? layoutPageCount)
+            : (typeof renderer?.pages === 'function'
+                ? await renderer.pages()
+                : layoutPageCount);
         const page = sameDocumentPageIndex ?? rendererReportedPage;
         const pageCount = sameDocumentPageCount ?? rendererReportedPageCount;
         const currentSectionIndex = Number.isFinite(renderer?.currentIndex) ? renderer.currentIndex : null;
         const currentSectionHref = currentSectionIndex != null
             ? renderer?.sections?.[currentSectionIndex]?.href
                 ?? renderer?.sections?.[currentSectionIndex]?.url
+                ?? globalThis.reader?.book?.sections?.[currentSectionIndex]?.href
+                ?? globalThis.reader?.book?.sections?.[currentSectionIndex]?.url
+                ?? globalThis.reader?.view?.book?.sections?.[currentSectionIndex]?.href
+                ?? globalThis.reader?.view?.book?.sections?.[currentSectionIndex]?.url
                 ?? null
             : null;
-        const atSectionStart = typeof renderer?.isAtSectionStart === 'function'
-            ? await renderer.isAtSectionStart()
-            : null;
-        const atSectionEnd = typeof renderer?.isAtSectionEnd === 'function'
-            ? await renderer.isAtSectionEnd()
-            : null;
+        const atSectionStart = prefersSameDocumentFastProbe && Number.isFinite(page)
+            ? page <= 0
+            : (typeof renderer?.isAtSectionStart === 'function'
+                ? await renderer.isAtSectionStart()
+                : null);
+        const atSectionEnd = prefersSameDocumentFastProbe && Number.isFinite(page) && Number.isFinite(pageCount)
+            ? (page + 1) >= pageCount
+            : (typeof renderer?.isAtSectionEnd === 'function'
+                ? await renderer.isAtSectionEnd()
+                : null);
         const hasPrevSection = typeof renderer?.getHasPrevSection === 'function'
             ? !!renderer.getHasPrevSection()
             : false;
@@ -3397,6 +3555,16 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
         const historyLastSuppressedReplaceStateReason = typeof view?.history?.lastSuppressedReplaceStateReason === 'string'
             ? view.history.lastSuppressedReplaceStateReason
             : null;
+        const sliderVisibility = (() => {
+            const slider = $('#progress-slider');
+            if (!slider || !slider.isConnected) return null;
+            const computedStyle = window.getComputedStyle?.(slider);
+            if (!computedStyle) return null;
+            return computedStyle.visibility !== 'hidden'
+                && computedStyle.display !== 'none'
+                && computedStyle.opacity !== '0';
+        })();
+        const progressScrubberActive = !!globalThis.reader?._progressScrubState;
         const shouldReportPreviousLoadIssue =
             !view &&
             !renderer &&
@@ -3413,13 +3581,15 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             hasSectionLayoutController: !!sectionLayoutController,
             bookDirection: globalThis.reader?.book?.dir ?? view?.book?.dir ?? null,
             isRightToLeft: !!(
-                globalThis.manabiGetWritingDirectionSnapshot?.()?.rtl
+                writingDirectionSnapshot?.rtl
                 ?? ((globalThis.reader?.book?.dir ?? view?.book?.dir ?? '').toLowerCase() === 'rtl')
             ),
-            isVertical: globalThis.manabiGetWritingDirectionSnapshot?.()?.vertical === true,
-            isVerticalRightToLeft: globalThis.manabiGetWritingDirectionSnapshot?.()?.verticalRTL === true,
+            isVertical: derivedIsVertical,
+            isVerticalRightToLeft: derivedIsVerticalRightToLeft,
             currentSectionIndex,
             currentSectionHref,
+            sameDocumentMode,
+            sameDocumentUsesPagePositioning,
             currentPage: Number.isFinite(page) ? page : null,
             pageCount: Number.isFinite(pageCount) ? pageCount : null,
             layoutPageRecordCount,
@@ -3486,7 +3656,7 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             currentPageDisplayLabel,
             currentPhysicalPageLabel,
             progressScrubberVisible: sliderVisibility,
-            progressScrubberActive: !!this.#progressScrubState,
+            progressScrubberActive,
             historyCanGoBack,
             historyCanGoForward,
             historyDepth,
@@ -3530,6 +3700,11 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             !loadEBookReady &&
             loadEBookLastState !== 'open-resolved' &&
             loadEBookLastState !== 'posting-loaded';
+        const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
+        const derivedWritingMode =
+            globalThis.manabiTrackingWritingMode
+            ?? globalThis.manabiResolveReadingDirectionProbe?.()?.resolvedWritingMode
+            ?? null;
         return {
             hasView,
             hasRenderer,
@@ -3544,11 +3719,14 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             ),
             bookDirection: globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? null,
             isRightToLeft: !!(
-                globalThis.manabiGetWritingDirectionSnapshot?.()?.rtl
+                writingDirectionSnapshot?.rtl
                 ?? ((globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? '').toLowerCase() === 'rtl')
             ),
-            isVertical: globalThis.manabiGetWritingDirectionSnapshot?.()?.vertical === true,
-            isVerticalRightToLeft: globalThis.manabiGetWritingDirectionSnapshot?.()?.verticalRTL === true,
+            isVertical: writingDirectionSnapshot?.vertical === true
+                || derivedWritingMode === 'vertical-rl'
+                || derivedWritingMode === 'vertical-lr',
+            isVerticalRightToLeft: writingDirectionSnapshot?.verticalRTL === true
+                || derivedWritingMode === 'vertical-rl',
             currentSectionIndex: Number.isFinite(globalThis.reader?.view?.renderer?.currentIndex)
                 ? globalThis.reader.view.renderer.currentIndex
                 : null,
@@ -3556,8 +3734,18 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
                 ? (
                     globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
                     ?? globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                    ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                    ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                    ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                    ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
                     ?? null
                 )
+                : null,
+            sameDocumentMode: typeof globalThis.reader?.view?.renderer?._sameDocumentMode === 'boolean'
+                ? globalThis.reader.view.renderer._sameDocumentMode
+                : null,
+            sameDocumentUsesPagePositioning: typeof globalThis.reader?.view?.renderer?._usesSameDocumentPagePositioningSync === 'function'
+                ? !!globalThis.reader.view.renderer._usesSameDocumentPagePositioningSync()
                 : null,
             currentPage: null,
             pageCount: null,
@@ -3637,6 +3825,11 @@ window.manabiGetPageTurnProbeSnapshotJSON = async () => {
     try {
         return JSON.stringify(await window.manabiGetPageTurnProbeSnapshot());
     } catch (error) {
+        const writingDirectionSnapshot = globalThis.manabiGetWritingDirectionSnapshot?.() ?? null;
+        const derivedWritingMode =
+            globalThis.manabiTrackingWritingMode
+            ?? globalThis.manabiResolveReadingDirectionProbe?.()?.resolvedWritingMode
+            ?? null;
         return JSON.stringify({
             hasView: !!globalThis.reader?.view,
             hasRenderer: !!globalThis.reader?.view?.renderer,
@@ -3650,11 +3843,14 @@ window.manabiGetPageTurnProbeSnapshotJSON = async () => {
             ),
             bookDirection: globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? null,
             isRightToLeft: !!(
-                globalThis.manabiGetWritingDirectionSnapshot?.()?.rtl
+                writingDirectionSnapshot?.rtl
                 ?? ((globalThis.reader?.book?.dir ?? globalThis.reader?.view?.book?.dir ?? '').toLowerCase() === 'rtl')
             ),
-            isVertical: globalThis.manabiGetWritingDirectionSnapshot?.()?.vertical === true,
-            isVerticalRightToLeft: globalThis.manabiGetWritingDirectionSnapshot?.()?.verticalRTL === true,
+            isVertical: writingDirectionSnapshot?.vertical === true
+                || derivedWritingMode === 'vertical-rl'
+                || derivedWritingMode === 'vertical-lr',
+            isVerticalRightToLeft: writingDirectionSnapshot?.verticalRTL === true
+                || derivedWritingMode === 'vertical-rl',
             currentSectionIndex: Number.isFinite(globalThis.reader?.view?.renderer?.currentIndex)
                 ? globalThis.reader.view.renderer.currentIndex
                 : null,
@@ -3662,6 +3858,10 @@ window.manabiGetPageTurnProbeSnapshotJSON = async () => {
                 ? (
                     globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
                     ?? globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                    ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                    ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                    ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                    ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
                     ?? null
                 )
                 : null,

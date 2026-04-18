@@ -2,7 +2,7 @@ import Foundation
 import RealmSwift
 
 public enum DefaultRealmConfiguration {
-    public static let schemaVersion: UInt64 = 54
+    public static let schemaVersion: UInt64 = 59
     
     public static var configuration: Realm.Configuration {
         var config = Realm.Configuration.defaultConfiguration
@@ -55,6 +55,22 @@ public enum DefaultRealmConfiguration {
 
         if oldSchemaVersion < 54 {
             migrateMediaTranscript_schemaVersionLessThan54(migration: migration)
+        }
+
+        if oldSchemaVersion < 55 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 56 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 57 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 58 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
+        }
+        if oldSchemaVersion < 59 {
+            migration.enumerateObjects(ofType: Feed.className()) { _, _ in }
         }
     }
 

@@ -1,5 +1,13 @@
 import * as CFI from './epubcfi.js'
 
+const setLoadState = state => {
+    if (typeof globalThis.manabiSetLoadEBookState === 'function') {
+        return globalThis.manabiSetLoadEBookState(state)
+    }
+    globalThis.manabiLoadEBookLastState = state
+    return state
+}
+
 const NS = {
     CONTAINER: 'urn:oasis:names:tc:opendocument:xmlns:container',
     XHTML: 'http://www.w3.org/1999/xhtml',
@@ -502,11 +510,11 @@ const deobfuscators = (sha1 = WebCryptoSHA1) => ({
 })
 
 class Encryption {
-    #uris = new Map()
-    #decoders = new Map()
-    #algorithms
+    _uris = new Map()
+    _decoders = new Map()
+    _algorithms
     constructor(algorithms) {
-        this.#algorithms = algorithms
+        this._algorithms = algorithms
     }
     async init(encryption, opf) {
         if (!encryption) return
@@ -522,20 +530,20 @@ class Encryption {
                 uri
             }
             of data) {
-            if (!this.#decoders.has(algorithm)) {
-                const algo = this.#algorithms[algorithm]
+            if (!this._decoders.has(algorithm)) {
+                const algo = this._algorithms[algorithm]
                 if (!algo) {
                     console.warn('Unknown encryption algorithm')
                     continue
                 }
                 const key = await algo.key(opf)
-                this.#decoders.set(algorithm, blob => algo.decode(key, blob))
+                this._decoders.set(algorithm, blob => algo.decode(key, blob))
             }
-            this.#uris.set(uri, algorithm)
+            this._uris.set(uri, algorithm)
         }
     }
     getDecoder(uri) {
-        return this.#decoders.get(this.#uris.get(uri)) ?? (x => x)
+        return this._decoders.get(this._uris.get(uri)) ?? (x => x)
     }
 }
 
@@ -627,9 +635,9 @@ class Resources {
 }
 
 class Loader {
-    #cache = new Map()
-    #children = new Map()
-    #refCount = new Map()
+    _cache = new Map()
+    _children = new Map()
+    _refCount = new Map()
     allowScript = false
     constructor({
         loadText,
@@ -650,40 +658,40 @@ class Loader {
         const url = URL.createObjectURL(new Blob([data], {
             type
         }))
-        this.#cache.set(href, url)
-        this.#refCount.set(href, 1)
+        this._cache.set(href, url)
+        this._refCount.set(href, 1)
         if (parent) {
-            const childList = this.#children.get(parent)
+            const childList = this._children.get(parent)
             if (childList) childList.push(href)
-            else this.#children.set(parent, [href])
+            else this._children.set(parent, [href])
         }
         return url
     }
     ref(href, parent) {
-        const childList = this.#children.get(parent)
+        const childList = this._children.get(parent)
         if (!childList?.includes(href)) {
-            this.#refCount.set(href, this.#refCount.get(href) + 1)
-            //console.log(`referencing ${href}, now ${this.#refCount.get(href)}`)
+            this._refCount.set(href, this._refCount.get(href) + 1)
+            //console.log(`referencing ${href}, now ${this._refCount.get(href)}`)
             if (childList) childList.push(href)
-            else this.#children.set(parent, [href])
+            else this._children.set(parent, [href])
         }
-        return this.#cache.get(href)
+        return this._cache.get(href)
     }
     unref(href) {
-        if (!this.#refCount.has(href)) return
-        const count = this.#refCount.get(href) - 1
+        if (!this._refCount.has(href)) return
+        const count = this._refCount.get(href) - 1
         //console.log(`unreferencing ${href}, now ${count}`)
         if (count < 1) {
             //console.log(`unloading ${href}`)
-            URL.revokeObjectURL(this.#cache.get(href))
-            this.#cache.delete(href)
-            this.#refCount.delete(href)
+            URL.revokeObjectURL(this._cache.get(href))
+            this._cache.delete(href)
+            this._refCount.delete(href)
             // unref children
-            const childList = this.#children.get(href)
+            const childList = this._children.get(href)
             if (childList)
                 while (childList.length) this.unref(childList.pop())
-            this.#children.delete(href)
-        } else this.#refCount.set(href, count)
+            this._children.delete(href)
+        } else this._refCount.set(href, count)
     }
     // load manifest item, recursively loading all resources as needed
     async loadItem(item, parents = []) {
@@ -697,7 +705,7 @@ class Loader {
         if (isScript && !this.allowScript) return null
 
         const parent = parents.at(-1)
-        if (this.#cache.has(href)) return this.ref(href, parent)
+        if (this._cache.has(href)) return this.ref(href, parent)
 
         const shouldReplace =
             (isScript || [MIME.XHTML, MIME.HTML, MIME.CSS, MIME.SVG].includes(mediaType))
@@ -720,9 +728,9 @@ class Loader {
             mediaType
         } = item
         const parent = parents.at(-1)
-        globalThis.manabiLoadEBookLastState = `epub-loadreplaced-awaiting-text:${href}`
+        setLoadState(`epub-loadreplaced-awaiting-text:${href}`)
         const str = await this.loadText(href)
-        globalThis.manabiLoadEBookLastState = `epub-loadreplaced-text-ready:${href}`
+        setLoadState(`epub-loadreplaced-text-ready:${href}`)
         if (!str) return null
 
         // note that one can also just use `replaceString` for everything:
@@ -737,9 +745,9 @@ class Loader {
         // Call replaceText with the original, unmodified text BEFORE any DOM parsing/rewriting
         let replacedStr = str
         if (this.replaceText) {
-            globalThis.manabiLoadEBookLastState = `epub-loadreplaced-awaiting-replace:${href}`
+            setLoadState(`epub-loadreplaced-awaiting-replace:${href}`)
             replacedStr = await this.replaceText(href, str, mediaType)
-            globalThis.manabiLoadEBookLastState = `epub-loadreplaced-replace-ready:${href}`
+            setLoadState(`epub-loadreplaced-replace-ready:${href}`)
         }
 
         if (!replacedStr) {
@@ -764,9 +772,9 @@ class Loader {
 
         // parse and replace in HTML
         if ([MIME.XHTML, MIME.HTML, MIME.SVG].includes(mediaType)) {
-            globalThis.manabiLoadEBookLastState = `epub-loadreplaced-parsing-dom:${href}`
+            setLoadState(`epub-loadreplaced-parsing-dom:${href}`)
             let doc = new DOMParser().parseFromString(replacedStr, mediaType)
-            globalThis.manabiLoadEBookLastState = `epub-loadreplaced-dom-ready:${href}`
+            setLoadState(`epub-loadreplaced-dom-ready:${href}`)
             if (shouldForceHTMLLogging) {
                 logEBookHTMLDiagnostic({
                     stage: 'js.epub.loadReplaced.segmentCount.parsed',
@@ -916,7 +924,7 @@ class Loader {
         this.unref(item?.href)
     }
     destroy() {
-        for (const url of this.#cache.values()) URL.revokeObjectURL(url)
+        for (const url of this._cache.values()) URL.revokeObjectURL(url)
     }
 }
 
@@ -935,8 +943,8 @@ const getPageSpread = properties => {
 
 export class EPUB {
     parser = new DOMParser()
-    #loader
-    #encryption
+    _loader
+    _encryption
     constructor({
         loadText,
         loadBlob,
@@ -948,26 +956,26 @@ export class EPUB {
         this.loadBlob = loadBlob
         this.getSize = getSize
         this.replaceText = replaceText
-        this.#encryption = new Encryption(deobfuscators(sha1))
+        this._encryption = new Encryption(deobfuscators(sha1))
     }
-    async #loadXML(uri) {
-        globalThis.manabiLoadEBookLastState = `epub-loadxml-awaiting:${uri}`
+    async _loadXML(uri) {
+        setLoadState(`epub-loadxml-awaiting:${uri}`)
         const str = await this.loadText(uri)
         if (!str) return null
-        globalThis.manabiLoadEBookLastState = `epub-loadxml-parsing:${uri}`
+        setLoadState(`epub-loadxml-parsing:${uri}`)
         const doc = this.parser.parseFromString(str, MIME.XML)
         if (doc.querySelector('parsererror'))
             throw new Error(`XML parsing error: ${uri}
 ${doc.querySelector('parsererror').innerText}`)
-        globalThis.manabiLoadEBookLastState = `epub-loadxml-ready:${uri}`
+        setLoadState(`epub-loadxml-ready:${uri}`)
         return doc
     }
     async init() {
-        globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-container'
-        const $container = await this.#loadXML('META-INF/container.xml')
+        setLoadState('epub-init-awaiting-container')
+        const $container = await this._loadXML('META-INF/container.xml')
         if (!$container) throw new Error('Failed to load container file')
 
-        globalThis.manabiLoadEBookLastState = 'epub-init-container-ready'
+        setLoadState('epub-init-container-ready')
         const opfs = Array.from(
                 $container.getElementsByTagNameNS(NS.CONTAINER, 'rootfile'),
                 getAttributes('full-path', 'media-type'))
@@ -975,29 +983,29 @@ ${doc.querySelector('parsererror').innerText}`)
 
         if (!opfs.length) throw new Error('No package document defined in container')
         const opfPath = opfs[0].fullPath
-        globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-opf'
-        const opf = await this.#loadXML(opfPath)
+        setLoadState('epub-init-awaiting-opf')
+        const opf = await this._loadXML(opfPath)
         if (!opf) throw new Error('Failed to load package document')
 
-        globalThis.manabiLoadEBookLastState = 'epub-init-opf-ready'
-        globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-encryption'
-        const $encryption = await this.#loadXML('META-INF/encryption.xml')
-        await this.#encryption.init($encryption, opf)
+        setLoadState('epub-init-opf-ready')
+        setLoadState('epub-init-awaiting-encryption')
+        const $encryption = await this._loadXML('META-INF/encryption.xml')
+        await this._encryption.init($encryption, opf)
 
-        globalThis.manabiLoadEBookLastState = 'epub-init-encryption-ready'
+        setLoadState('epub-init-encryption-ready')
         this.resources = new Resources({
             opf,
             resolveHref: url => resolveURL(url, opfPath),
         })
-        globalThis.manabiLoadEBookLastState = 'epub-init-resources-ready'
-        this.#loader = new Loader({
+        setLoadState('epub-init-resources-ready')
+        this._loader = new Loader({
             loadText: this.loadText,
             loadBlob: uri => Promise.resolve(this.loadBlob(uri))
-                .then(this.#encryption.getDecoder(uri)),
+                .then(this._encryption.getDecoder(uri)),
             resources: this.resources,
             replaceText: this.replaceText,
         })
-        globalThis.manabiLoadEBookLastState = 'epub-init-loader-ready'
+        setLoadState('epub-init-loader-ready')
         this.sections = this.resources.spine.map((spineItem, index) => {
             const {
                 idref,
@@ -1011,8 +1019,8 @@ ${doc.querySelector('parsererror').innerText}`)
             }
             return {
                 id: this.resources.getItemByID(idref)?.href,
-                load: () => this.#loader.loadItem(item),
-                unload: () => this.#loader.unloadItem(item),
+                load: () => this._loader.loadItem(item),
+                unload: () => this._loader.unloadItem(item),
                 createDocument: () => this.loadDocument(item),
                 size: this.getSize(item.href),
                 cfi: this.resources.cfis[index],
@@ -1022,36 +1030,36 @@ ${doc.querySelector('parsererror').innerText}`)
                 loadMediaOverlay: () => this.loadMediaOverlay(item),
             }
         }).filter(s => s)
-        globalThis.manabiLoadEBookLastState = 'epub-init-sections-ready'
+        setLoadState('epub-init-sections-ready')
 
         const {
             navPath,
             ncxPath
         } = this.resources
         if (navPath) try {
-            globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-nav'
+            setLoadState('epub-init-awaiting-nav')
             const resolve = url => resolveURL(url, navPath)
-            const nav = parseNav(await this.#loadXML(navPath), resolve)
+            const nav = parseNav(await this._loadXML(navPath), resolve)
             this.toc = nav.toc
             this.pageList = nav.pageList
             this.landmarks = nav.landmarks
-            globalThis.manabiLoadEBookLastState = 'epub-init-nav-ready'
+            setLoadState('epub-init-nav-ready')
         } catch (e) {
             console.warn(e)
         }
         if (!this.toc && ncxPath) try {
-            globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-ncx'
+            setLoadState('epub-init-awaiting-ncx')
             const resolve = url => resolveURL(url, ncxPath)
-            const ncx = parseNCX(await this.#loadXML(ncxPath), resolve)
+            const ncx = parseNCX(await this._loadXML(ncxPath), resolve)
             this.toc = ncx.toc
             this.pageList = ncx.pageList
-            globalThis.manabiLoadEBookLastState = 'epub-init-ncx-ready'
+            setLoadState('epub-init-ncx-ready')
         } catch (e) {
             console.warn(e)
         }
         this.landmarks ??= this.resources.guide
 
-        globalThis.manabiLoadEBookLastState = 'epub-init-awaiting-metadata'
+        setLoadState('epub-init-awaiting-metadata')
         const {
             metadata,
             rendition,
@@ -1120,7 +1128,7 @@ ${doc.querySelector('parsererror').innerText}`)
                 else this.metadata[key] = [value]
             }))
 
-        globalThis.manabiLoadEBookLastState = 'epub-init-complete'
+        setLoadState('epub-init-complete')
         return this
     }
     async loadDocument(item) {
@@ -1131,7 +1139,7 @@ ${doc.querySelector('parsererror').innerText}`)
         const id = item.mediaOverlay
         if (!id) return null
         const media = this.resources.getItemByID(id)
-        const doc = await this.#loadXML(media.href)
+        const doc = await this._loadXML(media.href)
         const parsed = parseSMIL(doc, url => resolveURL(url, media.href))
         return parsed
     }
@@ -1178,6 +1186,6 @@ ${doc.querySelector('parsererror').innerText}`)
         }
     }
     destroy() {
-        this.#loader?.destroy()
+        this._loader?.destroy()
     }
 }

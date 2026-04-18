@@ -1237,6 +1237,18 @@ enum ReaderPageTurnNavigationComparison {
         return direction == .forward ? .nextPage : .previousPage
     }
 
+    static func hasCommittedTurnChange(
+        direction: PageTurnDirection,
+        baseline: ReaderPageTurnNavigationObservation?,
+        after: ReaderPageTurnNavigationObservation?
+    ) -> Bool {
+        classifyCommittedTurn(
+            direction: direction,
+            baseline: baseline,
+            after: after
+        ) != .noPageChange
+    }
+
     static func materiallyExpandedPagination(
         probe: ReaderPageTurnNavigationObservation,
         comparedTo baseline: ReaderPageTurnNavigationObservation
@@ -1373,6 +1385,29 @@ private actor ReaderPageTurnNavigationProbeResultBox {
             return (false, nil)
         }
         return (true, probe)
+    }
+}
+
+private actor ReaderPageTurnJavaScriptEvaluationResultBox {
+    private var result: Any??
+    private var error: Error?
+
+    func setResult(_ result: Any?) {
+        self.result = result
+    }
+
+    func setError(_ error: Error) {
+        self.error = error
+    }
+
+    func get() -> (completed: Bool, result: Any?, error: Error?) {
+        if let error {
+            return (true, nil, error)
+        }
+        guard let result else {
+            return (false, nil, nil)
+        }
+        return (true, result, nil)
     }
 }
 
@@ -1646,7 +1681,11 @@ fileprivate struct ReaderPageTurnNavigationProbe {
 
     var resolvedPaginationMode: WebViewPaginationMode {
         if isVertical {
-            return isVerticalRightToLeft ? .rightToLeft : .leftToRight
+            let semanticRTL =
+                isVerticalRightToLeft
+                || isRightToLeft
+                || bookDirection?.lowercased() == "rtl"
+            return semanticRTL ? .rightToLeft : .leftToRight
         }
         return isRightToLeft ? .rightToLeft : .leftToRight
     }
@@ -2277,7 +2316,7 @@ public enum ReaderResolvedPagination {
         paginationCurrentPageIndex: Int? = nil,
         resolvedGraph: ReaderPageTurnResolvedGraph?
     ) -> Int? {
-        bridgeCurrentPage ?? paginationCurrentPageIndex ?? resolvedGraph?.currentPageIndex
+        paginationCurrentPageIndex ?? resolvedGraph?.currentPageIndex ?? bridgeCurrentPage
     }
 
     public static func visiblePageIndices(
@@ -2285,7 +2324,7 @@ public enum ReaderResolvedPagination {
         paginationVisiblePageIndices: [Int]? = nil,
         resolvedGraph: ReaderPageTurnResolvedGraph?
     ) -> [Int]? {
-        bridgeVisiblePageIndices ?? paginationVisiblePageIndices ?? resolvedGraph?.currentVisiblePageIndices
+        paginationVisiblePageIndices ?? resolvedGraph?.currentVisiblePageIndices ?? bridgeVisiblePageIndices
     }
 
     public static func canMoveForward(
@@ -2293,7 +2332,7 @@ public enum ReaderResolvedPagination {
         paginationCanMoveForward: Bool? = nil,
         resolvedGraph: ReaderPageTurnResolvedGraph?
     ) -> Bool? {
-        bridgeCanMoveForward ?? paginationCanMoveForward ?? resolvedGraph?.canMoveForward
+        paginationCanMoveForward ?? resolvedGraph?.canMoveForward ?? bridgeCanMoveForward
     }
 
     public static func canMoveBackward(
@@ -2301,7 +2340,7 @@ public enum ReaderResolvedPagination {
         paginationCanMoveBackward: Bool? = nil,
         resolvedGraph: ReaderPageTurnResolvedGraph?
     ) -> Bool? {
-        bridgeCanMoveBackward ?? paginationCanMoveBackward ?? resolvedGraph?.canMoveBackward
+        paginationCanMoveBackward ?? resolvedGraph?.canMoveBackward ?? bridgeCanMoveBackward
     }
 
     public static func destinationAvailability(
@@ -2309,17 +2348,16 @@ public enum ReaderResolvedPagination {
         paginationAvailability: String? = nil,
         resolvedGraphAvailability: PageTurnDestinationAvailability?
     ) -> PageTurnDestinationAvailability? {
-        bridgeAvailability
-            .flatMap(PageTurnDestinationAvailability.init(rawValue:))
-            ?? paginationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+        paginationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
             ?? resolvedGraphAvailability
+            ?? bridgeAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
     }
 
     public static func pageCount(
         bridgePageCount: Int?,
         paginationPageCount: Int?
     ) -> Int? {
-        bridgePageCount ?? paginationPageCount
+        paginationPageCount ?? bridgePageCount
     }
 
     public static func paginationComplete(
@@ -2475,36 +2513,22 @@ struct ReaderResolvedBridgeSpreadState: Equatable {
     ) -> ReaderResolvedBridgeSpreadState {
         let resolvedGraph = paginationContext.resolvedGraph
         return ReaderResolvedBridgeSpreadState(
-            pageOffsetsDisplayed: runtimeOwnedSpreadStateAvailable
-                ? existingPageOffsetsDisplayed
-                : paginationContext.pageOffsetsDisplayed,
-            currentSpread: runtimeOwnedSpreadStateAvailable
-                ? existingCurrentSpread
-                : paginationContext.currentSpread,
+            pageOffsetsDisplayed: paginationContext.pageOffsetsDisplayed ?? existingPageOffsetsDisplayed,
+            currentSpread: paginationContext.currentSpread ?? existingCurrentSpread,
             destinationSpread: runtimeOwnedDestinationSpreadAvailable
-                ? existingDestinationSpread
+                ? (paginationContext.destinationSpread(direction: nil as PageTurnDirection?) ?? existingDestinationSpread)
                 : paginationContext.destinationSpread(direction: nil as PageTurnDirection?),
             spreadSequence: paginationContext.preferredSpreadSequence ?? existingSpreadSequence,
-            pageCount: runtimeOwnedSpreadStateAvailable
-                ? existingPageCount
-                : paginationContext.pageCount,
-            visiblePageIndices: runtimeOwnedSpreadStateAvailable
-                ? existingVisiblePageIndices
-                : paginationContext.visiblePageIndices,
-            canForward: runtimeOwnedSpreadStateAvailable
-                ? existingCanForward
-                : (supportsActivePageTurn && (paginationContext.canMoveForward ?? resolvedGraph.canMoveForward)),
-            canBackward: runtimeOwnedSpreadStateAvailable
-                ? existingCanBackward
-                : (supportsActivePageTurn && (paginationContext.canMoveBackward ?? resolvedGraph.canMoveBackward)),
-            forwardDestinationAvailability: runtimeOwnedSpreadStateAvailable
-                ? existingForwardDestinationAvailability
-                : (paginationContext.destinationAvailability(for: .forward)?.rawValue
-                    ?? resolvedGraph.forwardDestinationAvailability.rawValue),
-            backwardDestinationAvailability: runtimeOwnedSpreadStateAvailable
-                ? existingBackwardDestinationAvailability
-                : (paginationContext.destinationAvailability(for: .backward)?.rawValue
-                    ?? resolvedGraph.backwardDestinationAvailability.rawValue)
+            pageCount: paginationContext.pageCount ?? existingPageCount,
+            visiblePageIndices: paginationContext.visiblePageIndices ?? existingVisiblePageIndices,
+            canForward: supportsActivePageTurn && (paginationContext.canMoveForward ?? resolvedGraph.canMoveForward),
+            canBackward: supportsActivePageTurn && (paginationContext.canMoveBackward ?? resolvedGraph.canMoveBackward),
+            forwardDestinationAvailability: paginationContext.destinationAvailability(for: .forward)?.rawValue
+                ?? existingForwardDestinationAvailability
+                ?? resolvedGraph.forwardDestinationAvailability.rawValue,
+            backwardDestinationAvailability: paginationContext.destinationAvailability(for: .backward)?.rawValue
+                ?? existingBackwardDestinationAvailability
+                ?? resolvedGraph.backwardDestinationAvailability.rawValue
         )
     }
 }
@@ -2688,13 +2712,17 @@ struct ReaderResolvedPaginationContext {
         preferredRuntimeSpreadSequence
     }
 
+    private var runtimeDerivedPageCount: Int? {
+        preferredRuntimeSpreadSequence?.spreads
+            .flatMap(\.pageIndices)
+            .max()
+            .map { $0 + 1 }
+    }
+
     var pageCount: Int? {
-        paginationState?.pageCount
+        runtimeDerivedPageCount
+            ?? paginationState?.pageCount
             ?? bridgePageCount
-            ?? preferredRuntimeSpreadSequence?.spreads
-                .flatMap(\.pageIndices)
-                .max()
-                .map { $0 + 1 }
     }
 
     var currentContentLocation: PageTurnCurrentContentLocation {
@@ -2773,33 +2801,49 @@ struct ReaderResolvedPaginationContext {
     }
 
     public var currentPageIndex: Int? {
-        paginationCurrentPageIndex ?? bridgeCurrentPage ?? seedGraph.currentPageIndex
+        preferredRuntimeSpreadSequence != nil
+            ? (seedGraph.currentPageIndex ?? paginationCurrentPageIndex ?? bridgeCurrentPage)
+            : (paginationCurrentPageIndex ?? bridgeCurrentPage ?? seedGraph.currentPageIndex)
     }
 
     public var visiblePageIndices: [Int]? {
-        paginationVisiblePageIndices ?? bridgeVisiblePageIndices ?? seedGraph.currentVisiblePageIndices
+        preferredRuntimeSpreadSequence != nil
+            ? (seedGraph.currentVisiblePageIndices ?? paginationVisiblePageIndices ?? bridgeVisiblePageIndices)
+            : (paginationVisiblePageIndices ?? bridgeVisiblePageIndices ?? seedGraph.currentVisiblePageIndices)
     }
 
     public var canMoveForward: Bool? {
-        paginationCanMoveForward ?? bridgeCanMoveForward ?? seedGraph.canMoveForward
+        preferredRuntimeSpreadSequence != nil
+            ? (seedGraph.canMoveForward ?? paginationCanMoveForward ?? bridgeCanMoveForward)
+            : (paginationCanMoveForward ?? bridgeCanMoveForward ?? seedGraph.canMoveForward)
     }
 
     public var canMoveBackward: Bool? {
-        paginationCanMoveBackward ?? bridgeCanMoveBackward ?? seedGraph.canMoveBackward
+        preferredRuntimeSpreadSequence != nil
+            ? (seedGraph.canMoveBackward ?? paginationCanMoveBackward ?? bridgeCanMoveBackward)
+            : (paginationCanMoveBackward ?? bridgeCanMoveBackward ?? seedGraph.canMoveBackward)
     }
 
     public func destinationAvailability(for direction: PageTurnDirection) -> PageTurnDestinationAvailability? {
         switch direction {
         case .forward:
-            return paginationForwardDestinationAvailability
-                .flatMap(PageTurnDestinationAvailability.init(rawValue:))
-                ?? bridgeForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
-                ?? seedGraph.forwardDestinationAvailability
+            return preferredRuntimeSpreadSequence != nil
+                ? (seedGraph.forwardDestinationAvailability
+                    ?? paginationForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? bridgeForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:)))
+                : (paginationForwardDestinationAvailability
+                    .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? bridgeForwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? seedGraph.forwardDestinationAvailability)
         case .backward:
-            return paginationBackwardDestinationAvailability
-                .flatMap(PageTurnDestinationAvailability.init(rawValue:))
-                ?? bridgeBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
-                ?? seedGraph.backwardDestinationAvailability
+            return preferredRuntimeSpreadSequence != nil
+                ? (seedGraph.backwardDestinationAvailability
+                    ?? paginationBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? bridgeBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:)))
+                : (paginationBackwardDestinationAvailability
+                    .flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? bridgeBackwardDestinationAvailability.flatMap(PageTurnDestinationAvailability.init(rawValue:))
+                    ?? seedGraph.backwardDestinationAvailability)
         }
     }
 
@@ -3525,42 +3569,162 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 return "prev"
             }
         }
-        let semanticActionName: (ReaderPageTurnNavigationProbe?) -> String = { _ in
-            switch direction {
-            case .forward:
+        let semanticActionName: (ReaderPageTurnNavigationProbe?) -> String = { probe in
+            let isRightToLeft = probe?.isRightToLeft ?? (self.pageProgressionDirection == .rightToLeft)
+            switch (direction, isRightToLeft) {
+            case (.forward, true):
+                return "goLeft"
+            case (.forward, false):
                 return "goRight"
-            case .backward:
+            case (.backward, true):
+                return "goRight"
+            case (.backward, false):
                 return "goLeft"
             }
         }
-        let activeTurnScript: (ReaderPageTurnNavigationProbe?) -> String = { probe in
+        let rendererHostTurnScript: (ReaderPageTurnNavigationProbe?) -> String = { probe in
             let functionName = semanticFunctionName(probe)
+            let actionName = semanticActionName(probe)
             return """
             (() => {
               const view = globalThis.reader?.view;
               const renderer = view?.renderer;
               if (!view) {
-                return;
+                return 'no-view';
               }
-              if (typeof renderer?.hostTurn === 'function') {
-                void Promise.resolve(renderer.hostTurn('\(direction.rawValue)')).catch(() => {});
-                return;
-              }
-              if (typeof view.\(functionName) !== 'function') {
-                return;
-              }
-              void Promise.resolve(view.\(functionName)()).catch(() => {});
+              globalThis.manabiSameDocumentHostTurnDiagnostics = {
+                phase: 'host-turn-requested',
+                direction: '\(direction.rawValue)',
+                currentPageIndex: null,
+                targetPageIndex: null,
+                pageCount: null,
+                result: null,
+              };
+              const trySemanticFallback = async () => {
+                if (typeof view.\(actionName) === 'function') {
+                  return await Promise.resolve(view.\(actionName)()).then(() => true).catch(() => false);
+                }
+                if (typeof view.\(functionName) === 'function') {
+                  return await Promise.resolve(view.\(functionName)()).then(() => true).catch(() => false);
+                }
+                return false;
+              };
+              return (async () => {
+                if (typeof renderer?.hostTurn === 'function') {
+                  const hostResult = await Promise.resolve(renderer.hostTurn('\(direction.rawValue)')).catch(error => {
+                    globalThis.manabiSameDocumentHostTurnDiagnostics = {
+                      phase: 'host-turn-error',
+                      direction: '\(direction.rawValue)',
+                      currentPageIndex: null,
+                      targetPageIndex: null,
+                      pageCount: null,
+                      result: String(error),
+                    };
+                    return '__host_turn_error__';
+                  });
+                  if (hostResult === true) {
+                    return 'host-turn-complete';
+                  }
+                  if (hostResult === false) {
+                    const semanticFallbackResult = await trySemanticFallback();
+                    return semanticFallbackResult ? 'semantic-fallback' : 'host-turn-stalled';
+                  }
+                  if (hostResult === '__host_turn_error__') {
+                    const semanticFallbackResult = await trySemanticFallback();
+                    return semanticFallbackResult ? 'semantic-fallback-after-error' : 'host-turn-error';
+                  }
+                  return String(hostResult);
+                }
+                const semanticFallbackResult = await trySemanticFallback();
+                return semanticFallbackResult ? 'semantic-fallback-no-renderer' : 'host-turn-unavailable';
+              })();
             })();
             """
         }
+        let semanticTurnScript: (ReaderPageTurnNavigationProbe?) -> String = { probe in
+            let functionName = semanticFunctionName(probe)
+            let actionName = semanticActionName(probe)
+            return """
+            (() => {
+              const view = globalThis.reader?.view;
+              if (!view) {
+                return;
+              }
+              if (typeof view.\(actionName) === 'function') {
+                void Promise.resolve(view.\(actionName)()).catch(() => {});
+                return;
+              }
+              if (typeof view.\(functionName) === 'function') {
+                void Promise.resolve(view.\(functionName)()).catch(() => {});
+                return;
+              }
+            })();
+            """
+        }
+        let controllerFallbackScript: String = """
+        (() => {
+          const view = globalThis.reader?.view;
+          const controller = view?.document?.defaultView?.manabiEbookSectionLayoutController
+            ?? globalThis.manabiEbookSectionLayoutController;
+          if (!controller) return;
+          let diagnostics = typeof controller.layoutDiagnostics === 'function'
+            ? controller.layoutDiagnostics()
+            : null;
+          const currentPageIndex = Number.isFinite(diagnostics?.currentPageIndex)
+            ? diagnostics.currentPageIndex
+            : null;
+          const pageCount = Number.isFinite(diagnostics?.pageRecordCount)
+            ? diagnostics.pageRecordCount
+            : (Number.isFinite(diagnostics?.pageCount) ? diagnostics.pageCount : null);
+          if (!Number.isFinite(currentPageIndex) || !Number.isFinite(pageCount)) return;
+          const targetPageIndex = currentPageIndex + (\(direction == .forward ? "1" : "-1"));
+          if (targetPageIndex < 0 || targetPageIndex >= pageCount) return;
+          if (typeof controller.ensurePageBuilt === 'function') {
+            try {
+              controller.ensurePageBuilt(targetPageIndex, {
+                reason: 'host-page-turn-controller-fallback-\(direction.rawValue)',
+              });
+            } catch (_error) {}
+          }
+          const location = typeof controller.captureLocationForPage === 'function'
+            ? controller.captureLocationForPage(targetPageIndex)
+            : null;
+          const anchor = typeof controller.sourceRangeForLocation === 'function'
+            ? controller.sourceRangeForLocation(location)
+            : null;
+          if (typeof controller.requestRebuild === 'function') {
+            controller.requestRebuild({
+              reason: 'host-page-turn-controller-fallback-\(direction.rawValue)',
+              anchor,
+            });
+          }
+        })();
+        """
 
         let shouldLogDiagnostics = ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-        let baselineProbe = await fetchNavigationProbe()
+        let logCommitTurnStage: (_ stage: String, _ payload: [String: Any]) -> Void = { stage, payload in
+            guard shouldLogDiagnostics else { return }
+            Logger.shared.logger.info("# PAGETURN commitTurn.stage stage=\(stage) payload=\(payload)")
+        }
+        var baselineProbe = await fetchNavigationProbe()
         if let baselineProbe {
             applyNavigationProbe(baselineProbe, publicationSerial: publicationSerial)
         }
+        if hasSectionLayoutController,
+           baselineProbe?.layoutState == .aboutToChange || baselineProbe?.layoutState == .changing,
+           let stabilizedProbe = await waitForStableLayoutProbeBeforeTurn() {
+            baselineProbe = stabilizedProbe
+            applyNavigationProbe(stabilizedProbe, publicationSerial: publicationSerial)
+        }
         let beforePayload = shouldLogDiagnostics ? currentNavigationDebugPayload() : [:]
-
+        let isVerticalVisibleUnit =
+            baselineProbe?.layoutVisibleUnitAxis == "vertical"
+            || baselineProbe?.layoutWritingMode?.contains("vertical") == true
+        let prefersSemanticInitialTurn =
+            baselineProbe?.hasSectionLayoutController == true
+            && ((baselineProbe?.layoutPageRecordCount ?? 0) > 1 || (baselineProbe?.pageCount ?? 0) > 1)
+            && (baselineProbe?.bookDirection == "rtl")
+            && !isVerticalVisibleUnit
         let initialScript: String = if !supportsActivePageTurn && hasFallbackTurnReadiness {
             """
             (() => {
@@ -3615,45 +3779,146 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
               }
             })();
             """
+        } else if prefersSemanticInitialTurn {
+            semanticTurnScript(baselineProbe)
         } else {
-            activeTurnScript(baselineProbe)
+            rendererHostTurnScript(baselineProbe)
         }
 
-        await issueJavaScriptAcrossReaderPageTurnFrames(initialScript, scriptCaller: scriptCaller)
-        var afterProbe = try await waitForCommittedTurnProbe(
+        logCommitTurnStage("baseline", [
+            "direction": direction.rawValue,
+            "baseline": baselineProbe?.logPayload ?? [:],
+        ])
+        let initialLaunchStatuses = await issueJavaScriptAcrossReaderPageTurnFrames(
+            initialScript,
+            scriptCaller: scriptCaller,
+            timeoutNanoseconds: isVerticalVisibleUnit ? 8_000_000_000 : 4_000_000_000,
+            allowFrameFallback: false
+        )
+        logCommitTurnStage("initial-launch", [
+            "direction": direction.rawValue,
+            "statuses": initialLaunchStatuses,
+        ])
+        let initialProbe = try await waitForCommittedTurnProbe(
             direction: direction,
             baselineProbe: baselineProbe,
             timeoutNanoseconds: 8_000_000_000,
             pollNanoseconds: 250_000_000
         )
+        logCommitTurnStage("initial-wait", [
+            "direction": direction.rawValue,
+            "probe": initialProbe?.logPayload ?? [:],
+        ])
+        var afterProbe = acceptedCommittedTurnProbe(
+            initialProbe,
+            direction: direction,
+            baselineProbe: baselineProbe
+        )
         if let baselineProbe,
-           let activatedProbe = afterProbe,
+           let activatedProbe = initialProbe,
            ReaderPageTurnNavigationComparison.shouldRetryCommittedTurnAfterActivation(
             baseline: ReaderPageTurnNavigationObservation(probe: baselineProbe),
             activatedProbe: ReaderPageTurnNavigationObservation(probe: activatedProbe)
            ) {
-            let followupScript = activeTurnScript(activatedProbe)
-            await issueJavaScriptAcrossReaderPageTurnFrames(followupScript, scriptCaller: scriptCaller)
+            let followupScript = rendererHostTurnScript(activatedProbe)
+            let followupStatuses = await issueJavaScriptAcrossReaderPageTurnFrames(
+                followupScript,
+                scriptCaller: scriptCaller,
+                timeoutNanoseconds: isVerticalVisibleUnit ? 8_000_000_000 : 4_000_000_000,
+                allowFrameFallback: false
+            )
+            logCommitTurnStage("followup-launch", [
+                "direction": direction.rawValue,
+                "statuses": followupStatuses,
+                "activatedProbe": activatedProbe.logPayload,
+            ])
             let secondProbe = try await waitForCommittedTurnProbe(
                 direction: direction,
                 baselineProbe: activatedProbe,
                 timeoutNanoseconds: 6_000_000_000,
                 pollNanoseconds: 250_000_000
             )
-            if secondProbe != nil {
-                afterProbe = secondProbe
+            logCommitTurnStage("followup-wait", [
+                "direction": direction.rawValue,
+                "probe": secondProbe?.logPayload ?? [:],
+            ])
+            if let acceptedSecondProbe = acceptedCommittedTurnProbe(
+                secondProbe,
+                direction: direction,
+                baselineProbe: baselineProbe
+            ) {
+                afterProbe = acceptedSecondProbe
+            }
+        }
+        if afterProbe == nil {
+            let fallbackScript = semanticTurnScript(baselineProbe)
+            let fallbackStatuses = await issueJavaScriptAcrossReaderPageTurnFrames(
+                fallbackScript,
+                scriptCaller: scriptCaller,
+                timeoutNanoseconds: 2_500_000_000,
+                allowFrameFallback: false
+            )
+            logCommitTurnStage("semantic-fallback-launch", [
+                "direction": direction.rawValue,
+                "statuses": fallbackStatuses,
+            ])
+            let fallbackProbe = try await waitForCommittedTurnProbe(
+                direction: direction,
+                baselineProbe: baselineProbe,
+                timeoutNanoseconds: 4_000_000_000,
+                pollNanoseconds: 250_000_000
+            )
+            logCommitTurnStage("semantic-fallback-wait", [
+                "direction": direction.rawValue,
+                "probe": fallbackProbe?.logPayload ?? [:],
+            ])
+            if let acceptedFallbackProbe = acceptedCommittedTurnProbe(
+                fallbackProbe,
+                direction: direction,
+                baselineProbe: baselineProbe
+            ) {
+                afterProbe = acceptedFallbackProbe
+            }
+        }
+        if afterProbe == nil {
+            let controllerFallbackStatuses = await issueJavaScriptAcrossReaderPageTurnFrames(
+                controllerFallbackScript,
+                scriptCaller: scriptCaller,
+                timeoutNanoseconds: 2_500_000_000,
+                allowFrameFallback: false
+            )
+            logCommitTurnStage("controller-fallback-launch", [
+                "direction": direction.rawValue,
+                "statuses": controllerFallbackStatuses,
+            ])
+            let controllerFallbackProbe = try await waitForCommittedTurnProbe(
+                direction: direction,
+                baselineProbe: baselineProbe,
+                timeoutNanoseconds: 4_000_000_000,
+                pollNanoseconds: 250_000_000
+            )
+            logCommitTurnStage("controller-fallback-wait", [
+                "direction": direction.rawValue,
+                "probe": controllerFallbackProbe?.logPayload ?? [:],
+            ])
+            if let acceptedControllerFallbackProbe = acceptedCommittedTurnProbe(
+                controllerFallbackProbe,
+                direction: direction,
+                baselineProbe: baselineProbe
+            ) {
+                afterProbe = acceptedControllerFallbackProbe
             }
         }
         if shouldLogDiagnostics {
             Logger.shared.logger.info(
-                "# PAGETURN commitTurn direction=\(direction.rawValue) function=\(semanticFunctionName(afterProbe ?? baselineProbe)) action=\(semanticActionName(afterProbe ?? baselineProbe)) mode=unsafe before=\(beforePayload) after=\(afterProbe?.logPayload ?? [:])"
+                "# PAGETURN commitTurn direction=\(direction.rawValue) function=\(semanticFunctionName(afterProbe ?? baselineProbe)) action=\(semanticActionName(afterProbe ?? baselineProbe)) mode=unsafe initialLaunchStatuses=\(initialLaunchStatuses) before=\(beforePayload) after=\(afterProbe?.logPayload ?? [:])"
             )
         }
         guard afterProbe != nil else {
             throw NSError(
                 domain: "ReaderPageTurnBridge",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "commitTurn timed out for \(direction.rawValue)"]
+                userInfo: [NSLocalizedDescriptionKey: "commitTurn timed out for \(direction.rawValue) launchStatuses=\(initialLaunchStatuses.joined(separator: ","))"]
             )
         }
         let navigationEventKind = ReaderPageTurnNavigationComparison.classifyCommittedTurn(
@@ -4265,9 +4530,7 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
     }
 
     func snapshot(for request: PageTurnSnapshotRequest) async throws -> PageTurnSnapshotArtifact {
-        let image = await navigator?.withAttachedWebView { webView in
-            await captureReaderPageTurnSnapshot(from: webView, contentRect: request.contentRect)
-        } ?? nil
+        let image = await captureReaderPageTurnSnapshotWithTimeout(contentRect: request.contentRect)
         let chromeContent = await resolvedSnapshotChromeContent(for: request)
 
         return PageTurnSnapshotArtifact(
@@ -4280,6 +4543,26 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
             layoutGeneration: request.layoutGeneration,
             includesChrome: false
         )
+    }
+
+    private func captureReaderPageTurnSnapshotWithTimeout(
+        contentRect: CGRect,
+        timeoutNanoseconds: UInt64 = 750_000_000
+    ) async -> PageTurnPlatformImage? {
+        await withTaskGroup(of: PageTurnPlatformImage?.self, returning: PageTurnPlatformImage?.self) { group in
+            group.addTask {
+                await self.navigator?.withAttachedWebView { webView in
+                    await captureReaderPageTurnSnapshot(from: webView, contentRect: contentRect)
+                } ?? nil
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                return nil
+            }
+            let image = await group.next() ?? nil
+            group.cancelAll()
+            return image
+        }
     }
 
     private func fetchNavigationProbe(preferredFrameOverride: WKFrameInfo? = nil) async -> ReaderPageTurnNavigationProbe? {
@@ -4315,6 +4598,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                   ? (
                       globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
                       ?? globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                      ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                      ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                      ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                      ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
                       ?? null
                     )
                   : null,
@@ -4324,6 +4611,15 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 viewportCenterChunkPageIndex: null,
                 pageCount: null,
                 computedFontSizeCSS: globalThis.getComputedStyle?.(globalThis.document?.body ?? null)?.fontSize ?? null,
+                documentReadyState: String(globalThis.document?.readyState ?? 'nil'),
+                documentTitle: String(globalThis.document?.title ?? 'nil'),
+                bodyChildElementCount: Number(globalThis.document?.body?.childElementCount ?? 0),
+                moduleScriptStatus: globalThis.manabiViewerModuleStatus ?? null,
+                moduleFetchStatus: globalThis.manabiViewerModuleFetchStatus ?? null,
+                moduleURL: globalThis.manabiViewerModuleURL ?? null,
+                hasModuleImportPromise: !!globalThis.manabiViewerModuleImportPromise,
+                hasLoadEBook: typeof globalThis.loadEBook === 'function',
+                hasInitializedAck: !!globalThis.manabiEbookViewerInitializedAck,
                 currentPageTextSample: null,
                 nextPageTextSample: null,
                 loadEBookStarted: !!globalThis.manabiLoadEBookStarted,
@@ -4334,7 +4630,17 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                   return startedAt > 0 ? Math.max(0, Date.now() - startedAt) : null;
                 })(),
                 loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
-                probeError: 'probe-helper-missing',
+                probeError: [
+                  'probe-helper-missing',
+                  `ready=${String(globalThis.document?.readyState ?? 'nil')}`,
+                  `title=${String(globalThis.document?.title ?? 'nil')}`,
+                  `moduleStatus=${String(globalThis.manabiViewerModuleStatus ?? 'nil')}`,
+                  `moduleFetchStatus=${String(globalThis.manabiViewerModuleFetchStatus ?? 'nil')}`,
+                  `hasImportPromise=${String(!!globalThis.manabiViewerModuleImportPromise)}`,
+                  `hasLoadEBook=${String(typeof globalThis.loadEBook === 'function')}`,
+                  `hasInitAck=${String(!!globalThis.manabiEbookViewerInitializedAck)}`,
+                  `bodyChildren=${String(Number(globalThis.document?.body?.childElementCount ?? 0))}`,
+                ].join('|'),
               });
             } catch (error) {
               return JSON.stringify({
@@ -4362,6 +4668,10 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                   ? (
                       globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
                       ?? globalThis.reader?.view?.renderer?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                      ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                      ?? globalThis.reader?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
+                      ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.href
+                      ?? globalThis.reader?.view?.book?.sections?.[globalThis.reader.view.renderer.currentIndex]?.url
                       ?? null
                     )
                   : null,
@@ -4371,6 +4681,15 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 viewportCenterChunkPageIndex: null,
                 pageCount: null,
                 computedFontSizeCSS: globalThis.getComputedStyle?.(globalThis.document?.body ?? null)?.fontSize ?? null,
+                documentReadyState: String(globalThis.document?.readyState ?? 'nil'),
+                documentTitle: String(globalThis.document?.title ?? 'nil'),
+                bodyChildElementCount: Number(globalThis.document?.body?.childElementCount ?? 0),
+                moduleScriptStatus: globalThis.manabiViewerModuleStatus ?? null,
+                moduleFetchStatus: globalThis.manabiViewerModuleFetchStatus ?? null,
+                moduleURL: globalThis.manabiViewerModuleURL ?? null,
+                hasModuleImportPromise: !!globalThis.manabiViewerModuleImportPromise,
+                hasLoadEBook: typeof globalThis.loadEBook === 'function',
+                hasInitializedAck: !!globalThis.manabiEbookViewerInitializedAck,
                 currentPageTextSample: null,
                 nextPageTextSample: null,
                 loadEBookStarted: !!globalThis.manabiLoadEBookStarted,
@@ -4381,7 +4700,17 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                   return startedAt > 0 ? Math.max(0, Date.now() - startedAt) : null;
                 })(),
                 loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
-                probeError: `probe-script-wrapper:${String(error)}`,
+                probeError: [
+                  `probe-script-wrapper:${String(error)}`,
+                  `ready=${String(globalThis.document?.readyState ?? 'nil')}`,
+                  `title=${String(globalThis.document?.title ?? 'nil')}`,
+                  `moduleStatus=${String(globalThis.manabiViewerModuleStatus ?? 'nil')}`,
+                  `moduleFetchStatus=${String(globalThis.manabiViewerModuleFetchStatus ?? 'nil')}`,
+                  `hasImportPromise=${String(!!globalThis.manabiViewerModuleImportPromise)}`,
+                  `hasLoadEBook=${String(typeof globalThis.loadEBook === 'function')}`,
+                  `hasInitAck=${String(!!globalThis.manabiEbookViewerInitializedAck)}`,
+                  `bodyChildren=${String(Number(globalThis.document?.body?.childElementCount ?? 0))}`,
+                ].join('|'),
               });
             }
             """
@@ -4936,7 +5265,11 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         var lastError: Error?
         for frame in readerPageTurnCandidateFrames(preferredFrameOverride: preferredFrameOverride, scriptCaller: scriptCaller) {
             do {
-                return try await scriptCaller.evaluateJavaScript(script, in: frame)
+                return try await evaluateReaderPageTurnJavaScriptBounded(
+                    script,
+                    in: frame,
+                    scriptCaller: scriptCaller
+                )
             } catch {
                 lastError = error
             }
@@ -4948,17 +5281,79 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
         )
     }
 
-    private func issueJavaScriptAcrossReaderPageTurnFrames(
+    fileprivate func issueJavaScriptAcrossReaderPageTurnFrames(
         _ script: String,
         preferredFrameOverride: WKFrameInfo? = nil,
-        scriptCaller: WebViewScriptCaller
-    ) async {
-        for frame in readerPageTurnCandidateFrames(
-            preferredFrameOverride: preferredFrameOverride,
-            scriptCaller: scriptCaller
-        ) {
-            _ = try? await scriptCaller.evaluateJavaScript(script, in: frame)
+        scriptCaller: WebViewScriptCaller,
+        timeoutNanoseconds: UInt64 = 1_500_000_000,
+        allowFrameFallback: Bool = true
+    ) async -> [String] {
+        var launchStatuses = [String]()
+        let candidateFrames: [WKFrameInfo?] = if allowFrameFallback {
+            readerPageTurnCandidateFrames(
+                preferredFrameOverride: preferredFrameOverride,
+                scriptCaller: scriptCaller
+            )
+        } else {
+            [preferredFrameOverride ?? readerPageTurnFrameInfo()]
         }
+        for frame in candidateFrames {
+            do {
+                let result = try await evaluateReaderPageTurnJavaScriptBounded(
+                    script,
+                    in: frame,
+                    scriptCaller: scriptCaller,
+                    timeoutNanoseconds: timeoutNanoseconds
+                )
+                let status = (result as? String) ?? "nil"
+                launchStatuses.append(status)
+                if status != "nil" && status != "no-view" {
+                    break
+                }
+            } catch {
+                launchStatuses.append("error:\(error.localizedDescription)")
+            }
+        }
+        return launchStatuses
+    }
+
+    private func evaluateReaderPageTurnJavaScriptBounded(
+        _ script: String,
+        in frame: WKFrameInfo?,
+        scriptCaller: WebViewScriptCaller,
+        timeoutNanoseconds: UInt64 = 1_500_000_000,
+        pollNanoseconds: UInt64 = 50_000_000
+    ) async throws -> Any? {
+        let resultBox = ReaderPageTurnJavaScriptEvaluationResultBox()
+        let task = Task { @MainActor in
+            do {
+                let result = try await scriptCaller.evaluateJavaScript(script, in: frame)
+                await resultBox.setResult(result)
+            } catch {
+                await resultBox.setError(error)
+            }
+        }
+        let timeoutDate = Date().addingTimeInterval(TimeInterval(timeoutNanoseconds) / 1_000_000_000)
+        while Date() < timeoutDate {
+            let state = await resultBox.get()
+            if state.completed {
+                task.cancel()
+                if let error = state.error {
+                    throw error
+                }
+                return state.result
+            }
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+        }
+        task.cancel()
+        throw NSError(
+            domain: "ReaderPageTurnBridge",
+            code: 4,
+            userInfo: [
+                NSLocalizedDescriptionKey: "JavaScript evaluation timed out",
+                "frameURL": frame?.request.url?.absoluteString ?? "nil",
+            ]
+        )
     }
 
     private func waitForCommittedTurnProbe(
@@ -4982,6 +5377,45 @@ fileprivate final class ReaderPageTurnBridge: ObservableObject, PageTurnSnapshot
                 if probe.hasSettledCommittedTurn(direction: direction) {
                     return probe
                 }
+            }
+            try? await Task.sleep(nanoseconds: pollNanoseconds)
+        }
+        return nil
+    }
+
+    private func acceptedCommittedTurnProbe(
+        _ probe: ReaderPageTurnNavigationProbe?,
+        direction: PageTurnDirection,
+        baselineProbe: ReaderPageTurnNavigationProbe?
+    ) -> ReaderPageTurnNavigationProbe? {
+        guard let probe else { return nil }
+        guard let baselineProbe else {
+            return probe.hasSettledCommittedTurn(direction: direction) ? probe : nil
+        }
+        return ReaderPageTurnNavigationComparison.hasCommittedTurnChange(
+            direction: direction,
+            baseline: ReaderPageTurnNavigationObservation(probe: baselineProbe),
+            after: ReaderPageTurnNavigationObservation(probe: probe)
+        ) ? probe : nil
+    }
+
+    private func waitForStableLayoutProbeBeforeTurn(
+        timeoutNanoseconds: UInt64 = 1_500_000_000,
+        pollNanoseconds: UInt64 = 150_000_000
+    ) async -> ReaderPageTurnNavigationProbe? {
+        let timeoutDate = Date().addingTimeInterval(TimeInterval(timeoutNanoseconds) / 1_000_000_000)
+        while Date() < timeoutDate {
+            let refreshedProbe = await refreshNavigationStateBounded(
+                timeoutNanoseconds: min(pollNanoseconds * 3, 1_000_000_000),
+                pollNanoseconds: min(pollNanoseconds, 100_000_000)
+            )
+            let probe = refreshedProbe ?? currentCachedNavigationProbe()
+            let isStableLayout = probe.layoutComplete == true && probe.layoutState == .done
+            let hasUsablePagination = (probe.pageCount ?? 0) > 1
+                || (probe.layoutPageRecordCount ?? 0) > 1
+                || (probe.currentPageDisplayLabel?.contains(" of ") ?? false)
+            if isStableLayout && hasUsablePagination {
+                return probe
             }
             try? await Task.sleep(nanoseconds: pollNanoseconds)
         }
@@ -5509,6 +5943,10 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         }
         .task(id: interactionContext) {
             controller.setInteractionPolicy(resolvedInteractionPolicy())
+        }
+        .task(id: interactionContext.lookupPresented) {
+            guard !interactionContext.lookupPresented else { return }
+            await settleAfterLookupDismiss()
         }
         .task(id: readerViewModel.pageTurnBootstrapSerial) {
             guard readerViewModel.pageTurnBootstrapSerial > 0 else { return }
@@ -7105,7 +7543,7 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
     @MainActor
     private func handleProbeCommand(_ command: ReaderPageTurnProbeCommand) async -> String {
         let diagnosticsEnabled = ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1"
-        let timeoutNanoseconds: UInt64 = 12_000_000_000
+        let timeoutNanoseconds: UInt64 = 30_000_000_000
         let pollNanoseconds: UInt64 = 200_000_000
         let timeoutResult = "error:timeout:\(command.rawValue)"
         if diagnosticsEnabled {
@@ -7263,6 +7701,35 @@ fileprivate struct ReaderPageTurnHost<Content: View>: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             hideNavigationDueToScroll = shouldHide
         }
+    }
+
+    private func settleAfterLookupDismiss() async {
+        guard bridge.supportsActivePageTurn || bridge.hasSectionLayoutController else { return }
+        let settleScript = """
+        (() => {
+          const view = globalThis.reader?.view;
+          const controller = view?.document?.defaultView?.manabiEbookSectionLayoutController
+            ?? globalThis.manabiEbookSectionLayoutController;
+          if (typeof controller?.rebuildFromCurrentLocation === 'function') {
+            try {
+              controller.rebuildFromCurrentLocation({
+                reason: 'lookup-dismiss-page-turn-settle',
+              });
+            } catch (_error) {}
+          }
+        })();
+        """
+        await bridge.issueJavaScriptAcrossReaderPageTurnFrames(
+            settleScript,
+            preferredFrameOverride: nil,
+            scriptCaller: scriptCaller
+        )
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        _ = await bridge.refreshNavigationState()
+        syncControllerFromBridge()
+        let snapshot = await makeProbeSnapshot()
+        probeModel.update(snapshot)
+        logProbeSnapshotIfEnabled(snapshot)
     }
 }
 
