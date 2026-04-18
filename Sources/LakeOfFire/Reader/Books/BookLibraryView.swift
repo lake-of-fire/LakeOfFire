@@ -149,13 +149,20 @@ public struct BookLibraryView: View {
     }
 
     @ViewBuilder
+    private var inlineAddEpubButton: some View {
+        addEpubButton
+            .tint(.secondary)
+            .foregroundStyle(.primary)
+    }
+
+    @ViewBuilder
     private var myBooksHeader: some View {
         if showsInlineAddButton {
             HStack(alignment: .firstTextBaseline) {
                 Text("My \(viewModel.mediaTypeTitle)")
                 Spacer()
                 if !isMyBooksEmpty {
-                    addEpubButton
+                    inlineAddEpubButton
                 }
             }
         } else {

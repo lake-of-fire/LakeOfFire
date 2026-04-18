@@ -18,7 +18,8 @@ fileprivate actor ReaderContentCellActor {
 class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiable>: ObservableObject {
     @Published var readingProgress: Float? = nil
     @Published var isFullArticleFinished: Bool? = nil
-    @Published var hasOpenedHistoryRecord: Bool? = nil
+    @Published var latestHistoryRecordLastVisitedAt: Date? = nil
+    @Published var feedShowsUnseenBadge = true
     @Published var forceShowBookmark = false
     @Published var title = ""
     @Published var author: String?
@@ -51,12 +52,16 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
             let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
             let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
-            let hasOpenedHistoryRecord: Bool?
+            let latestHistoryRecordLastVisitedAt: Date?
+            let feedShowsUnseenBadge: Bool
             if item is FeedEntry {
                 let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
-                hasOpenedHistoryRecord = HistoryRecord.hasOpenedRecord(for: item.url, in: historyRealm)
+                latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: item.url, in: historyRealm)
+                let feedEntry = item as? FeedEntry
+                feedShowsUnseenBadge = feedEntry?.getFeed()?.showsUnseenBadge ?? true
             } else {
-                hasOpenedHistoryRecord = nil
+                latestHistoryRecordLastVisitedAt = nil
+                feedShowsUnseenBadge = true
             }
 
             var sourceIconURL: URL?
@@ -86,9 +91,10 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.isFullArticleFinished = finished
                 } else {
                     self.readingProgress = nil
-                    self.isFullArticleFinished = nil
+                self.isFullArticleFinished = nil
                 }
-                self.hasOpenedHistoryRecord = hasOpenedHistoryRecord
+                self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
+                self.feedShowsUnseenBadge = feedShowsUnseenBadge
                 self.totalWordCount = metadataResult?.totalWordCount
                 self.remainingTime = metadataResult?.remainingTime
             }()
@@ -385,8 +391,15 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var showsUnreadIndicator: Bool {
-        if item is FeedEntry {
-            return viewModel.hasOpenedHistoryRecord == false
+        if let feedEntry = item as? FeedEntry {
+            guard viewModel.feedShowsUnseenBadge else { return false }
+            if let feed = feedEntry.getFeed() {
+                return feed.isEntryUnseen(
+                    feedEntry,
+                    latestHistoryLastVisitedAt: viewModel.latestHistoryRecordLastVisitedAt
+                )
+            }
+            return viewModel.latestHistoryRecordLastVisitedAt == nil
         }
         return false
     }
@@ -616,24 +629,29 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     @ViewBuilder
     private var titleRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text(displayTitle)
-                .font(.headline)
-                .lineLimit(titleLineLimit)
-                .multilineTextAlignment(.leading)
-                .environment(\._lineHeightMultiple, 0.875)
-                .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
-                .layoutPriority(1)
-
-            if showsUnreadIndicator {
-                Image(systemName: "circle.fill")
-                    .font(.headline.weight(.regular))
-                    .imageScale(.small)
-                    .foregroundColor(.accentColor)
-                    .padding(.leading, 10)
-            }
-        }
+        (
+            unreadIndicatorTitleSegment
+            + titleText
+        )
+        .font(.headline)
+        .lineLimit(titleLineLimit)
+        .multilineTextAlignment(.leading)
+        .environment(\._lineHeightMultiple, 0.875)
+        .layoutPriority(1)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var unreadIndicatorTitleSegment: Text {
+        guard showsUnreadIndicator else { return Text("") }
+        return Text(Image(systemName: "circlebadge.fill"))
+            .font(.subheadline.weight(.regular))
+            .foregroundColor(.accentColor)
+            + Text("  ")
+    }
+
+    private var titleText: Text {
+        Text(displayTitle)
+            .foregroundColor((viewModel.isFullArticleFinished ?? false) ? .secondary : .primary)
     }
 
     @ViewBuilder

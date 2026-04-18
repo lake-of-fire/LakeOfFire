@@ -13,7 +13,6 @@ public class FeedViewModel: ObservableObject {
     
     @RealmBackgroundActor
     private var cancellables = Set<AnyCancellable>()
-    private static var lastFetchTimes: [UUID: Date] = [:] // Tracks last fetch time for each feed
     
     public init(feed: Feed) {
         let feedID = feed.id
@@ -38,13 +37,8 @@ public class FeedViewModel: ObservableObject {
     
     @MainActor
     public func fetchIfNeeded(feed: Feed, force: Bool) async throws {
-        let now = Date()
-        let feedID = feed.id
-        let lastFetchTime = FeedViewModel.lastFetchTimes[feedID]
-        
-        if force || lastFetchTime == nil || now.timeIntervalSince(lastFetchTime!) > 30 * 60 {
+        if force || feed.shouldRefreshAutomaticallyOnFeedAppear {
             try await feed.fetch()
-            FeedViewModel.lastFetchTimes[feedID] = now
         }
     }
 }
@@ -54,6 +48,25 @@ public struct FeedView: View {
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
     @Environment(\.contentSelection) private var contentSelection
+
+    private var entries: [FeedEntry] {
+        viewModel.entries ?? []
+    }
+
+    private var showsMarkAllAsSeenAction: Bool {
+        feed.hasUnseenEntries(entries)
+    }
+
+    private var showUnseenBadgeBinding: Binding<Bool> {
+        Binding(
+            get: { feed.showsUnseenBadge },
+            set: { newValue in
+                Task { @MainActor in
+                    try? await setShowsUnseenBadge(newValue)
+                }
+            }
+        )
+    }
     
     public var body: some View {
         AsyncView(operation: { forceRefreshRequested in
@@ -97,6 +110,28 @@ public struct FeedView: View {
         .task(id: feed.id) {
             try? await markFeedAsViewed()
         }
+        .toolbar {
+            ToolbarItem(placement: toolbarTrailingPlacement) {
+                Menu {
+                    if showsMarkAllAsSeenAction {
+                        Button("Mark All as Seen") {
+                            Task { @MainActor in
+                                try? await markAllEntriesAsSeen()
+                            }
+                        }
+                    }
+                    Toggle(isOn: showUnseenBadgeBinding) {
+                        Text("Show Unseen Badge")
+                    }
+                } label: {
+                    Label("More Options", systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
+                }
+            }
+        }
+#if os(iOS)
+        .navigationBarTitleDisplayMode(.automatic)
+#endif
     }
     
     public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false) {
@@ -105,13 +140,44 @@ public struct FeedView: View {
         self.isHorizontal = isHorizontal
     }
 
+    private var toolbarTrailingPlacement: ToolbarItemPlacement {
+#if os(macOS)
+        .automatic
+#else
+        .navigationBarTrailing
+#endif
+    }
+
     @MainActor
     private func markFeedAsViewed() async throws {
+        guard feed.shouldMarkAsViewedOnAppear else { return }
         try await Realm.asyncWrite(
             ThreadSafeReference(to: feed),
             configuration: ReaderContentLoader.feedEntryRealmConfiguration
         ) { _, feed in
             feed.lastViewedAt = Date()
+        }
+    }
+
+    @MainActor
+    private func markAllEntriesAsSeen() async throws {
+        guard feed.hasUnseenEntries(entries) else { return }
+        try await Realm.asyncWrite(
+            ThreadSafeReference(to: feed),
+            configuration: ReaderContentLoader.feedEntryRealmConfiguration
+        ) { _, feed in
+            feed.lastSeenFeedEntriesAt = Date()
+        }
+    }
+
+    @MainActor
+    private func setShowsUnseenBadge(_ showsUnseenBadge: Bool) async throws {
+        guard feed.showsUnseenBadge != showsUnseenBadge else { return }
+        try await Realm.asyncWrite(
+            ThreadSafeReference(to: feed),
+            configuration: ReaderContentLoader.feedEntryRealmConfiguration
+        ) { _, feed in
+            feed.showsUnseenBadge = showsUnseenBadge
         }
     }
 }

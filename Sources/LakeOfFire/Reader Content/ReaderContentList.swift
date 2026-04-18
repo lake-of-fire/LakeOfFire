@@ -815,7 +815,7 @@ fileprivate struct ReaderContentInnerListItems<C: ReaderContentProtocol>: View {
     }
 }
 
-public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptyState: View>: View {
+public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections: View, Header: View, EmptyState: View>: View {
     let contents: [C]
     var contentFilter: ((Int, C) async throws -> Bool)? = nil
     var sortOrder = ReaderContentSortOrder.publicationDate
@@ -824,11 +824,13 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
+    let listRowSpacing: CGFloat?
     let contentSectionTitle: String?
     let rendersHeaderViewInSectionHeader: Bool
     let allowEditing: Bool
     let onDelete: (@MainActor ([C]) async throws -> Void)?
     let customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])?
+    @ViewBuilder let supplementarySections: () -> SupplementarySections
     @ViewBuilder let headerView: () -> Header
     @ViewBuilder let emptyStateView: () -> EmptyState
     let customMenuOptions: ((C) -> AnyView)?
@@ -863,6 +865,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
 
     private var isDeletionToolbarButtonDisabled: Bool {
         multiSelection.isEmpty
+    }
+
+    private var showsHeaderSection: Bool {
+        !rendersHeaderViewInSectionHeader && Header.self != EmptyView.self
     }
 
     @ViewBuilder
@@ -911,8 +917,14 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
 #if os(iOS)
     @ViewBuilder
     private var listContainerWithSpacing: some View {
-        if #available(iOS 16, *) {
-            listContainer.listRowSpacing(15)
+        if #available(iOS 17, *), let listRowSpacing {
+            listContainer
+                .listRowSpacing(listRowSpacing)
+                .listSectionSpacing(.default)
+        } else if #available(iOS 17, *) {
+            listContainer.listSectionSpacing(.default)
+        } else if #available(iOS 16, *), let listRowSpacing {
+            listContainer.listRowSpacing(listRowSpacing)
         } else {
             listContainer
         }
@@ -1036,13 +1048,15 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
 
     @ViewBuilder
     private var listContent: some View {
-        if !rendersHeaderViewInSectionHeader {
+        if showsHeaderSection {
             Section {
                 headerView()
                     .listRowInsets(.init())
                     .listRowBackground(Color.clear)
             }
         }
+
+        supplementarySections()
 
         if customGrouping == nil {
             Section {
@@ -1101,6 +1115,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
                             .readerContentListRowStyle()
                         } header: {
                             Text(section.title)
+                                .foregroundStyle(.secondary)
                         }
                         .headerProminence(.increased)
                     } else {
@@ -1144,6 +1159,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        listRowSpacing: CGFloat? = 15,
         contentSectionTitle: String? = nil,
         rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
@@ -1152,6 +1168,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         customMenuOptions: ((C) -> AnyView)? = nil,
         onContentSelected: ((C) -> Void)? = nil,
         postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
+        @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) {
@@ -1162,6 +1179,7 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         _entrySelection = entrySelection
         self.contentSortAscending = contentSortAscending
         self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.listRowSpacing = listRowSpacing
         self.contentSectionTitle = contentSectionTitle
         self.rendersHeaderViewInSectionHeader = rendersHeaderViewInSectionHeader
         self.allowEditing = allowEditing
@@ -1170,17 +1188,19 @@ public struct ReaderContentList<C: ReaderContentProtocol, Header: View, EmptySta
         self.customMenuOptions = customMenuOptions
         self.onContentSelected = onContentSelected
         self.postSortTransform = postSortTransform
+        self.supplementarySections = supplementarySections
         self.headerView = headerView
         self.emptyStateView = emptyStateView
     }
 }
 
-public extension ReaderContentList where Header == EmptyView, EmptyState == EmptyView {
+public extension ReaderContentList where SupplementarySections == EmptyView, Header == EmptyView, EmptyState == EmptyView {
     init(
         contents: [C],
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        listRowSpacing: CGFloat? = 15,
         includeSource: Bool = false,
         useCardBackground: Bool = true,
         clearRowBackground: Bool = false,
@@ -1201,6 +1221,7 @@ public extension ReaderContentList where Header == EmptyView, EmptyState == Empt
             entrySelection: entrySelection,
             contentSortAscending: contentSortAscending,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            listRowSpacing: listRowSpacing,
             contentSectionTitle: nil,
             allowEditing: allowEditing,
             onDelete: onDelete.map { onDelete in
@@ -1212,6 +1233,7 @@ public extension ReaderContentList where Header == EmptyView, EmptyState == Empt
             customMenuOptions: nil,
             onContentSelected: nil,
             postSortTransform: nil,
+            supplementarySections: { EmptyView() },
             headerView: { EmptyView() },
             emptyStateView: { EmptyView() }
         )
@@ -1225,6 +1247,7 @@ public extension ReaderContentList where Header == EmptyView, EmptyState == Empt
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        listRowSpacing: CGFloat? = 15,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
@@ -1241,6 +1264,7 @@ public extension ReaderContentList where Header == EmptyView, EmptyState == Empt
             entrySelection: entrySelection,
             contentSortAscending: contentSortAscending,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            listRowSpacing: listRowSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,
@@ -1248,8 +1272,54 @@ public extension ReaderContentList where Header == EmptyView, EmptyState == Empt
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected,
             postSortTransform: postSortTransform,
+            supplementarySections: { EmptyView() },
             headerView: { EmptyView() },
             emptyStateView: { EmptyView() }
+        )
+    }
+}
+
+public extension ReaderContentList where SupplementarySections == EmptyView {
+    init(
+        contents: [C],
+        contentFilter: ((Int, C) async throws -> Bool)? = nil,
+        sortOrder: ReaderContentSortOrder,
+        includeSource: Bool,
+        entrySelection: Binding<String?>,
+        contentSortAscending: Bool = false,
+        alwaysShowThumbnails: Bool = true,
+        listRowSpacing: CGFloat? = 15,
+        contentSectionTitle: String? = nil,
+        rendersHeaderViewInSectionHeader: Bool = false,
+        allowEditing: Bool = false,
+        onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
+        customGrouping: (([C]) -> [ReaderContentGroupingSection<C>])? = nil,
+        customMenuOptions: ((C) -> AnyView)? = nil,
+        onContentSelected: ((C) -> Void)? = nil,
+        postSortTransform: (@ReaderContentListActor ([C]) -> [C])? = nil,
+        @ViewBuilder headerView: @escaping () -> Header,
+        @ViewBuilder emptyStateView: @escaping () -> EmptyState
+    ) {
+        self.init(
+            contents: contents,
+            contentFilter: contentFilter,
+            sortOrder: sortOrder,
+            includeSource: includeSource,
+            entrySelection: entrySelection,
+            contentSortAscending: contentSortAscending,
+            alwaysShowThumbnails: alwaysShowThumbnails,
+            listRowSpacing: listRowSpacing,
+            contentSectionTitle: contentSectionTitle,
+            rendersHeaderViewInSectionHeader: rendersHeaderViewInSectionHeader,
+            allowEditing: allowEditing,
+            onDelete: onDelete,
+            customGrouping: customGrouping,
+            customMenuOptions: customMenuOptions,
+            onContentSelected: onContentSelected,
+            postSortTransform: postSortTransform,
+            supplementarySections: { EmptyView() },
+            headerView: headerView,
+            emptyStateView: emptyStateView
         )
     }
 }
@@ -1312,17 +1382,19 @@ public struct ReaderContentListItems<C: ReaderContentProtocol>: View {
 }
 
 public extension ReaderContentProtocol {
-    static func readerContentListView<Header: View, EmptyState: View>(
+    static func readerContentListView<SupplementarySections: View, Header: View, EmptyState: View>(
         contents: [Self],
         contentFilter: ((Int, Self) async throws -> Bool)? = nil,
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,
+        listRowSpacing: CGFloat? = 15,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
         customGrouping: (([Self]) -> [ReaderContentGroupingSection<Self>])? = nil,
         customMenuOptions: ((Self) -> AnyView)? = nil,
+        @ViewBuilder supplementarySections: @escaping () -> SupplementarySections,
         @ViewBuilder headerView: @escaping () -> Header,
         @ViewBuilder emptyStateView: @escaping () -> EmptyState
     ) -> some View {
@@ -1332,6 +1404,7 @@ public extension ReaderContentProtocol {
             sortOrder: sortOrder,
             includeSource: includeSource,
             entrySelection: entrySelection,
+            listRowSpacing: listRowSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,
@@ -1339,6 +1412,40 @@ public extension ReaderContentProtocol {
             customMenuOptions: customMenuOptions,
             onContentSelected: nil,
             postSortTransform: nil,
+            supplementarySections: supplementarySections,
+            headerView: headerView,
+            emptyStateView: emptyStateView
+        )
+    }
+
+    static func readerContentListView<Header: View, EmptyState: View>(
+        contents: [Self],
+        contentFilter: ((Int, Self) async throws -> Bool)? = nil,
+        sortOrder: ReaderContentSortOrder,
+        entrySelection: Binding<String?>,
+        includeSource: Bool,
+        listRowSpacing: CGFloat? = 15,
+        contentSectionTitle: String? = nil,
+        allowEditing: Bool = false,
+        onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
+        customGrouping: (([Self]) -> [ReaderContentGroupingSection<Self>])? = nil,
+        customMenuOptions: ((Self) -> AnyView)? = nil,
+        @ViewBuilder headerView: @escaping () -> Header,
+        @ViewBuilder emptyStateView: @escaping () -> EmptyState
+    ) -> some View {
+        readerContentListView(
+            contents: contents,
+            contentFilter: contentFilter,
+            sortOrder: sortOrder,
+            entrySelection: entrySelection,
+            includeSource: includeSource,
+            listRowSpacing: listRowSpacing,
+            contentSectionTitle: contentSectionTitle,
+            allowEditing: allowEditing,
+            onDelete: onDelete,
+            customGrouping: customGrouping,
+            customMenuOptions: customMenuOptions,
+            supplementarySections: { EmptyView() },
             headerView: headerView,
             emptyStateView: emptyStateView
         )

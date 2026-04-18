@@ -17,30 +17,38 @@ public struct FeedCell: View {
         feed.hasEntriesNewerThanLastViewedAt
     }
     
-    @ViewBuilder
-    private var titleLabel: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            if feed.title.isEmpty {
-                Text("Untitled Feed")
-                    .foregroundColor(.secondary)
-            } else {
-                Text(feed.title)
-                    .foregroundColor(feed.isArchived ? .secondary : nil)
-            }
-            if showsAudioIndicator {
-                Image(systemName: "headphones")
-                    .font(.headline.weight(.regular))
-                    .foregroundColor(.secondary)
-                    .padding(.leading, 10)
-            }
-            if showsUnreadIndicator {
-                Image(systemName: "circle.fill")
-                    .font(.headline.weight(.regular))
-                    .imageScale(.small)
-                    .foregroundColor(.accentColor)
-                    .padding(.leading, 10)
-            }
+    private var titleLabel: Text {
+        unreadIndicatorTitleSegment
+        + titleText
+        + audioIndicatorTitleSegment
+    }
+
+    private var unreadIndicatorTitleSegment: Text {
+        guard showsUnreadIndicator else { return Text("") }
+        return Text(Image(systemName: "circlebadge.fill"))
+            .font(.subheadline.weight(.regular))
+            .foregroundColor(.accentColor)
+            + Text("  ")
+    }
+
+    private var titleText: Text {
+        if feed.title.isEmpty {
+            return Text("Untitled Feed")
+                .foregroundColor(.secondary)
         }
+        if feed.isArchived {
+            return Text(feed.title)
+                .foregroundColor(.secondary)
+        }
+        return Text(feed.title)
+    }
+
+    private var audioIndicatorTitleSegment: Text {
+        guard showsAudioIndicator else { return Text("") }
+        return Text("  ")
+            + Text(Image(systemName: "headphones"))
+                .font(.subheadline.weight(.regular))
+                .foregroundColor(.secondary)
     }
     
     public var body: some View {

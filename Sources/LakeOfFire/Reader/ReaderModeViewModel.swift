@@ -1027,37 +1027,16 @@ public class ReaderModeViewModel: ObservableObject {
 
     func resolveSharedReaderFontCSSBase64() async -> String? {
         if let sharedFontCSSBase64, !sharedFontCSSBase64.isEmpty {
-            debugPrint(
-                "# READERLOAD stage=readerMode.sharedFont.source",
-                "source=cached",
-                "bytes=\(sharedFontCSSBase64.utf8.count)"
-            )
             return sharedFontCSSBase64
         }
         if let sharedFontCSSBase64Provider {
             let startedAt = CFAbsoluteTimeGetCurrent()
             let base64 = await sharedFontCSSBase64Provider()
             guard let base64, !base64.isEmpty else {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.sharedFont.source",
-                    "source=provider",
-                    "result=empty",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-                )
                 return nil
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.sharedFont.source",
-                "source=provider",
-                "bytes=\(base64.utf8.count)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
-            )
             return base64
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.sharedFont.source",
-            "source=unavailable"
-        )
         return nil
     }
 
@@ -2576,27 +2555,41 @@ public class ReaderModeViewModel: ObservableObject {
         snippetPublishedTime: String? = nil,
         meaningfulContentMinChars: Int
     ) async -> SwiftReadabilityProcessingOutcome {
+        let totalStart = CFAbsoluteTimeGetCurrent()
         guard canHaveReadabilityContent(for: url) else {
             return .unavailable
         }
 
+        let normalizeStart = CFAbsoluteTimeGetCurrent()
         let normalizedHTML = ensureReadabilityBodyExists(html)
-        if url.isSnippetURL,
-           let snippetHTML = buildSnippetCanonicalReadabilityHTML(
+        let normalizeElapsed = CFAbsoluteTimeGetCurrent() - normalizeStart
+        if url.isSnippetURL {
+            let snippetBypassStart = CFAbsoluteTimeGetCurrent()
+            if let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                 html: normalizedHTML,
                 contentURL: url,
                 fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
                 publishedTime: snippetPublishedTime
-           ) {
-            debugPrint(
-                "# SNIPPETS",
-                "processReadabilityHTMLInSwift",
-                "snippetBypassReadability=true",
-                "url=\(url.absoluteString)",
-                "contentBytes=\(normalizedHTML.utf8.count)"
-            )
-            return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
+            ) {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
+                    "contentURL=\(url.absoluteString)",
+                    "path=snippetBypass",
+                    "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
+                    "snippetBuildElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - snippetBypassStart))s",
+                    "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
+                )
+                debugPrint(
+                    "# SNIPPETS",
+                    "processReadabilityHTMLInSwift",
+                    "snippetBypassReadability=true",
+                    "url=\(url.absoluteString)",
+                    "contentBytes=\(normalizedHTML.utf8.count)"
+                )
+                return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
+            }
         }
+        let parserSetupStart = CFAbsoluteTimeGetCurrent()
         let options = SwiftReadability.ReadabilityOptions(
             charThreshold: max(meaningfulContentMinChars, 1),
             classesToPreserve: readabilityClassesToPreserve
@@ -2606,8 +2599,11 @@ public class ReaderModeViewModel: ObservableObject {
             url: url,
             options: options
         )
+        let parserSetupElapsed = CFAbsoluteTimeGetCurrent() - parserSetupStart
 
+        let parseStart = CFAbsoluteTimeGetCurrent()
         guard let result = try? parser.parse() else {
+            let parseElapsed = CFAbsoluteTimeGetCurrent() - parseStart
             if url.isSnippetURL,
                let snippetHTML = buildSnippetCanonicalReadabilityHTML(
                     html: normalizedHTML,
@@ -2615,13 +2611,43 @@ public class ReaderModeViewModel: ObservableObject {
                     fallbackTitle: titleFromReadabilityHTML(normalizedHTML),
                     publishedTime: snippetPublishedTime
                ) {
+                debugPrint(
+                    "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
+                    "contentURL=\(url.absoluteString)",
+                    "path=snippetFallbackAfterParseFailure",
+                    "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
+                    "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
+                    "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
+                    "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
+                )
                 return .success(SwiftReadabilityProcessingResult(outputHTML: snippetHTML))
             }
+            debugPrint(
+                "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
+                "contentURL=\(url.absoluteString)",
+                "path=parseFailed",
+                "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
+                "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
+                "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
+                "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
+            )
             return .failed
         }
+        let parseElapsed = CFAbsoluteTimeGetCurrent() - parseStart
 
+        let canonicalBuildStart = CFAbsoluteTimeGetCurrent()
         let rawContent = stripTemplateTagsForReadability(result.content)
         guard !rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            debugPrint(
+                "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
+                "contentURL=\(url.absoluteString)",
+                "path=emptyContent",
+                "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
+                "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
+                "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
+                "canonicalBuildElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - canonicalBuildStart))s",
+                "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
+            )
             return .failed
         }
 
@@ -2631,6 +2657,18 @@ public class ReaderModeViewModel: ObservableObject {
             publishedTime: result.publishedTime,
             content: rawContent,
             contentURL: url
+        )
+        let canonicalBuildElapsed = CFAbsoluteTimeGetCurrent() - canonicalBuildStart
+        debugPrint(
+            "# READERLOAD stage=readerMode.swiftProcessing.readabilityResolveBreakdown",
+            "contentURL=\(url.absoluteString)",
+            "path=success",
+            "normalizeElapsed=\(String(format: "%.3f", normalizeElapsed))s",
+            "parserSetupElapsed=\(String(format: "%.3f", parserSetupElapsed))s",
+            "parseElapsed=\(String(format: "%.3f", parseElapsed))s",
+            "canonicalBuildElapsed=\(String(format: "%.3f", canonicalBuildElapsed))s",
+            "outputBytes=\(outputHTML.utf8.count)",
+            "total=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - totalStart))s"
         )
         return .success(SwiftReadabilityProcessingResult(outputHTML: outputHTML))
     }

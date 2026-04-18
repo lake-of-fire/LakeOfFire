@@ -47,6 +47,21 @@ extension DeletableReaderContent {
 }
 
 public extension HistoryRecord {
+    static func hasOpenedRecord(for url: URL, in realm: Realm) -> Bool {
+        realm.objects(HistoryRecord.self)
+            .where { !$0.isDeleted }
+            .filter(NSPredicate(format: "url == %@", url.absoluteString))
+            .first != nil
+    }
+
+    static func latestLastVisitedAt(for url: URL, in realm: Realm) -> Date? {
+        realm.objects(HistoryRecord.self)
+            .where { !$0.isDeleted }
+            .filter(NSPredicate(format: "url == %@", url.absoluteString))
+            .map(\.lastVisitedAt)
+            .max()
+    }
+
     @RealmBackgroundActor
     func refreshDemotedStatus(skipPreviouslyDemoted: Bool = true) async throws {
         guard isDemoted != false || !skipPreviouslyDemoted else {

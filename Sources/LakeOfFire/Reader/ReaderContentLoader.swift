@@ -18,6 +18,21 @@ private func logSnippetEvent(_ stage: String, _ parts: String...) {
     debugPrint("# SNIPPETS", stage, parts.joined(separator: " "))
 }
 
+private let readerContentLoaderVerboseLoggingEnabled =
+    ProcessInfo.processInfo.environment["MANABI_READERLOAD_VERBOSE_CONTENT_LOADER"] == "1"
+private let readerContentLoaderSlowStepThreshold: TimeInterval = 0.010
+private let readerContentLoaderSlowSummaryThreshold: TimeInterval = 0.050
+
+@inline(__always)
+private func shouldLogLoadAllStep(found: Bool, elapsed: TimeInterval) -> Bool {
+    readerContentLoaderVerboseLoggingEnabled || found || elapsed >= readerContentLoaderSlowStepThreshold
+}
+
+@inline(__always)
+private func shouldLogLoadAllSummary(candidateCount: Int, elapsed: TimeInterval) -> Bool {
+    readerContentLoaderVerboseLoggingEnabled || candidateCount > 0 || elapsed >= readerContentLoaderSlowSummaryThreshold
+}
+
 fileprivate extension URL {
     func settingScheme(_ value: String) -> URL {
         let components = NSURLComponents.init(url: self, resolvingAgainstBaseURL: true)
@@ -147,60 +162,79 @@ public struct ReaderContentLoader {
             return try await resolveContentReferences(cached.references)
         }
         if let existingTask = inFlightLoadAllTasks[taskKey] {
-            logReaderLoad(
-                "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) taskKey=\(taskKey)"
-            )
+            if readerContentLoaderVerboseLoggingEnabled {
+                logReaderLoad(
+                    "stage=contentLoader.loadAll.coalesced url=\(url.absoluteString) taskKey=\(taskKey)"
+                )
+            }
             return try await resolveContentReferences(existingTask.value)
         }
 
         let task = Task<[ContentReference], Error> { @RealmBackgroundActor in
-        let startedAt = Date()
-        logReaderLoad(
-            "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
-        )
-        try Task.checkCancellation()
- 
-        var contentFile: ContentFile?
-        if !skipContentFiles {
-            let contentFileStartedAt = Date()
-            contentFile = try await ContentFile.get(forURL: url)
-            logReaderLoad(
-                "stage=contentLoader.loadAll.contentFile elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(contentFileStartedAt))) found=\(contentFile != nil) url=\(url.absoluteString)"
-            )
-        }
-        let historyStartedAt = Date()
-        let history = try await HistoryRecord.get(forURL: url)
-        logReaderLoad(
-            "stage=contentLoader.loadAll.history elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(historyStartedAt))) found=\(history != nil) url=\(url.absoluteString)"
-        )
-        let bookmarkStartedAt = Date()
-        let bookmark = try await Bookmark.get(forURL: url)
-        logReaderLoad(
-            "stage=contentLoader.loadAll.bookmark elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(bookmarkStartedAt))) found=\(bookmark != nil) url=\(url.absoluteString)"
-        )
-        
-        var feed: FeedEntry?
-        if !skipFeedEntries {
-            let feedStartedAt = Date()
-            let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
-            let feeds = feedRealm.objects(FeedEntry.self)
-                .where { !$0.isDeleted }
-                .sorted(by: \.createdAt, ascending: false)
-            
-            if url.scheme == "https" {
-                feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
-            } else if !url.isReaderFileURL {
-                feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+            let startedAt = Date()
+            if readerContentLoaderVerboseLoggingEnabled {
+                logReaderLoad(
+                    "stage=contentLoader.loadAll.begin url=\(url.absoluteString) skipContentFiles=\(skipContentFiles) skipFeedEntries=\(skipFeedEntries)"
+                )
             }
-            logReaderLoad(
-                "stage=contentLoader.loadAll.feed elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(feedStartedAt))) found=\(feed != nil) url=\(url.absoluteString)"
-            )
-        }
-        
-        let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
-        logReaderLoad(
-            "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
-        )
+            try Task.checkCancellation()
+
+            var contentFile: ContentFile?
+            if !skipContentFiles {
+                let contentFileStartedAt = Date()
+                contentFile = try await ContentFile.get(forURL: url)
+                let elapsed = Date().timeIntervalSince(contentFileStartedAt)
+                if shouldLogLoadAllStep(found: contentFile != nil, elapsed: elapsed) {
+                    logReaderLoad(
+                        "stage=contentLoader.loadAll.contentFile elapsed=\(String(format: "%.3fs", elapsed)) found=\(contentFile != nil) url=\(url.absoluteString)"
+                    )
+                }
+            }
+            let historyStartedAt = Date()
+            let history = try await HistoryRecord.get(forURL: url)
+            let historyElapsed = Date().timeIntervalSince(historyStartedAt)
+            if shouldLogLoadAllStep(found: history != nil, elapsed: historyElapsed) {
+                logReaderLoad(
+                    "stage=contentLoader.loadAll.history elapsed=\(String(format: "%.3fs", historyElapsed)) found=\(history != nil) url=\(url.absoluteString)"
+                )
+            }
+            let bookmarkStartedAt = Date()
+            let bookmark = try await Bookmark.get(forURL: url)
+            let bookmarkElapsed = Date().timeIntervalSince(bookmarkStartedAt)
+            if shouldLogLoadAllStep(found: bookmark != nil, elapsed: bookmarkElapsed) {
+                logReaderLoad(
+                    "stage=contentLoader.loadAll.bookmark elapsed=\(String(format: "%.3fs", bookmarkElapsed)) found=\(bookmark != nil) url=\(url.absoluteString)"
+                )
+            }
+
+            var feed: FeedEntry?
+            if !skipFeedEntries {
+                let feedStartedAt = Date()
+                let feedRealm = try await RealmBackgroundActor.shared.cachedRealm(for: feedEntryRealmConfiguration)
+                let feeds = feedRealm.objects(FeedEntry.self)
+                    .where { !$0.isDeleted }
+                    .sorted(by: \.createdAt, ascending: false)
+
+                if url.scheme == "https" {
+                    feed = feeds.filter(NSPredicate(format: "url == %@ OR url == %@", url.absoluteString as CVarArg, url.settingScheme("http").absoluteString as CVarArg)).first
+                } else if !url.isReaderFileURL {
+                    feed = feeds.filter(NSPredicate(format: "url == %@", url.absoluteString as CVarArg)).first
+                }
+                let feedElapsed = Date().timeIntervalSince(feedStartedAt)
+                if shouldLogLoadAllStep(found: feed != nil, elapsed: feedElapsed) {
+                    logReaderLoad(
+                        "stage=contentLoader.loadAll.feed elapsed=\(String(format: "%.3fs", feedElapsed)) found=\(feed != nil) url=\(url.absoluteString)"
+                    )
+                }
+            }
+
+            let candidates: [any ReaderContentProtocol] = [contentFile, bookmark, history, feed].compactMap { $0 }
+            let totalElapsed = Date().timeIntervalSince(startedAt)
+            if shouldLogLoadAllSummary(candidateCount: candidates.count, elapsed: totalElapsed) {
+                logReaderLoad(
+                    "stage=contentLoader.loadAll.finish url=\(url.absoluteString) candidates=\(candidates.map { String(describing: type(of: $0)) }.joined(separator: ",")) count=\(candidates.count) elapsed=\(String(format: "%.3fs", totalElapsed))"
+                )
+            }
             return candidates.compactMap(ContentReference.init(content:))
         }
 
