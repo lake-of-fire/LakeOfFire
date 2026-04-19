@@ -307,6 +307,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         max(1, appearance.thumbnailDimension ?? appearance.maxCellHeight)
     }
 
+    private var effectiveCardCellHeight: CGFloat {
+        appearance.maxCellHeight + 10
+    }
+
     private var displayImageURL: URL? {
         viewModel.imageURL ?? item.imageUrl
     }
@@ -446,7 +450,10 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
     }
 
     private var titleLineLimit: Int {
-        appearance.maxCellHeight >= 110 ? 2 : 1
+        if appearance.maxCellHeight >= 110 {
+            return isProgressVisible ? 2 : 3
+        }
+        return 1
     }
 
     private var thumbnailCornerRadius: CGFloat {
@@ -466,7 +473,7 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
 
     private var contentColumnHeight: CGFloat? {
         if appearance.thumbnailDimension != nil || hasVisibleThumbnail {
-            return appearance.maxCellHeight
+            return readerContentCellStyle == .card ? effectiveCardCellHeight : appearance.maxCellHeight
         }
         return nil
     }
@@ -790,9 +797,9 @@ struct ReaderContentCell<C: ReaderContentProtocol & ObjectKeyIdentifiable>: View
         }
         .frame(
             minWidth: appearance.maxCellHeight,
-            minHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil,
-            idealHeight: hasVisibleThumbnail ? appearance.maxCellHeight : nil,
-            maxHeight: readerContentCellStyle == .card ? appearance.maxCellHeight : nil
+            minHeight: readerContentCellStyle == .card ? effectiveCardCellHeight : nil,
+            idealHeight: hasVisibleThumbnail ? (readerContentCellStyle == .card ? effectiveCardCellHeight : appearance.maxCellHeight) : nil,
+            maxHeight: readerContentCellStyle == .card ? effectiveCardCellHeight : nil
         )
         .onHover { hovered in
             viewModel.forceShowBookmark = hovered

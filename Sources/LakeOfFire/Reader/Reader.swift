@@ -444,7 +444,7 @@ public extension WebViewNavigator {
                 "# READERLOAD stage=navigator.loadContent.begin contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault)"
             )
             debugPrint(
-                "# READERLOAD stage=navigator.loadContent.state targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) hasAttachedWebView=\(loadSnapshot.hasAttachedWebView)"
+                "# READERLOAD stage=navigator.loadContent.state targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) hasAttachedWebView=\(loadSnapshot.hasAttachedWebView) isLoading=\(loadSnapshot.isLoading)"
             )
             if let readerModeViewModel {
                 if url.isHTTP || url.isFileURL || url.isSnippetURL || url.isReaderURLLoaderURL {
@@ -461,8 +461,14 @@ public extension WebViewNavigator {
                 || loadSnapshot.lastHTMLBaseURL == url.absoluteString
                 || loadSnapshot.currentWebViewURL == url.absoluteString {
                 debugPrint(
-                    "# READERLOAD stage=navigator.loadContent.duplicateTarget targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL)"
+                    "# READERLOAD stage=navigator.loadContent.duplicateTarget targetURL=\(url.absoluteString) currentWebViewURL=\(loadSnapshot.currentWebViewURL) lastRequestURL=\(loadSnapshot.lastRequestURL) lastDataLoadBaseURL=\(loadSnapshot.lastDataLoadBaseURL) lastHTMLBaseURL=\(loadSnapshot.lastHTMLBaseURL) isLoading=\(loadSnapshot.isLoading)"
                 )
+                if loadSnapshot.isLoading {
+                    debugPrint(
+                        "# READERLOAD stage=navigator.loadContent.skipDuplicateActiveLoad targetURL=\(url.absoluteString)"
+                    )
+                    return
+                }
             }
             load(URLRequest(url: url))
             debugPrint(

@@ -1,65 +1,8 @@
 import * as CFI from './epubcfi.js'
 import { TOCProgress, SectionProgress } from './progress.js'
+import { Overlayer } from './overlayer.js'
 
 const SEARCH_PREFIX = 'foliate-search:'
-
-// pagination logger disabled for noise reduction
-const logEBookPagination = () => {}
-const logBug = (event, detail = {}) => {
-    try {
-        return globalThis.logBug?.(event, detail)
-    } catch (_error) {
-        return undefined
-    }
-}
-const logNavHide = globalThis.logNavHide || ((event, detail = {}) => {
-    const payload = { event, ...detail };
-    const line = `# EBOOK NAVHIDE ${JSON.stringify(payload)}`;
-    try {
-        window.webkit?.messageHandlers?.print?.postMessage?.(line);
-    } catch (_err) {
-        try { console.log(line); } catch (_) {}
-    }
-});
-
-const summarizeAnchor = anchor => {
-    if (anchor == null) return 'null'
-    if (typeof anchor === 'number') return `fraction:${Number(anchor).toFixed(6)}`
-    if (typeof anchor === 'function') return 'function'
-    if (anchor?.startContainer) return 'range'
-    if (anchor?.nodeType === Node.ELEMENT_NODE) return `element:${anchor.tagName ?? 'unknown'}`
-    if (anchor?.nodeType) return `nodeType:${anchor.nodeType}`
-    return typeof anchor
-}
-
-const summarizeNavigationTarget = target => {
-    if (!target) return null
-    return {
-        index: typeof target.index === 'number' ? target.index : null,
-        anchor: summarizeAnchor(target.anchor),
-        hasSelect: !!target.select,
-        reason: target.reason ?? null,
-    }
-}
-
-const postNavigationChromeVisibility = (shouldHide, { source, direction } = {}) => {
-    const appliedHide = !!shouldHide;
-    logNavHide('view:post-nav-visibility', {
-        requested: !!shouldHide,
-        applied: appliedHide,
-        source: source ?? null,
-        direction: direction ?? null,
-    });
-    try {
-        window.webkit?.messageHandlers?.ebookNavigationVisibility?.postMessage?.({
-            hideNavigationDueToScroll: appliedHide,
-            source: source ?? null,
-            direction: direction ?? null,
-        });
-    } catch (error) {
-        console.error('Failed to notify navigation chrome visibility', error);
-    }
-}
 
 class History extends EventTarget {
     #arr = []
@@ -176,55 +119,35 @@ export class View extends HTMLElement {
         
         this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
         if (this.isFixedLayout) {
-            globalThis.manabiLoadEBookLastState = 'view-open-fixed-layout-import-ready'
             await import('./fixed-layout.js')
-            globalThis.manabiLoadEBookLastState = 'view-open-fixed-layout-pre-create-renderer'
             this.renderer = document.createElement('foliate-fxl')
         } else {
-            globalThis.manabiLoadEBookLastState = 'view-open-paginator-import-ready'
             await import('./paginator.js')
-            globalThis.manabiLoadEBookLastState = 'view-open-paginator-pre-create-renderer'
             this.renderer = document.createElement('foliate-paginator')
         }
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-created'
         this.renderer.setAttribute('exportparts', 'head,foot') //,filter')
         this.renderer.addEventListener('load', e => this.#onLoad(e.detail))
         this.renderer.addEventListener('relocate', e => this.#onRelocate(e.detail))
-        // Overlayer support removed
+        if (!this.#isCacheWarmer) {
+            this.renderer.addEventListener('create-overlayer', e =>
+                                           e.detail.attach(this.#createOverlayer(e.detail)))
+            //            this.renderer.addEventListener('setViewTransition', e => {
+            //                // Workaround for WebKit bug: https://lists.webkit.org/pipermail/webkit-unassigned/2025-April/1218207.html
+            //                this.style.setProperty('display', 'block');
+            //                this.style.setProperty('width', '100%');
+            //                this.style.setProperty('height', '100%');
+            //
+            //                this.style.viewTransitionName = e.detail.viewTransitionName;
+            //                this.style.setProperty('--slide-from', e.detail.slideFrom);
+            //                this.style.setProperty('--slide-to', e.detail.slideTo);
+            ////                document.documentElement.style.viewTransitionName = e.detail.viewTransitionName;
+            ////                document.documentElement.style.setProperty('--slide-from', e.detail.slideFrom);
+            ////                document.documentElement.style.setProperty('--slide-to', e.detail.slideTo);
+            //            });
+        }
         
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-open-called'
         this.renderer.open(book, isCacheWarmer)
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-pre-append'
         this.#root.append(this.renderer)
-        globalThis.manabiLoadEBookLastState = 'view-open-renderer-appended'
-        const rendererLoadPromise = new Promise(resolve => {
-            const onLoad = () => {
-                globalThis.manabiLoadEBookLastState = 'view-open-renderer-load-event';
-                resolve('load');
-            };
-            const onRelocate = () => {
-                globalThis.manabiLoadEBookLastState = 'view-open-renderer-relocate-event';
-                resolve('relocate');
-            };
-            this.renderer.addEventListener('load', onLoad, { once: true })
-            this.renderer.addEventListener('relocate', onRelocate, { once: true })
-        });
-        const rendererFramePromise = new Promise(resolve => {
-            requestAnimationFrame(() => {
-                requestAnimationFrame(() => resolve('frame'))
-            })
-        })
-        globalThis.manabiLoadEBookLastState = 'view-open-awaiting-renderer-event'
-        const rendererReadyEvent = await Promise.race([rendererLoadPromise, rendererFramePromise])
-        try {
-            globalThis.logReader?.('ebook.viewOpen.rendererEvent', {
-                rendererReadyEvent,
-                hasRenderer: !!this.renderer,
-                rendererTagName: this.renderer?.tagName ?? null,
-                pageURL: globalThis.location?.href ?? null,
-            })
-        } catch (_error) {}
-        globalThis.manabiLoadEBookLastState = `view-open-renderer-event:${rendererReadyEvent}`
     }
     close() {
         this.renderer?.destroy()
@@ -247,62 +170,25 @@ export class View extends HTMLElement {
             await this.renderer.goTo(resolved)
             this.history.pushState(lastLocation)
         }
-        else if (showTextStart) {
-            await this.goToTextStart()
-        } else {
-            this.history.pushState(0)
-            await this.next()
-        }
+        else if (showTextStart) await this.goToTextStart()
+            else {
+                this.history.pushState(0)
+                await this.next()
+            }
     }
     #emit(name, detail, cancelable) {
         return this.dispatchEvent(new CustomEvent(name, { detail, cancelable }))
     }
-    #onRelocate(detail) {
-        if (!detail) return
-        const {
-            reason,
-            range,
-            index,
-            fraction,
-            size,
-            pageNumber,
-            pageCount,
-            scrolled,
-            sizeFraction,
-            startOffset,
-            pageSize,
-            viewSize,
-        } = detail
+    #onRelocate({ reason, range, index, fraction, size }) {
         const progress = this.#sectionProgress?.getProgress(index, fraction, size) ?? {}
         const tocItem = this.#tocProgress?.getProgress(index, range)
         const pageItem = this.#pageProgress?.getProgress(index, range)
         const cfi = this.getCFI(index, range)
-
-        // Preserve the original relocate payload so downstream consumers (NavigationHUD, native layer)
-        // can compute accurate page metrics instead of relying on derived estimates.
-        this.lastLocation = {
-            ...progress,
-            tocItem,
-            pageItem,
-            cfi,
-            range,
-            reason,
-            fraction,
-            size,
-            pageNumber,
-            pageCount,
-            scrolled,
-            sizeFraction,
-            startOffset,
-            pageSize,
-            viewSize,
-        }
-
-        if (reason === 'snap' || reason === 'page' || reason === 'scroll') {
+        this.lastLocation = { ...progress, tocItem, pageItem, cfi, range, reason }
+        if (reason === 'snap' || reason === 'page' || reason === 'scroll')
             this.history.replaceState(cfi)
-        }
-        this.#emit('relocate', this.lastLocation)
-    }
+            this.#emit('relocate', this.lastLocation)
+            }
     #onLoad({ doc, location, index }) {
         if (!this.#isCacheWarmer) {
             // set language and dir if not already set
@@ -317,8 +203,7 @@ export class View extends HTMLElement {
     #handleLinks(doc, index) {
         const { book } = this
         const section = book.sections[index]
-        const linkRoot = doc.getElementById?.('reader-content') || doc
-        for (const a of linkRoot.querySelectorAll('a[href]'))
+        for (const a of doc.querySelectorAll('a[href]'))
             a.addEventListener('click', e => {
                 e.preventDefault()
                 const href_ = a.getAttribute('href')
@@ -332,24 +217,68 @@ export class View extends HTMLElement {
                         .catch(e => console.error(e))
                         })
             }
-    async addAnnotation(annotation, _remove) {
+    async addAnnotation(annotation, remove) {
         const { value } = annotation
-        const resolved = await this.resolveNavigation(value.startsWith?.(SEARCH_PREFIX) ? value.replace(SEARCH_PREFIX, '') : value)
-        const index = resolved?.index
-        const label = typeof index === 'number' ? (this.#tocProgress?.getProgress(index)?.label ?? '') : ''
+        if (value.startsWith(SEARCH_PREFIX)) {
+            const cfi = value.replace(SEARCH_PREFIX, '')
+            const { index, anchor } = await this.resolveNavigation(cfi)
+            const obj = this.#getOverlayer(index)
+            if (obj) {
+                const { overlayer, doc } = obj
+                if (remove) {
+                    overlayer.remove(value)
+                    return
+                }
+                const range = doc ? anchor(doc) : anchor
+                overlayer.add(value, range, Overlayer.outline)
+            }
+            return
+        }
+        const { index, anchor } = await this.resolveNavigation(value)
+        const obj = this.#getOverlayer(index)
+        if (obj) {
+            const { overlayer, doc } = obj
+            overlayer.remove(value)
+            if (!remove) {
+                const range = doc ? anchor(doc) : anchor
+                const draw = (func, opts) => overlayer.add(value, range, func, opts)
+                this.#emit('draw-annotation', { draw, annotation, doc, range })
+            }
+        }
+        const label = this.#tocProgress.getProgress(index)?.label ?? ''
         return { index, label }
     }
     deleteAnnotation(annotation) {
         return this.addAnnotation(annotation, true)
     }
-    #getOverlayer(_index) {
-        return null
+    #getOverlayer(index) {
+        return this.renderer.getContents()
+        .find(x => x.index === index && x.overlayer)
     }
-    #createOverlayer(_detail) {
-        return null
-    }
-    async showAnnotation(_annotation) {
-        return
+    #createOverlayer({ doc, index }) {
+        const overlayer = new Overlayer()
+        doc.addEventListener('click', e => {
+            const [value, range] = overlayer.hitTest(e)
+            if (value && !value.startsWith(SEARCH_PREFIX)) {
+                this.#emit('show-annotation', { value, range })
+            }
+        }, false)
+        
+        const list = this.#searchResults.get(index)
+        if (list) for (const item of list) this.addAnnotation(item)
+            
+            this.#emit('create-overlay', { index })
+            return overlayer
+            }
+    async showAnnotation(annotation) {
+        const { value } = annotation
+        const resolved = await this.goTo(value)
+        if (resolved) {
+            const { index, anchor } = resolved
+            const { doc } =  this.#getOverlayer(index)
+            const range = anchor(doc)
+            this.#emit('show-annotation', { value, range })
+        }
     }
     getCFI(index, range) {
         const baseCFI = this.book.sections[index].cfi ?? CFI.fake.fromIndex(index)
@@ -434,148 +363,16 @@ export class View extends HTMLElement {
                 }
     }
     async prev(distance) {
-        const currentPage = await this.renderer?.page?.().catch?.(() => null)
-        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
-        const atSectionStart = await this.renderer?.isAtSectionStart?.().catch?.(() => null)
-        const useSectionJump =
-            distance == null &&
-            this.renderer?.getHasPrevSection?.() &&
-            await this.renderer?.isAtSectionStart?.()
-        globalThis.logReader?.('ebook.nav.prev', {
-            distance: distance ?? null,
-            useSectionJump,
-            hasPrevSection: this.renderer?.getHasPrevSection?.() ?? null,
-            atSectionStart,
-            currentPage,
-            pageCount,
-            bookDir: this.book?.dir ?? null,
-        })
-        logBug?.('view:prev', {
-            distance: distance ?? null,
-            useSectionJump,
-            hasPrevSection: this.renderer?.getHasPrevSection?.() ?? null,
-            bookDir: this.book?.dir ?? null,
-        })
-        if (useSectionJump) {
-            logBug?.('view:prev:section-jump', {
-                bookDir: this.book?.dir ?? null,
-            })
-            return await this.renderer.prevSection()
-        }
-        logBug?.('view:prev:intra-section', {
-            distance: distance ?? null,
-            bookDir: this.book?.dir ?? null,
-        })
-        return await this.renderer.prev(distance)
+        await this.renderer.prev(distance)
     }
     async next(distance) {
-        const currentPage = await this.renderer?.page?.().catch?.(() => null)
-        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
-        const atSectionEnd = await this.renderer?.isAtSectionEnd?.().catch?.(() => null)
-        const useSectionJump =
-            distance == null &&
-            this.renderer?.getHasNextSection?.() &&
-            await this.renderer?.isAtSectionEnd?.()
-        globalThis.logReader?.('ebook.nav.next', {
-            distance: distance ?? null,
-            useSectionJump,
-            hasNextSection: this.renderer?.getHasNextSection?.() ?? null,
-            atSectionEnd,
-            currentPage,
-            pageCount,
-            bookDir: this.book?.dir ?? null,
-        })
-        logBug?.('view:next', {
-            distance: distance ?? null,
-            useSectionJump,
-            hasNextSection: this.renderer?.getHasNextSection?.() ?? null,
-            bookDir: this.book?.dir ?? null,
-        })
-        if (useSectionJump) {
-            logBug?.('view:next:section-jump', {
-                bookDir: this.book?.dir ?? null,
-            })
-            return await this.renderer.nextSection()
-        }
-        logBug?.('view:next:intra-section', {
-            distance: distance ?? null,
-            bookDir: this.book?.dir ?? null,
-        })
-        return await this.renderer.next(distance)
+        await this.renderer.next(distance)
     }
     async goLeft() {
-        const isForward = this.book.dir === 'rtl'
-        const currentPage = await this.renderer?.page?.().catch?.(() => null)
-        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
-        globalThis.logReader?.('ebook.nav.goLeft', {
-            isForward,
-            dir: this.book.dir,
-            currentPage,
-            pageCount,
-            cacheWarmer: this.#isCacheWarmer,
-        })
-        logNavHide('view:goLeft', {
-            dir: this.book.dir,
-            requestedHide: isForward,
-            cacheWarmer: this.#isCacheWarmer,
-            navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
-        })
-        logBug?.('view:goLeft', {
-            dir: this.book.dir,
-            cacheWarmer: this.#isCacheWarmer,
-        });
-        const resolved = this.book.dir === 'rtl' ? await this.next() : await this.prev()
-        globalThis.logReader?.('ebook.nav.goLeft.result', {
-            isForward,
-            dir: this.book.dir,
-            resolved: !!resolved,
-            currentPage: await this.renderer?.page?.().catch?.(() => null),
-            pageCount: await this.renderer?.pages?.().catch?.(() => null),
-        })
-        if (!resolved && !this.#isCacheWarmer) {
-            postNavigationChromeVisibility(false, {
-                source: 'swipe-left-nochange',
-                direction: isForward ? 'forward' : 'backward',
-            })
-        }
-        return resolved
+        return this.book.dir === 'rtl' ? await this.next() : await this.prev()
     }
     async goRight() {
-        const isForward = this.book.dir !== 'rtl'
-        const currentPage = await this.renderer?.page?.().catch?.(() => null)
-        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
-        globalThis.logReader?.('ebook.nav.goRight', {
-            isForward,
-            dir: this.book.dir,
-            currentPage,
-            pageCount,
-            cacheWarmer: this.#isCacheWarmer,
-        })
-        logNavHide('view:goRight', {
-            dir: this.book.dir,
-            requestedHide: isForward,
-            cacheWarmer: this.#isCacheWarmer,
-            navHiddenClass: document?.body?.classList?.contains?.('nav-hidden') ?? null,
-        })
-        logBug?.('view:goRight', {
-            dir: this.book.dir,
-            cacheWarmer: this.#isCacheWarmer,
-        });
-        const resolved = this.book.dir === 'rtl' ? await this.prev() : await this.next()
-        globalThis.logReader?.('ebook.nav.goRight.result', {
-            isForward,
-            dir: this.book.dir,
-            resolved: !!resolved,
-            currentPage: await this.renderer?.page?.().catch?.(() => null),
-            pageCount: await this.renderer?.pages?.().catch?.(() => null),
-        })
-        if (!resolved && !this.#isCacheWarmer) {
-            postNavigationChromeVisibility(false, {
-                source: 'swipe-right-nochange',
-                direction: isForward ? 'forward' : 'backward',
-            })
-        }
-        return resolved
+        return this.book.dir === 'rtl' ? await this.prev() : await this.next()
     }
     async * #searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()
