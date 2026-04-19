@@ -45,7 +45,8 @@ public struct EbookFileManager {
             
             for contentFile in contentFiles {
                 // We'll determine it's an EPUB if the path extension is "epub" or if the mimeType suggests an EPUB/directory.
-                guard contentFile.url.pathExtension.lowercased() == "epub"
+                let pathExtension = NSString(string: contentFile.url.absoluteString).pathExtension.lowercased()
+                guard pathExtension == "epub"
                         || contentFile.mimeType == "application/epub+zip"
                         || contentFile.mimeType == "directory"
                 else {

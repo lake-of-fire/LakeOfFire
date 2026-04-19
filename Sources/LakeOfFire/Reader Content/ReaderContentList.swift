@@ -824,7 +824,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
     @Binding var entrySelection: String?
     var contentSortAscending = false
     var alwaysShowThumbnails = true
+    let useCardBackground: Bool
+    let clearRowBackground: Bool
     let listRowSpacing: CGFloat?
+    let listSectionSpacing: CGFloat?
     let contentSectionTitle: String?
     let rendersHeaderViewInSectionHeader: Bool
     let allowEditing: Bool
@@ -879,6 +882,8 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
             contentSortAscending: contentSortAscending,
             includeSource: includeSource,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
             onRequestDelete: onRequestDeleteSingle,
             customMenuOptions: customMenuOptions,
             onContentSelected: onContentSelected
@@ -917,12 +922,16 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #if os(iOS)
     @ViewBuilder
     private var listContainerWithSpacing: some View {
-        if #available(iOS 17, *), let listRowSpacing {
-            listContainer
-                .listRowSpacing(listRowSpacing)
-                .listSectionSpacing(.default)
-        } else if #available(iOS 17, *) {
-            listContainer.listSectionSpacing(.default)
+        if #available(iOS 17, *) {
+            let sectionSpacing = listSectionSpacing.map(ListSectionSpacing.custom) ?? .default
+            if let listRowSpacing {
+                listContainer
+                    .listRowSpacing(listRowSpacing)
+                    .listSectionSpacing(sectionSpacing)
+            } else {
+                listContainer
+                    .listSectionSpacing(sectionSpacing)
+            }
         } else if #available(iOS 16, *), let listRowSpacing {
             listContainer.listRowSpacing(listRowSpacing)
         } else {
@@ -932,6 +941,19 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
 #else
     private var listContainerWithSpacing: some View { listContainer }
 #endif
+
+    @ViewBuilder
+    private func sectionWithSpacing<Content: View>(_ section: Content) -> some View {
+#if os(iOS)
+        if #available(iOS 17, *), let listSectionSpacing {
+            section.listSectionSpacing(.custom(listSectionSpacing))
+        } else {
+            section
+        }
+#else
+        section
+#endif
+    }
 
     public var body: some View {
         Group {
@@ -1059,92 +1081,100 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         supplementarySections()
 
         if customGrouping == nil {
-            Section {
-                if showEmptyState {
-                    if #available(iOS 16, *) {
-                        emptyStateView()
-                            .padding(.top, 8)
-                            .frame(maxHeight: .infinity, alignment: .top)
+            sectionWithSpacing(
+                Section {
+                    if showEmptyState {
+                        if #available(iOS 16, *) {
+                            emptyStateView()
+                                .padding(.top, 8)
+                                .frame(maxHeight: .infinity, alignment: .top)
+                                .readerContentListRowStyle()
+                                .listRowBackground(Color.clear)
+                                .stackListStyle(.grouped)
+                        }
+                    } else {
+                        listItems
                             .readerContentListRowStyle()
-                            .listRowBackground(Color.clear)
-                            .stackListStyle(.grouped)
                     }
-                } else {
-                    listItems
-                        .readerContentListRowStyle()
+                } header: {
+                    if !showEmptyState || rendersHeaderViewInSectionHeader {
+                        contentSectionHeader
+                    }
                 }
-            } header: {
-                if !showEmptyState || rendersHeaderViewInSectionHeader {
-                    contentSectionHeader
-                }
-            }
-            .headerProminence(.increased)
+                .headerProminence(.increased)
+            )
         } else {
             if showEmptyState {
                 if #available(iOS 16, *) {
-                    Section {
-                        emptyStateView()
-                            .frame(maxHeight: .infinity, alignment: .top)
-                            .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
-                            .listRowBackground(Color.clear)
-                            .stackListStyle(.grouped)
-                    }
+                    sectionWithSpacing(
+                        Section {
+                            emptyStateView()
+                                .frame(maxHeight: .infinity, alignment: .top)
+                                .listRowInsets(.init(top: 20, leading: 0, bottom: 0, trailing: 0))
+                                .listRowBackground(Color.clear)
+                                .stackListStyle(.grouped)
+                        }
+                    )
                 }
             } else {
                 ForEach(groupedSections) { section in
                     if #available(iOS 17, macOS 14, *) {
-                        Section(isExpanded: binding(for: section.id)) {
-                            let lastIndex = section.items.indices.last ?? section.items.startIndex
-                            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
-                                ReaderContentInnerListItem(
-                                    content: content,
-                                    entrySelection: $entrySelection,
-                                    includeSource: includeSource,
-                                    appearance: ReaderContentListAppearance(
-                                        alwaysShowThumbnails: alwaysShowThumbnails,
-                                        showSeparators: false,
-                                        useCardBackground: false
-                                    ),
-                                    isFirst: index == section.items.startIndex,
-                                    isLast: index == lastIndex,
-                                    viewModel: viewModel,
-                                    onRequestDelete: onRequestDeleteSingle,
-                                    customMenuOptions: customMenuOptions
-                                )
+                        sectionWithSpacing(
+                            Section(isExpanded: binding(for: section.id)) {
+                                let lastIndex = section.items.indices.last ?? section.items.startIndex
+                                ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+                                    ReaderContentInnerListItem(
+                                        content: content,
+                                        entrySelection: $entrySelection,
+                                        includeSource: includeSource,
+                                        appearance: ReaderContentListAppearance(
+                                            alwaysShowThumbnails: alwaysShowThumbnails,
+                                            showSeparators: false,
+                                            useCardBackground: false
+                                        ),
+                                        isFirst: index == section.items.startIndex,
+                                        isLast: index == lastIndex,
+                                        viewModel: viewModel,
+                                        onRequestDelete: onRequestDeleteSingle,
+                                        customMenuOptions: customMenuOptions
+                                    )
+                                }
+                                .readerContentListRowStyle()
+                            } header: {
+                                Text(section.title)
+                                    .foregroundStyle(.secondary)
                             }
-                            .readerContentListRowStyle()
-                        } header: {
-                            Text(section.title)
-                                .foregroundStyle(.secondary)
-                        }
-                        .headerProminence(.increased)
+                            .headerProminence(.increased)
+                        )
                     } else {
-                        Section {
-                            let lastIndex = section.items.indices.last ?? section.items.startIndex
-                            ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
-                                ReaderContentInnerListItem(
-                                    content: content,
-                                    entrySelection: $entrySelection,
-                                    includeSource: includeSource,
-                                    appearance: ReaderContentListAppearance(
-                                        alwaysShowThumbnails: alwaysShowThumbnails,
-                                        showSeparators: false,
-                                        useCardBackground: false
-                                    ),
-                                    isFirst: index == section.items.startIndex,
-                                    isLast: index == lastIndex,
-                                    viewModel: viewModel,
-                                    onRequestDelete: onRequestDeleteSingle,
-                                    customMenuOptions: customMenuOptions
-                                )
+                        sectionWithSpacing(
+                            Section {
+                                let lastIndex = section.items.indices.last ?? section.items.startIndex
+                                ForEach(Array(section.items.enumerated()), id: \.element.compoundKey) { index, content in
+                                    ReaderContentInnerListItem(
+                                        content: content,
+                                        entrySelection: $entrySelection,
+                                        includeSource: includeSource,
+                                        appearance: ReaderContentListAppearance(
+                                            alwaysShowThumbnails: alwaysShowThumbnails,
+                                            showSeparators: false,
+                                            useCardBackground: false
+                                        ),
+                                        isFirst: index == section.items.startIndex,
+                                        isLast: index == lastIndex,
+                                        viewModel: viewModel,
+                                        onRequestDelete: onRequestDeleteSingle,
+                                        customMenuOptions: customMenuOptions
+                                    )
+                                }
+                                .readerContentListRowStyle()
+                            } header: {
+                                Text(section.title)
+                                    .bold()
+                                    .foregroundStyle(.secondary)
                             }
-                            .readerContentListRowStyle()
-                        } header: {
-                            Text(section.title)
-                                .bold()
-                                .foregroundStyle(.secondary)
-                        }
-                        .headerProminence(.increased)
+                            .headerProminence(.increased)
+                        )
                     }
                 }
             }
@@ -1159,7 +1189,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        useCardBackground: Bool = true,
+        clearRowBackground: Bool = false,
         listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
@@ -1179,7 +1212,10 @@ public struct ReaderContentList<C: ReaderContentProtocol, SupplementarySections:
         _entrySelection = entrySelection
         self.contentSortAscending = contentSortAscending
         self.alwaysShowThumbnails = alwaysShowThumbnails
+        self.useCardBackground = useCardBackground
+        self.clearRowBackground = clearRowBackground
         self.listRowSpacing = listRowSpacing
+        self.listSectionSpacing = listSectionSpacing
         self.contentSectionTitle = contentSectionTitle
         self.rendersHeaderViewInSectionHeader = rendersHeaderViewInSectionHeader
         self.allowEditing = allowEditing
@@ -1201,6 +1237,7 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
         listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
         includeSource: Bool = false,
         useCardBackground: Bool = true,
         clearRowBackground: Bool = false,
@@ -1221,7 +1258,10 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             entrySelection: entrySelection,
             contentSortAscending: contentSortAscending,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
             listRowSpacing: listRowSpacing,
+            listSectionSpacing: listSectionSpacing,
             contentSectionTitle: nil,
             allowEditing: allowEditing,
             onDelete: onDelete.map { onDelete in
@@ -1247,7 +1287,10 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        useCardBackground: Bool = true,
+        clearRowBackground: Bool = false,
         listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([C]) async throws -> Void)? = nil,
@@ -1264,7 +1307,10 @@ public extension ReaderContentList where SupplementarySections == EmptyView, Hea
             entrySelection: entrySelection,
             contentSortAscending: contentSortAscending,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
             listRowSpacing: listRowSpacing,
+            listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,
@@ -1288,7 +1334,10 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
         entrySelection: Binding<String?>,
         contentSortAscending: Bool = false,
         alwaysShowThumbnails: Bool = true,
+        useCardBackground: Bool = true,
+        clearRowBackground: Bool = false,
         listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         rendersHeaderViewInSectionHeader: Bool = false,
         allowEditing: Bool = false,
@@ -1308,7 +1357,10 @@ public extension ReaderContentList where SupplementarySections == EmptyView {
             entrySelection: entrySelection,
             contentSortAscending: contentSortAscending,
             alwaysShowThumbnails: alwaysShowThumbnails,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
             listRowSpacing: listRowSpacing,
+            listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             rendersHeaderViewInSectionHeader: rendersHeaderViewInSectionHeader,
             allowEditing: allowEditing,
@@ -1388,7 +1440,10 @@ public extension ReaderContentProtocol {
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,
+        useCardBackground: Bool = true,
+        clearRowBackground: Bool = false,
         listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
@@ -1404,7 +1459,10 @@ public extension ReaderContentProtocol {
             sortOrder: sortOrder,
             includeSource: includeSource,
             entrySelection: entrySelection,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
             listRowSpacing: listRowSpacing,
+            listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,
@@ -1424,7 +1482,10 @@ public extension ReaderContentProtocol {
         sortOrder: ReaderContentSortOrder,
         entrySelection: Binding<String?>,
         includeSource: Bool,
+        useCardBackground: Bool = true,
+        clearRowBackground: Bool = false,
         listRowSpacing: CGFloat? = 15,
+        listSectionSpacing: CGFloat? = nil,
         contentSectionTitle: String? = nil,
         allowEditing: Bool = false,
         onDelete: (@MainActor ([Self]) async throws -> Void)? = nil,
@@ -1439,7 +1500,10 @@ public extension ReaderContentProtocol {
             sortOrder: sortOrder,
             entrySelection: entrySelection,
             includeSource: includeSource,
+            useCardBackground: useCardBackground,
+            clearRowBackground: clearRowBackground,
             listRowSpacing: listRowSpacing,
+            listSectionSpacing: listSectionSpacing,
             contentSectionTitle: contentSectionTitle,
             allowEditing: allowEditing,
             onDelete: onDelete,

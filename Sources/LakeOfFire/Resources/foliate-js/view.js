@@ -208,10 +208,22 @@ export class View extends HTMLElement {
             };
             this.renderer.addEventListener('load', onLoad, { once: true })
             this.renderer.addEventListener('relocate', onRelocate, { once: true })
-            setTimeout(() => resolve('timeout'), 5000)
         });
+        const rendererFramePromise = new Promise(resolve => {
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => resolve('frame'))
+            })
+        })
         globalThis.manabiLoadEBookLastState = 'view-open-awaiting-renderer-event'
-        const rendererReadyEvent = await rendererLoadPromise
+        const rendererReadyEvent = await Promise.race([rendererLoadPromise, rendererFramePromise])
+        try {
+            globalThis.logReader?.('ebook.viewOpen.rendererEvent', {
+                rendererReadyEvent,
+                hasRenderer: !!this.renderer,
+                rendererTagName: this.renderer?.tagName ?? null,
+                pageURL: globalThis.location?.href ?? null,
+            })
+        } catch (_error) {}
         globalThis.manabiLoadEBookLastState = `view-open-renderer-event:${rendererReadyEvent}`
     }
     close() {
@@ -422,10 +434,22 @@ export class View extends HTMLElement {
                 }
     }
     async prev(distance) {
+        const currentPage = await this.renderer?.page?.().catch?.(() => null)
+        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
+        const atSectionStart = await this.renderer?.isAtSectionStart?.().catch?.(() => null)
         const useSectionJump =
             distance == null &&
             this.renderer?.getHasPrevSection?.() &&
             await this.renderer?.isAtSectionStart?.()
+        globalThis.logReader?.('ebook.nav.prev', {
+            distance: distance ?? null,
+            useSectionJump,
+            hasPrevSection: this.renderer?.getHasPrevSection?.() ?? null,
+            atSectionStart,
+            currentPage,
+            pageCount,
+            bookDir: this.book?.dir ?? null,
+        })
         logBug?.('view:prev', {
             distance: distance ?? null,
             useSectionJump,
@@ -445,10 +469,22 @@ export class View extends HTMLElement {
         return await this.renderer.prev(distance)
     }
     async next(distance) {
+        const currentPage = await this.renderer?.page?.().catch?.(() => null)
+        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
+        const atSectionEnd = await this.renderer?.isAtSectionEnd?.().catch?.(() => null)
         const useSectionJump =
             distance == null &&
             this.renderer?.getHasNextSection?.() &&
             await this.renderer?.isAtSectionEnd?.()
+        globalThis.logReader?.('ebook.nav.next', {
+            distance: distance ?? null,
+            useSectionJump,
+            hasNextSection: this.renderer?.getHasNextSection?.() ?? null,
+            atSectionEnd,
+            currentPage,
+            pageCount,
+            bookDir: this.book?.dir ?? null,
+        })
         logBug?.('view:next', {
             distance: distance ?? null,
             useSectionJump,
@@ -469,12 +505,15 @@ export class View extends HTMLElement {
     }
     async goLeft() {
         const isForward = this.book.dir === 'rtl'
-        if (!this.#isCacheWarmer) {
-            postNavigationChromeVisibility(isForward, {
-                source: 'swipe-left',
-                direction: isForward ? 'forward' : 'backward'
-            })
-        }
+        const currentPage = await this.renderer?.page?.().catch?.(() => null)
+        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
+        globalThis.logReader?.('ebook.nav.goLeft', {
+            isForward,
+            dir: this.book.dir,
+            currentPage,
+            pageCount,
+            cacheWarmer: this.#isCacheWarmer,
+        })
         logNavHide('view:goLeft', {
             dir: this.book.dir,
             requestedHide: isForward,
@@ -485,16 +524,33 @@ export class View extends HTMLElement {
             dir: this.book.dir,
             cacheWarmer: this.#isCacheWarmer,
         });
-        return this.book.dir === 'rtl' ? await this.next() : await this.prev()
+        const resolved = this.book.dir === 'rtl' ? await this.next() : await this.prev()
+        globalThis.logReader?.('ebook.nav.goLeft.result', {
+            isForward,
+            dir: this.book.dir,
+            resolved: !!resolved,
+            currentPage: await this.renderer?.page?.().catch?.(() => null),
+            pageCount: await this.renderer?.pages?.().catch?.(() => null),
+        })
+        if (!resolved && !this.#isCacheWarmer) {
+            postNavigationChromeVisibility(false, {
+                source: 'swipe-left-nochange',
+                direction: isForward ? 'forward' : 'backward',
+            })
+        }
+        return resolved
     }
     async goRight() {
         const isForward = this.book.dir !== 'rtl'
-        if (!this.#isCacheWarmer) {
-            postNavigationChromeVisibility(isForward, {
-                source: 'swipe-right',
-                direction: isForward ? 'forward' : 'backward'
-            })
-        }
+        const currentPage = await this.renderer?.page?.().catch?.(() => null)
+        const pageCount = await this.renderer?.pages?.().catch?.(() => null)
+        globalThis.logReader?.('ebook.nav.goRight', {
+            isForward,
+            dir: this.book.dir,
+            currentPage,
+            pageCount,
+            cacheWarmer: this.#isCacheWarmer,
+        })
         logNavHide('view:goRight', {
             dir: this.book.dir,
             requestedHide: isForward,
@@ -505,7 +561,21 @@ export class View extends HTMLElement {
             dir: this.book.dir,
             cacheWarmer: this.#isCacheWarmer,
         });
-        return this.book.dir === 'rtl' ? await this.prev() : await this.next()
+        const resolved = this.book.dir === 'rtl' ? await this.prev() : await this.next()
+        globalThis.logReader?.('ebook.nav.goRight.result', {
+            isForward,
+            dir: this.book.dir,
+            resolved: !!resolved,
+            currentPage: await this.renderer?.page?.().catch?.(() => null),
+            pageCount: await this.renderer?.pages?.().catch?.(() => null),
+        })
+        if (!resolved && !this.#isCacheWarmer) {
+            postNavigationChromeVisibility(false, {
+                source: 'swipe-right-nochange',
+                direction: isForward ? 'forward' : 'backward',
+            })
+        }
+        return resolved
     }
     async * #searchSection(matcher, query, index) {
         const doc = await this.book.sections[index].createDocument()

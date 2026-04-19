@@ -50,15 +50,22 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             let author = item.author.trimmingCharacters(in: .whitespacesAndNewlines)
             let shouldDisplayPublicationDate = item.displayPublicationDate || item.isPhysicalMedia
             let humanReadablePublicationDate = shouldDisplayPublicationDate ? item.humanReadablePublicationDate : nil
-            let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(item.url)
-            let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(item.url)
+            let itemURL = item.url
+            let itemURLString = itemURL.absoluteString
+            let itemSourceIconURL = item.sourceIconURL
+            let progressResult = try await ReaderContentReadingProgressLoader.readingProgressLoader?(itemURL)
+            let metadataResult = try await ReaderContentReadingProgressLoader.readingProgressMetadataLoader?(itemURL)
             let latestHistoryRecordLastVisitedAt: Date?
             let feedShowsUnseenBadge: Bool
             if item is FeedEntry {
-                let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
-                latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: item.url, in: historyRealm)
                 let feedEntry = item as? FeedEntry
                 feedShowsUnseenBadge = feedEntry?.getFeed()?.showsUnseenBadge ?? true
+                if feedShowsUnseenBadge {
+                    let historyRealm = try await Realm(configuration: ReaderContentLoader.historyRealmConfiguration, actor: ReaderContentCellActor.shared)
+                    latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: itemURL, in: historyRealm)
+                } else {
+                    latestHistoryRecordLastVisitedAt = nil
+                }
             } else {
                 latestHistoryRecordLastVisitedAt = nil
                 feedShowsUnseenBadge = true
@@ -67,14 +74,14 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
             var sourceIconURL: URL?
             var sourceTitle: String?
             if includeSource {
-                if item.url.isSnippetURL {
+                if itemURL.isSnippetURL {
                     sourceTitle = "Snippet"
                 } else if let feedEntry = item as? FeedEntry, let feed = feedEntry.getFeed() {
                     sourceTitle = feed.title
-                    sourceIconURL = feed.iconUrl ?? item.sourceIconURL
-                } else if let host = item.url.host, !host.isEmpty {
+                    sourceIconURL = feed.iconUrl ?? itemSourceIconURL
+                } else if let host = itemURL.host, !host.isEmpty {
                     sourceTitle = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-                    sourceIconURL = item.sourceIconURL
+                    sourceIconURL = itemSourceIconURL
                 }
             }
 
@@ -91,7 +98,7 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                     self.isFullArticleFinished = finished
                 } else {
                     self.readingProgress = nil
-                self.isFullArticleFinished = nil
+                    self.isFullArticleFinished = nil
                 }
                 self.latestHistoryRecordLastVisitedAt = latestHistoryRecordLastVisitedAt
                 self.feedShowsUnseenBadge = feedShowsUnseenBadge

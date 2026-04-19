@@ -10,6 +10,7 @@ import OpenGraph
 import RealmSwiftGaps
 import Combine
 import SwiftUtilities
+import LakeKit
 
 @MainActor
 class LibraryCategoryViewModel: ObservableObject {
@@ -202,6 +203,10 @@ struct LibraryCategoryView: View {
     private func matchingDistinctFeed(category: FeedCategory, feed: Feed) -> Feed? {
         return category.getFeeds()?.first(where: { $0.rssUrl == feed.rssUrl && $0.id != feed.id })
     }
+
+    private var visibleFeeds: [Feed] {
+        libraryCategoryViewModel.category.getFeeds() ?? []
+    }
     
     @ViewBuilder func duplicationMenu(feed: Feed) -> some View {
         Menu("Duplicate In…") {
@@ -294,31 +299,53 @@ struct LibraryCategoryView: View {
                         Text("Category Image URL")
                     }
                     
-                    Section("Feeds") {
-                        // TODO: Cache feeds in subview structs
-                        ForEach(libraryCategoryViewModel.category.getFeeds() ?? []) { feed in
-                            let isFeedUserEditable = feed.isUserEditable()
-                            NavigationLink(value: feed) {
-                                FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
-                            }
-                            .deleteDisabled(!isFeedUserEditable)
-                            .contextMenu {
-                                duplicationMenu(feed: feed)
-                                if isFeedUserEditable {
-                                    Divider()
-                                    Button(role: .destructive) {
-                                        Task {
-                                            try await libraryCategoryViewModel.deleteFeed(feed)
-                                        }
-                                    } label: {
-                                        Text("Delete Feed")
-                                    }
-                                    .tint(.red)
+                    Section {
+                        if visibleFeeds.isEmpty {
+                            EmptyStateBoxView(
+                                title: Text("Add feeds to this category"),
+                                text: Text("Use this category to organize the RSS and Atom feeds you want to follow together. When Manabi Reader discovers a feed on a webpage, an RSS menu appears in the toolbar or More menu so you can add it here."),
+                                systemImageName: "dot.radiowaves.up.forward"
+                            ) {
+                                if libraryCategoryViewModel.isUserEditable {
+                                    emptyStateAddFeedButton(scrollProxy: scrollProxy)
                                 }
                             }
+                            .listRowSeparatorIfAvailable(.hidden)
+                            .listRowBackground(Color.clear)
+                            .stackListStyle(.grouped)
+                        } else {
+                            ForEach(visibleFeeds) { feed in
+                                let isFeedUserEditable = feed.isUserEditable()
+                                NavigationLink(value: feed) {
+                                    FeedCell(feed: feed, includesDescription: false, horizontalSpacing: 5)
+                                }
+                                .deleteDisabled(!isFeedUserEditable)
+                                .contextMenu {
+                                    duplicationMenu(feed: feed)
+                                    if isFeedUserEditable {
+                                        Divider()
+                                        Button(role: .destructive) {
+                                            Task {
+                                                try await libraryCategoryViewModel.deleteFeed(feed)
+                                            }
+                                        } label: {
+                                            Text("Delete Feed")
+                                        }
+                                        .tint(.red)
+                                    }
+                                }
+                            }
+                            .onDelete {
+                                libraryCategoryViewModel.deleteFeed(at: $0)
+                            }
                         }
-                        .onDelete {
-                            libraryCategoryViewModel.deleteFeed(at: $0)
+                    } header: {
+                        HStack {
+                            Text("Feeds")
+                            if libraryCategoryViewModel.isUserEditable && !visibleFeeds.isEmpty {
+                                Spacer(minLength: 12)
+                                inlineAddFeedButton(scrollProxy: scrollProxy)
+                            }
                         }
                     }
                 }
@@ -328,16 +355,6 @@ struct LibraryCategoryView: View {
 #endif
 #if os(macOS)
             .textFieldStyle(.roundedBorder)
-            .safeAreaInset(edge: .bottom) {
-                if libraryCategoryViewModel.isUserEditable {
-                    HStack(spacing: 0) {
-                        addFeedButton(scrollProxy: scrollProxy)
-                            .buttonStyle(.borderless)
-                        Spacer(minLength: 0)
-                    }
-                    .padding()
-                }
-            }
 #endif
             .toolbar {
                 ToolbarItem(placement: .automatic) {
@@ -347,15 +364,9 @@ struct LibraryCategoryView: View {
                 }
 #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    // TODO: Cache feeds in subview structs
-                    if libraryCategoryViewModel.isUserEditable && !libraryCategoryViewModel.category.isEmpty() {
+                    if libraryCategoryViewModel.isUserEditable && !visibleFeeds.isEmpty {
                         EditButton()
-                    }
-                }
-                ToolbarItemGroup(placement: buttonsPlacement) {
-                    if libraryCategoryViewModel.isUserEditable {
-                        addFeedButton(scrollProxy: scrollProxy)
-                        Spacer(minLength: 0)
+                            .tint(.primary)
                     }
                 }
 #endif
@@ -377,37 +388,43 @@ struct LibraryCategoryView: View {
     }
     
     @ViewBuilder private func addFeedButton(scrollProxy: ScrollViewProxy) -> some View {
-        let button = Button {
-            Task { @MainActor in
-                let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
-                try await { @RealmBackgroundActor in
-                    guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref) else { return }
-                    try await { @MainActor in
-                        scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
-                        let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                        if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
-                            libraryCategoryViewModel.selectedFeed = feed
-                        }
-                    }()
-                }()
-            }
-        } label: {
-            Label("Add Feed", systemImage: "plus.circle")
-                .bold()
+        Button("Add Feed") {
+            createFeed(scrollProxy: scrollProxy)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .font(.footnote)
+        .fontWeight(.semibold)
+        .foregroundStyle(.primary)
+        .disabled(libraryCategoryViewModel.category.opmlURL != nil)
+        .keyboardShortcut("n", modifiers: [.command])
+    }
 
-        if #available(iOS 26, macOS 26, *) {
-            button
-                .labelStyle(.titleOnly)
-                .buttonStyle(.borderless)
-                .disabled(libraryCategoryViewModel.category.opmlURL != nil)
-                .keyboardShortcut("n", modifiers: [.command])
-        } else {
-            button
-                .labelStyle(.titleAndIcon)
-                .buttonStyle(.borderless)
-                .disabled(libraryCategoryViewModel.category.opmlURL != nil)
-                .keyboardShortcut("n", modifiers: [.command])
+    @ViewBuilder private func inlineAddFeedButton(scrollProxy: ScrollViewProxy) -> some View {
+        addFeedButton(scrollProxy: scrollProxy)
+    }
+
+    @ViewBuilder private func emptyStateAddFeedButton(scrollProxy: ScrollViewProxy) -> some View {
+        Button("Add Feed") {
+            createFeed(scrollProxy: scrollProxy)
+        }
+        .tint(.secondary)
+        .foregroundStyle(.primary)
+    }
+
+    private func createFeed(scrollProxy: ScrollViewProxy) {
+        Task { @MainActor in
+            let ref = ThreadSafeReference(to: libraryCategoryViewModel.category)
+            try await { @RealmBackgroundActor in
+                guard let feedID = try await LibraryDataManager.shared.createEmptyFeed(inCategory: ref) else { return }
+                try await { @MainActor in
+                    scrollProxy.scrollTo("library-sidebar-\(feedID.uuidString)")
+                    let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                    if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
+                        libraryCategoryViewModel.selectedFeed = feed
+                    }
+                }()
+            }()
         }
     }
     
@@ -424,10 +441,11 @@ struct LibraryCategoryView: View {
                 }
             }
         } label: {
-            Label("More Options", systemImage: "ellipsis.circle")
-                .foregroundStyle(.secondary)
+            Label("More Options", systemImage: "ellipsis")
+                .foregroundStyle(.primary)
                 .labelStyle(.iconOnly)
         }
+        .tint(.primary)
         .menuIndicator(.hidden)
     }
 }

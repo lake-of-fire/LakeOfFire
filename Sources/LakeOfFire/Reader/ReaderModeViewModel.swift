@@ -242,6 +242,14 @@ internal func buildCanonicalReadabilityHTML(
             <script>
                 \(Readability.shared.scripts)
                 (function() {
+                    const bootstrapNow = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+                        ? performance.now.bind(performance)
+                        : () => Date.now();
+                    const bootstrapStartedAt = bootstrapNow();
+                    let firstNonZeroReaderContentReason = null;
+                    let firstNonZeroReaderContentElapsedMs = null;
+                    let firstNonZeroBodyReason = null;
+                    let firstNonZeroBodyElapsedMs = null;
                     const postSnippetTitleLog = (payload) => {
                         try {
                             const message = '# SNIPPETTITLE ' + JSON.stringify(payload);
@@ -255,6 +263,236 @@ internal func buildCanonicalReadabilityHTML(
                             }
                         } catch (_) {}
                     };
+                    const postInvisibleLog = (payload) => {
+                        try {
+                            const message = '# INVISIBLE ' + JSON.stringify(payload);
+                            const webkitPrint = window.webkit?.messageHandlers?.print;
+                            if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
+                                webkitPrint.postMessage(message);
+                                return;
+                            }
+                            if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
+                                print.postMessage(message);
+                            }
+                        } catch (_) {}
+                    };
+                    const elapsedMs = () => Math.round((bootstrapNow() - bootstrapStartedAt) * 1000) / 1000;
+                    const describeNode = (node) => {
+                        if (!node || typeof node.getBoundingClientRect !== 'function') {
+                            return null;
+                        }
+                        const rect = node.getBoundingClientRect();
+                        const style = window.getComputedStyle(node);
+                        return {
+                            tag: node.tagName || null,
+                            id: node.id || null,
+                            className: typeof node.className === 'string' ? node.className : null,
+                            textLength: (node.textContent || '').trim().length,
+                            display: style.display,
+                            visibility: style.visibility,
+                            opacity: style.opacity,
+                            color: style.color,
+                            backgroundColor: style.backgroundColor,
+                            rect: {
+                                x: Math.round(rect.x),
+                                y: Math.round(rect.y),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                            },
+                        };
+                    };
+                    const summarizeElement = (id) => {
+                        const el = document.getElementById(id);
+                        if (!el) {
+                            return { id, exists: false };
+                        }
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        return {
+                            id,
+                            exists: true,
+                            childCount: el.childElementCount,
+                            textLength: (el.textContent || '').trim().length,
+                            htmlLength: (el.innerHTML || '').length,
+                            display: style.display,
+                            visibility: style.visibility,
+                            opacity: style.opacity,
+                            color: style.color,
+                            backgroundColor: style.backgroundColor,
+                            rect: {
+                                x: Math.round(rect.x),
+                                y: Math.round(rect.y),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                            },
+                            clientHeight: el.clientHeight,
+                            clientWidth: el.clientWidth,
+                            scrollHeight: el.scrollHeight,
+                            scrollWidth: el.scrollWidth,
+                        };
+                    };
+                    const summarizeStylesheets = () => {
+                        const readabilityStyle = document.getElementById('swiftuiwebview-readability-styles');
+                        return {
+                            styleTagCount: document.querySelectorAll('style').length,
+                            stylesheetCount: document.styleSheets ? document.styleSheets.length : null,
+                            readabilityStyleExists: !!readabilityStyle,
+                            readabilityStyleLength: readabilityStyle?.textContent?.length ?? null,
+                        };
+                    };
+                    const summarizeFonts = () => {
+                        const body = document.body;
+                        const title = document.getElementById('reader-title');
+                        const bodyStyle = body ? window.getComputedStyle(body) : null;
+                        const titleStyle = title ? window.getComputedStyle(title) : null;
+                        return {
+                            fontsApiPresent: !!document.fonts,
+                            fontsStatus: document.fonts?.status ?? null,
+                            bodyFontFamily: bodyStyle?.fontFamily ?? null,
+                            bodyFontSize: bodyStyle?.fontSize ?? null,
+                            bodyLineHeight: bodyStyle?.lineHeight ?? null,
+                            titleFontFamily: titleStyle?.fontFamily ?? null,
+                            titleFontSize: titleStyle?.fontSize ?? null,
+                        };
+                    };
+                    const summarizePaint = () => {
+                        try {
+                            if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
+                                return null;
+                            }
+                            return performance.getEntriesByType('paint').map((entry) => ({
+                                name: entry.name,
+                                startTimeMs: Math.round(entry.startTime * 1000) / 1000,
+                                durationMs: Math.round(entry.duration * 1000) / 1000,
+                            }));
+                        } catch (_) {
+                            return null;
+                        }
+                    };
+                    const summarizeNavigation = () => {
+                        try {
+                            if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
+                                return null;
+                            }
+                            const navigationEntry = performance.getEntriesByType('navigation')[0];
+                            if (!navigationEntry) { return null; }
+                            return {
+                                type: navigationEntry.type ?? null,
+                                domContentLoadedEventStartMs: Math.round((navigationEntry.domContentLoadedEventStart || 0) * 1000) / 1000,
+                                domContentLoadedEventEndMs: Math.round((navigationEntry.domContentLoadedEventEnd || 0) * 1000) / 1000,
+                                loadEventStartMs: Math.round((navigationEntry.loadEventStart || 0) * 1000) / 1000,
+                                loadEventEndMs: Math.round((navigationEntry.loadEventEnd || 0) * 1000) / 1000,
+                                responseEndMs: Math.round((navigationEntry.responseEnd || 0) * 1000) / 1000,
+                            };
+                        } catch (_) {
+                            return null;
+                        }
+                    };
+                    const summarizeImages = () => {
+                        const images = Array.from(document.images || []);
+                        const pending = images.filter((img) => !img.complete);
+                        const largest = images
+                            .map((img) => {
+                                const rect = typeof img.getBoundingClientRect === 'function' ? img.getBoundingClientRect() : null;
+                                return {
+                                    src: img.currentSrc || img.src || null,
+                                    complete: img.complete,
+                                    naturalWidth: img.naturalWidth,
+                                    naturalHeight: img.naturalHeight,
+                                    rectWidth: rect ? Math.round(rect.width) : null,
+                                    rectHeight: rect ? Math.round(rect.height) : null,
+                                };
+                            })
+                            .sort((lhs, rhs) => ((rhs.rectWidth || 0) * (rhs.rectHeight || 0)) - ((lhs.rectWidth || 0) * (lhs.rectHeight || 0)))
+                            .slice(0, 3);
+                        return {
+                            totalCount: images.length,
+                            pendingCount: pending.length,
+                            largest,
+                        };
+                    };
+                    const summarizeViewportCenter = () => {
+                        const centerX = Math.max(0, Math.round(window.innerWidth / 2));
+                        const centerY = Math.max(0, Math.round(window.innerHeight / 2));
+                        const node = document.elementFromPoint(centerX, centerY);
+                        return {
+                            centerX,
+                            centerY,
+                            elementAtCenter: describeNode(node),
+                            closestReaderContent: describeNode(node?.closest?.('#reader-content') ?? null),
+                            visibleMarkAsReadButtons: Array.from(document.querySelectorAll('.manabi-mark-section-as-read-button')).filter((button) => {
+                                const style = getComputedStyle(button);
+                                return style.display !== 'none'
+                                    && style.visibility !== 'hidden'
+                                    && Number.parseFloat(style.opacity || '1') > 0.01;
+                            }).length,
+                        };
+                    };
+                    const trackFirstNonZeroGeometry = (reason) => {
+                        const body = document.body;
+                        const content = document.getElementById('reader-content');
+                        if (!firstNonZeroBodyReason && body) {
+                            const bodyRect = body.getBoundingClientRect();
+                            if (bodyRect.width > 0 && bodyRect.height > 0) {
+                                firstNonZeroBodyReason = reason;
+                                firstNonZeroBodyElapsedMs = elapsedMs();
+                            }
+                        }
+                        if (!firstNonZeroReaderContentReason && content) {
+                            const contentRect = content.getBoundingClientRect();
+                            if (contentRect.width > 0 && contentRect.height > 0) {
+                                firstNonZeroReaderContentReason = reason;
+                                firstNonZeroReaderContentElapsedMs = elapsedMs();
+                            }
+                        }
+                    };
+                    const emitInvisible = (reason) => {
+                        const body = document.body;
+                        const html = document.documentElement;
+                        const bodyStyle = body ? window.getComputedStyle(body) : null;
+                        const htmlStyle = html ? window.getComputedStyle(html) : null;
+                        trackFirstNonZeroGeometry(reason);
+                        postInvisibleLog({
+                            reason,
+                            elapsedMs: elapsedMs(),
+                            href: window.location.href,
+                            readyState: document.readyState,
+                            bodyClassName: body ? body.className : null,
+                            bodyTextLength: body ? (body.textContent || '').trim().length : null,
+                            bodyChildCount: body ? body.childElementCount : null,
+                            bodyDisplay: bodyStyle ? bodyStyle.display : null,
+                            bodyVisibility: bodyStyle ? bodyStyle.visibility : null,
+                            bodyOpacity: bodyStyle ? bodyStyle.opacity : null,
+                            bodyColor: bodyStyle ? bodyStyle.color : null,
+                            bodyBackgroundColor: bodyStyle ? bodyStyle.backgroundColor : null,
+                            bodyRect: body ? {
+                                width: Math.round(body.getBoundingClientRect().width),
+                                height: Math.round(body.getBoundingClientRect().height),
+                            } : null,
+                            htmlDisplay: htmlStyle ? htmlStyle.display : null,
+                            htmlVisibility: htmlStyle ? htmlStyle.visibility : null,
+                            htmlOpacity: htmlStyle ? htmlStyle.opacity : null,
+                            firstNonZeroBodyReason,
+                            firstNonZeroBodyElapsedMs,
+                            firstNonZeroReaderContentReason,
+                            firstNonZeroReaderContentElapsedMs,
+                            viewport: {
+                                innerWidth: window.innerWidth,
+                                innerHeight: window.innerHeight,
+                                scrollX: Math.round(window.scrollX),
+                                scrollY: Math.round(window.scrollY),
+                            },
+                            navigation: summarizeNavigation(),
+                            paintEntries: summarizePaint(),
+                            stylesheets: summarizeStylesheets(),
+                            fonts: summarizeFonts(),
+                            images: summarizeImages(),
+                            viewportCenter: summarizeViewportCenter(),
+                            readerHeader: summarizeElement('reader-header'),
+                            readerTitle: summarizeElement('reader-title'),
+                            readerContent: summarizeElement('reader-content'),
+                        });
+                    };
                     const emit = () => {
                         const el = document.getElementById('reader-title');
                         const body = document.body;
@@ -265,11 +503,26 @@ internal func buildCanonicalReadabilityHTML(
                             titleText: el ? el.textContent : null,
                             computedDisplay: el ? window.getComputedStyle(el).display : null,
                         });
+                        emitInvisible('emit');
                     };
                     if (document.readyState === 'loading') {
-                        document.addEventListener('DOMContentLoaded', emit, { once: true });
+                        document.addEventListener('DOMContentLoaded', () => {
+                            emitInvisible('DOMContentLoaded');
+                            emit();
+                        }, { once: true });
                     } else {
                         emit();
+                    }
+                    document.addEventListener('visibilitychange', () => emitInvisible('visibilitychange'));
+                    window.addEventListener('pageshow', () => emitInvisible('pageshow'), { once: true });
+                    window.addEventListener('resize', () => emitInvisible('resize'));
+                    window.addEventListener('load', () => emitInvisible('load'), { once: true });
+                    requestAnimationFrame(() => emitInvisible('requestAnimationFrame'));
+                    setTimeout(() => emitInvisible('timeout-100ms'), 100);
+                    setTimeout(() => emitInvisible('timeout-500ms'), 500);
+                    setTimeout(() => emitInvisible('timeout-1500ms'), 1500);
+                    if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+                        document.fonts.ready.then(() => emitInvisible('fonts-ready')).catch(() => emitInvisible('fonts-ready-error'));
                     }
                 })();
             </script>
@@ -935,17 +1188,6 @@ public class ReaderModeViewModel: ObservableObject {
         let pendingMatches = pendingReaderModeURL.map { pendingKeysMatch($0, canonicalURL) } ?? false
         let expectedMatches = expectedSyntheticReaderLoaderURL.map { urlsMatchWithoutHashForHotfix($0, pageURL) } ?? false
         let syntheticCompletionInFlight = isReaderModeLoading && !pageURL.isReaderURLLoaderURL
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticLoad.readyHandler",
-            "pageURL=\(pageURL.absoluteString)",
-            "elapsedSinceSyntheticLoad=\(syntheticLoadElapsedString(for: canonicalURL))",
-            "pendingMatches=\(pendingMatches)",
-            "expectedMatches=\(expectedMatches)",
-            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)",
-            "pendingReaderModeURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "expectedSyntheticReaderLoaderURL=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-            "lastRenderedURL=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
         guard pendingMatches || expectedMatches || syntheticCompletionInFlight else { return }
 
         debugPrint(
@@ -955,20 +1197,6 @@ public class ReaderModeViewModel: ObservableObject {
             "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
             "hasReaderContent=\(hasReaderContent)",
             "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
-        )
-        if let issuedAt = syntheticLoadIssuedAtByURL[canonicalRenderKey(canonicalURL)] {
-            debugPrint(
-                "# READERLOAD stage=readerMode.syntheticLoad.renderReady",
-                "contentURL=\(canonicalURL.absoluteString)",
-                "elapsedSinceSyntheticLoad=\(formattedInterval(Date().timeIntervalSince(issuedAt)))"
-            )
-        }
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticLoad.forceClearLoadingIndicators",
-            "contentURL=\(canonicalURL.absoluteString)",
-            "pageURL=\(pageURL.absoluteString)",
-            "pendingReaderModeURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "expectedSyntheticReaderLoaderURL=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"
         )
         navigator?.forceClearLoadingIndicators(
             reason: "readerMode.syntheticLoad.renderReady",
@@ -1054,6 +1282,19 @@ public class ReaderModeViewModel: ObservableObject {
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
             (function() {
+                const postLog = (message) => {
+                    try {
+                        const payload = '# READERLOAD stage=readerMode.fontGate ' + message;
+                        const webkitPrint = window.webkit?.messageHandlers?.print;
+                        if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
+                            webkitPrint.postMessage(payload);
+                            return;
+                        }
+                        if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
+                            print.postMessage(payload);
+                        }
+                    } catch (_) {}
+                };
                 const setFontPendingState = (pending) => {
                     const root = document.documentElement;
                     if (!root) return;
@@ -1064,6 +1305,10 @@ public class ReaderModeViewModel: ObservableObject {
                         delete root.dataset.manabiFontPending;
                         root.dataset.manabiFontReady = '1';
                     }
+                    postLog('pending=' + (pending ? '1' : '0')
+                        + ' mode=local-scheme'
+                        + ' href=' + window.location.href
+                        + ' fontsStatus=' + (document.fonts?.status || 'nil'));
                 };
                 const resolveStylesheetURL = (desiredFamily) => {
                     const family = desiredFamily || 'YuKyokasho';
@@ -1089,11 +1334,27 @@ public class ReaderModeViewModel: ObservableObject {
                     style.dataset.manabiFontSource = 'local-scheme';
                     root.dataset.manabiInjectedFontFamily = family;
                     root.dataset.manabiFontInjected = '1';
+                    style.onload = () => postLog('stylesheetLoaded mode=local-scheme family=' + family + ' href=' + window.location.href);
+                    style.onerror = () => {
+                        postLog('stylesheetError mode=local-scheme family=' + family + ' href=' + window.location.href);
+                        setFontPendingState(false);
+                    };
+                    postLog('stylesheetPrepared mode=local-scheme family=' + family + ' href=' + window.location.href);
                     return style;
                 };
                 globalThis.manabiReaderFontInjectionMode = 'local-scheme';
                 globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+                let gateTimeout = null;
+                const scheduleGateTimeout = () => {
+                    if (gateTimeout) {
+                        clearTimeout(gateTimeout);
+                    }
+                    gateTimeout = setTimeout(() => {
+                        postLog('timeoutClear mode=local-scheme href=' + window.location.href);
+                        setFontPendingState(false);
+                    }, 4000);
+                };
                 const waitForFontReady = async (desiredFamily) => {
                     const fontSet = document.fonts;
                     if (!fontSet) return;
@@ -1115,6 +1376,7 @@ public class ReaderModeViewModel: ObservableObject {
                         || globalThis.manabiHorizontalFontFamilyName
                         || 'YuKyokasho';
                     setFontPendingState(true);
+                    scheduleGateTimeout();
                     ensureReaderFontStyle(desiredFamily);
                     if (typeof window.manabiApplyDirectionalInjectedFont === 'function') {
                         window.manabiApplyDirectionalInjectedFont();
@@ -1124,8 +1386,18 @@ public class ReaderModeViewModel: ObservableObject {
                         || desiredFamily
                         || null;
                     await waitForFontReady(resolvedFamily);
+                    if (gateTimeout) {
+                        clearTimeout(gateTimeout);
+                        gateTimeout = null;
+                    }
+                    postLog('fontsReady mode=local-scheme family=' + (resolvedFamily || 'nil') + ' href=' + window.location.href);
                     setFontPendingState(false);
                 })().catch((e) => {
+                    if (gateTimeout) {
+                        clearTimeout(gateTimeout);
+                        gateTimeout = null;
+                    }
+                    postLog('error mode=local-scheme href=' + window.location.href + ' error=' + String(e));
                     setFontPendingState(false);
                     try { console.log('manabi font inject error', e); } catch (_) {}
                 });
@@ -1143,6 +1415,19 @@ public class ReaderModeViewModel: ObservableObject {
         let fontHash = readerFontPayloadHash(base64)
         let js = """
         (function() {
+            const postLog = (message) => {
+                try {
+                    const payload = '# READERLOAD stage=readerMode.fontGate ' + message;
+                    const webkitPrint = window.webkit?.messageHandlers?.print;
+                    if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
+                        webkitPrint.postMessage(payload);
+                        return;
+                    }
+                    if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
+                        print.postMessage(payload);
+                    }
+                } catch (_) {}
+            };
             const setFontPendingState = (pending) => {
                 const root = document.documentElement;
                 if (!root) return;
@@ -1153,6 +1438,10 @@ public class ReaderModeViewModel: ObservableObject {
                     delete root.dataset.manabiFontPending;
                     root.dataset.manabiFontReady = '1';
                 }
+                postLog('pending=' + (pending ? '1' : '0')
+                    + ' mode=blob'
+                    + ' href=' + window.location.href
+                    + ' fontsStatus=' + (document.fonts?.status || 'nil'));
             };
             const replaceFontBlob = (css, fontHash, desiredFamily) => {
                 if (!css) return null;
@@ -1187,10 +1476,26 @@ public class ReaderModeViewModel: ObservableObject {
                 if (desiredFamily) {
                     style.dataset.manabiInjectedFontFamily = desiredFamily;
                 }
+                style.onload = () => postLog('stylesheetLoaded mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
+                style.onerror = () => {
+                    postLog('stylesheetError mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
+                    setFontPendingState(false);
+                };
                 (document.head || document.documentElement).appendChild(style);
+                postLog('stylesheetPrepared mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
                 return style;
             };
             globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+            let gateTimeout = null;
+            const scheduleGateTimeout = () => {
+                if (gateTimeout) {
+                    clearTimeout(gateTimeout);
+                }
+                gateTimeout = setTimeout(() => {
+                    postLog('timeoutClear mode=blob href=' + window.location.href);
+                    setFontPendingState(false);
+                }, 4000);
+            };
             const waitForFontReady = async (desiredFamily) => {
                 const fontSet = document.fonts;
                 if (!fontSet) return;
@@ -1212,6 +1517,7 @@ public class ReaderModeViewModel: ObservableObject {
                     || globalThis.manabiHorizontalFontFamilyName
                     || null;
                 setFontPendingState(true);
+                scheduleGateTimeout();
                 let style = ensureReaderFontStyle(desiredFamily);
                 if (!style) {
                     const css = atob(fontCSSBase64);
@@ -1236,8 +1542,18 @@ public class ReaderModeViewModel: ObservableObject {
                     || desiredFamily
                     || null;
                 await waitForFontReady(resolvedFamily);
+                if (gateTimeout) {
+                    clearTimeout(gateTimeout);
+                    gateTimeout = null;
+                }
+                postLog('fontsReady mode=blob family=' + (resolvedFamily || 'nil') + ' href=' + window.location.href);
                 setFontPendingState(false);
             })().catch((e) => {
+                if (gateTimeout) {
+                    clearTimeout(gateTimeout);
+                    gateTimeout = null;
+                }
+                postLog('error mode=blob href=' + window.location.href + ' error=' + String(e));
                 setFontPendingState(false);
                 try { console.log('manabi font inject error', e); } catch (_) {}
             });
@@ -1419,19 +1735,7 @@ public class ReaderModeViewModel: ObservableObject {
         hasReaderRenderReady: Bool,
         reason: String
     ) {
-        let canonicalURL = pageURL.canonicalReaderContentURLForHotfix()
-        debugPrint(
-            "# READERLOAD stage=readerMode.syntheticLoad.docState",
-            "pageURL=\(pageURL.absoluteString)",
-            "readyState=\(readyState)",
-            "hasReaderContent=\(hasReaderContent)",
-            "hasReaderRenderReady=\(hasReaderRenderReady)",
-            "reason=\(reason)",
-            "elapsedSinceSyntheticLoad=\(syntheticLoadElapsedString(for: canonicalURL))",
-            "pendingReaderModeURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "expectedSyntheticReaderLoaderURL=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
-            "lastRenderedURL=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
+        return
     }
 
     private func activeRenderGenerationDescription(for key: String) -> String {
@@ -1589,14 +1893,7 @@ public class ReaderModeViewModel: ObservableObject {
     ) -> Bool {
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         let key = canonicalRenderKey(canonicalURL)
-        let cancelOthersStartedAt = CFAbsoluteTimeGetCurrent()
         cancelOtherActiveRenders(except: key, requestedURL: canonicalURL, reason: reason)
-        debugPrint(
-            "# READERLOAD stage=readerMode.render.singleFlight.afterCancelOthers",
-            "url=\(canonicalURL.absoluteString)",
-            "reason=\(reason)",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - cancelOthersStartedAt))s"
-        )
 
         if let existingTask = activeRenderTaskByURL[key], !existingTask.isCancelled {
             debugPrint(
@@ -1611,29 +1908,9 @@ public class ReaderModeViewModel: ObservableObject {
         let generation = UUID()
         let scheduledAt = CFAbsoluteTimeGetCurrent()
         activeRenderGenerationByURL[key] = generation
-        debugPrint(
-            "# READERLOAD stage=readerMode.render.singleFlight.start",
-            "url=\(canonicalURL.absoluteString)",
-            "reason=\(reason)",
-            "generation=\(generation.uuidString)"
-        )
         let task = Task { @ReaderViewModelActor [weak self] in
             guard let self else { return }
-            debugPrint(
-                "# READERLOAD stage=readerMode.render.singleFlight.operationBegin",
-                "url=\(canonicalURL.absoluteString)",
-                "reason=\(reason)",
-                "generation=\(generation.uuidString)",
-                "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
-            )
             let operationInvokeStartedAt = CFAbsoluteTimeGetCurrent()
-            debugPrint(
-                "# READERLOAD stage=readerMode.render.singleFlight.beforeOperation",
-                "url=\(canonicalURL.absoluteString)",
-                "reason=\(reason)",
-                "generation=\(generation.uuidString)",
-                "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
-            )
             await operation(generation)
             debugPrint(
                 "# READERLOAD stage=readerMode.render.singleFlight.afterOperation",
@@ -1643,22 +1920,9 @@ public class ReaderModeViewModel: ObservableObject {
                 "operationElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - operationInvokeStartedAt))s",
                 "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
             )
-            debugPrint(
-                "# READERLOAD stage=readerMode.render.singleFlight.operationEnd",
-                "url=\(canonicalURL.absoluteString)",
-                "reason=\(reason)",
-                "generation=\(generation.uuidString)",
-                "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
-            )
             await self.finishRenderTask(for: canonicalURL, generation: generation, reason: reason)
         }
         activeRenderTaskByURL[key] = task
-        debugPrint(
-            "# READERLOAD stage=readerMode.render.singleFlight.taskStored",
-            "url=\(canonicalURL.absoluteString)",
-            "reason=\(reason)",
-            "generation=\(generation.uuidString)"
-        )
         return true
     }
 
@@ -1667,6 +1931,12 @@ public class ReaderModeViewModel: ObservableObject {
         case capturedReadability = "webviewReadability"
         case unavailable = "unavailable"
     }
+
+    private struct ReaderModeRouteDecision {
+        let route: ReaderModeRoute
+        let prefetchedContent: (any ReaderContentProtocol)?
+        let prefetchedLocalHTML: String?
+    }
     
     func isReaderModeLoadPending(content: any ReaderContentProtocol) -> Bool {
         return !isReaderMode && content.isReaderModeAvailable && content.isReaderModeByDefault
@@ -1674,6 +1944,11 @@ public class ReaderModeViewModel: ObservableObject {
     
     @MainActor
     private func resolveReaderModeRoute(readerContent: ReaderContent) async -> ReaderModeRoute {
+        await resolveReaderModeRouteDecision(readerContent: readerContent).route
+    }
+
+    @MainActor
+    private func resolveReaderModeRouteDecision(readerContent: ReaderContent) async -> ReaderModeRouteDecision {
         let startedAt = CFAbsoluteTimeGetCurrent()
         if let readabilityContent, !readabilityContent.isEmpty {
             debugPrint(
@@ -1684,7 +1959,11 @@ public class ReaderModeViewModel: ObservableObject {
                 "readabilityHasCanonicalMarkup=\(hasCanonicalReadabilityMarkup(in: readabilityContent))",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
             )
-            return .capturedReadability
+            return ReaderModeRouteDecision(
+                route: .capturedReadability,
+                prefetchedContent: nil,
+                prefetchedLocalHTML: nil
+            )
         }
         let activeReaderFileManager = readerFileManager ?? .shared
         if let content = try? await readerContent.getContent(),
@@ -1700,7 +1979,11 @@ public class ReaderModeViewModel: ObservableObject {
                 "reason=localHTMLAvailable",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
             )
-            return .localHTML
+            return ReaderModeRouteDecision(
+                route: .localHTML,
+                prefetchedContent: content,
+                prefetchedLocalHTML: html
+            )
         }
         debugPrint(
             "# READERLOAD stage=readerMode.route.resolve",
@@ -1709,7 +1992,11 @@ public class ReaderModeViewModel: ObservableObject {
             "reason=noReadabilityOrLocalHTML",
             "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - startedAt))s"
         )
-        return .unavailable
+        return ReaderModeRouteDecision(
+            route: .unavailable,
+            prefetchedContent: nil,
+            prefetchedLocalHTML: nil
+        )
     }
 
     @MainActor
@@ -1726,41 +2013,31 @@ public class ReaderModeViewModel: ObservableObject {
         let cachedContainerSelector = readabilityContainerSelector
         let cachedContainerFrameInfo = readabilityContainerFrameInfo
         beginReaderModeLoad(for: contentURL, reason: "showReaderView")
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReaderView.afterBeginLoad",
-            "contentURL=\(contentURL.absoluteString)",
-            "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s",
-            "pendingURL=\(pendingReaderModeURL?.absoluteString ?? "nil")",
-            "renderedURL=\(lastRenderedURL?.absoluteString ?? "nil")"
-        )
         logTrace(.readabilityTaskScheduled, url: contentURL, details: "readabilityBytes=\(cachedReadabilityBytes)")
-        let taskSetupStart = CFAbsoluteTimeGetCurrent()
         let startedRenderTask = startRenderTaskIfNeeded(for: contentURL, reason: "showReaderView") { [weak self] generation in
             guard let self else { return }
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReaderView.renderStart",
-                "contentURL=\(contentURL.absoluteString)",
-                "generation=\(generation.uuidString)",
-                "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s"
-            )
             let currentPageURL = await MainActor.run { readerContent.pageURL }
             guard urlsMatchWithoutHashForHotfix(contentURL, currentPageURL) else {
                 await self.cancelReaderModeLoad(for: contentURL, reason: "showReaderView.urlMismatch")
                 return
             }
-            let route = await self.resolveReaderModeRoute(readerContent: readerContent)
+            let routeDecision = await self.resolveReaderModeRouteDecision(readerContent: readerContent)
+            let route = routeDecision.route
             debugPrint(
                 "# READERLOAD stage=readerMode.showReaderView.route",
                 "contentURL=\(contentURL.absoluteString)",
                 "route=\(route.rawValue)",
-                "readabilityBytes=\(cachedReadabilityBytes)"
+                "readabilityBytes=\(cachedReadabilityBytes)",
+                "prefetchedLocalHTMLBytes=\(routeDecision.prefetchedLocalHTML?.utf8.count ?? 0)"
             )
             switch route {
             case .localHTML:
                 await self.showReaderViewUsingSwiftProcessing(
                     readerContent: readerContent,
                     scriptCaller: scriptCaller,
-                    renderGeneration: generation
+                    renderGeneration: generation,
+                    prefetchedContent: routeDecision.prefetchedContent,
+                    prefetchedLocalHTML: routeDecision.prefetchedLocalHTML
                 )
             case .capturedReadability:
                 guard let cachedReadabilityContent else {
@@ -1786,13 +2063,6 @@ public class ReaderModeViewModel: ObservableObject {
                 await self.cancelReaderModeLoad(for: contentURL, reason: "showReaderView.unavailable")
             }
         }
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReaderView.afterStartRenderTask",
-            "contentURL=\(contentURL.absoluteString)",
-            "startedRenderTask=\(startedRenderTask)",
-            "elapsedSinceSchedule=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - scheduledAt))s",
-            "taskSetupElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - taskSetupStart))s"
-        )
         if !startedRenderTask {
             debugPrint(
                 "# READERLOAD stage=readerMode.showReaderView.skipSingleFlight",
@@ -1853,7 +2123,9 @@ public class ReaderModeViewModel: ObservableObject {
     private func showReaderViewUsingSwiftProcessing(
         readerContent: ReaderContent,
         scriptCaller: WebViewScriptCaller,
-        renderGeneration: UUID? = nil
+        renderGeneration: UUID? = nil,
+        prefetchedContent: (any ReaderContentProtocol)? = nil,
+        prefetchedLocalHTML: String? = nil
     ) async {
         do {
             let swiftProcessingStart = CFAbsoluteTimeGetCurrent()
@@ -1861,32 +2133,46 @@ public class ReaderModeViewModel: ObservableObject {
             var localHTMLElapsed: Double = 0
             var readabilityResolveElapsed: Double = 0
             var showReadabilityElapsed: Double = 0
-            let getContentStart = CFAbsoluteTimeGetCurrent()
-            guard let content = try await readerContent.getContent() else {
-                cancelReaderModeLoad(for: readerContent.pageURL, reason: "swiftProcessing.missingContent")
-                return
+            let content: any ReaderContentProtocol
+            if let prefetchedContent {
+                content = prefetchedContent
+            } else {
+                let getContentStart = CFAbsoluteTimeGetCurrent()
+                guard let resolvedContent = try await readerContent.getContent() else {
+                    cancelReaderModeLoad(for: readerContent.pageURL, reason: "swiftProcessing.missingContent")
+                    return
+                }
+                content = resolvedContent
+                getContentElapsed = CFAbsoluteTimeGetCurrent() - getContentStart
             }
-            getContentElapsed = CFAbsoluteTimeGetCurrent() - getContentStart
             debugPrint(
                 "# READERLOAD stage=readerMode.swiftProcessing.getContent",
                 "contentURL=\(content.url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", getContentElapsed))s"
+                "elapsed=\(String(format: "%.3f", getContentElapsed))s",
+                "source=\(prefetchedContent == nil ? "fetched" : "prefetched")"
             )
             let activeReaderFileManager = readerFileManager ?? .shared
-            let localHTMLStart = CFAbsoluteTimeGetCurrent()
-            guard let html = try await locallyRetrievableReaderHTML(
-                for: content,
-                readerFileManager: activeReaderFileManager
-            ) else {
-                cancelReaderModeLoad(for: content.url, reason: "swiftProcessing.missingHTML")
-                return
+            let html: String
+            if let prefetchedLocalHTML {
+                html = prefetchedLocalHTML
+            } else {
+                let localHTMLStart = CFAbsoluteTimeGetCurrent()
+                guard let resolvedHTML = try await locallyRetrievableReaderHTML(
+                    for: content,
+                    readerFileManager: activeReaderFileManager
+                ) else {
+                    cancelReaderModeLoad(for: content.url, reason: "swiftProcessing.missingHTML")
+                    return
+                }
+                html = resolvedHTML
+                localHTMLElapsed = CFAbsoluteTimeGetCurrent() - localHTMLStart
             }
-            localHTMLElapsed = CFAbsoluteTimeGetCurrent() - localHTMLStart
             debugPrint(
                 "# READERLOAD stage=readerMode.swiftProcessing.localHTML",
                 "contentURL=\(content.url.absoluteString)",
                 "bytes=\(html.utf8.count)",
-                "elapsed=\(String(format: "%.3f", localHTMLElapsed))s"
+                "elapsed=\(String(format: "%.3f", localHTMLElapsed))s",
+                "source=\(prefetchedLocalHTML == nil ? "fetched" : "prefetched")"
             )
 
             let resolvedReadabilityHTML: String?
@@ -2010,7 +2296,6 @@ public class ReaderModeViewModel: ObservableObject {
             cancelReaderModeLoad(for: readerContent.pageURL, reason: "showReadabilityContent.missingContent")
             return
         }
-        let getContentElapsed = CFAbsoluteTimeGetCurrent() - getContentStart
         let url = content.url
         let renderBaseURL: URL
         if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" || url.isSnippetURL {
@@ -2033,19 +2318,12 @@ public class ReaderModeViewModel: ObservableObject {
                 "hasProcessHTML": processHTML != nil
             ] as [String: Any]
         )
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReadabilityContent.getContent",
-            "contentURL=\(url.absoluteString)",
-            "elapsed=\(String(format: "%.3f", getContentElapsed))s"
-        )
-
         let shouldStoreReaderHTML = !url.isEBookURL
             && !url.isFileURL
             && !url.isNativeReaderView
             && !url.isReaderFileURL
             && (content.content?.isEmpty ?? true)
         let resolvedStoredHTML = shouldStoreReaderHTML ? readabilityContent : nil
-        let derivedStorageStart = CFAbsoluteTimeGetCurrent()
         let resolvedTitleIfNeeded: String? = {
             guard content.title.isEmpty else { return nil }
             return (resolvedStoredHTML ?? content.html)?
@@ -2055,14 +2333,6 @@ public class ReaderModeViewModel: ObservableObject {
                 .first?
                 .truncate(36) ?? ""
         }()
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReadabilityContent.derivedStorage",
-            "contentURL=\(url.absoluteString)",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - derivedStorageStart))s",
-            "shouldStoreReaderHTML=\(shouldStoreReaderHTML)",
-            "storedHTMLBytes=\(resolvedStoredHTML?.utf8.count ?? 0)",
-            "resolvedTitleBytes=\(resolvedTitleIfNeeded?.utf8.count ?? 0)"
-        )
         let needsAsyncWrite =
             content.isReaderModeByDefault == false
             || content.isReaderModeAvailable == true
@@ -2077,7 +2347,6 @@ public class ReaderModeViewModel: ObservableObject {
             || (resolvedTitleIfNeeded != nil && content.title != resolvedTitleIfNeeded)
 
         if needsAsyncWrite {
-            let asyncWriteStart = CFAbsoluteTimeGetCurrent()
             try await content.asyncWrite { _, content in
                 content.isReaderModeByDefault = true
                 content.isReaderModeAvailable = false
@@ -2093,19 +2362,6 @@ public class ReaderModeViewModel: ObservableObject {
                 }
                 content.refreshChangeMetadata(explicitlyModified: true)
             }
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.asyncWrite",
-                "contentURL=\(url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - asyncWriteStart))s",
-                "skipped=false"
-            )
-        } else {
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.asyncWrite",
-                "contentURL=\(url.absoluteString)",
-                "elapsed=0.000s",
-                "skipped=true"
-            )
         }
         
         if !isReaderMode {
@@ -2113,26 +2369,12 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if currentReaderFontNeedsDeferredSharedCSS() {
-            let sharedFontStart = CFAbsoluteTimeGetCurrent()
             _ = await resolveSharedReaderFontCSSBase64()
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.sharedFontResolve",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - sharedFontStart))s"
-            )
         }
         
-        let contentMetadataStart = CFAbsoluteTimeGetCurrent()
         let injectEntryImageIntoHeader = content.injectEntryImageIntoHeader
         let titleForDisplay = content.titleForDisplay
         let imageURLToDisplay = try await content.imageURLToDisplay()
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReadabilityContent.contentMetadata",
-            "contentURL=\(url.absoluteString)",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - contentMetadataStart))s",
-            "injectEntryImageIntoHeader=\(injectEntryImageIntoHeader)",
-            "hasImageURL=\(imageURLToDisplay != nil)",
-            "titleBytes=\(titleForDisplay.utf8.count)"
-        )
         let processReadabilityContent = processReadabilityContent
         let processHTML = processHTML
         let prefersDirectSnippetReadabilityParse = url.isSnippetURL && hasCanonicalReadabilityMarkup(in: readabilityContent)
@@ -2141,7 +2383,6 @@ public class ReaderModeViewModel: ObservableObject {
         let hideRedundantSnippetTitle = content.isTitlePrefixOfContent
         let primaryRecordCompoundKey = await MainActor.run { content.compoundKey }
         
-        let renderDispatchStart = CFAbsoluteTimeGetCurrent()
         try await { @ReaderViewModelActor [weak self] in
             let transformStart = CFAbsoluteTimeGetCurrent()
             var doc: SwiftSoup.Document?
@@ -2192,15 +2433,7 @@ public class ReaderModeViewModel: ObservableObject {
                 print("Error: Unexpectedly failed to receive doc")
                 return
             }
-            let derivedTitleStart = CFAbsoluteTimeGetCurrent()
             let derivedTitle = titleFromReadabilityDocument(doc) ?? titleForDisplay
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.derivedTitle",
-                "contentURL=\(url.absoluteString)",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - derivedTitleStart))s",
-                "derivedTitleBytes=\(derivedTitle.utf8.count)"
-            )
-            let propagateStart = CFAbsoluteTimeGetCurrent()
             await propagateReaderModeDefaults(
                 for: url,
                 primaryKey: primaryRecordCompoundKey,
@@ -2208,12 +2441,6 @@ public class ReaderModeViewModel: ObservableObject {
                 fallbackTitle: titleForDisplay,
                 derivedTitle: derivedTitle
             )
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.propagateDefaults",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - propagateStart))s"
-            )
-
-            let processForReaderModeStart = CFAbsoluteTimeGetCurrent()
             try await processForReaderMode(
                 doc: doc,
                 url: url,
@@ -2225,11 +2452,6 @@ public class ReaderModeViewModel: ObservableObject {
                 injectEntryImageIntoHeader: injectEntryImageIntoHeader,
                 defaultFontSize: defaultFontSize ?? 21
             )
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.processForReaderMode",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - processForReaderModeStart))s"
-            )
-
             if url.isSnippetURL {
                 let cleanedSnippetTitle = ReaderContentLoader.resolvedDisplayTitle(
                     snippetRawTitle,
@@ -2265,7 +2487,18 @@ public class ReaderModeViewModel: ObservableObject {
             let processedSegmentCount = (try? doc.getElementsByTag("manabi-segment").size()) ?? 0
             let processedBodyExists = doc.body() != nil
             let processedBodyClasses = (try? doc.body()?.className()) ?? ""
+            let processedBodyClassesForFrameInjection: String = {
+                let trimmed = processedBodyClasses.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? "readability-mode" : trimmed
+            }()
             let processedTitleDisplayStyle = (try? doc.getElementById("reader-title")?.attr("style")) ?? ""
+            let processedStyleTextForFrameInjection: String = {
+                guard let styleElement = try? doc.getElementById("swiftuiwebview-readability-styles"),
+                      let styleHTML = try? styleElement.html() else {
+                    return Readability.shared.css
+                }
+                return styleHTML.isEmpty ? Readability.shared.css : styleHTML
+            }()
             debugPrint(
                 "# READERTRACE",
                 "readerMode.showReadabilityContent.processed",
@@ -2286,13 +2519,7 @@ public class ReaderModeViewModel: ObservableObject {
 
             markReaderRenderReady(in: doc)
 
-            let serializeStart = CFAbsoluteTimeGetCurrent()
             let serializedHTMLBytes = try doc.outerHtmlUTF8()
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.serialize",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - serializeStart))s",
-                "bytes=\(serializedHTMLBytes.count)"
-            )
 
             var transformedHTMLBytes = serializedHTMLBytes
             var transformedHTMLString: String?
@@ -2326,33 +2553,37 @@ public class ReaderModeViewModel: ObservableObject {
             if let frameInfo, !frameInfo.isMainFrame {
                 let transformedContent = transformedHTMLString ?? String(decoding: transformedHTMLBytes, as: UTF8.self)
                 transformedContentForFrameInjection = transformedContent
-                let transformedDocument = try? SwiftSoup.parse(transformedContent)
-                let transformedBodyClasses = {
-                    guard let transformedDocument,
-                          let bodyElement = transformedDocument.body(),
-                          let bodyClassNames = try? bodyElement.className() else {
-                        return "readability-mode"
-                    }
-                    let trimmed = bodyClassNames.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return trimmed.isEmpty ? "readability-mode" : trimmed
-                }()
-                let transformedStyleText = {
-                    guard let transformedDocument,
-                          let styleElement = try? transformedDocument.getElementById("swiftuiwebview-readability-styles"),
-                          let styleHTML = try? styleElement.html() else {
-                        return Readability.shared.css
-                    }
-                    return styleHTML.isEmpty ? Readability.shared.css : styleHTML
-                }()
-                transformedBodyClassesForFrameInjection = transformedBodyClasses
-                transformedStyleTextForFrameInjection = transformedStyleText
+                if processHTML == nil {
+                    transformedBodyClassesForFrameInjection = processedBodyClassesForFrameInjection
+                    transformedStyleTextForFrameInjection = processedStyleTextForFrameInjection
+                } else {
+                    let transformedDocument = try? SwiftSoup.parse(transformedContent)
+                    let transformedBodyClasses = {
+                        guard let transformedDocument,
+                              let bodyElement = transformedDocument.body(),
+                              let bodyClassNames = try? bodyElement.className() else {
+                            return processedBodyClassesForFrameInjection
+                        }
+                        let trimmed = bodyClassNames.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return trimmed.isEmpty ? "readability-mode" : trimmed
+                    }()
+                    let transformedStyleText = {
+                        guard let transformedDocument,
+                              let styleElement = try? transformedDocument.getElementById("swiftuiwebview-readability-styles"),
+                              let styleHTML = try? styleElement.html() else {
+                            return processedStyleTextForFrameInjection
+                        }
+                        return styleHTML.isEmpty ? processedStyleTextForFrameInjection : styleHTML
+                    }()
+                    transformedBodyClassesForFrameInjection = transformedBodyClasses
+                    transformedStyleTextForFrameInjection = transformedStyleText
+                }
             } else {
                 transformedContentForFrameInjection = nil
                 transformedBodyClassesForFrameInjection = nil
                 transformedStyleTextForFrameInjection = nil
             }
             let transformedHTMLData = Data(transformedHTMLBytes)
-            let mainActorHandoffStart = CFAbsoluteTimeGetCurrent()
             try await { @MainActor in
                 guard url.matchesReaderURL(readerContent.pageURL) else {
                     debugPrint(
@@ -2442,17 +2673,7 @@ public class ReaderModeViewModel: ObservableObject {
 //                    readerModeLoading(false)
 //                }()
             }()
-            debugPrint(
-                "# READERLOAD stage=readerMode.showReadabilityContent.mainActorHandoff",
-                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - mainActorHandoffStart))s",
-                "renderBaseURL=\(renderBaseURL.absoluteString)"
-            )
         }()
-        debugPrint(
-            "# READERLOAD stage=readerMode.showReadabilityContent.renderDispatch",
-            "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - renderDispatchStart))s",
-            "renderBaseURL=\(renderBaseURL.absoluteString)"
-        )
 
         let canonicalURL = url.canonicalReaderContentURLForHotfix()
         if injectEntryImageIntoHeader && content.imageUrl == nil {
@@ -2758,15 +2979,7 @@ public class ReaderModeViewModel: ObservableObject {
                 return
             }
             if let readerFileManager {
-                let htmlResolutionStartedAt = Date()
                 let html = try await content.htmlToDisplay(readerFileManager: readerFileManager)
-                debugPrint(
-                    "# READERLOAD stage=readerMode.navCommit.loaderHTMLResolved",
-                    "contentURL=\(committedURL.absoluteString)",
-                    "hasHTML=\(html != nil)",
-                    "htmlBytes=\(html?.utf8.count ?? 0)",
-                    "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(htmlResolutionStartedAt)))"
-                )
                 if let html {
                     try Task.checkCancellation()
 
@@ -2799,19 +3012,7 @@ public class ReaderModeViewModel: ObservableObject {
                         usedSnippetCanonical = false
                         usedCanonicalMarkup = false
                     }
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.navCommit.loaderReadabilityPrepared",
-                        "contentURL=\(committedURL.absoluteString)",
-                        "readabilityBytes=\(readabilityContent?.utf8.count ?? 0)",
-                        "usedSnippetCanonical=\(usedSnippetCanonical)",
-                        "usedCanonicalMarkup=\(usedCanonicalMarkup)"
-                    )
                     readerContent.isRenderingReaderHTML = true
-                    debugPrint(
-                        "# READERLOAD stage=readerMode.navCommit.loaderShowReaderView",
-                        "contentURL=\(committedURL.absoluteString)",
-                        "elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(loaderStartedAt)))"
-                    )
                     showReaderView(
                         readerContent: readerContent,
                         scriptCaller: scriptCaller

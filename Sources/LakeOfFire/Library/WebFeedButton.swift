@@ -203,8 +203,7 @@ public struct WebFeedButton<C: ReaderContentProtocol>: View {
             Group {
                 if let feed = viewModel.feed, !feed.isDeleted, let category = feed.getCategory() {
                     Button("Edit Feed in Library…") {
-                        libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
-                        libraryViewModel.navigationPath.append(category)
+                        libraryViewModel.showCategory(category.id)
                         libraryViewModel.selectedFeed = feed
                         LibraryManagerViewModel.shared.isLibraryPresented = true
                     }
@@ -221,7 +220,7 @@ public struct WebFeedButton<C: ReaderContentProtocol>: View {
                     }
                     Divider()
                     Button("Manage Library Categories…") {
-                        libraryViewModel.navigationPath.removeLast(libraryViewModel.navigationPath.count)
+                        libraryViewModel.showLibraryRoot()
                         LibraryManagerViewModel.shared.isLibraryPresented = true
                     }
                 }

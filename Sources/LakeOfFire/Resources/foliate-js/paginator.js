@@ -1768,12 +1768,20 @@ class View {
     get element() {
         return this.#element
     }
+    #getSameDocumentLiveRoot() {
+        return document?.getElementById?.('reader-content')?.querySelector?.('.manabi-page-root') || null
+    }
+    #getSameDocumentResolvedPageCountSync() {
+        const liveRoot = this.#getSameDocumentLiveRoot()
+        const domPageCount = liveRoot?.querySelectorAll?.(':scope > .manabi-page')?.length ?? 0
+        return Math.max(0, domPageCount)
+    }
     reconcileSameDocumentExpandedWidth() {
         if (!this.#sameDocumentMode || !this.#column || !Number.isFinite(this.#size) || this.#size <= 0) {
             return null
         }
         try {
-            const liveRoot = document?.getElementById?.('reader-content')?.querySelector?.('.manabi-page-root') || null
+            const liveRoot = this.#getSameDocumentLiveRoot()
             const livePages = Array.from(liveRoot?.querySelectorAll?.(':scope > .manabi-page') || [])
             const livePageCount = livePages.length
             const livePageExtent = livePages.reduce((max, node) => {
@@ -1805,10 +1813,10 @@ class View {
             )
             this.#iframe.style[side] = `${layoutExpandedSize}px`
             this.#element.style[side] = `${layoutExpandedSize + this.#size * 2}px`
-            this.#container.style[side] = `${layoutExpandedSize + this.#size * 2}px`
+            this.container.style[side] = `${layoutExpandedSize + this.#size * 2}px`
             this.#iframe.style[otherSide] = '100%'
             this.#element.style[otherSide] = '100%'
-            this.#container.style[otherSide] = '100%'
+            this.container.style[otherSide] = '100%'
             logEBookPageNumLimited('expand:same-document-reconcile', {
                 side,
                 size: this.#size,
@@ -1818,7 +1826,7 @@ class View {
                 layoutExpandedSize,
                 iframe: this.#iframe?.style?.[side] || null,
                 element: this.#element?.style?.[side] || null,
-                container: this.#container?.style?.[side] || null,
+                container: this.container?.style?.[side] || null,
             })
             return {
                 layoutPageCount,
@@ -6209,6 +6217,17 @@ export class Paginator extends HTMLElement {
         const beforePage = await this.page().catch(() => null)
         const beforePages = await this.pages().catch(() => null)
         const adjacentIndex = this.#adjacentIndex(dir)
+        globalThis.logReader?.('ebook.paginator.turnPage.start', {
+            dir,
+            distance: distance ?? null,
+            currentIndex: beforeIndex,
+            adjacentIndex,
+            beforePage,
+            beforePages,
+            sameDocumentMode: this.#sameDocumentMode,
+            vertical: this.#vertical,
+            scrolled: this.scrolled,
+        })
         logBug?.('paginator:turnPage:start', {
             dir,
             distance,
@@ -6220,6 +6239,12 @@ export class Paginator extends HTMLElement {
         try {
             const prev = dir === -1
             const shouldGo = await (prev ? await this.#scrollPrev(distance) : await this.#scrollNext(distance))
+            globalThis.logReader?.('ebook.paginator.turnPage.shouldGo', {
+                dir,
+                shouldGo,
+                currentIndex: this.#index,
+                adjacentIndex,
+            })
             logBug?.('paginator:turnPage:shouldGo', {
                 dir,
                 shouldGo,
@@ -6228,6 +6253,11 @@ export class Paginator extends HTMLElement {
             });
             let didNavigate = false
             if (shouldGo) {
+                globalThis.logReader?.('ebook.paginator.turnPage.crossSection', {
+                    dir,
+                    currentIndex: this.#index,
+                    targetIndex: adjacentIndex,
+                })
                 logBug?.('paginator:turnPage:cross-section', {
                     dir,
                     currentIndex: this.#index,
@@ -6248,12 +6278,28 @@ export class Paginator extends HTMLElement {
                 || this.#index !== beforeIndex
                 || beforePage !== afterPage
                 || beforePages !== afterPages
+            globalThis.logReader?.('ebook.paginator.turnPage.resolved', {
+                dir,
+                didNavigate,
+                resolved,
+                currentIndex: this.#index,
+                beforePage,
+                afterPage,
+                beforePages,
+                afterPages,
+            })
             return resolved
         } finally {
             // Never leave the paginator locked if navigation threw/cancelled.
             this.#locked = false
             const afterPage = await this.page().catch(() => null)
             const afterPages = await this.pages().catch(() => null)
+            globalThis.logReader?.('ebook.paginator.turnPage.end', {
+                dir,
+                currentIndex: this.#index,
+                afterPage,
+                afterPages,
+            })
             logBug?.('paginator:turnPage:end', {
                 dir,
                 currentIndex: this.#index,
@@ -6274,6 +6320,16 @@ export class Paginator extends HTMLElement {
             const currentPage = this.#getSameDocumentClampedPageIndexSync()
             const pageCount = this.#getSameDocumentResolvedPageCountSync()
             const targetPage = currentPage + dir
+            globalThis.logReader?.('ebook.paginator.hostTurn.begin', {
+                direction,
+                dir,
+                currentPageIndex: currentPage,
+                pageCount,
+                targetPageIndex: targetPage,
+                sameDocumentMode: this.#sameDocumentMode,
+                vertical: this.#vertical,
+                scrolled: this.scrolled,
+            })
             setSameDocumentHostTurnDiagnostics({
                 phase: 'host-turn-begin',
                 direction,
@@ -6282,6 +6338,12 @@ export class Paginator extends HTMLElement {
                 targetPageIndex: targetPage,
             })
             if (targetPage >= 0 && targetPage < pageCount) {
+                globalThis.logReader?.('ebook.paginator.hostTurn.page', {
+                    direction,
+                    currentPageIndex: currentPage,
+                    pageCount,
+                    targetPageIndex: targetPage,
+                })
                 this.#applySameDocumentPagePositionSync(targetPage, {
                     reason: 'host-turn',
                     smooth: true,
@@ -6299,6 +6361,12 @@ export class Paginator extends HTMLElement {
             }
             const adjacentIndex = this.#adjacentIndex(dir)
             if (adjacentIndex != null) {
+                globalThis.logReader?.('ebook.paginator.hostTurn.section', {
+                    direction,
+                    currentPageIndex: currentPage,
+                    pageCount,
+                    adjacentSectionIndex: adjacentIndex,
+                })
                 setSameDocumentHostTurnDiagnostics({
                     phase: 'host-turn-section',
                     direction,
@@ -6313,6 +6381,11 @@ export class Paginator extends HTMLElement {
                     reason: 'page',
                 })
             }
+            globalThis.logReader?.('ebook.paginator.hostTurn.unavailable', {
+                direction,
+                currentPageIndex: currentPage,
+                pageCount,
+            })
             setSameDocumentHostTurnDiagnostics({
                 phase: 'host-turn-unavailable',
                 direction,

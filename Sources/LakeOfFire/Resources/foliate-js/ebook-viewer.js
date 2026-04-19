@@ -28,6 +28,19 @@ const logFix = (event, detail = {}) => {
     }
 };
 
+const logReader = (event, detail = {}) => {
+    try {
+        const payload = Object.entries(detail ?? {})
+            .map(([key, value]) => `${key}=${value ?? 'null'}`)
+            .join(' ');
+        const suffix = payload.length > 0 ? ` ${payload}` : '';
+        window.webkit?.messageHandlers?.print?.postMessage?.(`# READER ${event}${suffix}`);
+    } catch (_err) {
+        try { console.log('# READER', event, detail); } catch (_) {}
+    }
+};
+globalThis.logReader = logReader;
+
 const logBug = (event, detail = {}) => {
     try {
         const payload = { event, ...detail };
@@ -43,6 +56,104 @@ const EBOOK_HTML_TARGET_HREFS = [
     'item/xhtml/0001.xhtml',
 ];
 const EBOOK_HTML_VERBOSE_DUMP = false;
+
+const EBOOK_NON_CONTENT_LANDMARK_TYPES = [
+    'cover',
+    'titlepage',
+    'halftitlepage',
+    'copyright-page',
+    'imprint',
+    'toc',
+    'loi',
+    'lot',
+    'dedication',
+    'acknowledgments',
+    'acknowledgements',
+    'colophon',
+    'index',
+    'glossary',
+];
+
+const normalizeBookHref = (href) => {
+    if (typeof href !== 'string' || href.length === 0) return null;
+    const base = href.split('#')[0];
+    try {
+        return decodeURIComponent(base).toLowerCase();
+    } catch (_error) {
+        return base.toLowerCase();
+    }
+};
+
+const normalizeLandmarkTypes = (rawType) => {
+    if (Array.isArray(rawType)) {
+        return rawType
+            .flatMap((value) => normalizeLandmarkTypes(value))
+            .filter(Boolean);
+    }
+    if (typeof rawType !== 'string') return [];
+    return rawType
+        .split(/\s+/)
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
+};
+
+const classifyBookSection = (book, {
+    sectionIndex = null,
+    sectionHref = null,
+    tocItem = null,
+} = {}) => {
+    const resolvedSectionHref = normalizeBookHref(
+        (typeof sectionIndex === 'number' ? book?.sections?.[sectionIndex]?.id : null)
+        ?? sectionHref
+        ?? tocItem?.href
+    );
+    const coverHref = normalizeBookHref(book?.resources?.cover?.href ?? null);
+    const tocLabel = typeof tocItem?.label === 'string' ? tocItem.label.trim() : '';
+    const tocLabelLower = tocLabel.toLowerCase();
+    const landmarks = Array.isArray(book?.landmarks) ? book.landmarks : [];
+    const matchedLandmarks = landmarks.filter((landmark) =>
+        normalizeBookHref(landmark?.href) === resolvedSectionHref
+    );
+    const landmarkTypes = [...new Set(matchedLandmarks.flatMap((landmark) =>
+        normalizeLandmarkTypes(landmark?.type)
+    ))];
+    const hrefText = resolvedSectionHref ?? '';
+    const isCoverPage = landmarkTypes.includes('cover')
+        || (coverHref != null && coverHref === resolvedSectionHref)
+        || hrefText.includes('cover');
+    const isTitlePage = landmarkTypes.includes('titlepage')
+        || landmarkTypes.includes('halftitlepage')
+        || hrefText.includes('titlepage')
+        || hrefText.endsWith('/title.xhtml')
+        || hrefText.endsWith('/title.html');
+    const isTOCPage = landmarkTypes.includes('toc')
+        || hrefText.endsWith('/nav.xhtml')
+        || tocLabelLower === 'table of contents'
+        || tocLabelLower === 'contents'
+        || tocLabelLower === '目次';
+    const isMetadataPage = landmarkTypes.some((type) => EBOOK_NON_CONTENT_LANDMARK_TYPES.includes(type))
+        || isCoverPage
+        || isTitlePage
+        || isTOCPage;
+    const classification = isCoverPage
+        ? 'cover-page'
+        : isTitlePage
+            ? 'title-page'
+            : isTOCPage
+                ? 'toc-page'
+                : isMetadataPage
+                    ? 'metadata-page'
+                    : 'content-page';
+    return {
+        classification,
+        isNonContent: isMetadataPage,
+        sectionIndex: typeof sectionIndex === 'number' ? sectionIndex : null,
+        sectionHref: resolvedSectionHref,
+        tocLabel: tocLabel || null,
+        coverHref,
+        landmarkTypes: landmarkTypes.join(',') || null,
+    };
+};
 
 const logEBookHTMLLine = (line) => {
     try {
@@ -106,6 +217,62 @@ const getBookCacheKey = () => {
             || globalThis.reader?.view?.book?.dir
             || null;
     } catch (_) { return null; }
+};
+
+const logSectionClassification = (source, detail = {}) => {
+    const book = globalThis.reader?.book ?? globalThis.reader?.view?.book ?? null;
+    if (!book) return null;
+    const classification = classifyBookSection(book, detail);
+    logReader('ebook.pageKind', {
+        source,
+        classification: classification.classification,
+        isNonContent: classification.isNonContent,
+        sectionIndex: classification.sectionIndex,
+        sectionHref: classification.sectionHref,
+        tocLabel: classification.tocLabel,
+        landmarkTypes: classification.landmarkTypes,
+        coverHref: classification.coverHref,
+    });
+    globalThis.manabiCurrentEBookPageKind = classification;
+    return classification;
+};
+
+const logNavigationLayout = (source) => {
+    try {
+        const navBar = document.getElementById('nav-bar');
+        const navBottomRow = document.getElementById('nav-bottom-row');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        const slider = document.getElementById('progress-slider');
+        const navRect = navBar?.getBoundingClientRect?.() ?? null;
+        const bottomRowRect = navBottomRow?.getBoundingClientRect?.() ?? null;
+        const progressRect = progressWrapper?.getBoundingClientRect?.() ?? null;
+        const sliderRect = slider?.getBoundingClientRect?.() ?? null;
+        logReader('ebook.navLayout', {
+            source,
+            viewportWidth: window.innerWidth ?? null,
+            viewportHeight: window.innerHeight ?? null,
+            bodyClientHeight: document.body?.clientHeight ?? null,
+            bodyScrollHeight: document.body?.scrollHeight ?? null,
+            navHiddenClass: navBar?.classList?.contains?.('nav-hidden') ?? null,
+            navHiddenScrollClass: navBar?.classList?.contains?.('nav-hidden-due-to-scroll') ?? null,
+            bodyNavHiddenClass: document.body?.classList?.contains?.('nav-hidden') ?? null,
+            progressWrapperHidden: progressWrapper?.getAttribute?.('aria-hidden') ?? null,
+            sliderVisibility: slider ? getComputedStyle(slider).visibility : null,
+            sliderDisplay: slider ? getComputedStyle(slider).display : null,
+            navTop: navRect ? Math.round(navRect.top) : null,
+            navBottom: navRect ? Math.round(navRect.bottom) : null,
+            navHeight: navRect ? Math.round(navRect.height) : null,
+            bottomRowTop: bottomRowRect ? Math.round(bottomRowRect.top) : null,
+            bottomRowBottom: bottomRowRect ? Math.round(bottomRowRect.bottom) : null,
+            bottomRowHeight: bottomRowRect ? Math.round(bottomRowRect.height) : null,
+            progressTop: progressRect ? Math.round(progressRect.top) : null,
+            progressBottom: progressRect ? Math.round(progressRect.bottom) : null,
+            progressHeight: progressRect ? Math.round(progressRect.height) : null,
+            sliderTop: sliderRect ? Math.round(sliderRect.top) : null,
+            sliderBottom: sliderRect ? Math.round(sliderRect.bottom) : null,
+            sliderHeight: sliderRect ? Math.round(sliderRect.height) : null,
+        });
+    } catch (_error) {}
 };
 
 const getCacheWarmerSectionPageCounts = () => {
@@ -571,6 +738,9 @@ const makeNativeSourceURLQuery = sourceURL =>
     `sourceURL=${encodeURIComponent(sourceURL)}`
 
 const fetchNativeEntries = async sourceURL => {
+    logReader('ebook.nativeEntries.begin', {
+        sourceURL,
+    })
     const response = await Promise.race([
         fetch(`ebook://ebook/entries?${makeNativeSourceURLQuery(sourceURL)}`, {
             headers: {
@@ -590,6 +760,11 @@ const fetchNativeEntries = async sourceURL => {
     const payload = await response.json()
     try {
         const count = Array.isArray(payload?.entries) ? payload.entries.length : -1
+        logReader('ebook.nativeEntries.ready', {
+            sourceURL,
+            status: response.status,
+            count,
+        })
         window.webkit?.messageHandlers?.print?.postMessage?.(
             `# EBOOKFETCH entries.json count=${count} source=${sourceURL}`
         )
@@ -598,6 +773,10 @@ const fetchNativeEntries = async sourceURL => {
 }
 
 const fetchNativeEntryResponse = async (sourceURL, subpath) => {
+    logReader('ebook.nativeEntry.begin', {
+        sourceURL,
+        subpath,
+    })
     const response = await Promise.race([
         fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
             headers: {
@@ -612,8 +791,19 @@ const fetchNativeEntryResponse = async (sourceURL, subpath) => {
         )
     } catch (_err) {}
     if (!response.ok) {
+        logReader('ebook.nativeEntry.notOK', {
+            sourceURL,
+            subpath,
+            status: response.status,
+        })
         return null
     }
+    logReader('ebook.nativeEntry.ready', {
+        sourceURL,
+        subpath,
+        status: response.status,
+        contentType: response.headers?.get?.('content-type') ?? null,
+    })
     return response
 }
 
@@ -656,12 +846,21 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
         sourceURL: url,
         isCacheWarmer: !!isCacheWarmer,
     });
+    logReader('ebook.nativeLoader.begin', {
+        sourceURL: url,
+        isCacheWarmer: !!isCacheWarmer,
+    })
     const { entries: rawEntries = [] } = await fetchNativeEntries(url)
     logFix('nativeLoader:entries', {
         sourceURL: url,
         isCacheWarmer: !!isCacheWarmer,
         count: rawEntries.length,
     });
+    logReader('ebook.nativeLoader.entries', {
+        sourceURL: url,
+        isCacheWarmer: !!isCacheWarmer,
+        count: rawEntries.length,
+    })
     const entries = rawEntries.map(entry => ({
         filename: entry.path,
         uncompressedSize: entry.size ?? 0,
@@ -679,11 +878,25 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
                     isCacheWarmer: !!isCacheWarmer,
                     name,
                 });
+                logReader('ebook.nativeLoader.missingTextEntry', {
+                    sourceURL: url,
+                    isCacheWarmer: !!isCacheWarmer,
+                    name,
+                })
                 return null
             }
             globalThis.manabiLoadEBookLastState = `native-loader-awaiting-text:${name}`
+            logReader('ebook.nativeLoader.loadText.begin', {
+                sourceURL: url,
+                name,
+            })
             const response = await fetchNativeEntryResponse(url, name)
             globalThis.manabiLoadEBookLastState = `native-loader-text-ready:${name}`
+            logReader('ebook.nativeLoader.loadText.ready', {
+                sourceURL: url,
+                name,
+                hasResponse: !!response,
+            })
             return readNativeEntryText(response, name)
         },
         loadBlob: async name => {
@@ -693,11 +906,25 @@ const makeNativeEpubLoader = async (url, isCacheWarmer) => {
                     isCacheWarmer: !!isCacheWarmer,
                     name,
                 });
+                logReader('ebook.nativeLoader.missingBlobEntry', {
+                    sourceURL: url,
+                    isCacheWarmer: !!isCacheWarmer,
+                    name,
+                })
                 return null
             }
             globalThis.manabiLoadEBookLastState = `native-loader-awaiting-blob:${name}`
+            logReader('ebook.nativeLoader.loadBlob.begin', {
+                sourceURL: url,
+                name,
+            })
             const response = await fetchNativeEntryResponse(url, name)
             globalThis.manabiLoadEBookLastState = `native-loader-blob-ready:${name}`
+            logReader('ebook.nativeLoader.loadBlob.ready', {
+                sourceURL: url,
+                name,
+                hasResponse: !!response,
+            })
             return readNativeEntryBlob(response, name)
         },
         getSize: name => sizeMap.get(name) ?? 0,
@@ -805,15 +1032,32 @@ const getView = async (source, isCacheWarmer, owner = null) => {
     let book
     if (source?.kind === 'native') {
         setLoadStateForOwner(owner, 'getView-native-source');
+        logReader('ebook.getView.nativeSource', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+        })
         logFix('getView:native-source', {
             sourceURL: source.url ?? null,
             isCacheWarmer: !!isCacheWarmer,
         });
         setLoadStateForOwner(owner, 'getView-native-importing-epub');
+        logReader('ebook.getView.importingEPUB', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+        })
         const {
             EPUB
             } = await import('./epub.js')
+        logReader('ebook.getView.importedEPUB', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+            hasEPUB: typeof EPUB === 'function',
+        })
         setLoadStateForOwner(owner, 'getView-native-awaiting-loader');
+        logReader('ebook.getView.awaitingLoader', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+        })
         const loader = await Promise.race([
             makeNativeEpubLoader(source.url, isCacheWarmer),
             new Promise((_, reject) => {
@@ -821,7 +1065,16 @@ const getView = async (source, isCacheWarmer, owner = null) => {
             }),
         ])
         setLoadStateForOwner(owner, 'getView-native-loader-ready');
+        logReader('ebook.getView.loaderReady', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+            entryCount: Array.isArray(loader?.entries) ? loader.entries.length : null,
+        })
         setLoadStateForOwner(owner, 'getView-native-awaiting-book-init');
+        logReader('ebook.getView.awaitingBookInit', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+        })
         book = await Promise.race([
             new EPUB(loader).init(),
             new Promise((_, reject) => {
@@ -829,6 +1082,12 @@ const getView = async (source, isCacheWarmer, owner = null) => {
             }),
         ])
         setLoadStateForOwner(owner, 'getView-native-book-ready');
+        logReader('ebook.getView.bookReady', {
+            sourceURL: source.url ?? null,
+            isCacheWarmer: !!isCacheWarmer,
+            bookDir: book?.dir ?? null,
+            hasPageList: Array.isArray(book?.pageList) && book.pageList.length > 0,
+        })
         logFix('getView:native-book-ready', {
             sourceURL: source.url ?? null,
             isCacheWarmer: !!isCacheWarmer,
@@ -920,12 +1179,7 @@ const getView = async (source, isCacheWarmer, owner = null) => {
         bookDir: book?.dir ?? null,
     });
     try {
-        await Promise.race([
-            Promise.resolve(view.open(book, isCacheWarmer)),
-            new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('view-open-timeout')), 5000)
-            }),
-        ])
+        await Promise.resolve(view.open(book, isCacheWarmer))
     } catch (error) {
         logFix('getView:view-open-error', {
             isCacheWarmer: !!isCacheWarmer,
@@ -1194,17 +1448,17 @@ class Reader {
     #chevronAnimator = null;
     #progressSlider = null
     #tickContainer = null
-    #progressScrubState = null
+    _progressScrubState = null
     #handleProgressSliderPointerDown = (event) => {
     if (!this.#progressSlider) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    if (this.#progressScrubState) {
+    if (this._progressScrubState) {
     this.#finalizeProgressScrubSession({ cancel: true });
     }
     const originDescriptor = this.navHUD?.getCurrentDescriptor();
     const originFraction = originDescriptor?.fraction ?? Number(this.#progressSlider?.value ?? NaN);
     this.#progressSlider.setPointerCapture?.(event.pointerId);
-    this.#progressScrubState = {
+    this._progressScrubState = {
     pointerId: event.pointerId,
     pendingEnd: false,
     cancelRequested: false,
@@ -1221,8 +1475,8 @@ class Reader {
     });
     }
     #handleProgressSliderPointerUp = (event) => {
-    if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
-    this.#progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
+    if (!this._progressScrubState || this._progressScrubState.pointerId !== event.pointerId) return;
+    this._progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
     this.#progressSlider?.releasePointerCapture?.(event.pointerId);
     this.#logScrubDiagnostic('pointer-up', {
     pointerId: event.pointerId,
@@ -1231,8 +1485,8 @@ class Reader {
     this.#requestProgressScrubEnd(false);
     }
     #handleProgressSliderPointerCancel = (event) => {
-    if (!this.#progressScrubState || this.#progressScrubState.pointerId !== event.pointerId) return;
-    this.#progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
+    if (!this._progressScrubState || this._progressScrubState.pointerId !== event.pointerId) return;
+    this._progressScrubState.releaseFraction = Number(this.#progressSlider?.value ?? NaN);
     this.#progressSlider?.releasePointerCapture?.(event.pointerId);
     this.#logScrubDiagnostic('pointer-cancel', {
     pointerId: event.pointerId,
@@ -1400,8 +1654,6 @@ class Reader {
     this.buttons = {
     prev: document.getElementById('btn-prev-chapter'),
     next: document.getElementById('btn-next-chapter'),
-    finish: document.getElementById('btn-finish'),
-    restart: document.getElementById('btn-restart'),
     };
     // Hide all other nav buttons except spinners
     for (const btn of Object.values(this.buttons)) {
@@ -1458,9 +1710,9 @@ class Reader {
     this.buttons.next._spinnerAfterLabel = false;
     }
     }
-    Object.values(this.buttons).forEach(btn =>
-    btn.addEventListener('click', this.#onNavButtonClick.bind(this))
-    );
+    Object.values(this.buttons)
+    .filter(Boolean)
+    .forEach(btn => btn.addEventListener('click', this.#onNavButtonClick.bind(this)));
     // Side-nav scroll handlers
     const leftSideBtn = document.getElementById('btn-scroll-left');
     if (leftSideBtn) {
@@ -1789,27 +2041,21 @@ class Reader {
     const hasNextSection = typeof r.getHasNextSection === "function" ? await r.getHasNextSection() : true;
     const shouldShowPrev = atSectionStart && hasPrevSection;
     const shouldShowNext = atSectionEnd && hasNextSection;
+    const sectionClassification = logSectionClassification('updateNavButtons', {
+    sectionIndex: typeof r.currentIndex === 'number' ? r.currentIndex : null,
+    tocItem: this.view?.renderer?.tocItem ?? null,
+    });
 
     this.#show(this.buttons.prev, shouldShowPrev);
 
     if (shouldShowNext) {
     this.#show(this.buttons.next, true);
-    this.#show(this.buttons.finish, false);
-    this.#show(this.buttons.restart, false);
     } else if (atSectionEnd && !hasNextSection) {
     this.#show(this.buttons.next, false);
-    if (this.markedAsFinished) {
-    this.#show(this.buttons.restart, true);
-    this.#show(this.buttons.finish, false);
-    } else {
-    this.#show(this.buttons.finish, true);
-    this.#show(this.buttons.restart, false);
-    }
     } else {
     this.#show(this.buttons.next, false);
-    this.#show(this.buttons.finish, false);
-    this.#show(this.buttons.restart, false);
     }
+    logNavigationLayout('updateNavButtons');
     this.#setForwardChevronHint(shouldShowNext);
 
     // RTL/LTR logic for disabling/hiding side chevrons
@@ -1829,23 +2075,13 @@ class Reader {
     }
     }
 
-    // Consolidate restart icon SVG path update
-    const restartBtn = this.buttons.restart;
-    if (restartBtn) {
-    const iconPath = restartBtn.querySelector('svg path');
-    if (iconPath) {
-    iconPath.setAttribute('d', 'M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z');
-    iconPath.setAttribute('fill', 'currentColor');
-    iconPath.setAttribute('stroke', 'none');
-    }
-    }
     this.navHUD?.setNavContext({
     atSectionStart,
     atSectionEnd,
     hasPrevSection,
     hasNextSection,
-    showingFinish: this.#isButtonVisible(this.buttons.finish),
-    showingRestart: this.#isButtonVisible(this.buttons.restart),
+    showingFinish: false,
+    showingRestart: false,
     });
     }
 
@@ -1890,37 +2126,37 @@ class Reader {
     }))
     }
     #requestProgressScrubEnd(cancelRequested) {
-    if (!this.#progressScrubState) return;
-    this.#progressScrubState.pendingEnd = true;
-    this.#progressScrubState.cancelRequested = !!cancelRequested;
-    this.#progressScrubState.pendingCommit = true; // mark origin fixed for next relocate
-    if (this.#progressScrubState.timeoutId) {
-    clearTimeout(this.#progressScrubState.timeoutId);
+    if (!this._progressScrubState) return;
+    this._progressScrubState.pendingEnd = true;
+    this._progressScrubState.cancelRequested = !!cancelRequested;
+    this._progressScrubState.pendingCommit = true; // mark origin fixed for next relocate
+    if (this._progressScrubState.timeoutId) {
+    clearTimeout(this._progressScrubState.timeoutId);
     }
-    const cancel = this.#progressScrubState.cancelRequested;
+    const cancel = this._progressScrubState.cancelRequested;
     this.#logScrubDiagnostic('schedule-scrub-end', {
     cancel,
     });
-    this.#progressScrubState.timeoutId = setTimeout(() => {
+    this._progressScrubState.timeoutId = setTimeout(() => {
     this.#finalizeProgressScrubSession({ cancel });
     }, 400);
     }
     #finalizeProgressScrubSession({ cancel } = {}) {
-    if (!this.#progressScrubState) return;
-    if (this.#progressScrubState.timeoutId) {
-    clearTimeout(this.#progressScrubState.timeoutId);
+    if (!this._progressScrubState) return;
+    if (this._progressScrubState.timeoutId) {
+    clearTimeout(this._progressScrubState.timeoutId);
     }
     const descriptor = cancel ? null : this.navHUD?.getCurrentDescriptor();
     this.navHUD?.endProgressScrubSession(descriptor, {
     cancel,
-    releaseFraction: this.#progressScrubState.releaseFraction,
-    originDescriptor: this.#progressScrubState.originDescriptor ?? null,
-    originFraction: this.#progressScrubState.originFraction ?? null,
+    releaseFraction: this._progressScrubState.releaseFraction,
+    originDescriptor: this._progressScrubState.originDescriptor ?? null,
+    originFraction: this._progressScrubState.originFraction ?? null,
     });
     this.#logScrubDiagnostic('finalize-scrub-session', {
     cancel,
     });
-    this.#progressScrubState = null;
+    this._progressScrubState = null;
     }
 
     #isJumpInputValueValid(value) {
@@ -2127,6 +2363,11 @@ class Reader {
             topWindowURL: window.top?.location?.href ?? null,
             currentPageURL: currentPageURL ?? null,
         });
+        logSectionClassification('load', {
+            sectionIndex: typeof index === 'number' ? index : null,
+            sectionHref: currentPageURL ?? null,
+            tocItem: this.view?.renderer?.tocItem ?? null,
+        });
         await this.#postFallbackReadingProgressMessage({
             reason: 'load',
             sectionIndex: typeof index === 'number' ? index : null,
@@ -2259,7 +2500,7 @@ class Reader {
         const ticks = document.getElementById('progress-ticks');
         if (ticks) ticks.style.visibility = 'visible'
         // (removed: setting tocView currentHref here)
-        const scrubbing = !!this.#progressScrubState;
+        const scrubbing = !!this._progressScrubState;
         if (scrubbing) {
             detail.reason = 'live-scroll';
             detail.liveScrollPhase = 'dragging';
@@ -2374,8 +2615,8 @@ class Reader {
         }
         tooltipParts.push(percent);
         slider.title = tooltipParts.filter(Boolean).join(' · ');
-        if (scrubbing && this.#progressScrubState?.pendingEnd) {
-            this.#finalizeProgressScrubSession({ cancel: this.#progressScrubState.cancelRequested });
+        if (scrubbing && this._progressScrubState?.pendingEnd) {
+            this.#finalizeProgressScrubSession({ cancel: this._progressScrubState.cancelRequested });
         }
 
         this.lastKnownFraction = percentValue;
@@ -2417,6 +2658,15 @@ class Reader {
             lastPercentValue: this.lastPercentValue ?? null,
             scrubbing,
         });
+        const classificationSectionIndex = typeof this.view?.renderer?.currentIndex === 'number'
+            ? this.view.renderer.currentIndex
+            : sectionIndex;
+        logSectionClassification('relocate', {
+            sectionIndex: classificationSectionIndex,
+            sectionHref: this.view?.book?.sections?.[classificationSectionIndex]?.id ?? tocItem?.href ?? null,
+            tocItem: this.view?.renderer?.tocItem ?? tocItem ?? null,
+        });
+        logNavigationLayout(`relocate:${detail?.reason ?? 'unknown'}`);
         this._lastRelocateSectionIndex = sectionIndex;
         this.#updateJumpUnitAvailability();
         this.#syncJumpInputWithState();
@@ -2502,31 +2752,29 @@ class Reader {
         switch (type) {
         // TODO: Clean up, the scroll cases here won't be reached because of above...
         case 'prev':
-            postNavigationChromeVisibility(false, { source: 'button-prev', direction: 'backward' });
-            nav = this.view.renderer.prevSection();
+            nav = this.view.prev();
             break;
         case 'next':
-            postNavigationChromeVisibility(true, { source: 'button-next', direction: 'forward', scrubbing: false });
-            nav = this.view.renderer.nextSection();
-            break;
-        case 'finish':
-            window.webkit.messageHandlers.finishedReadingBook.postMessage({
-                topWindowURL: window.top.location.href,
-            });
-            nav = Promise.resolve();
-            break;
-        case 'restart':
-            window.webkit.messageHandlers.startOver.postMessage({});
-            await this.view.renderer.firstSection();
-            nav = Promise.resolve();
+            nav = this.view.next();
             break;
         }
-        Promise.resolve(nav).catch(err => {
+        Promise.resolve(nav).then(resolved => {
+            globalThis.logReader?.('ebook.nav.buttonResult', {
+                type,
+                resolved: !!resolved,
+                currentIndex: this.view?.renderer?.currentIndex ?? null,
+            });
+            if (!resolved) {
+                postNavigationChromeVisibility(false, {
+                    source: `button-${type}-nochange`,
+                    direction: type === 'next' ? 'forward' : 'backward',
+                    scrubbing: false,
+                });
+            }
+        }).catch(err => {
             const line = `# EBOOK nav:error ${JSON.stringify({ type, message: err?.message ?? String(err) })}`;
             // try { window.webkit?.messageHandlers?.print?.postMessage?.(line); console.log(line); } catch (_) {}
         }).finally(() => {
-            // Keep spinner for 'finish' or 'restart' – Swift layer will handle refresh
-            if (type === 'finish' || type === 'restart') return;
             restoreIcon();
         });
     }
@@ -3450,7 +3698,7 @@ window.manabiGetPageTurnProbeSnapshot = async () => {
             currentPageDisplayLabel,
             currentPhysicalPageLabel,
             progressScrubberVisible: sliderVisibility,
-            progressScrubberActive: !!this.#progressScrubState,
+            progressScrubberActive: !!this._progressScrubState,
             livePageIndex,
             liveChunkPageIndex,
             viewportCenterChunkPageIndex,
@@ -3631,21 +3879,20 @@ window.loadEBook = ({
     url,
     layoutMode,
 }) => {
-    const priorAttemptCount = Number(globalThis.manabiLoadEBookAttemptCount || 0) || 0;
-    if (priorAttemptCount > 0 && globalThis.manabiLoadEBookReady !== true) {
-        globalThis.manabiPreviousLoadEBookLastState =
-            globalThis.manabiLoadEBookLastState
-            ?? `restart-before-ready:attempt-${priorAttemptCount}`;
-        globalThis.manabiPreviousLoadEBookError =
-            globalThis.manabiPreviousLoadEBookError
-            ?? globalThis.manabiLoadEBookLastState
-            ?? `restart-before-ready:attempt-${priorAttemptCount}`;
+    if (globalThis.manabiLoadEBookStarted === true) {
+        logReader('ebook.loadEBook.ignoredAlreadyStarted', {
+            pageURL: window.location.href,
+            sourceURL: url ?? null,
+            loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
+        });
+        return;
     }
+    globalThis.manabiPendingLoadEBookArgs = null;
     globalThis.manabiLoadEBookLastState = 'called';
     globalThis.manabiLoadEBookStarted = true;
     globalThis.manabiLoadEBookStartedAt = Date.now();
     globalThis.manabiLoadEBookReady = false;
-    globalThis.manabiLoadEBookAttemptCount = (Number(globalThis.manabiLoadEBookAttemptCount || 0) || 0) + 1;
+    globalThis.manabiLoadEBookAttemptCount = 1;
     const loadAttemptNumber = globalThis.manabiLoadEBookAttemptCount;
     logFix('loadEBook:called', {
         hasURL: !!url,
@@ -3653,12 +3900,25 @@ window.loadEBook = ({
         layoutMode: layoutMode ?? null,
         pageURL: window.location.href,
     });
+    logReader('ebook.loadEBook.called', {
+        hasURL: !!url,
+        attempt: loadAttemptNumber,
+        layoutMode: layoutMode ?? null,
+        pageURL: window.location.href,
+        sourceURL: url ?? null,
+    });
     let reader = new Reader()
     globalThis.reader = reader
     globalThis.manabiLoadEBookLastState = 'reader-created';
     logFix('loadEBook:reader-created', {
         hasReader: !!globalThis.reader,
         hasView: !!globalThis.reader?.view,
+    });
+    logReader('ebook.loadEBook.readerCreated', {
+        attempt: loadAttemptNumber,
+        hasReader: !!globalThis.reader,
+        hasView: !!globalThis.reader?.view,
+        pendingHideNavigationState: pendingHideNavigationState ?? null,
     });
     setTimeout(() => logReaderBootstrapState('loadEBook:delayed-state:1s'), 1000);
     setTimeout(() => logReaderBootstrapState('loadEBook:delayed-state:3s'), 3000);
@@ -3682,7 +3942,12 @@ window.loadEBook = ({
     setTimeout(() => {
     const currentAttempt = Number(globalThis.manabiLoadEBookAttemptCount || 0) || 0;
     const hasRendererNow = !!globalThis.reader?.view?.renderer;
-    if (globalThis.manabiLoadEBookReady || hasRendererNow || currentAttempt !== loadAttemptNumber) {
+    if (
+    globalThis.manabiLoadEBookStarted !== true
+    || globalThis.manabiLoadEBookReady
+    || hasRendererNow
+    || currentAttempt !== loadAttemptNumber
+    ) {
     return;
     }
     globalThis.manabiPreviousLoadEBookLastState = globalThis.manabiLoadEBookLastState ?? 'open-watchdog-timeout';
@@ -3696,18 +3961,66 @@ window.loadEBook = ({
     logFix('loadEBook:watchdog-timeout', {
     attempt: loadAttemptNumber,
     pageURL: window.location.href,
-    retrying: loadAttemptNumber < 4,
+    retrying: false,
     });
-    if (loadAttemptNumber < 4) {
-    setTimeout(() => {
-    if ((Number(globalThis.manabiLoadEBookAttemptCount || 0) || 0) === loadAttemptNumber && typeof window.loadEBook === 'function') {
-    window.loadEBook({ url, layoutMode });
-    }
-    }, 0);
-    }
+    logReader('ebook.loadEBook.watchdogTimeout', {
+    attempt: loadAttemptNumber,
+    pageURL: window.location.href,
+    sourceURL: url ?? null,
+    loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
+    });
     }, 6000);
     globalThis.manabiLoadEBookLastState = 'open-requested';
-    Promise.resolve(reader.open(source))
+    Promise.resolve()
+    .then(async () => {
+    try {
+    await reader.open(source)
+    } catch (nativeError) {
+    logFix('loadEBook:native-fallback', {
+    attempt: loadAttemptNumber,
+    message: String(nativeError),
+    sourceURL: url,
+    });
+    logReader('ebook.loadEBook.nativeFallback', {
+    attempt: loadAttemptNumber,
+    pageURL: window.location.href,
+    sourceURL: url ?? null,
+    message: nativeError?.message ?? String(nativeError),
+    previousState: globalThis.manabiLoadEBookLastState ?? null,
+    });
+    globalThis.manabiLoadEBookLastState = 'native-open-fallback-fetch';
+    const response = await fetch(url, {
+    headers: {
+    "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
+    },
+    })
+    if (!response.ok) {
+    throw new Error(`native-open-fallback-fetch-failed:${response.status}`);
+    }
+    const blob = await response.blob()
+    const fallbackFilename = (() => {
+    try {
+    return decodeURIComponent(new URL(url).pathname.split('/').pop() || 'book.epub')
+    } catch (_error) {
+    return 'book.epub'
+    }
+    })()
+    const fallbackSource = makeFileSource(new File([blob], fallbackFilename, {
+    type: blob.type || 'application/epub+zip',
+    }))
+    window.blob = blob
+    window.bookSource = fallbackSource
+    globalThis.manabiLoadEBookLastState = 'native-open-fallback-open';
+    logReader('ebook.loadEBook.nativeFallbackOpen', {
+    attempt: loadAttemptNumber,
+    pageURL: window.location.href,
+    fileName: fallbackFilename,
+    blobType: blob.type || null,
+    blobSize: blob.size ?? null,
+    });
+    await reader.open(fallbackSource)
+    }
+    })
     .then(async () => {
     if (!isCurrentAttempt()) {
     logFix('loadEBook:open-resolved-stale-attempt', {
@@ -3788,6 +4101,7 @@ window.loadEBook = ({
     globalThis.manabiPreviousLoadEBookError = String(error);
     globalThis.manabiLoadEBookStarted = false;
     globalThis.manabiLoadEBookReady = false;
+    globalThis.manabiEbookFallbackLoadRequested = false;
     globalThis.manabiLoadEBookLastState = 'open-error:' + String(error);
     try {
     postReaderOnError({
@@ -3806,29 +4120,80 @@ window.loadEBook = ({
     //.catch(e => console.error(e))
 }
 
+const flushPendingLoadEBookRequest = () => {
+    const pendingArgs = globalThis.manabiPendingLoadEBookArgs;
+    if (!pendingArgs || globalThis.manabiLoadEBookStarted) {
+        return false;
+    }
+    globalThis.manabiPendingLoadEBookArgs = null;
+    logFix('loadEBook:flush-pending', {
+        hasURL: !!pendingArgs?.url,
+        layoutMode: pendingArgs?.layoutMode ?? null,
+        pageURL: window.location.href,
+    });
+    logReader('ebook.loadEBook.flushPending', {
+        hasURL: !!pendingArgs?.url,
+        layoutMode: pendingArgs?.layoutMode ?? null,
+        pageURL: window.location.href,
+        loadStarted: globalThis.manabiLoadEBookStarted === true,
+    });
+    queueMicrotask(() => {
+        if (!globalThis.manabiLoadEBookStarted && typeof window.loadEBook === 'function') {
+            window.loadEBook(pendingArgs);
+        }
+    });
+    return true;
+};
+
 const scheduleAutomaticInitialBookLoad = () => {
     let parsedURL = null;
     try {
         parsedURL = new URL(window.location.href);
     } catch (_error) {
+        logReader('ebook.autoBootstrap.parseFailed', {
+            pageURL: window.location.href,
+        });
         return;
     }
     if (parsedURL.protocol !== 'ebook:' || !parsedURL.pathname.startsWith('/load/')) {
+        logReader('ebook.autoBootstrap.skipped', {
+            pageURL: window.location.href,
+            protocol: parsedURL.protocol,
+            pathname: parsedURL.pathname,
+        });
         return;
     }
     const start = (attempt = 0) => {
         if (globalThis.manabiLoadEBookStarted) {
+            logReader('ebook.autoBootstrap.alreadyStarted', {
+                attempt,
+                pageURL: window.location.href,
+                loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
+            });
+            return;
+        }
+        if (flushPendingLoadEBookRequest()) {
+            logReader('ebook.autoBootstrap.usedPending', {
+                attempt,
+                pageURL: window.location.href,
+            });
             return;
         }
         if (typeof window.loadEBook !== 'function') {
-            if (attempt < 10) {
-                setTimeout(() => start(attempt + 1), Math.min(1000, 100 * (attempt + 1)));
-            }
+            logReader('ebook.autoBootstrap.loadFunctionMissing', {
+                attempt,
+                pageURL: window.location.href,
+            });
             return;
         }
         logFix('loadEBook:auto-bootstrap', {
             attempt,
             pageURL: window.location.href,
+        });
+        logReader('ebook.autoBootstrap.start', {
+            attempt,
+            pageURL: window.location.href,
+            layoutMode: globalThis.window.initialLayoutMode ?? 'paginated',
         });
         window.loadEBook({
             url: window.location.href,
@@ -3838,7 +4203,7 @@ const scheduleAutomaticInitialBookLoad = () => {
     setTimeout(() => start(0), 0);
 };
 
-scheduleAutomaticInitialBookLoad();
+flushPendingLoadEBookRequest();
 
 window.loadLastPosition = async ({
     cfi,
@@ -3947,9 +4312,20 @@ logFix('module:posting-initialized', {
     pageURL: window.location.href,
     bodyReady: !!document.body,
 });
+logReader('ebook.moduleInitialized', {
+    pageURL: window.location.href,
+    bodyReady: !!document.body,
+    hasPendingLoadArgs: globalThis.manabiPendingLoadEBookArgs != null,
+    hasLoadFunction: typeof window.loadEBook === 'function',
+});
 globalThis.manabiEbookViewerInitializedAck = false;
 globalThis.manabiMarkEbookViewerInitializedAck = () => {
     globalThis.manabiEbookViewerInitializedAck = true;
+    logReader('ebook.viewerInitializedAck', {
+        pageURL: window.location.href,
+        loadEBookStarted: globalThis.manabiLoadEBookStarted === true,
+        loadEBookLastState: globalThis.manabiLoadEBookLastState ?? null,
+    });
 };
 
 const postEbookViewerInitialized = (attempt = 0) => {
@@ -3961,17 +4337,29 @@ const postEbookViewerInitialized = (attempt = 0) => {
         try {
             handler.postMessage({ attempt });
             logFix('ebookViewerInitialized:posted', { attempt });
+            logReader('ebook.viewerInitializedPosted', {
+                attempt,
+                pageURL: window.location.href,
+                hasLoadFunction: typeof window.loadEBook === 'function',
+                hasPendingLoadArgs: globalThis.manabiPendingLoadEBookArgs != null,
+            });
         } catch (error) {
             logFix('ebookViewerInitialized:post:error', {
                 attempt,
                 error: String(error),
             });
+            logReader('ebook.viewerInitializedPostError', {
+                attempt,
+                error: String(error),
+                pageURL: window.location.href,
+            });
         }
     } else {
         logFix('ebookViewerInitialized:handler:missing', { attempt });
-    }
-    if (!globalThis.manabiEbookViewerInitializedAck && attempt < 10) {
-        setTimeout(() => postEbookViewerInitialized(attempt + 1), Math.min(1000, 100 * (attempt + 1)));
+        logReader('ebook.viewerInitializedHandlerMissing', {
+            attempt,
+            pageURL: window.location.href,
+        });
     }
 };
 

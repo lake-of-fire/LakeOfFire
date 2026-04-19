@@ -83,9 +83,25 @@ public extension Feed {
 
     var hasEntriesNewerThanLastViewedAt: Bool {
         let entries = getEntries() ?? []
+        guard showsUnseenBadge else {
+            let result = false
+            debugPrint(
+                "# FEEDNEW stage=feed.unread.evaluate",
+                "feedID=\(id.uuidString)",
+                "title=\(title)",
+                "entryCount=\(entries.count)",
+                "lastViewedAt=\(lastViewedAt?.description ?? "nil")",
+                "lastSeenFeedEntriesAt=\(lastSeenFeedEntriesAt?.description ?? "nil")",
+                "latestEntryCreatedAt=\(latestEntryCreatedAt?.description ?? "nil")",
+                "latestHistoryLastVisitedAt=nil",
+                "effectiveLastViewedAt=nil",
+                "showsUnseenBadge=\(showsUnseenBadge)",
+                "result=\(result) reason=badgeHidden"
+            )
+            return result
+        }
         let latestHistoryLastVisitedAt = latestHistoryRecordLastVisitedAtForFeedEntries
-        guard showsUnseenBadge,
-              let effectiveLastViewedAt = effectiveFeedSeenDate else {
+        guard let effectiveLastViewedAt = effectiveFeedSeenDate else {
             let result = false
             debugPrint(
                 "# FEEDNEW stage=feed.unread.evaluate",
@@ -96,9 +112,9 @@ public extension Feed {
                 "lastSeenFeedEntriesAt=\(lastSeenFeedEntriesAt?.description ?? "nil")",
                 "latestEntryCreatedAt=\(latestEntryCreatedAt?.description ?? "nil")",
                 "latestHistoryLastVisitedAt=\(latestHistoryLastVisitedAt?.description ?? "nil")",
-                "effectiveLastViewedAt=\(effectiveFeedSeenDate?.description ?? "nil")",
+                "effectiveLastViewedAt=nil",
                 "showsUnseenBadge=\(showsUnseenBadge)",
-                "result=\(result) reason=noViewedOrHistoryDateOrBadgeHidden"
+                "result=\(result) reason=noViewedOrHistoryDate"
             )
             return result
         }

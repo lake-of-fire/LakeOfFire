@@ -90,6 +90,7 @@ public struct LibraryManagerView: View {
     @EnvironmentObject private var viewModel: LibraryManagerViewModel
     
     @State private var columnVisibility = NavigationSplitViewVisibility.doubleColumn
+    @State private var compactColumn = CompactLibraryColumn.sidebar
     
 #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -99,20 +100,34 @@ public struct LibraryManagerView: View {
     @State private var libraryCategoryViewModel: LibraryCategoryViewModel?
     
     public var body: some View {
-        NavigationSplitView(
-            columnVisibility: $columnVisibility,
-            sidebar: {
-                sidebarView
-            },
-            detail: {
-                detailView
-            }
-        )
+        splitView
         .navigationSplitViewStyle(.balanced)
+        .onChange(of: viewModel.selectedSidebarDestination) { destination in
+            Task { @MainActor in
+                switch destination {
+                case .none:
+                    viewModel.selectedFeed = nil
+                    viewModel.selectedScript = nil
+                    compactColumn = .sidebar
+                case .some(.userScripts):
+                    viewModel.selectedFeed = nil
+                    compactColumn = .content
+                case .some(.category(let categoryID)):
+                    viewModel.selectedScript = nil
+                    if viewModel.selectedFeed?.categoryID != categoryID {
+                        viewModel.selectedFeed = nil
+                    }
+                    compactColumn = .content
+                }
+            }
+        }
         .onChange(of: viewModel.selectedFeed) { feed in
             Task { @MainActor in
                 if feed != nil {
                     viewModel.selectedScript = nil
+                    compactColumn = .detail
+                } else if viewModel.selectedScript == nil {
+                    compactColumn = viewModel.selectedSidebarDestination == nil ? .sidebar : .content
                 }
             }
         }
@@ -120,52 +135,121 @@ public struct LibraryManagerView: View {
             Task { @MainActor in
                 if script != nil {
                     viewModel.selectedFeed = nil
+                    compactColumn = .detail
+                } else if viewModel.selectedFeed == nil {
+                    compactColumn = viewModel.selectedSidebarDestination == nil ? .sidebar : .content
                 }
+            }
+        }
+        .task { @MainActor in
+            if viewModel.selectedFeed != nil || viewModel.selectedScript != nil {
+                compactColumn = .detail
+            } else if viewModel.selectedSidebarDestination == nil {
+                compactColumn = .sidebar
+            } else {
+                compactColumn = .content
             }
         }
     }
 
     @ViewBuilder
+    private var splitView: some View {
+        if #available(iOS 17, macOS 14, *) {
+            NavigationSplitView(
+                columnVisibility: $columnVisibility,
+                preferredCompactColumn: Binding(
+                    get: { compactColumn.navigationSplitViewColumn },
+                    set: { compactColumn = CompactLibraryColumn($0) }
+                ),
+                sidebar: {
+                    sidebarView
+                },
+                content: {
+                    contentView
+                },
+                detail: {
+                    detailView
+                }
+            )
+        } else {
+            NavigationSplitView(
+                columnVisibility: $columnVisibility,
+                sidebar: {
+                    sidebarView
+                },
+                content: {
+                    contentView
+                },
+                detail: {
+                    detailView
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
     private var sidebarView: some View {
-        NavigationStack(path: $viewModel.navigationPath) {
-            LibraryCategoriesView()
+        LibraryCategoriesView()
 #if os(iOS)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        if horizontalSizeClass == .compact {
-                            if #available(iOS 26, macOS 26, *) {
-                                Button("Done") {
-                                    viewModel.isLibraryPresented = false
-                                }
-                            } else {
-                                Button {
-                                    viewModel.isLibraryPresented = false
-                                } label: {
-                                    Text("Done")
-                                        .bold()
-                                }
+            .toolbar {
+                ToolbarItem(placement: dismissToolbarPlacement) {
+                    if horizontalSizeClass == .compact {
+                        if #available(iOS 26, *) {
+                            Button(role: .close) {
+                                viewModel.isLibraryPresented = false
                             }
+                            .tint(.primary)
+                        } else {
+                            Button {
+                                viewModel.isLibraryPresented = false
+                            } label: {
+                                Text("Done")
+                                    .bold()
+                            }
+                            .tint(.primary)
                         }
                     }
                 }
+            }
 #endif
-                .navigationDestination(for: FeedCategory.self) { category in
-                    if let libraryConfiguration = viewModel.libraryConfiguration {
-                        LibraryCategoryViewContainer(
-                            category: category,
-                            libraryConfiguration: libraryConfiguration,
-                            selectedFeed: $viewModel.selectedFeed
-                        )
-                    }
-                }
-                .navigationDestination(for: LibraryRoute.self) { _ in
-                    LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
-                        .navigationTitle("User Scripts")
-                }
-        }
 #if os(macOS)
         .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 380)
 #endif
+    }
+
+    @ViewBuilder
+    private var contentView: some View {
+        switch viewModel.selectedSidebarDestination {
+        case .some(.category(let categoryID)):
+            if let libraryConfiguration = viewModel.libraryConfiguration,
+               let category = libraryConfiguration.getCategories()?.first(where: { $0.id == categoryID }) {
+                LibraryCategoryViewContainer(
+                    category: category,
+                    libraryConfiguration: libraryConfiguration,
+                    selectedFeed: $viewModel.selectedFeed
+                )
+            } else {
+                contentPlaceholder("Select a category to edit feeds, or open user scripts.")
+            }
+        case .some(.userScripts):
+            LibraryScriptsListView(selectedScript: $viewModel.selectedScript)
+                .navigationTitle("User Scripts")
+        case .none:
+            contentPlaceholder("Select a category to edit feeds, or open user scripts.")
+        }
+    }
+
+    @ViewBuilder
+    private func contentPlaceholder(_ text: String) -> some View {
+        VStack {
+            Spacer()
+            Text(text)
+                .multilineTextAlignment(.center)
+                .padding()
+                .foregroundColor(.secondary)
+                .font(.callout)
+            Spacer()
+        }
     }
 
     @ViewBuilder
@@ -193,15 +277,6 @@ public struct LibraryManagerView: View {
                 //                            .id("library-manager-script-view-\(script.id.uuidString)") // Because it's hard to reuse form instance across script objects. ?
 #endif
             }
-            if viewModel.selectedFeed == nil && viewModel.selectedScript == nil {
-                Spacer()
-                Text("Select a category and feed to edit.\nImport or export user feeds (excluding Manabi Reader defaults) via the toolbar.")
-                    .multilineTextAlignment(.center)
-                    .padding().padding()
-                    .foregroundColor(.secondary)
-                    .font(.callout)
-                Spacer()
-            }
         }
 #if os(macOS)
         .textFieldStyle(.roundedBorder)
@@ -210,11 +285,12 @@ public struct LibraryManagerView: View {
         //            }
         .toolbar {
 #if os(iOS)
-            ToolbarItem(placement: .confirmationAction) {
-                if #available(iOS 26, macOS 26, *) {
-                    Button("Done") {
+            ToolbarItem(placement: dismissToolbarPlacement) {
+                if #available(iOS 26, *) {
+                    Button(role: .close) {
                         viewModel.isLibraryPresented = false
                     }
+                    .tint(.primary)
                 } else {
                     Button {
                         viewModel.isLibraryPresented = false
@@ -222,6 +298,7 @@ public struct LibraryManagerView: View {
                         Text("Done")
                             .bold()
                     }
+                    .tint(.primary)
                 }
             }
 #endif
@@ -231,3 +308,48 @@ public struct LibraryManagerView: View {
     public init() {
     }
 }
+
+private enum CompactLibraryColumn {
+    case sidebar
+    case content
+    case detail
+
+    @available(iOS 17, macOS 14, *)
+    var navigationSplitViewColumn: NavigationSplitViewColumn {
+        switch self {
+        case .sidebar:
+            return .sidebar
+        case .content:
+            return .content
+        case .detail:
+            return .detail
+        }
+    }
+
+    @available(iOS 17, macOS 14, *)
+    init(_ column: NavigationSplitViewColumn) {
+        switch column {
+        case .sidebar:
+            self = .sidebar
+        case .content:
+            self = .content
+        case .detail:
+            self = .detail
+        default:
+            self = .sidebar
+        }
+    }
+}
+
+#if os(iOS)
+@available(iOS 16.0, macOS 13.0, *)
+private extension LibraryManagerView {
+    var dismissToolbarPlacement: ToolbarItemPlacement {
+        if #available(iOS 26, *) {
+            return .cancellationAction
+        } else {
+            return .confirmationAction
+        }
+    }
+}
+#endif

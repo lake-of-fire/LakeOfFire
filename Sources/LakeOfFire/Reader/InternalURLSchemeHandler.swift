@@ -89,63 +89,21 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
                 Date().timeIntervalSince1970,
                 forKey: Self.readerLoaderResponseAtKeyPrefix + url.absoluteString
             )
-            readerLoadSchemeLog(
-                "internalScheme.readerLoader.didReceiveResponse",
-                [
-                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                    "url": url.absoluteString
-                ]
-            )
         }
-        readerLoadSchemeLog(
-            "internalScheme.didReceiveResponse",
-            [
-                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                "url": url.absoluteString
-            ]
-        )
         urlSchemeTask.didReceive(Data())
         if url.path == "/load/reader" {
             UserDefaults.standard.set(
                 Date().timeIntervalSince1970,
                 forKey: Self.readerLoaderDataAtKeyPrefix + url.absoluteString
             )
-            readerLoadSchemeLog(
-                "internalScheme.readerLoader.didReceiveData",
-                [
-                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                    "url": url.absoluteString
-                ]
-            )
         }
-        readerLoadSchemeLog(
-            "internalScheme.didReceiveData",
-            [
-                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                "url": url.absoluteString
-            ]
-        )
         urlSchemeTask.didFinish()
         if url.path == "/load/reader" {
             UserDefaults.standard.set(
                 Date().timeIntervalSince1970,
                 forKey: Self.readerLoaderFinishedAtKeyPrefix + url.absoluteString
             )
-            readerLoadSchemeLog(
-                "internalScheme.readerLoader.didFinish",
-                [
-                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                    "url": url.absoluteString
-                ]
-            )
         }
-        readerLoadSchemeLog(
-            "internalScheme.didFinish",
-            [
-                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
-                "url": url.absoluteString
-            ]
-        )
     }
     
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {

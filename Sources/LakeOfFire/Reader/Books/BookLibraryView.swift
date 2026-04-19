@@ -134,25 +134,18 @@ public struct BookLibraryView: View {
             bookLibraryModalsModel.isImportingBookFile.toggle()
         } label: {
             Text("Add EPUB Ebook")
+                .foregroundStyle(.primary)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .font(.footnote)
         .fontWeight(.semibold)
-        .modifier {
-            if #available(iOS 16, macOS 15, *) {
-                $0.backgroundStyle(.secondary)
-            } else {
-                $0
-            }
-        }
     }
 
     @ViewBuilder
     private var inlineAddEpubButton: some View {
         addEpubButton
             .tint(.secondary)
-            .foregroundStyle(.primary)
     }
 
     @ViewBuilder

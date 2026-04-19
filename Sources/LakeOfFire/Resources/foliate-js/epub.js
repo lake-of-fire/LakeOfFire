@@ -983,6 +983,21 @@ ${doc.querySelector('parsererror').innerText}`)
                 if (this.metadata[key]) this.metadata[key].push(value)
                 else this.metadata[key] = [value]
             }))
+        try {
+            globalThis.logReader?.('ebook.bookStructure', {
+                title: this.metadata?.title ?? null,
+                navPath: navPath ?? null,
+                ncxPath: ncxPath ?? null,
+                coverHref: this.resources?.cover?.href ?? null,
+                landmarkCount: Array.isArray(this.landmarks) ? this.landmarks.length : 0,
+                landmarks: Array.isArray(this.landmarks)
+                    ? this.landmarks
+                        .map((landmark) => `${landmark?.type ?? 'unknown'}:${landmark?.href ?? 'nil'}`)
+                        .slice(0, 8)
+                        .join('|')
+                    : null,
+            })
+        } catch (_error) {}
 
         globalThis.manabiLoadEBookLastState = 'epub-init-complete'
         return this

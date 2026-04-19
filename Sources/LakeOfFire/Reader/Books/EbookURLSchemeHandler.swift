@@ -252,8 +252,12 @@ typealias EbookTextProcessorCacheHitsHandler = @Sendable (URL, String) async thr
 typealias SharedFontCSSBase64Provider = @Sendable () async -> String?
 
 public extension URL {
+    fileprivate var ebookPathExtension: String {
+        NSString(string: absoluteString).pathExtension
+    }
+
     var isEBookURL: Bool {
-        return (isFileURL || scheme == "https" || scheme == "http" || scheme == "ebook" || scheme == "ebook-url") && pathExtension.lowercased() == "epub"
+        return (isFileURL || scheme == "https" || scheme == "http" || scheme == "ebook" || scheme == "ebook-url") && ebookPathExtension.lowercased() == "epub"
     }
 }
 
@@ -556,7 +560,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     nonisolated private static func bundleURLFromWebURL(_ url: URL) -> URL? {
         guard url.path.hasPrefix("/load/viewer-assets/") else { return nil }
         let assetName = url.deletingPathExtension().lastPathComponent
-        let assetExtension = url.pathExtension
+        let assetExtension = url.ebookPathExtension
         let assetDirectory = url.deletingLastPathComponent().path.deletingPrefix("/load/viewer-assets/")
         let resolvedURL = Bundle.module.url(forResource: assetName, withExtension: assetExtension, subdirectory: assetDirectory)
         if resolvedURL == nil, ProcessInfo.processInfo.environment["MANABI_PAGE_TURN_INTERACTION_DIAGNOSTIC"] == "1" {
@@ -616,7 +620,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     
     nonisolated private static func mimeType(ofFileAtUrl url: URL) -> String? {
-        return UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        return UTType(filenameExtension: url.ebookPathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 }
 

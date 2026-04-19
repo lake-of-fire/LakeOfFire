@@ -1,6 +1,9 @@
 import SwiftUI
 import Combine
 
+private let activeInternalReaderLoaderTraceIDKey = "SwiftUIWebView.activeInternalReaderLoader.traceID"
+private let activeInternalReaderLoaderURLKey = "SwiftUIWebView.activeInternalReaderLoader.url"
+
 private func logReaderLoad(_ message: String) {
     debugPrint("# READERLOAD \(message)")
 }
@@ -23,6 +26,7 @@ public class ReaderContent: ObservableObject {
     public private(set) var snippetTitleIsGeneratedFromPrefix = false
     
     private var loadingTask: Task<(any ReaderContentProtocol)?, Error>?
+    private var loadingResolvedContentURL: URL?
     private var suppressedTransientAboutBlankTargetURL: URL?
     private var preloadedResolvedContentURL: URL?
     private var preloadedContent: (any ReaderContentProtocol)?
@@ -111,6 +115,15 @@ public class ReaderContent: ObservableObject {
         self.preloadedContent = nil
         return preloadedContent
     }
+
+    private func activeInternalLoaderWaitContext() -> (traceID: String, requestURL: String)? {
+        let defaults = UserDefaults.standard
+        guard let traceID = defaults.string(forKey: activeInternalReaderLoaderTraceIDKey),
+              let requestURL = defaults.string(forKey: activeInternalReaderLoaderURLKey) else {
+            return nil
+        }
+        return (traceID, requestURL)
+    }
     
     @MainActor
     internal func load(url: URL) async throws {
@@ -129,15 +142,25 @@ public class ReaderContent: ObservableObject {
             return
         }
 
+        if resolvedContentURL.absoluteString == "about:blank",
+           let activeInternalLoaderWait = activeInternalLoaderWaitContext() {
+            logReaderLoad(
+                "stage=readerContent.load.skipActiveInternalLoaderAboutBlank requestURL=\(url.absoluteString) activeLoaderURL=\(activeInternalLoaderWait.requestURL) traceID=\(activeInternalLoaderWait.traceID)"
+            )
+            return
+        }
+
         if resolvedContentURL.absoluteString != "about:blank" {
             suppressedTransientAboutBlankTargetURL = nil
         }
 
-        if let loadingTask, pageURL.matchesReaderURL(url) {
+        if let loadingTask,
+           let loadingResolvedContentURL,
+           matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
             let startedAt = CFAbsoluteTimeGetCurrent()
             _ = try await loadingTask.value
             logReaderLoad(
-                "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
+                "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
             )
             return
         }
@@ -179,6 +202,7 @@ public class ReaderContent: ObservableObject {
         pageURL = displayURL
         
         loadingTask?.cancel()
+        loadingResolvedContentURL = resolvedContentURL
         loadingTask = Task { @MainActor [weak self] in
             try Task.checkCancellation()
             let content = try await ReaderViewModel.getContent(
@@ -201,6 +225,7 @@ public class ReaderContent: ObservableObject {
         }
         let loadedContent = try await loadingTask?.value
         loadingTask = nil
+        loadingResolvedContentURL = nil
         let finalContentURL = loadedContent.flatMap { $0 }?.url.absoluteString ?? content?.url.absoluteString ?? "nil"
         logReaderLoad(
             "stage=readerContent.load.finish requestURL=\(url.absoluteString) pageURL=\(pageURL.absoluteString) contentURL=\(finalContentURL)"

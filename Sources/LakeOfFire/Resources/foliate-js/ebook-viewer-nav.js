@@ -116,7 +116,6 @@ export class NavigationHUD {
             back: document.getElementById('nav-relocate-label-back'),
             forward: document.getElementById('nav-relocate-label-forward'),
         };
-        this.completionStack = document.getElementById('completion-stack');
         this.progressWrapper = document.getElementById('progress-wrapper');
         this.progressSlider = document.getElementById('progress-slider');
         
@@ -926,13 +925,10 @@ export class NavigationHUD {
     }
     
     #toggleCompletionStack(forceShow) {
-        const shouldShow = typeof forceShow === 'boolean'
+        const requestedShow = typeof forceShow === 'boolean'
             ? forceShow
             : !!(this.navContext?.showingFinish || this.navContext?.showingRestart);
-        if (this.completionStack) {
-            this.completionStack.hidden = !shouldShow;
-            this.completionStack.style.display = shouldShow ? '' : 'none';
-        }
+        const shouldShow = false;
         const fadeTargets = [
             this.navRelocateButtons?.back,
             this.navRelocateButtons?.forward,
@@ -942,7 +938,7 @@ export class NavigationHUD {
             this.navPrimaryPercent,
         ].filter(Boolean);
         fadeTargets.forEach(el => {
-            if (shouldShow) {
+            if (requestedShow && shouldShow) {
                 el.classList.add('nav-fade-out');
             } else {
                 el.classList.remove('nav-fade-out');

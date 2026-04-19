@@ -10,6 +10,11 @@ public enum LibraryRoute: Hashable, Codable {
     case userScripts
 }
 
+public enum LibrarySidebarDestination: Hashable {
+    case userScripts
+    case category(UUID)
+}
+
 //
 //extension Array<LibraryRoute>: RawRepresentable {
 ////extension LibraryRoute: RawRepresentable {
@@ -73,6 +78,9 @@ struct LibraryManagerSheetModifier: ViewModifier {
                 .sheet(isPresented: $libraryViewModel.isLibraryPresented.gatedBy(isActive)) {
                     if #available(iOS 16.4, macOS 13.1, *) {
                         LibraryManagerView()
+#if os(iOS)
+                            .presentationDragIndicator(.visible)
+#endif
 #if os(macOS)
                             .frame(minWidth: 650, minHeight: 500)
 #endif
@@ -116,6 +124,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     @Published var selectedScript: UserScript?
+    @Published public var selectedSidebarDestination: LibrarySidebarDestination?
     @Published public var navigationPath = NavigationPath()
     @Published var libraryConfiguration: LibraryConfiguration?
     
@@ -124,6 +133,31 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
     
     var exportableOPML: OPML {
         return exportedOPML ?? OPML(entries: [])
+    }
+
+    @MainActor
+    public func showLibraryRoot() {
+        selectedSidebarDestination = nil
+        selectedFeed = nil
+        selectedScript = nil
+        navigationPath = NavigationPath()
+    }
+
+    @MainActor
+    public func showCategory(_ categoryID: UUID) {
+        selectedSidebarDestination = .category(categoryID)
+        selectedScript = nil
+        if selectedFeed?.categoryID != categoryID {
+            selectedFeed = nil
+        }
+        navigationPath = NavigationPath()
+    }
+
+    @MainActor
+    public func showUserScripts() {
+        selectedSidebarDestination = .userScripts
+        selectedFeed = nil
+        navigationPath = NavigationPath()
     }
 
     public override init() {
@@ -261,8 +295,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
             let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
             await realm.asyncRefresh()
             if let category = realm.resolve(assignRef) {
-                navigationPath.removeLast(navigationPath.count)
-                navigationPath.append(category)
+                showCategory(category.id)
                 if let feed = realm.object(ofType: Feed.self, forPrimaryKey: feedID) {
                     selectedFeed = feed
                 }
@@ -279,8 +312,7 @@ public class LibraryManagerViewModel: NSObject, ObservableObject {
                 guard let category = realm.resolve(category),
                       let newFeed = realm.object(ofType: Feed.self, forPrimaryKey: newFeedID)
                 else { return }
-                navigationPath.removeLast(navigationPath.count)
-                navigationPath.append(category)
+                showCategory(category.id)
                 selectedFeed = newFeed
             }
         } catch { }

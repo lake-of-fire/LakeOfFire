@@ -9,6 +9,7 @@ import OpenGraph
 import RealmSwiftGaps
 import SwiftUtilities
 import Combine
+import LakeKit
 
 let libraryCategoriesQueue = DispatchQueue(label: "LibraryCategories")
 
@@ -158,8 +159,11 @@ struct LibraryCategoriesView: View {
     @State private var window: NSWindow?
 #endif
     
-    @State private var selection = Set<AnyHashable>()
-    
+    private var isUserLibraryEmpty: Bool {
+        guard let userLibraryCategories = viewModel.userLibraryCategories else { return false }
+        return userLibraryCategories.isEmpty
+    }
+
     @ViewBuilder var importExportView: some View {
         ShareLink(item: libraryManagerViewModel.exportedOPMLFileURL ?? URL(string: "about:blank")!, message: Text(""), preview: SharePreview("Manabi Reader User Feeds OPML File", image: Image(systemName: "doc"))) {
 #if os(macOS)
@@ -218,7 +222,7 @@ struct LibraryCategoriesView: View {
     
     @ViewBuilder var userLibraryView: some View {
         ForEach(viewModel.userLibraryCategories ?? []) { category in
-            NavigationLink(value: category) {
+            NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(
                     title: category.title,
                     backgroundImageURL: category.backgroundImageUrl,
@@ -265,7 +269,7 @@ struct LibraryCategoriesView: View {
 
     @ViewBuilder var editorsPicksLibraryView: some View {
         ForEach(viewModel.editorsPicksLibraryCategories ?? []) { category in
-            NavigationLink(value: category) {
+            NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(
                     title: category.title,
                     backgroundImageURL: category.backgroundImageUrl,
@@ -283,7 +287,7 @@ struct LibraryCategoriesView: View {
     
     @ViewBuilder var archiveView: some View {
         ForEach(viewModel.archivedCategories ?? []) { category in
-            NavigationLink(value: category) {
+            NavigationLink(value: LibrarySidebarDestination.category(category.id)) {
                 FeedCategoryButtonLabel(title: category.title, backgroundImageURL: category.backgroundImageUrl, isCompact: true)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .saturation(0)
@@ -343,14 +347,33 @@ struct LibraryCategoriesView: View {
     
     var body: some View {
         ScrollViewReader { scrollProxy in
-            List(selection: $selection) {
+            List(selection: Binding(
+                get: { libraryManagerViewModel.selectedSidebarDestination },
+                set: { libraryManagerViewModel.selectedSidebarDestination = $0 }
+            )) {
                 Section {
-                    userLibraryView
+                    if isUserLibraryEmpty {
+                        EmptyStateBoxView(
+                            title: Text("Create categories for your feeds"),
+                            text: Text("Add categories to organize the RSS and Atom feeds you want to keep in your library. When Manabi Reader detects a feed on a webpage, an RSS menu appears in the toolbar or the More menu so you can add it here."),
+                            systemImageName: "square.stack.3d.up"
+                        ) {
+                            emptyStateAddCategoryButton(scrollProxy: scrollProxy)
+                        }
+                        .listRowSeparatorIfAvailable(.hidden)
+                        .listRowBackground(Color.clear)
+                        .stackListStyle(.grouped)
+                    } else {
+                        userLibraryView
+                    }
                 } header: {
                     HStack {
                         Text("User Library")
-                        Spacer(minLength: 12)
-                        addCategoryButton(scrollProxy: scrollProxy)
+                            .foregroundStyle(.primary)
+                        if !isUserLibraryEmpty {
+                            Spacer(minLength: 12)
+                            inlineAddCategoryButton(scrollProxy: scrollProxy)
+                        }
                     }
                 }
 
@@ -360,56 +383,83 @@ struct LibraryCategoriesView: View {
                 .labelStyle(.titleOnly)
                 .tint(appTint)
                 
-                Section("Editor's Picks") {
+                Section {
                     editorsPicksLibraryView
+                } header: {
+                    Text("Editor's Picks")
+                        .foregroundStyle(.primary)
                 }
                 
                 Section("Extensions") {
-                    NavigationLink(value: LibraryRoute.userScripts, label: {
+                    NavigationLink(value: LibrarySidebarDestination.userScripts, label: {
                         Label("User Scripts", systemImage: "wrench.and.screwdriver")
                     })
                 }
                 
-                Section("Archive") {
+                Section {
                     archiveView
+                } header: {
+                    Text("Archive")
+                        .foregroundStyle(.primary)
                 }
             }
             .listStyle(.sidebar)
 #if os(iOS)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if viewModel.userLibraryCategories?.contains(where: { $0.isUserEditable }) ?? false {
+                    if !isUserLibraryEmpty {
                         EditButton()
+                            .tint(.primary)
                     }
                 }
             }
 #endif
+            .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in
+                guard let categoryIDNeedsScrollTo else { return }
+                Task { @MainActor in
+                    scrollProxy.scrollTo("library-sidebar-\(categoryIDNeedsScrollTo)")
+                    self.categoryIDNeedsScrollTo = nil
+                }
+            }
         }
     }
     
     @ViewBuilder func addCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
         Button {
-            Task { @RealmBackgroundActor in
-                let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
-                try await { @MainActor in
-                    let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
-                    guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
-                    categoryIDNeedsScrollTo = category.id.uuidString
-                    try await Task.sleep(nanoseconds: 100_000_000)
-//                    libraryManagerViewModel.navigationPath.removeLast(libraryManagerViewModel.navigationPath.count)
-                    libraryManagerViewModel.navigationPath.append(category)
-                }()
-            }
+            createCategory(scrollProxy: scrollProxy)
         } label: {
-            Label("Add Category", systemImage: "plus")
+            Text("Add Category")
+                .foregroundStyle(.primary)
         }
         .buttonStyle(.bordered)
-        .onChange(of: categoryIDNeedsScrollTo) { categoryIDNeedsScrollTo in
-            guard let categoryIDNeedsScrollTo = categoryIDNeedsScrollTo else { return }
-            Task { @MainActor in // Untested whether this is needed
-                scrollProxy.scrollTo("library-sidebar-\(categoryIDNeedsScrollTo)")
-                self.categoryIDNeedsScrollTo = nil
-            }
+        .controlSize(.small)
+        .font(.footnote)
+        .fontWeight(.semibold)
+    }
+
+    @ViewBuilder private func inlineAddCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
+        addCategoryButton(scrollProxy: scrollProxy)
+            .tint(.secondary)
+    }
+
+    @ViewBuilder private func emptyStateAddCategoryButton(scrollProxy: ScrollViewProxy) -> some View {
+        Button("Add Category") {
+            createCategory(scrollProxy: scrollProxy)
+        }
+        .tint(.secondary)
+        .foregroundStyle(.primary)
+    }
+
+    private func createCategory(scrollProxy: ScrollViewProxy) {
+        Task { @RealmBackgroundActor in
+            let categoryID = try await LibraryDataManager.shared.createEmptyCategory(addToLibrary: true)
+            try await { @MainActor in
+                let realm = try await Realm.open(configuration: LibraryDataManager.realmConfiguration)
+                guard let category = realm.object(ofType: FeedCategory.self, forPrimaryKey: categoryID) else { return }
+                categoryIDNeedsScrollTo = category.id.uuidString
+                try await Task.sleep(nanoseconds: 100_000_000)
+                libraryManagerViewModel.showCategory(category.id)
+            }()
         }
     }
 }

@@ -436,8 +436,10 @@ public extension WebViewNavigator {
         readerFileManager: ReaderFileManager = ReaderFileManager.shared,
         readerModeViewModel: ReaderModeViewModel?
     ) async throws {
+        let loadStartedAt = CFAbsoluteTimeGetCurrent()
         if let url = try await ReaderContentLoader.load(content: content, readerFileManager: readerFileManager) {
             let loadSnapshot = debugLoadSnapshot
+            let resolvedAt = CFAbsoluteTimeGetCurrent()
             debugPrint(
                 "# READERLOAD stage=navigator.loadContent.begin contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) contentType=\(String(describing: type(of: content))) readerDefault=\(content.isReaderModeByDefault)"
             )
@@ -465,6 +467,9 @@ public extension WebViewNavigator {
             load(URLRequest(url: url))
             debugPrint(
                 "# READERLOAD stage=navigator.loadContent.dispatched targetURL=\(url.absoluteString)"
+            )
+            debugPrint(
+                "# READERLOAD stage=navigator.loadContent.summary contentURL=\(content.url.absoluteString) targetURL=\(url.absoluteString) resolveElapsed=\(String(format: "%.3f", resolvedAt - loadStartedAt))s dispatchElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - resolvedAt))s totalElapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - loadStartedAt))s readerDefault=\(content.isReaderModeByDefault) targetKind=\(url.isReaderURLLoaderURL ? "readerLoader" : (url.isHTTP ? "http" : (url.isFileURL ? "file" : "other")))"
             )
         } else {
             debugPrint(
