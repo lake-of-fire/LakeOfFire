@@ -5,6 +5,19 @@ import LakeOfFireAdblock
 import LakeOfFireContent
 import LakeOfFireFiles
 
+@inline(__always)
+private func readerLoadSchemeLog(_ stage: String, _ metadata: [String: String] = [:]) {
+    let payload = metadata
+        .sorted { $0.key < $1.key }
+        .map { "\($0.key)=\($0.value)" }
+        .joined(separator: " ")
+    if payload.isEmpty {
+        Swift.debugPrint("# READERLOAD stage=\(stage)")
+    } else {
+        Swift.debugPrint("# READERLOAD stage=\(stage) \(payload)")
+    }
+}
+
 public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     public var sharedReaderFontAsset: SharedReaderFontAsset?
     private static let readerLoaderStartedAtKeyPrefix = "InternalURLSchemeHandler.readerLoader.startedAt."
@@ -23,10 +36,26 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
     private let snippetPath = "/snippet"
 
     public func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let startedAt = Date()
         guard let url = urlSchemeTask.request.url, url.host == "local" else {
+            readerLoadSchemeLog(
+                "internalScheme.startFailed",
+                [
+                    "reason": "notLocalHost",
+                    "url": urlSchemeTask.request.url?.absoluteString ?? "nil"
+                ]
+            )
             urlSchemeTask.didFailWithError(CustomSchemeHandlerError.notFound)
             return
         }
+        readerLoadSchemeLog(
+            "internalScheme.start",
+            [
+                "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil",
+                "url": url.absoluteString,
+                "webViewURL": webView.url?.absoluteString ?? "nil"
+            ]
+        )
 
         if let fontResponse = sharedReaderFontResponse(
             for: url,
@@ -35,6 +64,15 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didReceive(fontResponse.response)
             urlSchemeTask.didReceive(fontResponse.data)
             urlSchemeTask.didFinish()
+            readerLoadSchemeLog(
+                "internalScheme.sharedReaderFont.finish",
+                [
+                    "bytes": String(fontResponse.data.count),
+                    "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                    "status": String(fontResponse.response.statusCode),
+                    "url": url.absoluteString
+                ]
+            )
             return
         }
 
@@ -44,7 +82,7 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         if url.path == readerLoaderPath {
-            handleReaderLoaderRequest(url: url, task: urlSchemeTask)
+            handleReaderLoaderRequest(url: url, webView: webView, task: urlSchemeTask)
             return
         }
 
@@ -57,9 +95,37 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
         urlSchemeTask.didReceive(response)
         urlSchemeTask.didReceive(Data())
         urlSchemeTask.didFinish()
+        readerLoadSchemeLog(
+            "internalScheme.didReceiveResponse",
+            [
+                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                "url": url.absoluteString
+            ]
+        )
+        readerLoadSchemeLog(
+            "internalScheme.didReceiveData",
+            [
+                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                "url": url.absoluteString
+            ]
+        )
+        readerLoadSchemeLog(
+            "internalScheme.didFinish",
+            [
+                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                "url": url.absoluteString
+            ]
+        )
     }
 
     public func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        readerLoadSchemeLog(
+            "internalScheme.stop",
+            [
+                "url": urlSchemeTask.request.url?.absoluteString ?? "nil",
+                "webViewURL": webView.url?.absoluteString ?? "nil"
+            ]
+        )
         let identifier = ObjectIdentifier(urlSchemeTask)
         taskQueue.sync {
             pendingTasks[identifier]?.cancel()
@@ -120,15 +186,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
         }
     }
 
-    private func handleReaderLoaderRequest(url: URL, task urlSchemeTask: WKURLSchemeTask) {
+    private func handleReaderLoaderRequest(url: URL, webView: WKWebView, task urlSchemeTask: WKURLSchemeTask) {
         let requestStartedAt = Date()
         UserDefaults.standard.set(
             requestStartedAt.timeIntervalSince1970,
             forKey: Self.readerLoaderStartedAtKeyPrefix + url.absoluteString
         )
-        debugPrint(
-            "# READERLOAD stage=internalScheme.readerLoader.begin",
-            "url=\(url.absoluteString)"
+        readerLoadSchemeLog(
+            "internalScheme.readerLoader.begin",
+            [
+                "mainDocumentURL": urlSchemeTask.request.mainDocumentURL?.absoluteString ?? "nil",
+                "url": url.absoluteString,
+                "webViewURL": webView.url?.absoluteString ?? "nil"
+            ]
         )
         let html = """
         <!doctype html>
@@ -164,10 +234,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             forKey: Self.readerLoaderResponseAtKeyPrefix + url.absoluteString
         )
         urlSchemeTask.didReceive(response)
-        debugPrint(
-            "# READERLOAD stage=internalScheme.readerLoader.didReceiveResponse",
-            "url=\(url.absoluteString)",
-            "elapsed=\(String(format: "%.3f", responseAt.timeIntervalSince(requestStartedAt)))s"
+        readerLoadSchemeLog(
+            "internalScheme.readerLoader.didReceiveResponse",
+            [
+                "elapsed": String(format: "%.3fs", responseAt.timeIntervalSince(requestStartedAt)),
+                "url": url.absoluteString
+            ]
+        )
+        readerLoadSchemeLog(
+            "internalScheme.didReceiveResponse",
+            [
+                "elapsed": String(format: "%.3fs", responseAt.timeIntervalSince(requestStartedAt)),
+                "url": url.absoluteString
+            ]
         )
         let dataAt = Date()
         UserDefaults.standard.set(
@@ -175,11 +254,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             forKey: Self.readerLoaderDataAtKeyPrefix + url.absoluteString
         )
         urlSchemeTask.didReceive(data)
-        debugPrint(
-            "# READERLOAD stage=internalScheme.readerLoader.didReceiveData",
-            "url=\(url.absoluteString)",
-            "bytes=\(data.count)",
-            "elapsed=\(String(format: "%.3f", dataAt.timeIntervalSince(requestStartedAt)))s"
+        readerLoadSchemeLog(
+            "internalScheme.readerLoader.didReceiveData",
+            [
+                "elapsed": String(format: "%.3fs", dataAt.timeIntervalSince(requestStartedAt)),
+                "url": url.absoluteString
+            ]
+        )
+        readerLoadSchemeLog(
+            "internalScheme.didReceiveData",
+            [
+                "elapsed": String(format: "%.3fs", dataAt.timeIntervalSince(requestStartedAt)),
+                "url": url.absoluteString
+            ]
         )
         let finishAt = Date()
         urlSchemeTask.didFinish()
@@ -187,10 +274,19 @@ public final class InternalURLSchemeHandler: NSObject, WKURLSchemeHandler {
             finishAt.timeIntervalSince1970,
             forKey: Self.readerLoaderFinishedAtKeyPrefix + url.absoluteString
         )
-        debugPrint(
-            "# READERLOAD stage=internalScheme.readerLoader.didFinish",
-            "url=\(url.absoluteString)",
-            "elapsed=\(String(format: "%.3f", finishAt.timeIntervalSince(requestStartedAt)))s"
+        readerLoadSchemeLog(
+            "internalScheme.readerLoader.didFinish",
+            [
+                "elapsed": String(format: "%.3fs", finishAt.timeIntervalSince(requestStartedAt)),
+                "url": url.absoluteString
+            ]
+        )
+        readerLoadSchemeLog(
+            "internalScheme.didFinish",
+            [
+                "elapsed": String(format: "%.3fs", finishAt.timeIntervalSince(requestStartedAt)),
+                "url": url.absoluteString
+            ]
         )
     }
 

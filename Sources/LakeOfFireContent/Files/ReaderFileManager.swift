@@ -11,6 +11,12 @@ import UniformTypeIdentifiers
 import LakeOfFireCore
 import LakeOfFireAdblock
 
+private extension URL {
+    var readerFilePathExtension: String {
+        NSString(string: absoluteString).pathExtension
+    }
+}
+
 public enum ReaderFileManagerError: Swift.Error {
     case invalidFileURL
     case driveMissing
@@ -56,11 +62,11 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             guard !content.isDeleted else { return false }
 
             let mimeType = content.mimeType.lowercased()
-            if ebookMimeTypes.contains(mimeType) || content.url.pathExtension.lowercased() == "epub" {
+            if ebookMimeTypes.contains(mimeType) || content.url.readerFilePathExtension.lowercased() == "epub" {
                 return false
             }
 
-            return ReaderContentLoader.supportsReaderContent(mimeType: content.mimeType, pathExtension: content.url.pathExtension)
+            return ReaderContentLoader.supportsReaderContent(mimeType: content.mimeType, pathExtension: content.url.readerFilePathExtension)
         }
     }
     
@@ -308,7 +314,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
         if distinctTargetExists, let originData = originData {
             if try await drive.readFile(at: targetFilePath) != originData {
                 // Make a unique filename
-                var ext = fileURL.pathExtension
+                var ext = fileURL.readerFilePathExtension
                 if !ext.isEmpty {
                     ext = "." + ext
                 }
@@ -454,7 +460,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         Self.logContentFileDecision(
                             stage: "discovery.skipUnsupported",
                             path: tryRelativePath.path,
-                            pathExtension: absoluteFileURL.pathExtension,
+                            pathExtension: absoluteFileURL.readerFilePathExtension,
                             mimeType: mimeType,
                             reason: "unsupportedType"
                         )
@@ -463,7 +469,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                         Self.logContentFileDecision(
                             stage: "discovery.index",
                             path: tryRelativePath.path,
-                            pathExtension: absoluteFileURL.pathExtension,
+                            pathExtension: absoluteFileURL.readerFilePathExtension,
                             mimeType: mimeType,
                             reason: reason
                         )
@@ -504,7 +510,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
                                 contentFile.updateCompoundKey()
                                 contentFile.isReaderModeByDefault = ReaderContentLoader.supportsReaderContent(
                                     mimeType: contentFile.mimeType,
-                                    pathExtension: readerFileURL.pathExtension
+                                    pathExtension: readerFileURL.readerFilePathExtension
                                 )
                                 realm.add(contentFile, update: .modified)
                                 updatedFiles.append(contentFile)
@@ -545,15 +551,16 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             if contentFile.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 contentFile.title = fileURL.deletingPathExtension().lastPathComponent
             }
-            let typeIdentifier = UTType(filenameExtension: fileURL.pathExtension)?.identifier
+            let pathExtension = fileURL.readerFilePathExtension
+            let typeIdentifier = UTType(filenameExtension: pathExtension)?.identifier
             contentFile.mimeType = ReaderContentLoader.canonicalMimeType(
-                mimeType: UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType,
+                mimeType: UTType(filenameExtension: pathExtension)?.preferredMIMEType,
                 typeIdentifier: typeIdentifier,
-                pathExtension: fileURL.pathExtension
+                pathExtension: pathExtension
             )
             
             // contentFile.url replace with on-disk url (make a new computed var for that?)
-            if absoluteFileURL.pathExtension.lowercased() == "zip", let archive = try? Archive(url: absoluteFileURL, accessMode: .read) {
+            if absoluteFileURL.readerFilePathExtension.lowercased() == "zip", let archive = try? Archive(url: absoluteFileURL, accessMode: .read) {
                 let filePaths = RealmSwift.MutableSet<String>()
                 filePaths.insert(objectsIn: archive.map { $0.path })
                 contentFile.packageFilePaths = filePaths
@@ -616,7 +623,7 @@ public class ReaderFileManager: ObservableObject, @unchecked Sendable {
             return .skipArtifact
         }
 
-        let pathExtension = absoluteFileURL.pathExtension.lowercased()
+        let pathExtension = absoluteFileURL.readerFilePathExtension.lowercased()
         let mimeType = UTType(filenameExtension: pathExtension)?.preferredMIMEType
 
         if ReaderContentLoader.supportsReaderContent(mimeType: mimeType, pathExtension: pathExtension) {
@@ -717,7 +724,7 @@ extension ReaderFileManager: CloudDriveObserver {
 private extension ReaderFileManager {
     @MainActor
     static func rootRelativePath(forImportedURL url: URL, drive: CloudDrive) async throws -> RootRelativePath {
-        switch url.pathExtension.lowercased() {
+        switch url.readerFilePathExtension.lowercased() {
         default:
             for fileDestinationProcessor in fileDestinationProcessors {
                 if let destination = try await fileDestinationProcessor(url) {

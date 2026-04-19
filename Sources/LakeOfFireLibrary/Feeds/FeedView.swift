@@ -70,6 +70,7 @@ public struct FeedView: View {
     @ObservedRealmObject var feed: Feed
     @ObservedObject var viewModel: FeedViewModel
     var isHorizontal = false
+    var showsToolbar = true
 
     @Environment(\.contentSelection) private var contentSelection
 
@@ -136,29 +137,32 @@ public struct FeedView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Menu {
-                    if showsMarkAllAsSeenAction {
-                        Button("Mark All as Seen") {
-                            Task { @MainActor in
-                                try? await markAllEntriesAsSeen()
+                if showsToolbar {
+                    Menu {
+                        if showsMarkAllAsSeenAction {
+                            Button("Mark All as Seen") {
+                                Task { @MainActor in
+                                    try? await markAllEntriesAsSeen()
+                                }
                             }
                         }
+                        Toggle(isOn: showUnseenBadgeBinding) {
+                            Text("Show Unseen Badge")
+                        }
+                    } label: {
+                        Label("More Options", systemImage: "ellipsis")
+                            .labelStyle(.iconOnly)
                     }
-                    Toggle(isOn: showUnseenBadgeBinding) {
-                        Text("Show Unseen Badge")
-                    }
-                } label: {
-                    Label("More Options", systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
                 }
             }
         }
     }
     
-    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false) {
+    public init(feed: Feed, viewModel: FeedViewModel, isHorizontal: Bool = false, showsToolbar: Bool = true) {
         self.feed = feed
         self.viewModel = viewModel
         self.isHorizontal = isHorizontal
+        self.showsToolbar = showsToolbar
     }
 
     @MainActor

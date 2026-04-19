@@ -4023,19 +4023,48 @@ export class Paginator extends HTMLElement {
     async _getSameDocumentPreparedNavigationState(targetPageIndex, reason = 'same-document-navigation') {
         const target = Number.isFinite(targetPageIndex) ? Math.max(0, Math.floor(targetPageIndex)) : null
         const activeLayout = this._getActiveEbookSectionLayout()
-        if (target != null && typeof activeLayout?.ensurePageBuilt === 'function') {
+        const requestTargetPageBuild = () => {
+            if (target == null || typeof activeLayout?.ensurePageBuilt !== 'function') return
             try {
                 activeLayout.ensurePageBuilt(target, { reason })
             } catch (_error) {}
         }
+        const hasTargetPageLocation = () => {
+            if (target == null || typeof activeLayout?.captureLocationForPage !== 'function') return false
+            try {
+                return activeLayout.captureLocationForPage(target) != null
+            } catch (_error) {
+                return false
+            }
+        }
+        const hasTargetPageNode = () => {
+            if (target == null) return false
+            const liveRoot = this._getSameDocumentLiveRoot()
+            if (!(liveRoot instanceof HTMLElement)) return false
+            return !!(
+                liveRoot.querySelector(`:scope > .manabi-page[data-manabi-page-index="${target}"]`)
+                || liveRoot.querySelector(`.manabi-page[data-manabi-page-index="${target}"]`)
+            )
+        }
+        const hasResolvedTargetPage = () => hasTargetPageNode() || hasTargetPageLocation()
+        requestTargetPageBuild()
         let resolved = this._getSameDocumentResolvedNavigationStateSync()
-        if (
-            target != null
-            && resolved.pageCount <= 1
-            && typeof activeLayout?.layoutDiagnostics === 'function'
-        ) {
-            await nextFrame()
-            resolved = this._getSameDocumentResolvedNavigationStateSync()
+        if (target != null && typeof activeLayout?.layoutDiagnostics === 'function') {
+            for (let attempt = 0; attempt < 6; attempt += 1) {
+                if (resolved.pageCount > target && hasResolvedTargetPage()) {
+                    break
+                }
+                if (hasResolvedTargetPage()) {
+                    resolved = {
+                        ...resolved,
+                        pageCount: Math.max(resolved.pageCount, target + 1),
+                    }
+                    break
+                }
+                await nextFrame()
+                requestTargetPageBuild()
+                resolved = this._getSameDocumentResolvedNavigationStateSync()
+            }
         }
         return resolved
     }
@@ -5423,12 +5452,20 @@ export class Paginator extends HTMLElement {
                 page,
                 reason ?? 'scrollToPage'
             )
+            const activeTargetPageNode = typeof document !== 'undefined'
+                ? (
+                    this._getSameDocumentLiveRoot()?.querySelector?.(`:scope > .manabi-page[data-manabi-page-index="${page}"]`)
+                    || this._getSameDocumentLiveRoot()?.querySelector?.(`.manabi-page[data-manabi-page-index="${page}"]`)
+                    || null
+                )
+                : null
             setSameDocumentHostTurnDiagnostics({
                 phase: 'scroll-to-page-begin',
                 reason: reason ?? 'scrollToPage',
                 currentPageIndex: pageIndex,
                 pageCount,
                 targetPageIndex: page,
+                targetPageNodePresent: activeTargetPageNode != null,
             })
             await this._applySameDocumentPagePosition(page, {
                 reason: reason ?? 'scrollToPage',
@@ -5804,18 +5841,20 @@ export class Paginator extends HTMLElement {
         const sameDocumentNavigationState = this._usesSameDocumentPagePositioningSync()
             ? this._getSameDocumentResolvedNavigationStateSync()
             : null
-        let range = await this._getVisibleRange()
+        let range = null
         if (
             sameDocumentNavigationState
             && activeLayout
             && typeof activeLayout.sourceRangeForPage === 'function'
         ) {
             try {
-                const sameDocumentRange = activeLayout.sourceRangeForPage(sameDocumentNavigationState.pageIndex)
-                if (sameDocumentRange) {
-                    range = sameDocumentRange
-                }
-            } catch (_error) {}
+                range = activeLayout.sourceRangeForPage(sameDocumentNavigationState.pageIndex)
+            } catch (_error) {
+                range = null
+            }
+        }
+        if (!range) {
+            range = await this._getVisibleRange()
         }
 
         const index = this._index
@@ -6473,12 +6512,7 @@ export class Paginator extends HTMLElement {
         if (this._usesSameDocumentPagePositioningSync()) {
             return Promise.resolve().then(async () => {
                 let { pageIndex: currentPage, pageCount } = this._getSameDocumentResolvedNavigationStateSync()
-                let targetPage = currentPage + dir
-                ;({ pageIndex: currentPage, pageCount } = await this._getSameDocumentPreparedNavigationState(
-                    targetPage,
-                    'host-turn'
-                ))
-                targetPage = currentPage + dir
+                let targetPage = Math.max(0, Math.min(pageCount - 1, currentPage + dir))
                 setSameDocumentHostTurnDiagnostics({
                     phase: 'host-turn-begin',
                     direction,
@@ -6486,20 +6520,26 @@ export class Paginator extends HTMLElement {
                     pageCount,
                     targetPageIndex: targetPage,
                 })
-                if (targetPage >= 0 && targetPage < pageCount) {
-                    await this._scrollToPage(targetPage, 'host-turn', false)
-                    const settledState = this._getSameDocumentResolvedNavigationStateSync()
-                    const settledPageIndex = settledState.pageIndex
-                    const settledPageCount = settledState.pageCount
+                if (dir < 0) {
+                    await this._scrollPrev()
+                } else {
+                    await this._scrollNext()
+                }
+                const settledState = this._getSameDocumentResolvedNavigationStateSync()
+                const settledPageIndex = settledState.pageIndex
+                const settledPageCount = settledState.pageCount
+                const moved = settledPageIndex !== currentPage
+                targetPage = Math.max(0, Math.min(settledPageCount - 1, currentPage + dir))
+                if (moved) {
                     setSameDocumentHostTurnDiagnostics({
-                        phase: settledPageIndex === targetPage ? 'host-turn-complete' : 'host-turn-stalled',
+                        phase: 'host-turn-complete',
                         direction,
                         currentPageIndex: settledPageIndex,
                         pageCount: settledPageCount,
                         targetPageIndex: targetPage,
-                        result: settledPageIndex === targetPage ? 'page' : 'stalled',
+                        result: 'page',
                     })
-                    return settledPageIndex === targetPage
+                    return true
                 }
                 const adjacentIndex = this._adjacentIndex(dir)
                 if (adjacentIndex != null) {
@@ -6520,8 +6560,8 @@ export class Paginator extends HTMLElement {
                 setSameDocumentHostTurnDiagnostics({
                     phase: 'host-turn-unavailable',
                     direction,
-                    currentPageIndex: currentPage,
-                    pageCount,
+                    currentPageIndex: settledPageIndex,
+                    pageCount: settledPageCount,
                     targetPageIndex: targetPage,
                     result: 'unavailable',
                 })

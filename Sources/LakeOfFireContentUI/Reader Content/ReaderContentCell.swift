@@ -68,10 +68,14 @@ class ReaderContentCellViewModel<C: ReaderContentProtocol & ObjectKeyIdentifiabl
                 let latestHistoryRecordLastVisitedAt: Date?
                 let feedShowsUnseenBadge: Bool
                 if item is FeedEntry {
-                    let historyRealm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
-                    latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: item.url, in: historyRealm)
                     let feedEntry = item as? FeedEntry
                     feedShowsUnseenBadge = feedEntry?.getFeed()?.showsUnseenBadge ?? true
+                    if feedShowsUnseenBadge {
+                        let historyRealm = try await Realm.open(configuration: ReaderContentLoader.historyRealmConfiguration)
+                        latestHistoryRecordLastVisitedAt = HistoryRecord.latestLastVisitedAt(for: item.url, in: historyRealm)
+                    } else {
+                        latestHistoryRecordLastVisitedAt = nil
+                    }
                 } else {
                     latestHistoryRecordLastVisitedAt = nil
                     feedShowsUnseenBadge = true

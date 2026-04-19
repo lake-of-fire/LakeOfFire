@@ -85,9 +85,9 @@ public extension Feed {
     }
 
     var hasEntriesNewerThanLastViewedAt: Bool {
+        guard showsUnseenBadge else { return false }
         let entries = getEntries() ?? []
         let effectiveLastViewedAt = effectiveFeedSeenDate
-        guard showsUnseenBadge else { return false }
         guard let effectiveLastViewedAt else {
             return false
         }
