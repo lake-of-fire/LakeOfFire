@@ -553,6 +553,11 @@ internal func hasCanonicalReadabilityMarkup(in html: String) -> Bool {
 internal func markReaderRenderReady(in doc: SwiftSoup.Document) {
     try? doc.select("html").first()?.attr("data-manabi-reader-render-ready", "1")
     try? doc.body()?.attr("data-manabi-reader-render-ready", "1")
+    debugPrint(
+        "# READERLOAD stage=readerMode.renderReadyMarkerInserted",
+        "baseURL=\(doc.getBaseUri())",
+        "hasBody=\(doc.body() != nil)"
+    )
 }
 
 internal func titleFromReadabilityHTML(_ html: String) -> String? {
@@ -858,7 +863,7 @@ private func propagateReaderModeDefaults(
         )
     } catch {
         debugPrint(
-            "# READER readerMode.propagateDefaults.error",
+            "# EPUB  readerMode.propagateDefaults.error",
             url.absoluteString,
             error.localizedDescription
         )
@@ -926,13 +931,13 @@ private func propagateReaderModeDefaultsOnBackgroundActor(
 @MainActor
 public class ReaderModeViewModel: ObservableObject {
     public var readerFileManager: ReaderFileManager?
-    public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
-    public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
-    public var processHTML: ((String, Bool) async -> String)? = nil
+    @Published public var ebookTextProcessorCacheHits: ((URL, String) async throws -> Bool)? = nil
+    @Published public var processReadabilityContent: ((String, URL, URL?, Bool, ((SwiftSoup.Document) async -> SwiftSoup.Document)) async throws -> SwiftSoup.Document)? = nil
+    @Published public var processHTML: ((String, Bool) async -> String)? = nil
     public var navigator: WebViewNavigator?
     public var defaultFontSize: Double?
-    public var sharedFontCSSBase64: String?
-    public var sharedFontCSSBase64Provider: (() async -> String?)?
+    @Published public var sharedFontCSSBase64: String?
+    @Published public var sharedFontCSSBase64Provider: (() async -> String?)?
     @Published public var sharedReaderFontAsset: SharedReaderFontAsset?
     public var readerModeLoadCompletionHandler: ((URL) -> Void)?
     
@@ -1191,12 +1196,13 @@ public class ReaderModeViewModel: ObservableObject {
         guard pendingMatches || expectedMatches || syntheticCompletionInFlight else { return }
 
         debugPrint(
-            "# READER snippet.readerDocumentReady",
+            "# EPUB  snippet.readerDocumentReady",
             "pageURL=\(pageURL.absoluteString)",
             "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
             "expected=\(expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")",
             "hasReaderContent=\(hasReaderContent)",
-            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)"
+            "syntheticCompletionInFlight=\(syntheticCompletionInFlight)",
+            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: canonicalURL))"
         )
         navigator?.forceClearLoadingIndicators(
             reason: "readerMode.syntheticLoad.renderReady",
@@ -1229,7 +1235,7 @@ public class ReaderModeViewModel: ObservableObject {
         }
 
         if expectedSyntheticReaderLoaderURL != nil {
-            debugPrint("# READER readerMode.complete.defer.emptyReadability.expectedSyntheticCommit", canonicalURL.absoluteString)
+            debugPrint("# EPUB  readerMode.complete.defer.emptyReadability.expectedSyntheticCommit", canonicalURL.absoluteString)
             return true
         }
 
@@ -1269,6 +1275,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
+        guard !pageURL.isReaderURLLoaderURL else { return false }
         if sharedReaderFontUsesLocalScheme(for: pageURL) {
             return true
         }
@@ -1278,6 +1285,7 @@ public class ReaderModeViewModel: ObservableObject {
 
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard pageURL.absoluteString != "about:blank" else { return }
+        guard !pageURL.isReaderURLLoaderURL else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
         if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
@@ -1294,6 +1302,10 @@ public class ReaderModeViewModel: ObservableObject {
                             print.postMessage(payload);
                         }
                     } catch (_) {}
+                };
+                const isLoaderShellDocument = () => {
+                    const href = window.location.href || '';
+                    return href.startsWith('internal://local/load/reader');
                 };
                 const setFontPendingState = (pending) => {
                     const root = document.documentElement;
@@ -1315,6 +1327,10 @@ public class ReaderModeViewModel: ObservableObject {
                     return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
                 };
                 const ensureReaderFontStyle = (desiredFamily) => {
+                    if (isLoaderShellDocument()) {
+                        postLog('skipLoaderShell mode=local-scheme href=' + window.location.href);
+                        return null;
+                    }
                     const root = document.documentElement;
                     if (!root) return null;
                     const family = desiredFamily
@@ -1342,6 +1358,10 @@ public class ReaderModeViewModel: ObservableObject {
                     postLog('stylesheetPrepared mode=local-scheme family=' + family + ' href=' + window.location.href);
                     return style;
                 };
+                if (isLoaderShellDocument()) {
+                    postLog('skipLoaderShell mode=local-scheme href=' + window.location.href);
+                    return;
+                }
                 globalThis.manabiReaderFontInjectionMode = 'local-scheme';
                 globalThis.manabiResolveReaderFontStylesheetURL = resolveStylesheetURL;
                 globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
@@ -1414,10 +1434,10 @@ public class ReaderModeViewModel: ObservableObject {
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return }
         let fontHash = readerFontPayloadHash(base64)
         let js = """
-        (function() {
-            const postLog = (message) => {
-                try {
-                    const payload = '# READERLOAD stage=readerMode.fontGate ' + message;
+            (function() {
+                const postLog = (message) => {
+                    try {
+                        const payload = '# READERLOAD stage=readerMode.fontGate ' + message;
                     const webkitPrint = window.webkit?.messageHandlers?.print;
                     if (webkitPrint && typeof webkitPrint.postMessage === 'function') {
                         webkitPrint.postMessage(payload);
@@ -1425,12 +1445,16 @@ public class ReaderModeViewModel: ObservableObject {
                     }
                     if (typeof print !== 'undefined' && print && typeof print.postMessage === 'function') {
                         print.postMessage(payload);
-                    }
-                } catch (_) {}
-            };
-            const setFontPendingState = (pending) => {
-                const root = document.documentElement;
-                if (!root) return;
+                        }
+                    } catch (_) {}
+                };
+                const isLoaderShellDocument = () => {
+                    const href = window.location.href || '';
+                    return href.startsWith('internal://local/load/reader');
+                };
+                const setFontPendingState = (pending) => {
+                    const root = document.documentElement;
+                    if (!root) return;
                 if (pending) {
                     root.dataset.manabiFontPending = '1';
                     root.dataset.manabiFontReady = '0';
@@ -1458,10 +1482,14 @@ public class ReaderModeViewModel: ObservableObject {
                     try { URL.revokeObjectURL(previousBlobURL); } catch (_) {}
                 }
                 return nextBlobURL;
-            };
-            const ensureReaderFontStyle = (desiredFamily) => {
-                const root = document.documentElement;
-                if (!root) return null;
+                };
+                const ensureReaderFontStyle = (desiredFamily) => {
+                    if (isLoaderShellDocument()) {
+                        postLog('skipLoaderShell mode=blob href=' + window.location.href);
+                        return null;
+                    }
+                    const root = document.documentElement;
+                    if (!root) return null;
                 let style = document.getElementById('manabi-custom-fonts-inline');
                 if (style) return style;
                 const css = globalThis.manabiReaderFontCSSText || '';
@@ -1484,9 +1512,13 @@ public class ReaderModeViewModel: ObservableObject {
                 (document.head || document.documentElement).appendChild(style);
                 postLog('stylesheetPrepared mode=blob family=' + (desiredFamily || 'nil') + ' href=' + window.location.href);
                 return style;
-            };
-            globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
-            let gateTimeout = null;
+                };
+                if (isLoaderShellDocument()) {
+                    postLog('skipLoaderShell mode=blob href=' + window.location.href);
+                    return;
+                }
+                globalThis.manabiEnsureReaderFontStyle = ensureReaderFontStyle;
+                let gateTimeout = null;
             const scheduleGateTimeout = () => {
                 if (gateTimeout) {
                     clearTimeout(gateTimeout);
@@ -1617,7 +1649,7 @@ public class ReaderModeViewModel: ObservableObject {
             loadTraceRecords[key] = record
         }
         var segments: [String] = [
-            "# READER readerMode.trace",
+            "# EPUB  readerMode.trace",
             "stage=\(stage.rawValue)",
             "url=\(url.absoluteString)",
             "pending=\(pendingReaderModeURL?.absoluteString ?? "nil")",
@@ -1639,7 +1671,8 @@ public class ReaderModeViewModel: ObservableObject {
         expectedSyntheticReaderLoaderURL = baseURL
         debugPrint(
             "# READERLOAD stage=readerMode.syntheticExpectation.set",
-            "url=\(baseURL?.absoluteString ?? "nil")"
+            "url=\(baseURL?.absoluteString ?? "nil")",
+            "syntheticLoadElapsed=\(baseURL.map { syntheticLoadElapsedString(for: $0) } ?? "nil")"
         )
     }
 
@@ -1651,14 +1684,16 @@ public class ReaderModeViewModel: ObservableObject {
             debugPrint(
                 "# READERLOAD stage=readerMode.syntheticExpectation.consume",
                 "expectedURL=\(expectedSyntheticReaderLoaderURL.absoluteString)",
-                "actualURL=\(url.absoluteString)"
+                "actualURL=\(url.absoluteString)",
+                "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: url))"
             )
             return true
         }
         debugPrint(
             "# READERLOAD stage=readerMode.syntheticExpectation.miss",
             "expectedURL=\(expectedSyntheticReaderLoaderURL.absoluteString)",
-            "actualURL=\(url.absoluteString)"
+            "actualURL=\(url.absoluteString)",
+            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: url))"
         )
         return false
     }
@@ -1711,8 +1746,18 @@ public class ReaderModeViewModel: ObservableObject {
         return normalizedPendingMatchKey(for: canonicalURL) ?? canonicalURL.absoluteString
     }
 
+    @MainActor
+    public func currentRenderGenerationDescription(for url: URL) -> String {
+        activeRenderGenerationDescription(for: canonicalRenderKey(url))
+    }
+
     private func markSyntheticLoadIssued(for url: URL) {
         syntheticLoadIssuedAtByURL[canonicalRenderKey(url)] = Date()
+        debugPrint(
+            "# READERLOAD stage=readerMode.syntheticLoad.issued",
+            "url=\(url.absoluteString)",
+            "renderGeneration=\(activeRenderGenerationDescription(for: canonicalRenderKey(url)))"
+        )
     }
 
     private func clearSyntheticLoadIssued(for url: URL) {
@@ -1720,7 +1765,7 @@ public class ReaderModeViewModel: ObservableObject {
     }
 
     @MainActor
-    func syntheticLoadElapsedString(for url: URL) -> String {
+    public func syntheticLoadElapsedString(for url: URL) -> String {
         guard let issuedAt = syntheticLoadIssuedAtByURL[canonicalRenderKey(url)] else {
             return "nil"
         }
@@ -1733,9 +1778,24 @@ public class ReaderModeViewModel: ObservableObject {
         readyState: String,
         hasReaderContent: Bool,
         hasReaderRenderReady: Bool,
-        reason: String
+        reason: String,
+        manabiFontPending: String,
+        bodyVisibility: String,
+        bodyOpacity: String
     ) {
-        return
+        debugPrint(
+            "# READERLOAD stage=readerMode.syntheticDocumentState",
+            "pageURL=\(pageURL.absoluteString)",
+            "readyState=\(readyState)",
+            "hasReaderContent=\(hasReaderContent)",
+            "hasReaderRenderReady=\(hasReaderRenderReady)",
+            "reason=\(reason)",
+            "renderGeneration=\(activeRenderGenerationDescription(for: canonicalRenderKey(pageURL)))",
+            "manabiFontPending=\(manabiFontPending)",
+            "bodyVisibility=\(bodyVisibility)",
+            "bodyOpacity=\(bodyOpacity)",
+            "syntheticLoadElapsed=\(syntheticLoadElapsedString(for: pageURL))"
+        )
     }
 
     private func activeRenderGenerationDescription(for key: String) -> String {
@@ -2519,10 +2579,13 @@ public class ReaderModeViewModel: ObservableObject {
 
             markReaderRenderReady(in: doc)
 
+            let serializeStartedAt = CFAbsoluteTimeGetCurrent()
             let serializedHTMLBytes = try doc.outerHtmlUTF8()
+            let serializeElapsed = CFAbsoluteTimeGetCurrent() - serializeStartedAt
 
             var transformedHTMLBytes = serializedHTMLBytes
             var transformedHTMLString: String?
+            var processHTMLElapsed: CFAbsoluteTime = 0
             if let processHTML {
                 let processHTMLStart = CFAbsoluteTimeGetCurrent()
                 let serializedHTML = String(decoding: serializedHTMLBytes, as: UTF8.self)
@@ -2532,9 +2595,10 @@ public class ReaderModeViewModel: ObservableObject {
                 )
                 transformedHTMLString = processedHTML
                 transformedHTMLBytes = Array(processedHTML.utf8)
+                processHTMLElapsed = CFAbsoluteTimeGetCurrent() - processHTMLStart
                 debugPrint(
                     "# READERLOAD stage=readerMode.showReadabilityContent.processHTML",
-                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - processHTMLStart))s",
+                    "elapsed=\(String(format: "%.3f", processHTMLElapsed))s",
                     "bytes=\(transformedHTMLBytes.count)"
                 )
             }
@@ -2542,11 +2606,15 @@ public class ReaderModeViewModel: ObservableObject {
             debugPrint(
                 "# READERLOAD stage=readerMode.showReadabilityContent.transformed",
                 "renderBaseURL=\(renderBaseURL.absoluteString)",
+                "serializedBytes=\(serializedHTMLBytes.count)",
                 "bytes=\(transformedHTMLBytes.count)",
                 "segmentCount=\(processedSegmentCount)",
                 "hasBody=\(processedBodyExists)",
+                "serializeElapsed=\(String(format: "%.3f", serializeElapsed))s",
+                "processHTMLElapsed=\(String(format: "%.3f", processHTMLElapsed))s",
                 "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - transformStart))s"
             )
+            let frameInjectionPrepStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedContentForFrameInjection: String?
             let transformedBodyClassesForFrameInjection: String?
             let transformedStyleTextForFrameInjection: String?
@@ -2583,8 +2651,28 @@ public class ReaderModeViewModel: ObservableObject {
                 transformedBodyClassesForFrameInjection = nil
                 transformedStyleTextForFrameInjection = nil
             }
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.frameInjectionPrep",
+                "renderBaseURL=\(renderBaseURL.absoluteString)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - frameInjectionPrepStartedAt))s",
+                "hasFrameInfo=\(frameInfo != nil)",
+                "isMainFrame=\(frameInfo?.isMainFrame ?? true)"
+            )
+            let dataBuildStartedAt = CFAbsoluteTimeGetCurrent()
             let transformedHTMLData = Data(transformedHTMLBytes)
+            debugPrint(
+                "# READERLOAD stage=readerMode.showReadabilityContent.dataBuild",
+                "renderBaseURL=\(renderBaseURL.absoluteString)",
+                "bytes=\(transformedHTMLData.count)",
+                "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - dataBuildStartedAt))s"
+            )
+            let mainActorHandoffStartedAt = CFAbsoluteTimeGetCurrent()
             try await { @MainActor in
+                debugPrint(
+                    "# READERLOAD stage=readerMode.showReadabilityContent.mainActorHandoff",
+                    "renderBaseURL=\(renderBaseURL.absoluteString)",
+                    "elapsed=\(String(format: "%.3f", CFAbsoluteTimeGetCurrent() - mainActorHandoffStartedAt))s"
+                )
                 guard url.matchesReaderURL(readerContent.pageURL) else {
                     debugPrint(
                         "# READERTRACE",
@@ -2925,7 +3013,7 @@ public class ReaderModeViewModel: ObservableObject {
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         logStateSnapshot("navCommitted", url: committedURL)
         if !scriptCaller.hasAsyncCaller {
-            debugPrint("# READER paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(newState.pageURL.absoluteString)")
+            debugPrint("# EPUB  paginationBookKey.set.skip", "reason=asyncCallerNil", "url=\(newState.pageURL.absoluteString)")
         } else {
             do {
                 try await scriptCaller.evaluateJavaScript(
@@ -2934,9 +3022,9 @@ public class ReaderModeViewModel: ObservableObject {
                     in: nil,
                     duplicateInMultiTargetFrames: true
                 )
-                debugPrint("# READER paginationBookKey.set", "key=\(newState.pageURL.absoluteString.prefix(72))…")
+                debugPrint("# EPUB  paginationBookKey.set", "key=\(newState.pageURL.absoluteString.prefix(72))…")
             } catch {
-                debugPrint("# READER paginationBookKey.set.error", error.localizedDescription)
+                debugPrint("# EPUB  paginationBookKey.set.error", error.localizedDescription)
             }
         }
 

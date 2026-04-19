@@ -7,6 +7,10 @@ import SwiftSoup
 import Combine
 import RealmSwiftGaps
 
+private func logLandscapeInset(_ message: String) {
+    debugPrint("# LANDSCAPEINSET \(message)")
+}
+
 private struct ReaderStatusBarFadeMask: ViewModifier {
     var topFadeHeight: CGFloat
     var edgeOpacity: CGFloat = 0.125
@@ -71,7 +75,7 @@ func syncReaderPaginationTrackingSettingsKey(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-        debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+        debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
         return
     }
     let key = readerPaginationTrackingSettingsKey(
@@ -84,9 +88,9 @@ func syncReaderPaginationTrackingSettingsKey(
             "window.paginationTrackingSettingsKey = '" + key + "';",
             true
         )
-        debugPrint("# READER paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
+        debugPrint("# EPUB  paginationSettingsKey.set", "reason=\(reason)", "key=\(key)")
     } catch {
-        debugPrint("# READER paginationSettingsKey.set.error", error.localizedDescription)
+        debugPrint("# EPUB  paginationSettingsKey.set.error", error.localizedDescription)
     }
 }
 
@@ -116,7 +120,7 @@ func applyReaderFontSize(
     evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
 ) async {
     guard hasAsyncCaller else {
-        debugPrint("# READER paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
+        debugPrint("# EPUB  paginationSettingsKey.set.skip", "reason=\(reason)", "key=<nil>", "info=no asyncCaller")
         return
     }
     do {
@@ -216,6 +220,67 @@ func applyReaderDarkTheme(
         evaluateJavaScript: evaluateJavaScript
     )
     await requestReaderTrackingSectionGeometryBake(reason: "dark-theme-change", evaluateJavaScript: evaluateJavaScript)
+}
+
+@MainActor
+private func ebookToolbarBottomOffset(
+    obscuredBottomInset: CGFloat,
+    additionalBottomSafeAreaInset: CGFloat
+) -> CGFloat {
+    let obscuredBottomInset = max(0, obscuredBottomInset)
+    let additionalBottomSafeAreaInset = max(0, additionalBottomSafeAreaInset)
+    guard additionalBottomSafeAreaInset > 0 else {
+        return obscuredBottomInset
+    }
+    // The minimized detent adds a full safe-area bar for content/layout, but the floating
+    // EPUB toolbar only needs to clear the visible chrome near the sheet edge.
+    return max(0, obscuredBottomInset - (additionalBottomSafeAreaInset * 0.5))
+}
+
+@MainActor
+func syncEbookViewerChromeInsets(
+    pageURL: URL,
+    toolbarBottomOffset: CGFloat,
+    obscuredBottomInset: CGFloat,
+    hasAsyncCaller: Bool,
+    evaluateJavaScript: ReaderSettingsJavaScriptEvaluator
+) async {
+    guard pageURL.isEBookURL else { return }
+    guard hasAsyncCaller else { return }
+    let toolbarBottomOffset = max(0, toolbarBottomOffset)
+    let obscuredBottomInset = max(0, obscuredBottomInset)
+    let toolbarBottomOffsetCSS = "\(toolbarBottomOffset)px"
+    let obscuredBottomInsetCSS = "\(obscuredBottomInset)px"
+    do {
+        try await evaluateJavaScript(
+            """
+            (function() {
+              const toolbarBottomOffset = '\(toolbarBottomOffsetCSS)';
+              const obscuredBottomInset = '\(obscuredBottomInsetCSS)';
+              const targets = [document.documentElement, document.body].filter(Boolean);
+              for (const target of targets) {
+                target.style.setProperty('--manabi-toolbar-bottom-offset', toolbarBottomOffset);
+                target.style.setProperty('--manabi-obscured-bottom-inset', obscuredBottomInset);
+              }
+            })();
+            """,
+            true
+        )
+        debugPrint(
+            "# EPUB  ebook.viewer.insets.apply",
+            "pageURL=\(pageURL.absoluteString)",
+            "toolbarBottomOffset=\(toolbarBottomOffset)",
+            "obscuredBottomInset=\(obscuredBottomInset)",
+            "toolbarBottomOffsetCSS=\(toolbarBottomOffsetCSS)",
+            "obscuredBottomInsetCSS=\(obscuredBottomInsetCSS)"
+        )
+    } catch {
+        debugPrint(
+            "# EPUB  ebook.viewer.insets.apply.error",
+            "pageURL=\(pageURL.absoluteString)",
+            "error=\(error.localizedDescription)"
+        )
+    }
 }
 
 fileprivate struct ThemeModifier: ViewModifier {
@@ -591,19 +656,24 @@ public struct Reader: View {
             GeometryReader { geometry in
                 Color.clear
                     .task {
-                        obscuredInsets = EdgeInsets(
+                        let sampledInsets = EdgeInsets(
                             top: max(0, geometry.safeAreaInsets.top),
                             leading: max(0, geometry.safeAreaInsets.leading),
                             bottom: max(0, geometry.safeAreaInsets.bottom),
                             trailing: max(0, geometry.safeAreaInsets.trailing)
                         )
+                        obscuredInsets = sampledInsets
                     }
                     .onChange(of: geometry.safeAreaInsets) { safeAreaInsets in
-                        obscuredInsets = EdgeInsets(
+                        let sampledInsets = EdgeInsets(
                             top: max(0, safeAreaInsets.top),
                             leading: max(0, safeAreaInsets.leading),
                             bottom: max(0, safeAreaInsets.bottom),
                             trailing: max(0, safeAreaInsets.trailing)
+                        )
+                        obscuredInsets = sampledInsets
+                        logLandscapeInset(
+                            "stage=reader.sampledObscuredInsets.changed size=\(Int(geometry.size.width))x\(Int(geometry.size.height)) safeAreaTop=\(sampledInsets.top) safeAreaBottom=\(sampledInsets.bottom) safeAreaLeading=\(sampledInsets.leading) safeAreaTrailing=\(sampledInsets.trailing) additionalTop=\(additionalTopSafeAreaInset ?? 0) additionalBottom=\(additionalBottomSafeAreaInset ?? 0)"
                         )
                     }
             }
@@ -623,6 +693,37 @@ public struct Reader: View {
         .modifier(ThemeModifier())
         .modifier(PageMetadataModifier())
         .modifier(ReaderMediaPlayerViewModifier())
+        .task(id: {
+            let pageURL = readerContent.content?.url ?? readerContent.pageURL
+            let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
+            let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
+            let effectiveBottomInset = max(0, sampledBottomInset + additionalBottomInset)
+            let effectiveToolbarBottomOffset = ebookToolbarBottomOffset(
+                obscuredBottomInset: effectiveBottomInset,
+                additionalBottomSafeAreaInset: additionalBottomInset
+            )
+            return "\(pageURL.absoluteString)|\(effectiveBottomInset)|\(effectiveToolbarBottomOffset)"
+        }()) {
+            let pageURL = readerContent.content?.url ?? readerContent.pageURL
+            let sampledBottomInset = max(0, obscuredInsets?.bottom ?? 0)
+            let additionalBottomInset = max(0, additionalBottomSafeAreaInset ?? 0)
+            let effectiveBottomInset = max(0, sampledBottomInset + additionalBottomInset)
+            let effectiveToolbarBottomOffset = ebookToolbarBottomOffset(
+                obscuredBottomInset: effectiveBottomInset,
+                additionalBottomSafeAreaInset: additionalBottomInset
+            )
+            await syncEbookViewerChromeInsets(
+                pageURL: pageURL,
+                toolbarBottomOffset: effectiveToolbarBottomOffset,
+                obscuredBottomInset: effectiveBottomInset,
+                hasAsyncCaller: scriptCaller.hasAsyncCaller
+            ) { js, duplicateInMultiTargetFrames in
+                _ = try await scriptCaller.evaluateJavaScript(
+                    js,
+                    duplicateInMultiTargetFrames: duplicateInMultiTargetFrames
+                )
+            }
+        }
         .onReceive(readerContent.contentTitleSubject.receive(on: RunLoop.main)) { _ in
             Task { @MainActor in
                 guard scriptCaller.hasAsyncCaller else { return }
@@ -686,7 +787,7 @@ public struct Reader: View {
                         duplicateInMultiTargetFrames: true
                     )
                 } catch {
-                    debugPrint("# READER title.sync.failed", error.localizedDescription)
+                    debugPrint("# EPUB  title.sync.failed", error.localizedDescription)
                 }
             }
         }

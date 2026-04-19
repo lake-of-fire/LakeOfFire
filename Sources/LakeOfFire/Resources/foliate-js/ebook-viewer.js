@@ -1,8 +1,9 @@
 // Global timers for side-nav chevron fades
 import './view.js'
 import {
-    createTOCView
+createTOCView
 } from './ui/tree.js'
+import { NavigationHUD } from './ebook-viewer-nav.js'
 import {
     Overlayer
 } from '../foliate-js/overlayer.js'
@@ -52,6 +53,12 @@ function forwardShadowErrors(root) {
 // Factory for replaceText with isCacheWarmer support
 const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
     if (mediaType !== 'application/xhtml+xml' && mediaType !== 'text/html' /* && mediaType !== 'application/xml'*/ ) {
+        logReplaceTextOnce('ebook.replaceText.skip', {
+            href,
+            mediaType: mediaType || 'nil',
+            isCacheWarmer: !!isCacheWarmer,
+            reason: 'unsupported-media-type',
+        });
         return text;
     }
     const headers = {
@@ -74,11 +81,41 @@ const makeReplaceText = (isCacheWarmer) => async (href, text, mediaType) => {
             throw new Error(`HTTP error, status = ${response.status}`)
         }
         let html = await response.text()
-        if (isCacheWarmer && html.replace) {
-            html = html.replace(/<body\s/i, "<body data-is-cache-warmer='true' ")
-        }
+        postReaderLog('ebook.replaceText.responseSummary', {
+            href,
+            isCacheWarmer: !!isCacheWarmer,
+            containsSegmentTag: html.includes('<manabi-segment'),
+            containsSentenceTag: html.includes('<manabi-sentence'),
+            firstSegmentIndex: html.indexOf('<manabi-segment'),
+            firstSentenceIndex: html.indexOf('<manabi-sentence'),
+        });
+        const sentenceCount = (html.match(/<manabi-sentence\b/g) || []).length;
+        const segmentCount = (html.match(/<manabi-segment\b/g) || []).length;
+        html = injectBodyDatasetAttributes(html, {
+            'data-is-cache-warmer': isCacheWarmer ? 'true' : null,
+            'data-manabi-source-href': href,
+        });
+        logReplaceTextOnce(
+            sentenceCount > 0 || segmentCount > 0
+                ? 'ebook.replaceText.processed'
+                : 'ebook.replaceText.processedEmpty',
+            {
+                href,
+                mediaType,
+                isCacheWarmer: !!isCacheWarmer,
+                status: response.status,
+                sentenceCount,
+                segmentCount,
+            },
+        );
         return html
     } catch (error) {
+        logReplaceTextOnce('ebook.replaceText.error', {
+            href,
+            mediaType: mediaType || 'nil',
+            isCacheWarmer: !!isCacheWarmer,
+            reason: error?.message || String(error),
+        });
         console.error("Error replacing text:", error)
         return text
     }
@@ -108,6 +145,204 @@ const debounce = (fn, delay) => {
     }
 };
 
+const postReaderLog = (event, details = {}) => {
+    const payload = {
+        prefix: '# READER',
+        event,
+    };
+    for (const [key, value] of Object.entries(details)) {
+        if (value === undefined || value === null) {
+            continue;
+        }
+        payload[key] = value;
+    }
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (error) {
+        console.debug('# READER', event, details, error);
+    }
+};
+
+const postEPUBLog = (event, details = {}) => {
+    const payload = {
+        prefix: '# EPUB',
+        event,
+    };
+    for (const [key, value] of Object.entries(details)) {
+        if (value === undefined || value === null) {
+            continue;
+        }
+        payload[key] = value;
+    }
+    try {
+        window.webkit?.messageHandlers?.print?.postMessage?.(payload);
+    } catch (error) {
+        console.debug('# EPUB', event, details, error);
+    }
+};
+
+const postOpenReaderGoToSheetRequest = (source, targetID = null) => {
+    postEPUBLog('ebook.goToSheet.request', {
+        source,
+        targetID,
+    });
+    try {
+        window.webkit?.messageHandlers?.openReaderGoToSheet?.postMessage?.({
+            source,
+            targetID,
+        });
+    } catch (error) {
+        postEPUBLog('ebook.goToSheet.request.error', {
+            source,
+            targetID,
+            message: error?.message || String(error),
+        });
+    }
+};
+
+const flattenTOCEntries = (items, collector = []) => {
+    if (!Array.isArray(items)) {
+        return collector;
+    }
+    for (const item of items) {
+        if (!item) {
+            continue;
+        }
+        collector.push(item);
+        if (Array.isArray(item.subitems) && item.subitems.length > 0) {
+            flattenTOCEntries(item.subitems, collector);
+        }
+    }
+    return collector;
+};
+
+const injectBodyDatasetAttributes = (html, attributes) => {
+    if (typeof html !== 'string' || !html.replace) {
+        return html;
+    }
+    const serializedAttributes = Object.entries(attributes)
+        .filter(([, value]) => value !== undefined && value !== null && value !== '')
+        .map(([key, value]) => ` ${key}="${String(value).replace(/"/g, '&quot;')}"`)
+        .join('');
+    if (!serializedAttributes) {
+        return html;
+    }
+    return html.replace(/<body\b/i, `<body${serializedAttributes}`);
+};
+
+const setNativeHideNavigationState = (shouldHide, source = 'native-bridge') => {
+    const normalized = !!shouldHide;
+    const body = document.body;
+    if (body) {
+        body.classList.toggle('nav-hidden', normalized);
+    }
+    globalThis.reader?.navHUD?.setHideNavigationDueToScroll?.(normalized, source, {
+        bridgeSource: source,
+        bodyClassApplied: body?.classList?.contains?.('nav-hidden') ?? null,
+    });
+    postReaderLog('ebook.navigationVisibility.bridge', {
+        source,
+        shouldHide: normalized,
+        bodyHasNavHiddenClass: body?.classList?.contains?.('nav-hidden') ?? null,
+        hudHideNavigationDueToScroll: !!globalThis.reader?.navHUD?.hideNavigationDueToScroll,
+        hudNavHidden: !!globalThis.reader?.navHUD?.navHidden,
+    });
+    globalThis.reader?.queueLayoutDiagnostics?.('native-hide-bridge', {
+        source,
+        shouldHide: normalized,
+    });
+    return normalized;
+};
+
+window.manabiSetHideNavigationDueToScroll = (shouldHide) => {
+    return setNativeHideNavigationState(shouldHide, 'window.manabiSetHideNavigationDueToScroll');
+};
+
+const replaceTextLogKeys = new Set();
+const logReplaceTextOnce = (event, details = {}) => {
+    const key = JSON.stringify({
+        event,
+        href: details.href || 'nil',
+        isCacheWarmer: !!details.isCacheWarmer,
+        mediaType: details.mediaType || 'nil',
+        status: details.status || 'nil',
+        reason: details.reason || 'nil',
+    });
+    if (replaceTextLogKeys.has(key)) {
+        return;
+    }
+    replaceTextLogKeys.add(key);
+    postReaderLog(event, details);
+};
+
+const safeRound = (value, digits = 1) =>
+    typeof value === 'number' && Number.isFinite(value)
+        ? Number(value.toFixed(digits))
+        : null;
+
+const summarizeRect = (rect) => {
+    if (!rect) return null;
+    return {
+        left: safeRound(rect.left),
+        top: safeRound(rect.top),
+        right: safeRound(rect.right),
+        bottom: safeRound(rect.bottom),
+        width: safeRound(rect.width),
+        height: safeRound(rect.height),
+    };
+};
+
+const summarizeElementLayout = (element) => {
+    if (!(element instanceof Element)) {
+        return null;
+    }
+    const rect = summarizeRect(element.getBoundingClientRect?.());
+    const style = window.getComputedStyle?.(element);
+    const hiddenAttr = element.hasAttribute?.('hidden') ?? false;
+    const ariaHidden = element.getAttribute?.('aria-hidden');
+    const text = (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
+    return {
+        hiddenAttr,
+        ariaHidden: ariaHidden ?? null,
+        display: style?.display ?? null,
+        visibility: style?.visibility ?? null,
+        opacity: safeRound(Number(style?.opacity)),
+        pointerEvents: style?.pointerEvents ?? null,
+        overflowX: style?.overflowX ?? null,
+        overflowY: style?.overflowY ?? null,
+        text,
+        clientWidth: element.clientWidth ?? null,
+        scrollWidth: element.scrollWidth ?? null,
+        offsetWidth: element instanceof HTMLElement ? element.offsetWidth : null,
+        rect,
+    };
+};
+
+const summarizeFoliateViewLayout = (view) => {
+    const summary = summarizeElementLayout(view);
+    if (!summary) {
+        return null;
+    }
+    const paginator = view.shadowRoot?.querySelector?.('foliate-paginator') || null;
+    const paginatorTop = paginator?.shadowRoot?.getElementById?.('top') || null;
+    const paginatorContainer = paginator?.shadowRoot?.getElementById?.('container') || null;
+    return {
+        ...summary,
+        parentTag: view.parentElement?.tagName ?? null,
+        parentID: view.parentElement?.id ?? null,
+        datasetIsCache: view.dataset?.isCache ?? null,
+        paginator: summarizeElementLayout(paginator),
+        paginatorTop: summarizeElementLayout(paginatorTop),
+        paginatorContainer: summarizeElementLayout(paginatorContainer),
+    };
+};
+
+const isDocumentLike = (value) =>
+    !!value
+    && value.nodeType === 9
+    && typeof value.querySelectorAll === 'function'
+    && !!value.documentElement;
+
 const parseEntryIDs = (rawValue) => {
     if (typeof rawValue !== 'string' || rawValue.length === 0) {
         return [];
@@ -133,9 +368,16 @@ const normalizeArticleReadingProgress = (articleReadingProgress = {}) => ({
     articleMarkedAsFinished: !!articleReadingProgress?.articleMarkedAsFinished,
 });
 
+const sentenceIdentifierForNode = (sentenceNode) => {
+    const sentenceIdentifier = sentenceNode?.dataset?.sentenceIdentifier || sentenceNode?.dataset?.textHash;
+    return typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0
+        ? sentenceIdentifier
+        : null;
+};
+
 const segmentIdentifierForNode = (segmentNode) => {
-    const sentenceNode = segmentNode?.closest?.('manabi-sentence[data-sentence-identifier]');
-    const sentenceIdentifier = sentenceNode?.dataset?.sentenceIdentifier;
+    const sentenceNode = segmentNode?.closest?.('manabi-sentence');
+    const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
     const segmentHash = segmentNode?.dataset?.segmentHash;
     if (typeof sentenceIdentifier !== 'string' || sentenceIdentifier.length === 0) {
         return null;
@@ -147,7 +389,7 @@ const segmentIdentifierForNode = (segmentNode) => {
 };
 
 const buildExampleSentenceForSegment = (segmentNode) => {
-    const sentenceNode = segmentNode?.closest?.('manabi-sentence[data-sentence-identifier]');
+    const sentenceNode = segmentNode?.closest?.('manabi-sentence');
     if (!(sentenceNode instanceof Element)) {
         return {
             sentenceHTML: null,
@@ -177,33 +419,57 @@ const rectIntersectsViewport = (rect, viewportWidth, viewportHeight) => {
 };
 
 const collectVisibleSegmentNodes = (doc) => {
-    if (!(doc instanceof Document)) {
-        return [];
+    if (!isDocumentLike(doc)) {
+        return {
+            visibleSegments: [],
+            viewportWidth: 0,
+            viewportHeight: 0,
+            totalSegmentCount: 0,
+            hiddenTooltipCount: 0,
+            missingIdentifierCount: 0,
+            outOfViewportCount: 0,
+        };
     }
     const viewportWidth = doc.documentElement?.clientWidth || doc.defaultView?.innerWidth || 0;
     const viewportHeight = doc.documentElement?.clientHeight || doc.defaultView?.innerHeight || 0;
     const visibleSegments = [];
+    let totalSegmentCount = 0;
+    let hiddenTooltipCount = 0;
+    let missingIdentifierCount = 0;
+    let outOfViewportCount = 0;
     for (const segmentNode of doc.querySelectorAll('manabi-segment')) {
+        totalSegmentCount += 1;
         if (segmentNode.closest('.tippy-box')) {
+            hiddenTooltipCount += 1;
             continue;
         }
         const segmentIdentifier = segmentIdentifierForNode(segmentNode);
         if (!segmentIdentifier) {
+            missingIdentifierCount += 1;
             continue;
         }
         const rect = segmentNode.getBoundingClientRect();
         if (!rectIntersectsViewport(rect, viewportWidth, viewportHeight)) {
+            outOfViewportCount += 1;
             continue;
         }
-        const sentenceNode = segmentNode.closest('manabi-sentence[data-sentence-identifier]');
+        const sentenceNode = segmentNode.closest('manabi-sentence');
         visibleSegments.push({
             node: segmentNode,
             rect,
             segmentIdentifier,
-            sentenceIdentifier: sentenceNode?.dataset?.sentenceIdentifier || null,
+            sentenceIdentifier: sentenceIdentifierForNode(sentenceNode),
         });
     }
-    return visibleSegments;
+    return {
+        visibleSegments,
+        viewportWidth,
+        viewportHeight,
+        totalSegmentCount,
+        hiddenTooltipCount,
+        missingIdentifierCount,
+        outOfViewportCount,
+    };
 };
 
 const getPageClusterAxis = (doc) => {
@@ -259,11 +525,20 @@ const clusterVisibleSegmentsByPage = (visibleSegments, axis = 'inline') => {
 const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
     const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
     const readSegmentIdentifiers = new Set(normalizedProgress.readSegmentIdentifiers);
-    const visibleSegments = collectVisibleSegmentNodes(doc);
+    const {
+        visibleSegments,
+        viewportWidth,
+        viewportHeight,
+        totalSegmentCount,
+        hiddenTooltipCount,
+        missingIdentifierCount,
+        outOfViewportCount,
+    } = collectVisibleSegmentNodes(doc);
     const clusterAxis = getPageClusterAxis(doc);
     const pageClusters = clusterVisibleSegmentsByPage(visibleSegments, clusterAxis);
     const pageCount = pageClusters.length;
-    return pageClusters.map((cluster, clusterIndex) => {
+    let skippedMissingSearchStringCount = 0;
+    const states = pageClusters.map((cluster, clusterIndex) => {
         const dedupedSegments = new Map();
         const visibleSegmentIdentifiers = new Set();
         const sentencesByIdentifier = new Map();
@@ -271,6 +546,7 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
             if (!dedupedSegments.has(item.segmentIdentifier)) {
                 const searchString = item.node.dataset?.jmdictSearchString || item.node.dataset?.jmnedictSearchString;
                 if (typeof searchString !== 'string' || searchString.length === 0) {
+                    skippedMissingSearchStringCount += 1;
                     continue;
                 }
                 visibleSegmentIdentifiers.add(item.segmentIdentifier);
@@ -286,7 +562,7 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
                 });
             }
             if (item.sentenceIdentifier && !sentencesByIdentifier.has(item.sentenceIdentifier)) {
-                const sentenceNode = item.node.closest('manabi-sentence[data-sentence-identifier]');
+                const sentenceNode = item.node.closest('manabi-sentence');
                 const allSegmentIdentifiers = Array.from(sentenceNode?.querySelectorAll?.('manabi-segment') || [])
                     .map((segmentNode) => segmentIdentifierForNode(segmentNode))
                     .filter((identifier) => typeof identifier === 'string' && identifier.length > 0);
@@ -308,6 +584,11 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
                 ? (clusterIndex === 0 ? 'Top Page' : 'Bottom Page')
                 : (clusterIndex === 0 ? 'Left Page' : 'Right Page'))
             : 'Page';
+        const shortSideLabel = pageCount === 2
+            ? (clusterAxis === 'block'
+                ? (clusterIndex === 0 ? 'Top' : 'Bottom')
+                : (clusterIndex === 0 ? 'Left' : 'Right'))
+            : 'Read';
         return {
             id: `page-cluster-${clusterIndex}`,
             payload: {
@@ -318,14 +599,115 @@ const buildVisiblePageTrackingStates = (doc, articleReadingProgress) => {
             unreadVisibleSegmentCount,
             visibleSegmentCount: visibleSegmentIdentifiers.size,
             fullLabel: isRead ? `${sideLabel} Read` : `Mark ${sideLabel} Read`,
-            shortLabel: isRead ? 'Read' : (pageCount === 2 ? (clusterIndex === 0 ? 'Left' : 'Right') : 'Read'),
+            shortLabel: isRead ? 'Read' : shortSideLabel,
         };
     }).filter((state) => state.payload.segments.length > 0);
+    return {
+        states,
+        diagnostics: {
+            documentURL: doc.location?.href || null,
+            viewportWidth,
+            viewportHeight,
+            clusterAxis,
+            totalSegmentCount,
+            visibleSegmentCount: visibleSegments.length,
+            hiddenTooltipCount,
+            missingIdentifierCount,
+            outOfViewportCount,
+            skippedMissingSearchStringCount,
+            clusterCount: pageClusters.length,
+            stateCount: states.length,
+            completedStateCount: states.filter((state) => state.isRead).length,
+            readSegmentCount: readSegmentIdentifiers.size,
+            readSentenceCount: normalizedProgress.sentenceIdentifiersRead.length,
+        },
+    };
 };
 
 const isZip = async file => {
     const arr = new Uint8Array(await file.slice(0, 4).arrayBuffer())
     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
+}
+
+const makeNativeSource = url => ({ kind: 'native', url })
+const makeFileSource = file => ({ kind: 'file', file })
+
+const makeNativeSourceURLQuery = sourceURL =>
+    `sourceURL=${encodeURIComponent(sourceURL)}`
+
+const fetchNativeEntries = async sourceURL => {
+    const response = await fetch(`ebook://ebook/entries?${makeNativeSourceURLQuery(sourceURL)}`, {
+        headers: {
+            'X-Ebook-Source-URL': sourceURL,
+        },
+    })
+    if (!response.ok) {
+        throw new Error(`Failed to load native EPUB entries: ${response.status}`)
+    }
+    return response.json()
+}
+
+const fetchNativeEntryResponse = async (sourceURL, subpath) => {
+    const response = await fetch(`ebook://ebook/entry?subpath=${encodeURIComponent(subpath)}&${makeNativeSourceURLQuery(sourceURL)}`, {
+        headers: {
+            'X-Ebook-Source-URL': sourceURL,
+        },
+    })
+    if (!response.ok) {
+        return null
+    }
+    return response
+}
+
+const readNativeEntryText = async (response) => {
+    if (!response) return null
+    const arrayBuffer = await response.arrayBuffer()
+    const charset = response.headers?.get?.('content-type')?.match(/charset=([^;]+)/i)?.[1]?.trim() || 'utf-8'
+    let decoder
+    try {
+        decoder = new TextDecoder(charset)
+    } catch (_error) {
+        decoder = new TextDecoder('utf-8')
+    }
+    return decoder.decode(arrayBuffer)
+}
+
+const readNativeEntryBlob = async (response) => {
+    if (!response) return null
+    const arrayBuffer = await response.arrayBuffer()
+    const mimeType = response.headers?.get?.('content-type') || ''
+    return new Blob([arrayBuffer], mimeType ? { type: mimeType } : undefined)
+}
+
+const makeNativeEpubLoader = async (url, isCacheWarmer) => {
+    const { entries: rawEntries = [] } = await fetchNativeEntries(url)
+    const entries = rawEntries.map(entry => ({
+        filename: entry.path,
+        uncompressedSize: entry.size ?? 0,
+    }))
+    const sizeMap = new Map(entries.map(entry => [entry.filename, entry.uncompressedSize]))
+    const entryNames = new Set(entries.map(entry => entry.filename))
+    const replaceText = makeReplaceText(isCacheWarmer)
+    return {
+        entries,
+        loadText: async name => {
+            if (!entryNames.has(name)) {
+                return null
+            }
+            const response = await fetchNativeEntryResponse(url, name)
+            return readNativeEntryText(response)
+        },
+        loadBlob: async name => {
+            if (!entryNames.has(name)) {
+                return null
+            }
+            const response = await fetchNativeEntryResponse(url, name)
+            return readNativeEntryBlob(response)
+        },
+        getSize: name => sizeMap.get(name) ?? 0,
+        replaceText,
+        sourceURL: url,
+    }
 }
 
 const makeZipLoader = async (file, isCacheWarmer) => {
@@ -386,10 +768,17 @@ const isFBZ = ({
 type === 'application/x-zip-compressed-fb2' ||
 name.endsWith('.fb2.zip') || name.endsWith('.fbz')
 
-const getView = async (file, isCacheWarmer) => {
+const getView = async (source, isCacheWarmer) => {
     let book
-    if (!file.size) throw new Error('File not found')
-        else if (await isZip(file)) {
+    if (source?.kind === 'native' && source.url) {
+        const {
+            EPUB
+        } = await import('./epub.js')
+        const loader = await makeNativeEpubLoader(source.url, isCacheWarmer)
+        book = await new EPUB(loader).init()
+    } else if (source?.kind === 'file' && source.file?.size) {
+        const file = source.file
+        if (await isZip(file)) {
             const loader = await makeZipLoader(file, isCacheWarmer)
             if (isCBZ(file)) {
                 throw new Error('File format not yet supported')
@@ -419,13 +808,21 @@ const getView = async (file, isCacheWarmer) => {
             //            book = await makeFB2(file)
             //        }
         }
+    } else {
+        throw new Error('File not found')
+    }
     if (!book) throw new Error('File type not supported')
-        const view = document.createElement('foliate-view')
-        view.dataset.isCache = isCacheWarmer;
-    //if (!isCacheWarmer) {
-    document.body.append(view);
+    const view = document.createElement('foliate-view')
+    view.dataset.isCache = isCacheWarmer;
+    view.style.display = isCacheWarmer ? 'none' : 'block';
+    view.style.width = isCacheWarmer ? '0px' : '100%';
+    view.style.height = isCacheWarmer ? '0px' : '100%';
+    view.style.overflow = 'hidden';
+    view.style.contain = 'strict';
+    view.style.pointerEvents = isCacheWarmer ? 'none' : 'auto';
+    const readerStage = document.getElementById('reader-stage');
+    (isCacheWarmer ? document.body : (readerStage || document.body)).append(view);
     forwardShadowErrors(view.shadowRoot);
-    //}
     if (isCacheWarmer) {
         view.style.display = 'none'
         view.style.contain = 'strict'
@@ -601,6 +998,11 @@ class Reader {
     articleReadingProgress = normalizeArticleReadingProgress();
     pageTrackingStates = [];
     pageTrackingBusyStateIDs = new Set();
+    lastPageTrackingDiagnosticsKey = null;
+    lastBookReadingProgressKey = null;
+    pageTrackingRetryHandle = null;
+    layoutDiagnosticsHandle = null;
+    lastLayoutDiagnosticsKey = null;
     style = {
         spacing: 1.4,
         justify: true,
@@ -619,10 +1021,167 @@ class Reader {
         $('#dimming-overlay').classList.remove('show')
         $('#side-bar').classList.remove('show')
     }
-    constructor() {
-        $('#progress-button').addEventListener('click', () => {
+    toggleTableOfContents() {
+        if ($('#side-bar').classList.contains('show')) {
+            this.closeSideBar()
+        } else {
             this.openSideBar()
-        })
+        }
+    }
+    async _goToDescriptor(descriptor) {
+        if (!descriptor || !this.view) return;
+        if (typeof descriptor.cfi === 'string' && descriptor.cfi) {
+            await this.view.goTo(descriptor.cfi).catch((error) => console.error(error));
+            return;
+        }
+        if (typeof descriptor.fraction === 'number' && Number.isFinite(descriptor.fraction)) {
+            await this.view.goToFraction(descriptor.fraction);
+        }
+    }
+    async goToHref(href, source = 'unknown') {
+        if (!this.view || typeof href !== 'string' || !href) {
+            return false;
+        }
+        postEPUBLog('ebook.goTo.href.request', {
+            source,
+            href,
+        });
+        await this.view.goTo(href);
+        return true;
+    }
+    async goToPercent(percent, source = 'unknown') {
+        if (!this.view) {
+            return false;
+        }
+        const numericPercent = Number(percent);
+        const clampedPercent = Math.max(0, Math.min(100, numericPercent));
+        if (!Number.isFinite(clampedPercent)) {
+            return false;
+        }
+        const fraction = clampedPercent / 100;
+        postEPUBLog('ebook.goTo.percent.request', {
+            source,
+            percent: clampedPercent,
+            fraction,
+        });
+        await this.view.goToFraction(fraction);
+        return true;
+    }
+    async goToPageNumber(pageNumber, source = 'unknown') {
+        if (!this.view) {
+            return false;
+        }
+        const numericPageNumber = Number(pageNumber);
+        const totalPages = this.navHUD?.lastPageMetricsSnapshot?.totalPages
+            ?? this.navHUD?.totalPageCount
+            ?? this.navHUD?.fallbackTotalPageCount
+            ?? null;
+        if (!Number.isFinite(numericPageNumber)) {
+            return false;
+        }
+        const maxPageNumber = typeof totalPages === 'number' && totalPages > 0
+            ? totalPages
+            : Math.max(1, Math.round(numericPageNumber));
+        const clampedPageNumber = Math.max(1, Math.min(maxPageNumber, Math.round(numericPageNumber)));
+        const pageTarget = this.navHUD?.pageTargets?.[clampedPageNumber - 1] ?? null;
+        postEPUBLog('ebook.goTo.page.request', {
+            source,
+            pageNumber: clampedPageNumber,
+            totalPages,
+            hasPageTarget: !!pageTarget,
+            targetHref: typeof pageTarget?.href === 'string' ? pageTarget.href : null,
+        });
+        if (typeof pageTarget?.href === 'string' && pageTarget.href) {
+            await this.view.goTo(pageTarget.href);
+            return true;
+        }
+        if (typeof totalPages === 'number' && totalPages > 1) {
+            const fraction = (clampedPageNumber - 1) / (totalPages - 1);
+            await this.view.goToFraction(fraction);
+            return true;
+        }
+        if (clampedPageNumber <= 1) {
+            await this.view.goToFraction(0);
+            return true;
+        }
+        return false;
+    }
+    async buildGoToSheetSnapshot() {
+        const chapters = [];
+        const seenHrefs = new Set();
+        const tocEntries = flattenTOCEntries(this.view?.book?.toc ?? []);
+        for (const entry of tocEntries) {
+            const href = typeof entry?.href === 'string' ? entry.href : null;
+            const title = typeof entry?.label === 'string' ? entry.label.trim() : '';
+            if (!href || !title || seenHrefs.has(href)) {
+                continue;
+            }
+            seenHrefs.add(href);
+            let pageNumber = null;
+            try {
+                const progress = await this.view?.getNavigationProgressOf?.(href);
+                const metrics = progress ? this.navHUD?._computePageMetrics?.(progress) : null;
+                if (typeof metrics?.currentPageNumber === 'number' && metrics.currentPageNumber > 0) {
+                    pageNumber = metrics.currentPageNumber;
+                }
+            } catch (error) {
+                postEPUBLog('ebook.goTo.snapshot.chapter.error', {
+                    href,
+                    title,
+                    message: error?.message || String(error),
+                });
+            }
+            chapters.push({
+                href,
+                title,
+                pageNumber,
+            });
+        }
+        const currentChapter = this.view?.renderer?.tocItem ?? this.view?.lastLocation?.tocItem ?? null;
+        const snapshot = {
+            currentChapterHref: typeof currentChapter?.href === 'string' ? currentChapter.href : null,
+            currentChapterTitle: typeof currentChapter?.label === 'string' ? currentChapter.label : null,
+            currentPageNumber: this.navHUD?.lastPageMetricsSnapshot?.currentPageNumber ?? null,
+            totalPages: this.navHUD?.lastPageMetricsSnapshot?.totalPages ?? null,
+            chapters,
+        };
+        postEPUBLog('ebook.goTo.snapshot', {
+            chapterCount: chapters.length,
+            currentChapterHref: snapshot.currentChapterHref,
+            currentPageNumber: snapshot.currentPageNumber,
+            totalPages: snapshot.totalPages,
+        });
+        return snapshot;
+    }
+    constructor() {
+        this.navHUD = new NavigationHUD({
+            formatPercent: value => percentFormat.format(value),
+            getRenderer: () => this.view?.renderer,
+            onJumpRequest: descriptor => this._goToDescriptor(descriptor),
+        });
+        this.scheduleGoToPageNumber = debounce((pageNumber) => {
+            this.goToPageNumber(pageNumber, 'schedule-page-number')
+                .catch((error) => console.error(error));
+        }, 120);
+        this.scheduleGoToFraction = debounce((fraction) => {
+            const clampedFraction = Math.max(0, Math.min(1, Number(fraction)));
+            if (!Number.isFinite(clampedFraction) || !this.view) {
+                return;
+            }
+            this.view.goToFraction(clampedFraction).catch((error) => console.error(error));
+        }, 250);
+        document.getElementById('nav-primary-text')?.addEventListener('click', (event) => {
+            event.preventDefault?.();
+            postOpenReaderGoToSheetRequest('nav-primary-text', 'nav-primary-text');
+        });
+        document.getElementById('nav-hidden-primary-text')?.addEventListener('click', (event) => {
+            event.preventDefault?.();
+            postOpenReaderGoToSheetRequest('nav-hidden-primary-text', 'nav-hidden-primary-text');
+        });
+        document.getElementById('nav-section-progress-center')?.addEventListener('click', (event) => {
+            event.preventDefault?.();
+            postOpenReaderGoToSheetRequest('nav-section-progress-center', 'nav-section-progress-center');
+        });
         $('#side-bar-close-button').addEventListener('click', () => {
             this.closeSideBar()
         })
@@ -635,6 +1194,114 @@ class Reader {
             }
             this.#markPageClusterAsRead(stateID).catch((error) => console.error(error));
         });
+        window.addEventListener('resize', () => this.#queueLayoutDiagnostics('window-resize'));
+        window.visualViewport?.addEventListener?.('resize', () => this.#queueLayoutDiagnostics('visual-viewport-resize'));
+        window.visualViewport?.addEventListener?.('scroll', () => this.#queueLayoutDiagnostics('visual-viewport-scroll'));
+    }
+    #logPageTracking(event, details = {}) {
+        postReaderLog(event, details);
+    }
+    #queuePageTrackingRetry(reason, explicitDoc, retryCount) {
+        if (retryCount <= 0) {
+            return;
+        }
+        if (this.pageTrackingRetryHandle) {
+            cancelAnimationFrame(this.pageTrackingRetryHandle);
+        }
+        this.pageTrackingRetryHandle = requestAnimationFrame(() => {
+            this.pageTrackingRetryHandle = null;
+            this.#syncPageTrackingButtons(reason, explicitDoc, retryCount - 1);
+        });
+    }
+    queueLayoutDiagnostics(reason = 'unknown', extra = null) {
+        this.#queueLayoutDiagnostics(reason, extra);
+    }
+    #queueLayoutDiagnostics(reason = 'unknown', extra = null) {
+        if (this.layoutDiagnosticsHandle) {
+            cancelAnimationFrame(this.layoutDiagnosticsHandle);
+        }
+        this.layoutDiagnosticsHandle = requestAnimationFrame(() => {
+            this.layoutDiagnosticsHandle = null;
+            this.#logLayoutDiagnostics(reason, extra);
+        });
+    }
+    #logLayoutDiagnostics(reason = 'unknown', extra = null) {
+        const body = document.body;
+        const docEl = document.documentElement;
+        const viewport = window.visualViewport;
+        const scrollingElement = document.scrollingElement || docEl;
+        const navBar = document.getElementById('nav-bar');
+        const navBottomRow = document.getElementById('nav-bottom-row');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        const pageTrackingContainer = document.getElementById('page-tracking-container');
+        const pageTrackingButtons = document.getElementById('page-tracking-buttons');
+        const firstPageReadButton = pageTrackingButtons?.querySelector?.('.page-read-button') || null;
+        const readerStage = document.getElementById('reader-stage');
+        const allFoliateViews = Array.from(document.querySelectorAll('foliate-view'));
+        const liveFoliateView = allFoliateViews.find((view) => view?.dataset?.isCache !== 'true') || null;
+        const cacheFoliateView = allFoliateViews.find((view) => view?.dataset?.isCache === 'true') || null;
+        const layoutSnapshot = {
+            reason,
+            extra,
+            pageURL: window.location?.href || null,
+            bodyClasses: body?.className || '',
+            navBarClasses: navBar?.className || '',
+            bodyDir: body?.getAttribute?.('dir') || null,
+            bookDir: body?.dataset?.bookDir || null,
+            hideNavigationDueToScroll: !!this.navHUD?.hideNavigationDueToScroll,
+            navHidden: !!this.navHUD?.navHidden,
+            viewportWidth: safeRound(window.innerWidth),
+            viewportHeight: safeRound(window.innerHeight),
+            visualViewportWidth: safeRound(viewport?.width),
+            visualViewportHeight: safeRound(viewport?.height),
+            visualViewportOffsetLeft: safeRound(viewport?.offsetLeft),
+            visualViewportOffsetTop: safeRound(viewport?.offsetTop),
+            scrollX: safeRound(window.scrollX),
+            scrollY: safeRound(window.scrollY),
+            docClientWidth: docEl?.clientWidth ?? null,
+            docScrollWidth: docEl?.scrollWidth ?? null,
+            bodyClientWidth: body?.clientWidth ?? null,
+            bodyScrollWidth: body?.scrollWidth ?? null,
+            scrollingClientWidth: scrollingElement?.clientWidth ?? null,
+            scrollingScrollWidth: scrollingElement?.scrollWidth ?? null,
+            scrollingScrollLeft: safeRound(scrollingElement?.scrollLeft),
+            horizontalOverflowDocument: (docEl?.scrollWidth ?? 0) > (docEl?.clientWidth ?? 0) + 1,
+            horizontalOverflowBody: (body?.scrollWidth ?? 0) > (body?.clientWidth ?? 0) + 1,
+            horizontalOverflowScrolling: (scrollingElement?.scrollWidth ?? 0) > (scrollingElement?.clientWidth ?? 0) + 1,
+            cssToolbarBottomOffset: window.getComputedStyle(body || docEl)?.getPropertyValue('--manabi-toolbar-bottom-offset')?.trim() || null,
+            cssObscuredBottomInset: window.getComputedStyle(body || docEl)?.getPropertyValue('--manabi-obscured-bottom-inset')?.trim() || null,
+            navBarBottomComputed: navBar ? window.getComputedStyle(navBar).bottom : null,
+            navBarViewportBottomGap: navBar ? safeRound(window.innerHeight - navBar.getBoundingClientRect().bottom) : null,
+            readerStage: summarizeElementLayout(readerStage),
+            liveFoliateView: summarizeFoliateViewLayout(liveFoliateView),
+            cacheFoliateView: summarizeFoliateViewLayout(cacheFoliateView),
+            allFoliateViews: allFoliateViews.map((view, index) => ({
+                index,
+                ...summarizeFoliateViewLayout(view),
+            })),
+            liveFoliateViewCount: allFoliateViews.length,
+            navBar: summarizeElementLayout(navBar),
+            navBottomRow: summarizeElementLayout(navBottomRow),
+            progressWrapper: summarizeElementLayout(progressWrapper),
+            locationLabel: summarizeElementLayout(document.getElementById('nav-primary-text')),
+            percentLabel: summarizeElementLayout(document.getElementById('nav-primary-percent')),
+            hiddenOverlayLocationLabel: summarizeElementLayout(document.getElementById('nav-hidden-primary-text')),
+            hiddenOverlayPercentLabel: summarizeElementLayout(document.getElementById('nav-hidden-primary-percent')),
+            jumpBackButton: summarizeElementLayout(document.getElementById('nav-relocate-back')),
+            jumpForwardButton: summarizeElementLayout(document.getElementById('nav-relocate-forward')),
+            sectionProgressLeading: summarizeElementLayout(document.getElementById('nav-section-progress-leading')),
+            sectionProgressTrailing: summarizeElementLayout(document.getElementById('nav-section-progress-trailing')),
+            sectionProgressCenter: summarizeElementLayout(document.getElementById('nav-section-progress-center')),
+            pageTrackingContainer: summarizeElementLayout(pageTrackingContainer),
+            pageTrackingButtons: summarizeElementLayout(pageTrackingButtons),
+            firstPageReadButton: summarizeElementLayout(firstPageReadButton),
+        };
+        const key = JSON.stringify(layoutSnapshot);
+        if (key === this.lastLayoutDiagnosticsKey) {
+            return;
+        }
+        this.lastLayoutDiagnosticsKey = key;
+        postReaderLog('ebook.layout.snapshot', layoutSnapshot);
     }
     #renderPageTrackingButtons() {
         const container = document.getElementById('page-tracking-container');
@@ -648,6 +1315,7 @@ class Reader {
         buttonHost.hidden = !hasStates;
         if (!hasStates) {
             buttonHost.innerHTML = '';
+            this.navHUD?.refreshAuxiliaryLayout?.();
             return;
         }
         buttonHost.innerHTML = pageTrackingStates.map((state) => {
@@ -666,28 +1334,210 @@ class Reader {
                 </button>
             `;
         }).join('');
+        this.navHUD?.refreshAuxiliaryLayout?.();
+        this.#queueLayoutDiagnostics('page-tracking-render', {
+            stateCount: pageTrackingStates.length,
+        });
     }
-    #syncPageTrackingButtons() {
-        const doc = this.view?.renderer?.getContents?.()?.[0]?.doc;
-        if (!(doc instanceof Document)) {
-            this.pageTrackingStates = [];
-            this.#renderPageTrackingButtons();
+    async #advanceAfterMarkRead() {
+        if (!this.view?.renderer) {
             return;
         }
-        this.pageTrackingStates = buildVisiblePageTrackingStates(doc, this.articleReadingProgress);
+        const renderer = this.view.renderer;
+        const isAtForwardSectionBoundary = await renderer.atEnd();
+        if (isAtForwardSectionBoundary) {
+            const nextButtonVisible = this.buttons?.next && !this.buttons.next.hidden && !this.buttons.next.disabled;
+            if (nextButtonVisible) {
+                this.#logPageTracking('ebook.pageTracking.markRead.advance', {
+                    mode: 'next-section',
+                });
+                this.buttons.next.click();
+                return;
+            }
+        }
+        this.#logPageTracking('ebook.pageTracking.markRead.advance', {
+            mode: this.isRTL ? 'previous-visual-page' : 'next-visual-page',
+        });
+        if (this.isRTL) {
+            await this.view.goLeft();
+        } else {
+            await this.view.goRight();
+        }
+    }
+    #syncPageTrackingButtons(reason = 'unspecified', explicitDoc = null, retryCount = 0) {
+        const isRestorePending =
+            reason === 'document-load'
+            && globalThis.reader
+            && globalThis.reader.hasLoadedLastPosition !== true;
+        if (isRestorePending) {
+            const diagnosticsKey = `restore-pending:${retryCount}`;
+            if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
+                this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
+                this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
+                    reason,
+                    retryCount,
+                    hasView: !!this.view,
+                    hasRenderer: !!this.view?.renderer,
+                    hasExplicitDoc: isDocumentLike(explicitDoc),
+                    pendingReason: 'restore-pending',
+                });
+            }
+            this.#queuePageTrackingRetry(reason, explicitDoc, retryCount);
+            return;
+        }
+        const contents = this.view?.renderer?.getContents?.() || [];
+        const doc = isDocumentLike(explicitDoc) ? explicitDoc : contents[0]?.doc;
+        if (!isDocumentLike(doc)) {
+            this.pageTrackingStates = [];
+            this.#renderPageTrackingButtons();
+            const diagnosticsKey = `no-document:${reason}:${contents.length}:${retryCount}`;
+            if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
+                this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
+                this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
+                    reason,
+                    contentsCount: contents.length,
+                    hasView: !!this.view,
+                    hasRenderer: !!this.view?.renderer,
+                    hasExplicitDoc: isDocumentLike(explicitDoc),
+                    retryCount,
+                });
+            }
+            this.#queuePageTrackingRetry(reason, explicitDoc, retryCount);
+            return;
+        }
+        if (this.pageTrackingRetryHandle) {
+            cancelAnimationFrame(this.pageTrackingRetryHandle);
+            this.pageTrackingRetryHandle = null;
+        }
+        const {
+            states,
+            diagnostics,
+        } = buildVisiblePageTrackingStates(doc, this.articleReadingProgress);
+        const shouldRetryEmptyDocument =
+            retryCount > 0
+            && diagnostics.stateCount === 0
+            && diagnostics.totalSegmentCount === 0
+            && (
+                !Number.isFinite(diagnostics.viewportWidth)
+                || !Number.isFinite(diagnostics.viewportHeight)
+                || diagnostics.viewportWidth <= 0
+                || diagnostics.viewportHeight <= 0
+            );
+        if (shouldRetryEmptyDocument) {
+            const diagnosticsKey = `empty-document:${reason}:${retryCount}:${diagnostics.documentURL || 'nil'}`;
+            if (this.lastPageTrackingDiagnosticsKey !== diagnosticsKey) {
+                this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
+                this.#logPageTracking('ebook.pageTracking.sync.noDocument', {
+                    reason,
+                    retryCount,
+                    hasView: !!this.view,
+                    hasRenderer: !!this.view?.renderer,
+                    hasExplicitDoc: isDocumentLike(explicitDoc),
+                    contentsCount: contents.length,
+                    documentURL: diagnostics.documentURL,
+                    viewportWidth: diagnostics.viewportWidth,
+                    viewportHeight: diagnostics.viewportHeight,
+                    pendingReason: 'zero-viewport-empty-document',
+                });
+            }
+            this.#queuePageTrackingRetry(reason, null, retryCount);
+            return;
+        }
+        this.pageTrackingStates = states;
         this.#renderPageTrackingButtons();
+        const diagnosticsKey = JSON.stringify({
+            reason,
+            documentURL: diagnostics.documentURL,
+            clusterAxis: diagnostics.clusterAxis,
+            totalSegmentCount: diagnostics.totalSegmentCount,
+            visibleSegmentCount: diagnostics.visibleSegmentCount,
+            clusterCount: diagnostics.clusterCount,
+            stateCount: diagnostics.stateCount,
+            completedStateCount: diagnostics.completedStateCount,
+            missingIdentifierCount: diagnostics.missingIdentifierCount,
+            skippedMissingSearchStringCount: diagnostics.skippedMissingSearchStringCount,
+        });
+        if (this.lastPageTrackingDiagnosticsKey === diagnosticsKey) {
+            return;
+        }
+        this.lastPageTrackingDiagnosticsKey = diagnosticsKey;
+        const event = diagnostics.stateCount === 0
+            ? 'ebook.pageTracking.sync.empty'
+            : 'ebook.pageTracking.sync';
+        this.#logPageTracking(event, {
+            reason,
+            documentURL: diagnostics.documentURL,
+            clusterAxis: diagnostics.clusterAxis,
+            viewportWidth: diagnostics.viewportWidth,
+            viewportHeight: diagnostics.viewportHeight,
+            totalSegmentCount: diagnostics.totalSegmentCount,
+            visibleSegmentCount: diagnostics.visibleSegmentCount,
+            hiddenTooltipCount: diagnostics.hiddenTooltipCount,
+            missingIdentifierCount: diagnostics.missingIdentifierCount,
+            outOfViewportCount: diagnostics.outOfViewportCount,
+            skippedMissingSearchStringCount: diagnostics.skippedMissingSearchStringCount,
+            clusterCount: diagnostics.clusterCount,
+            stateCount: diagnostics.stateCount,
+            completedStateCount: diagnostics.completedStateCount,
+            readSegmentCount: diagnostics.readSegmentCount,
+            readSentenceCount: diagnostics.readSentenceCount,
+        });
     }
     applyBookReadingProgress(articleReadingProgress) {
         this.articleReadingProgress = normalizeArticleReadingProgress(articleReadingProgress);
         this.markedAsFinished = !!this.articleReadingProgress.articleMarkedAsFinished;
         this.pageTrackingBusyStateIDs.clear();
-        this.#syncPageTrackingButtons();
+        const progressKey = JSON.stringify({
+            articleMarkedAsFinished: this.articleReadingProgress.articleMarkedAsFinished,
+            sentenceIdentifiersRead: this.articleReadingProgress.sentenceIdentifiersRead.length,
+            readSegmentIdentifiers: this.articleReadingProgress.readSegmentIdentifiers.length,
+            articleSentenceCount: this.articleReadingProgress.articleSentenceCount,
+        });
+        if (this.lastBookReadingProgressKey !== progressKey) {
+            this.lastBookReadingProgressKey = progressKey;
+            this.#logPageTracking('ebook.pageTracking.progressApplied', {
+                articleMarkedAsFinished: this.articleReadingProgress.articleMarkedAsFinished,
+                sentenceIdentifiersRead: this.articleReadingProgress.sentenceIdentifiersRead.length,
+                readSegmentIdentifiers: this.articleReadingProgress.readSegmentIdentifiers.length,
+                articleSentenceCount: this.articleReadingProgress.articleSentenceCount,
+            });
+        }
+        this.#syncPageTrackingButtons('progress-applied', null, 2);
+        this.#queueLayoutDiagnostics('progress-applied', {
+            articleSentenceCount: this.articleReadingProgress.articleSentenceCount,
+            readSegmentIdentifiers: this.articleReadingProgress.readSegmentIdentifiers.length,
+        });
     }
     async #markPageClusterAsRead(stateID) {
         const pageTrackingState = this.pageTrackingStates.find((state) => state.id === stateID);
-        if (!pageTrackingState || pageTrackingState.payload.segments.length === 0 || pageTrackingState.isRead) {
+        if (!pageTrackingState) {
+            this.#logPageTracking('ebook.pageTracking.markRead.skip', {
+                reason: 'missing-state',
+                stateID,
+            });
             return;
         }
+        if (pageTrackingState.payload.segments.length === 0) {
+            this.#logPageTracking('ebook.pageTracking.markRead.skip', {
+                reason: 'empty-payload',
+                stateID,
+            });
+            return;
+        }
+        if (pageTrackingState.isRead) {
+            this.#logPageTracking('ebook.pageTracking.markRead.skip', {
+                reason: 'already-read',
+                stateID,
+            });
+            return;
+        }
+        this.#logPageTracking('ebook.pageTracking.markRead.start', {
+            stateID,
+            visibleSegmentCount: pageTrackingState.visibleSegmentCount,
+            unreadVisibleSegmentCount: pageTrackingState.unreadVisibleSegmentCount,
+            payloadSegmentCount: pageTrackingState.payload.segments.length,
+            sentenceIdentifierCount: pageTrackingState.payload.sentenceIdentifiers.length,
+        });
         this.pageTrackingBusyStateIDs.add(stateID);
         this.#renderPageTrackingButtons();
         window.webkit.messageHandlers.markSectionAsRead.postMessage(pageTrackingState.payload);
@@ -701,6 +1551,12 @@ class Reader {
             ...pageTrackingState.payload.sentenceIdentifiers,
         ]));
         this.applyBookReadingProgress(optimisticProgress);
+        this.#logPageTracking('ebook.pageTracking.markRead.optimisticApplied', {
+            stateID,
+            readSegmentIdentifiers: optimisticProgress.readSegmentIdentifiers.length,
+            sentenceIdentifiersRead: optimisticProgress.sentenceIdentifiersRead.length,
+        });
+        await this.#advanceAfterMarkRead();
     }
     async open(file) {
         this.setLoadingIndicator(true);
@@ -721,10 +1577,18 @@ class Reader {
         } = this.view
         this.bookDir = book.dir || 'ltr';
         this.isRTL = this.bookDir === 'rtl';
+        document.body.dir = this.bookDir;
+        document.body?.setAttribute?.('data-book-dir', this.bookDir);
+        this.navHUD?.setIsRTL(this.isRTL);
+        this.navHUD?.setPageTargets(book.pageList ?? []);
         this.view.renderer.setStyles?.(getCSSForBookContent(this.style))
         //        this.view.renderer.next()
         
         $('#nav-bar').style.visibility = 'visible'
+        this.#queueLayoutDiagnostics('reader-open', {
+            isRTL: this.isRTL,
+            bookDir: this.bookDir,
+        });
         this.buttons = {
             prev: document.getElementById('btn-prev-chapter'),
             next: document.getElementById('btn-next-chapter'),
@@ -856,25 +1720,6 @@ class Reader {
         // Listen for resetSideNavChevrons custom event to reset chevrons
         document.addEventListener('resetSideNavChevrons', () => this.#resetSideNavChevrons());
         
-        // Reorder toolbar children for RTL/LTR so left/right stacks and progress are positioned correctly
-        const navBar = document.getElementById('nav-bar');
-        const leftStack = document.getElementById('left-stack');
-        const rightStack = document.getElementById('right-stack');
-        const progressWrapper = document.getElementById('progress-wrapper');
-        navBar.innerHTML = '';
-        if (this.isRTL) {
-            navBar.append(rightStack, progressWrapper, leftStack);
-        } else {
-            navBar.append(leftStack, progressWrapper, rightStack);
-        }
-        
-        const slider = $('#progress-slider')
-        slider.dir = book.dir
-        const debouncedGoToFraction = debounce(e => {
-            this.view.goToFraction(parseFloat(e.target.value))
-        }, 250);
-        slider.addEventListener('input', debouncedGoToFraction)
-        
         // Section ticks
         const sizes = book.sections.filter(s => s.linear !== 'no').map(s => s.size)
         const total = sizes.reduce((a, b) => a + b, 0)
@@ -916,13 +1761,18 @@ class Reader {
             }
             ticks = collapsed;
         }
-        // Clear any previous ticks
-        const tickMarks = $('#tick-marks');
-        tickMarks.innerHTML = '';
-        for (const tick of ticks) {
-            const option = document.createElement('option');
-            option.value = tick;
-            tickMarks.append(option);
+        // Render section ticks into the custom overlay container used by the January toolbar.
+        const tickContainer = document.getElementById('progress-ticks');
+        if (tickContainer) {
+            tickContainer.innerHTML = '';
+            for (const tick of ticks) {
+                if (!Number.isFinite(tick)) continue;
+                const pos = Math.max(0, Math.min(1, tick)) * 100;
+                const mark = document.createElement('div');
+                mark.className = 'tick';
+                mark.style[this.isRTL ? 'right' : 'left'] = `${pos}%`;
+                tickContainer.append(mark);
+            }
         }
         
         slider.style.setProperty('--value', slider.value);
@@ -1087,6 +1937,9 @@ class Reader {
             this.#show(this.buttons.finish, false);
             this.#show(this.buttons.restart, false);
         }
+        const showingCompletion = !!(this.buttons.finish && !this.buttons.finish.hidden)
+            || !!(this.buttons.restart && !this.buttons.restart.hidden);
+        this.navHUD?._toggleCompletionStack?.(showingCompletion);
         
         // RTL/LTR logic for disabling/hiding side chevrons
         const btnScrollLeft = document.getElementById('btn-scroll-left');
@@ -1115,7 +1968,22 @@ class Reader {
                 iconPath.setAttribute('stroke', 'none');
             }
         }
-        this.#syncPageTrackingButtons();
+        this.navHUD?.setNavContext({
+            atSectionStart,
+            atSectionEnd,
+            hasPrevSection,
+            hasNextSection,
+            showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
+            showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
+            sections: this.view?.book?.sections ?? [],
+        });
+        this.#syncPageTrackingButtons('nav-buttons', null, 1);
+        this.#queueLayoutDiagnostics('nav-buttons', {
+            showingFinish: !!(this.buttons.finish && !this.buttons.finish.hidden),
+            showingRestart: !!(this.buttons.restart && !this.buttons.restart.hidden),
+            showPrev: !!(this.buttons.prev && !this.buttons.prev.hidden),
+            showNext: !!(this.buttons.next && !this.buttons.next.hidden),
+        });
     }
     async #handleKeydown(event) {
         const k = event.key;
@@ -1158,7 +2026,10 @@ class Reader {
             topWindowURL: window.top.location.href,
             currentPageURL: doc.location.href,
         })
-        requestAnimationFrame(() => this.#syncPageTrackingButtons());
+        requestAnimationFrame(() => this.#syncPageTrackingButtons('document-load', doc, 2));
+        this.#queueLayoutDiagnostics('document-load', {
+            documentURL: doc?.location?.href || null,
+        });
     }
     
     #resetSideNavChevrons() {
@@ -1178,7 +2049,9 @@ class Reader {
     #postUpdateReadingProgressMessage = debounce(({
         fraction,
         cfi,
-        reason
+        reason,
+        currentPageNumber,
+        totalPages,
     }) => {
         let mainDocumentURL = (window.location != window.parent.location) ? document.referrer : document.location.href
         window.webkit.messageHandlers.updateReadingProgress.postMessage({
@@ -1186,6 +2059,8 @@ class Reader {
             cfi: cfi,
             reason: reason,
             mainDocumentURL: mainDocumentURL,
+            currentPageNumber: currentPageNumber,
+            totalPages: totalPages,
         })
     }, 400)
     
@@ -1200,33 +2075,41 @@ class Reader {
             cfi,
             reason
         } = detail
-        const percent = percentFormat.format(fraction)
-        const loc = pageItem ? `Page ${pageItem.label}` : `Loc ${location.current}`
-        const progressButton = $('#progress-button')
-        progressButton.textContent = percent
-        progressButton.style.visibility = 'visible'
-        const slider = $('#progress-slider')
-        slider.style.visibility = 'visible'
-        slider.value = fraction
-        slider.style.setProperty('--value', slider.value); // keep slider progress updated
-        slider.title = `${percent} · ${loc}`
+        await this.navHUD?.handleRelocate(detail);
+        const scrubFraction = this.navHUD?.getScrubberFraction(detail) ?? null;
+        const effectiveFraction = Number.isFinite(scrubFraction) ? scrubFraction : fraction;
+        const pageMetrics = this.navHUD?.lastPageMetricsSnapshot ?? null;
+        const currentPageNumber = typeof pageMetrics?.currentPageNumber === 'number'
+            ? pageMetrics.currentPageNumber
+            : null;
+        const totalPages = typeof pageMetrics?.totalPages === 'number'
+            ? pageMetrics.totalPages
+            : null;
         // (removed: setting tocView currentHref here)
         
         if (this.hasLoadedLastPosition) {
             this.#postUpdateReadingProgressMessage({
                 fraction,
                 cfi,
-                reason
+                reason,
+                currentPageNumber,
+                totalPages,
             })
         }
         
         await this.updateNavButtons();
+        this.#queueLayoutDiagnostics('relocate', {
+            reason: detail?.reason || null,
+            fraction: safeRound(detail?.fraction),
+            currentLocation: detail?.location?.current ?? null,
+            totalLocation: detail?.location?.total ?? null,
+        });
         
         // Keep percent-jump input in sync with scroll
         const percentInput = document.getElementById('percent-jump-input');
         const percentButton = document.getElementById('percent-jump-button');
         if (percentInput && percentButton) {
-            const pct = Math.round(fraction * 100);
+            const pct = Math.round(effectiveFraction * 100);
             percentInput.value = pct;
             this.lastPercentValue = pct;
             percentButton.disabled = true;
@@ -1316,7 +2199,19 @@ class CacheWarmer {
         this.uniqueSentenceIdentifiers = new Set()
         this.lastPostedSentenceCount = null
     }
+    destroy() {
+        if (this.view) {
+            try {
+                this.view.close?.()
+            } catch (_error) {}
+            this.view.remove?.()
+            this.view = null
+        }
+        this.uniqueSentenceIdentifiers.clear()
+        this.lastPostedSentenceCount = null
+    }
     async open(file) {
+        this.destroy()
         this.view = await getView(file, true)
         this.view.addEventListener('load', this.#onLoad.bind(this))
         
@@ -1332,18 +2227,52 @@ class CacheWarmer {
     async #onLoad({
         detail: {
             doc,
-            location
+            location,
+            index,
         }
     }) {
-        const sentenceNodes = Array.from(doc?.querySelectorAll?.('manabi-sentence[data-sentence-identifier]') || []);
+        const sentenceNodes = Array.from(doc?.querySelectorAll?.('manabi-sentence') || []);
+        const segmentNodes = Array.from(doc?.querySelectorAll?.('manabi-segment') || []);
+        const indexedSectionHref =
+            Number.isInteger(index)
+            ? this.view?.book?.sections?.[index]?.href || null
+            : null;
+        const sourceHref = doc?.body?.dataset?.manabiSourceHref || indexedSectionHref || null;
+        const sectionHref = indexedSectionHref || sourceHref || null;
+        const isLikelyTitlePage = typeof sourceHref === 'string' && /(?:^|\/)(title|cover)\.xhtml$/i.test(sourceHref);
+        postReaderLog('ebook.cacheWarmer.sectionLoaded', {
+            sectionURL: location,
+            documentURL: doc?.location?.href || 'nil',
+            sectionIndex: Number.isInteger(index) ? index : 'nil',
+            sourceHref: sourceHref || 'nil',
+            sectionHref: sectionHref || 'nil',
+            sentenceCount: sentenceNodes.length,
+            segmentCount: segmentNodes.length,
+            isCacheWarmerDocument: doc?.body?.dataset?.isCacheWarmer === 'true',
+            isLikelyTitlePage,
+        });
         for (const sentenceNode of sentenceNodes) {
-            const sentenceIdentifier = sentenceNode?.dataset?.sentenceIdentifier;
+            const sentenceIdentifier = sentenceIdentifierForNode(sentenceNode);
             if (typeof sentenceIdentifier === 'string' && sentenceIdentifier.length > 0) {
                 this.uniqueSentenceIdentifiers.add(sentenceIdentifier);
             }
         }
-        if (this.lastPostedSentenceCount !== this.uniqueSentenceIdentifiers.size) {
+        const shouldDeferSentenceCountUpdate = this.uniqueSentenceIdentifiers.size === 0 && isLikelyTitlePage;
+        if (shouldDeferSentenceCountUpdate) {
+            postReaderLog('ebook.cacheWarmer.sentenceCountDeferred', {
+                sectionURL: location,
+                sectionIndex: Number.isInteger(index) ? index : 'nil',
+                sourceHref: sourceHref || 'nil',
+                reason: 'title-page-without-sentences',
+            });
+        } else if (this.lastPostedSentenceCount !== this.uniqueSentenceIdentifiers.size) {
             this.lastPostedSentenceCount = this.uniqueSentenceIdentifiers.size;
+            postReaderLog('ebook.cacheWarmer.sentenceCountUpdate', {
+                sectionURL: location,
+                sectionIndex: Number.isInteger(index) ? index : 'nil',
+                sourceHref: sourceHref || 'nil',
+                articleSentenceCount: this.uniqueSentenceIdentifiers.size,
+            });
             window.webkit.messageHandlers.updateArticleSentenceCount.postMessage({
                 windowURL: window.top.location.href,
                 articleSentenceCount: this.uniqueSentenceIdentifiers.size,
@@ -1407,56 +2336,220 @@ window.loadEBook = ({
     url,
     layoutMode,
 }) => {
+    postReaderLog('ebook.viewer.load.start', {
+        hasURL: typeof url === 'string' && url.length > 0,
+        layoutMode: layoutMode || 'default',
+    });
+    try {
+        globalThis.reader?.view?.close?.()
+    } catch (_error) {}
+    try {
+        globalThis.reader?.view?.remove?.()
+    } catch (_error) {}
+    try {
+        window.cacheWarmer?.destroy?.()
+    } catch (_error) {}
     let reader = new Reader()
     globalThis.reader = reader
     
     window.cacheWarmer = new CacheWarmer()
+    window.ebookSource = typeof url === 'string' && url.length > 0 && url.startsWith('ebook://')
+        ? makeNativeSource(url)
+        : null
     
-    if (url) fetch(url, {
-        headers: {
-            "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
-        },
-    })
-        .then(res => res.blob())
-        .then(async (blob) => {
-            window.blob = blob
+    if (url) {
+        const sourcePromise = window.ebookSource
+            ? Promise.resolve(window.ebookSource)
+            : fetch(url, {
+                headers: {
+                    "IS-SWIFTUIWEBVIEW-VIEWER-FILE-REQUEST": "true",
+                },
+            })
+                .then(res => res.blob())
+                .then((blob) => {
+                    window.blob = blob
+                    postReaderLog('ebook.viewer.load.blobReady', {
+                        blobSize: blob.size,
+                        blobType: blob.type || 'nil',
+                    });
+                    return makeFileSource(new File([blob], new URL(url).pathname))
+                })
+
+        sourcePromise
+        .then(async (source) => {
+            if (source?.kind === 'native') {
+                postReaderLog('ebook.viewer.load.nativeSource', {
+                    sourceURL: source.url,
+                });
+            }
             if (layoutMode) {
                 window.initialLayoutMode = layoutMode
             }
-            await reader.open(new File([blob], new URL(url).pathname))
+            await reader.open(source)
         })
         .then(async () => {
+            postReaderLog('ebook.viewer.load.opened', {
+                hasRenderer: !!globalThis.reader?.view?.renderer,
+                bookDir: globalThis.reader?.bookDir || 'nil',
+                isRTL: !!globalThis.reader?.isRTL,
+            });
             window.webkit.messageHandlers.ebookViewerLoaded.postMessage({})
         })
-        //.catch(e => console.error(e))
-        }
+        .catch((error) => {
+            postReaderLog('ebook.viewer.load.error', {
+                message: error?.message || String(error),
+            });
+            throw error;
+        })
+    }
+    //.catch(e => console.error(e))
+}
 
 window.loadLastPosition = async ({
     cfi,
     fractionalCompletion,
 }) => {
+    const awaitWithTimeout = (promise, timeoutMs) =>
+        Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+            }),
+        ]);
+    postReaderLog('ebook.viewer.loadLastPosition.start', {
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+        fractionalCompletion: Number.isFinite(fractionalCompletion) ? fractionalCompletion : 'nil',
+    });
+    const hasFractionalCompletion = Number.isFinite(fractionalCompletion) && fractionalCompletion > 0;
     if (cfi.length > 0) {
-        await globalThis.reader.view.goTo(cfi).catch(e => {
+        postReaderLog('ebook.viewer.loadLastPosition.path', {
+            mode: 'cfi',
+        });
+        await globalThis.reader.view.goTo(cfi).catch(async e => {
+            postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                hasCFI: true,
+                message: e?.message || String(e),
+            });
             console.error(e)
-            if (fractionalCompletion) {
-                globalThis.reader.view.goToFraction(fractionalCompletion)
+            if (hasFractionalCompletion) {
+                postReaderLog('ebook.viewer.loadLastPosition.path', {
+                    mode: 'fraction-fallback',
+                });
+                await globalThis.reader.view.goToFraction(fractionalCompletion)
             }
         })
+    } else if (hasFractionalCompletion) {
+        postReaderLog('ebook.viewer.loadLastPosition.path', {
+            mode: 'fraction',
+        });
+        try {
+            await globalThis.reader.view.goToFraction(fractionalCompletion);
+        } catch (error) {
+            postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                hasCFI: false,
+                mode: 'fraction',
+                message: error?.message || String(error),
+                fallback: 'default-next',
+            });
+            try {
+                await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
+            } catch (nextError) {
+                postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                    hasCFI: false,
+                    mode: 'default-next',
+                    message: nextError?.message || String(nextError),
+                    fallback: 'nextSection',
+                });
+                await globalThis.reader.view.renderer.nextSection();
+            }
+            postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
+                mode: 'default-next',
+            });
+        }
     } else {
-        await globalThis.reader.view.renderer.next()
+        postReaderLog('ebook.viewer.loadLastPosition.path', {
+            mode: 'default-next',
+        });
+        try {
+            await awaitWithTimeout(globalThis.reader.view.renderer.next(), 1500);
+        } catch (error) {
+            postReaderLog('ebook.viewer.loadLastPosition.goToError', {
+                hasCFI: false,
+                mode: 'default-next',
+                message: error?.message || String(error),
+                fallback: 'nextSection',
+            });
+            await globalThis.reader.view.renderer.nextSection();
+        }
+        postReaderLog('ebook.viewer.loadLastPosition.afterNext', {
+            mode: 'default-next',
+        });
     }
     globalThis.reader.hasLoadedLastPosition = true
+    postReaderLog('ebook.viewer.loadLastPosition.done', {
+        hasCFI: typeof cfi === 'string' && cfi.length > 0,
+    });
     
     // Don't overlap cache warming with initial page load
-    await window.cacheWarmer.open(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+    const cacheWarmerSource = window.ebookSource
+        || makeFileSource(new File([window.blob], new URL(globalThis.reader.view.ownerDocument.defaultView.top.location.href).pathname))
+    await window.cacheWarmer.open(cacheWarmerSource)
 }
 
 window.refreshBookReadingProgress = async (articleReadingProgress) => {
     if (!globalThis.reader) {
+        postReaderLog('ebook.pageTracking.progressRefresh.skip', {
+            reason: 'missing-reader',
+        });
         return;
     }
+    const normalizedProgress = normalizeArticleReadingProgress(articleReadingProgress);
+    postReaderLog('ebook.pageTracking.progressRefresh.received', {
+        articleMarkedAsFinished: normalizedProgress.articleMarkedAsFinished,
+        sentenceIdentifiersRead: normalizedProgress.sentenceIdentifiersRead.length,
+        readSegmentIdentifiers: normalizedProgress.readSegmentIdentifiers.length,
+        articleSentenceCount: normalizedProgress.articleSentenceCount,
+    });
     globalThis.reader.applyBookReadingProgress(articleReadingProgress);
     await globalThis.reader.updateNavButtons();
+}
+
+window.manabiToggleReaderTableOfContents = () => {
+    globalThis.reader?.toggleTableOfContents?.();
+}
+
+window.manabiGetReaderGoToSheetSnapshot = async () => {
+    return await globalThis.reader?.buildGoToSheetSnapshot?.() ?? {
+        currentChapterHref: null,
+        currentChapterTitle: null,
+        currentPageNumber: null,
+        totalPages: null,
+        chapters: [],
+    };
+}
+
+window.manabiScheduleReaderPageGoTo = (pageNumber) => {
+    globalThis.reader?.scheduleGoToPageNumber?.(pageNumber);
+}
+
+window.manabiGoToReaderPage = async (pageNumber) => {
+    return await globalThis.reader?.goToPageNumber?.(pageNumber, 'window.manabiGoToReaderPage');
+}
+
+window.manabiGoToReaderPercent = async (percent) => {
+    return await globalThis.reader?.goToPercent?.(percent, 'window.manabiGoToReaderPercent');
+}
+
+window.manabiGoToReaderHref = async (href) => {
+    return await globalThis.reader?.goToHref?.(href, 'window.manabiGoToReaderHref');
+}
+
+window.manabiScheduleReaderFractionGoTo = (fraction) => {
+    globalThis.reader?.scheduleGoToFraction?.(fraction);
+}
+
+window.manabiOpenReaderGoToSheet = (source = 'window.manabiOpenReaderGoToSheet') => {
+    postOpenReaderGoToSheetRequest(source, null);
 }
 
 window.nextSection = async () => {
@@ -1469,3 +2562,6 @@ window.nextSection = async () => {
 }
 
 window.webkit.messageHandlers.ebookViewerInitialized.postMessage({})
+postReaderLog('ebook.viewer.js.version', {
+    version: 'replace-text-summary-v1',
+});

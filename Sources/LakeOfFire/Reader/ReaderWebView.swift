@@ -16,6 +16,10 @@ fileprivate let blockedHosts = Set([
     "adservice.google.ca", "adservice.google.com", "adservice.google.jp",
 ])
 
+private func logLandscapeInset(_ message: String) {
+    debugPrint("# LANDSCAPEINSET \(message)")
+}
+
 // To avoid redraws...
 @MainActor
 fileprivate class ReaderWebViewHandler {
@@ -158,6 +162,18 @@ public struct ReaderWebView: View {
     @EnvironmentObject internal var readerModeViewModel: ReaderModeViewModel
     @EnvironmentObject internal var readerMediaPlayerViewModel: ReaderMediaPlayerViewModel
     @Environment(\.webViewNavigator) internal var navigator: WebViewNavigator
+
+    private var ebookSchemeBindingState: String {
+        [
+            readerModeViewModel.ebookTextProcessorCacheHits != nil ? "cacheHits=1" : "cacheHits=0",
+            readerModeViewModel.processReadabilityContent != nil ? "readability=1" : "readability=0",
+            readerModeViewModel.processHTML != nil ? "html=1" : "html=0",
+            readerModeViewModel.sharedFontCSSBase64 == nil ? "fontCSS=0" : "fontCSS=1",
+            readerModeViewModel.sharedFontCSSBase64Provider == nil ? "fontCSSProvider=0" : "fontCSSProvider=1",
+            readerModeViewModel.sharedReaderFontAsset == nil ? "fontAsset=0" : "fontAsset=1",
+        ]
+        .joined(separator: " ")
+    }
     
     public init(
         persistentWebViewID: String? = nil,
@@ -219,7 +235,7 @@ public struct ReaderWebView: View {
             sharedReaderFontAsset: readerModeViewModel.sharedReaderFontAsset,
             handler: handler
         )
-        .task { @MainActor in
+        .task(id: ebookSchemeBindingState) { @MainActor in
             navigator.shouldLoadFallbackOnAttach = false
             navigator.attachFallbackDelayNanoseconds = 700_000_000
             ebookURLSchemeHandler.ebookTextProcessorCacheHits = readerModeViewModel.ebookTextProcessorCacheHits
@@ -230,6 +246,7 @@ public struct ReaderWebView: View {
             ebookURLSchemeHandler.sharedFontCSSBase64Provider = readerModeViewModel.sharedFontCSSBase64Provider
             ebookURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
             readerFileURLSchemeHandler.sharedReaderFontAsset = readerModeViewModel.sharedReaderFontAsset
+            print("# EPUB", "readerWebView.schemeHandlerBindings", ebookSchemeBindingState)
         }
         .readerFileManagerSetup { readerFileManager in
             readerFileURLSchemeHandler.readerFileManager = readerFileManager
@@ -267,13 +284,12 @@ fileprivate struct ReaderWebViewInternal: View {
     
     private func totalObscuredInsets(additionalInsets: EdgeInsets = .init(top: 0, leading: 0, bottom: 0, trailing: 0)) -> EdgeInsets {
 #if os(iOS)
-        let insets = EdgeInsets(
+        return EdgeInsets(
             top: max(0, (obscuredInsets?.top ?? 0) + additionalInsets.top),
             leading: max(0, (obscuredInsets?.leading ?? 0) + additionalInsets.leading),
             bottom: max(0, (obscuredInsets?.bottom ?? 0) + additionalInsets.bottom),
             trailing: max(0, (obscuredInsets?.trailing ?? 0) + additionalInsets.trailing)
         )
-        return insets
 #else
         EdgeInsets()
 #endif

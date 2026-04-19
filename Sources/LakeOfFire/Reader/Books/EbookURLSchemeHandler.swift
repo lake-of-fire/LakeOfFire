@@ -322,7 +322,7 @@ public final class EbookURLSchemeHandler: NSObject, WKURLSchemeHandler {
             guard let self else { return }
             if url.path == "/process-text" {
                 if urlSchemeTask.request.httpMethod == "POST", let payload = ebookRequestBodyData(urlSchemeTask.request), let text = String(data: payload, encoding: .utf8), let replacedTextLocation = urlSchemeTask.request.value(forHTTPHeaderField: "X-REPLACED-TEXT-LOCATION"), let contentURLRaw = urlSchemeTask.request.value(forHTTPHeaderField: "X-CONTENT-LOCATION"), let contentURL = URL(string: contentURLRaw) {
-                    if let ebookTextProcessor, let processReadabilityContent, let processHTML {
+                    if let ebookTextProcessor {
                         let isCacheWarmer = urlSchemeTask.request.value(forHTTPHeaderField: "X-IS-CACHE-WARMER") == "true"
                         let processRequestKey = EBookProcessTextRequestKey(
                             contentURL: contentURL,

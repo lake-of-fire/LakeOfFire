@@ -158,6 +158,9 @@ public class ReaderContent: ObservableObject {
            let loadingResolvedContentURL,
            matchesResolvedContentURL(loadingResolvedContentURL, resolvedContentURL: resolvedContentURL) {
             let startedAt = CFAbsoluteTimeGetCurrent()
+            logReaderLoad(
+                "stage=readerContent.load.reuseLoadingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) currentPageURL=\(pageURL.absoluteString) currentContentURL=\(content?.url.absoluteString ?? "nil")"
+            )
             _ = try await loadingTask.value
             logReaderLoad(
                 "stage=readerContent.load.awaitExistingTask requestURL=\(url.absoluteString) resolvedContentURL=\(resolvedContentURL.absoluteString) loadingResolvedContentURL=\(loadingResolvedContentURL.absoluteString) elapsed=\(String(format: "%.3fs", CFAbsoluteTimeGetCurrent() - startedAt))"
@@ -280,7 +283,7 @@ public class ReaderContent: ObservableObject {
                 return true
             }
         } catch {
-            debugPrint("# READER contentTitle.update.failed", error.localizedDescription)
+            debugPrint("# EPUB  contentTitle.update.failed", error.localizedDescription)
         }
     }
 }

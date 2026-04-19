@@ -209,6 +209,8 @@ public struct FractionalCompletionMessage: Sendable {
     public var reason: String
     public var mainDocumentURL: URL?
     public var sectionIndex: Int?
+    public var currentPageNumber: Int?
+    public var totalPages: Int?
 
     public init?(fromMessage message: WebViewMessage) {
         guard let body = message.body as? [String: Any], let completion = body["fractionalCompletion"] as? Double, let cfi = body["cfi"] as? String, let reason = body["reason"] as? String else { return nil }
@@ -223,6 +225,27 @@ public struct FractionalCompletionMessage: Sendable {
         } else if let doubleIndex = body["sectionIndex"] as? Double {
             sectionIndex = Int(doubleIndex)
         }
+        if let rawCurrentPageNumber = body["currentPageNumber"] as? Int {
+            currentPageNumber = rawCurrentPageNumber
+        } else if let doubleCurrentPageNumber = body["currentPageNumber"] as? Double {
+            currentPageNumber = Int(doubleCurrentPageNumber)
+        }
+        if let rawTotalPages = body["totalPages"] as? Int {
+            totalPages = rawTotalPages
+        } else if let doubleTotalPages = body["totalPages"] as? Double {
+            totalPages = Int(doubleTotalPages)
+        }
+    }
+}
+
+public struct OpenReaderGoToSheetMessage {
+    public let source: String?
+    public let targetID: String?
+
+    public init?(fromMessage message: WebViewMessage) {
+        guard let body = message.body as? [String: Any] else { return nil }
+        source = body["source"] as? String
+        targetID = body["targetID"] as? String
     }
 }
 

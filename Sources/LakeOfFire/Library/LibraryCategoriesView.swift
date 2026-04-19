@@ -381,7 +381,7 @@ struct LibraryCategoriesView: View {
                     importExportView
                 }
                 .labelStyle(.titleOnly)
-                .tint(appTint)
+                .accentColor(appTint)
                 
                 Section {
                     editorsPicksLibraryView

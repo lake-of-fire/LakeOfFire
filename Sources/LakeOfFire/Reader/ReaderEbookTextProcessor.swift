@@ -204,6 +204,15 @@ internal func ebookTextProcessor(
         )
         
         var html = try doc.outerHtml()
+        print(
+            "# EPUB",
+            "ebookTextProcessor.output",
+            "contentURL=\(contentURL.absoluteString)",
+            "sectionLocation=\(sectionLocation)",
+            "isCacheWarmer=\(isCacheWarmer)",
+            "segmentCount=\(html.components(separatedBy: "<manabi-segment").count - 1)",
+            "sentenceCount=\(html.components(separatedBy: "<manabi-sentence").count - 1)"
+        )
         
         if let processHTML {
             html = await EbookHTMLProcessingContext.$isEbookHTML.withValue(true) {

@@ -410,7 +410,12 @@ public class BookLibraryViewModel: ObservableObject {
         }
 
         guard let toLoad = importedURL else { return }
-        guard let content = try await ReaderContentLoader.load(url: toLoad, persist: true, countsAsHistoryVisit: true), !content.url.matchesReaderURL(readerPageURL) else { return }
+        guard let content = try await ReaderContentLoader.load(
+            url: toLoad,
+            persist: true,
+            countsAsHistoryVisit: true,
+            source: "BookLibraryView.openOrDownloadPublication"
+        ), !content.url.matchesReaderURL(readerPageURL) else { return }
         try await navigator.load(
             content: content,
             readerFileManager: readerFileManager,
@@ -435,7 +440,12 @@ public class BookLibraryViewModel: ObservableObject {
             let importedURL = try await readerFileManager.readerFileURL(for: downloadable)
         else { return }
 
-        guard let content = try await ReaderContentLoader.load(url: importedURL, persist: true, countsAsHistoryVisit: true) else { return }
+        guard let content = try await ReaderContentLoader.load(
+            url: importedURL,
+            persist: true,
+            countsAsHistoryVisit: true,
+            source: "BookLibraryView.openDownloaded"
+        ) else { return }
         if content.url.matchesReaderURL(readerContent.pageURL) { return }
         try await navigator.load(
             content: content,

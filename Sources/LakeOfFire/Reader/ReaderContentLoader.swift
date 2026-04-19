@@ -285,7 +285,7 @@ public struct ReaderContentLoader {
         let taskKey = "\(resolvedURL.absoluteString)|history:\(countsAsHistoryVisit)"
         if let existingTask = inFlightGetContentTasks[taskKey] {
             logReaderLoad(
-                "stage=contentLoader.getContent.coalesced pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
+                "stage=contentLoader.getContent.coalesced pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(taskKey) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
             )
             return try await existingTask.value
         }
@@ -293,18 +293,27 @@ public struct ReaderContentLoader {
             let nonHistoryTaskKey = "\(resolvedURL.absoluteString)|history:false"
             if let existingTask = inFlightGetContentTasks[nonHistoryTaskKey] {
                 logReaderLoad(
-                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
+                    "stage=contentLoader.getContent.reuseNonHistoryTask pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(nonHistoryTaskKey) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
                 )
                 let existingContent = try await existingTask.value
                 if existingContent == nil || existingContent is HistoryRecord {
+                    logReaderLoad(
+                        "stage=contentLoader.getContent.reuseNonHistoryTask.accepted pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) contentURL=\(existingContent?.url.absoluteString ?? "nil") contentType=\(existingContent.map { String(describing: type(of: $0)) } ?? "nil") source=\(source)"
+                    )
                     return existingContent
                 }
+                guard let existingContent else {
+                    return nil
+                }
+                logReaderLoad(
+                    "stage=contentLoader.getContent.reuseNonHistoryTask.rejected pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) contentURL=\(existingContent.url.absoluteString) contentType=\(String(describing: type(of: existingContent))) source=\(source)"
+                )
             }
         } else {
             let historyTaskKey = "\(resolvedURL.absoluteString)|history:true"
             if let existingTask = inFlightGetContentTasks[historyTaskKey] {
                 logReaderLoad(
-                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString) source=\(source)"
+                    "stage=contentLoader.getContent.reuseHistoryTask pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) taskKey=\(historyTaskKey) source=\(source)"
                 )
                 return try await existingTask.value
             }
@@ -316,13 +325,22 @@ public struct ReaderContentLoader {
                 "stage=contentLoader.getContent.begin pageURL=\(pageURL.absoluteString) resolvedURL=\(resolvedURL.absoluteString) countsAsHistoryVisit=\(countsAsHistoryVisit) isLoaderURL=\(pageURL.isReaderURLLoaderURL) source=\(source)"
             )
             if let contentURL = ReaderContentLoader.getContentURL(fromLoaderURL: pageURL),
-               let content = try await ReaderContentLoader.load(url: contentURL, countsAsHistoryVisit: countsAsHistoryVisit) {
+               let content = try await ReaderContentLoader.load(
+                url: contentURL,
+                countsAsHistoryVisit: countsAsHistoryVisit,
+                source: "\(source).loaderRedirect"
+               ) {
                 try Task.checkCancellation()
                 logReaderLoad(
                     "stage=contentLoader.getContent.loaderResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
                 )
                 return content
-            } else if let content = try await ReaderContentLoader.load(url: pageURL, persist: !pageURL.isNativeReaderView, countsAsHistoryVisit: true) {
+            } else if let content = try await ReaderContentLoader.load(
+                url: pageURL,
+                persist: !pageURL.isNativeReaderView,
+                countsAsHistoryVisit: true,
+                source: "\(source).directLoad"
+            ) {
                 try Task.checkCancellation()
                 logReaderLoad(
                     "stage=contentLoader.getContent.directResolved pageURL=\(pageURL.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
@@ -361,10 +379,15 @@ public struct ReaderContentLoader {
     }
     
     @MainActor
-    public static func load(url: URL, persist: Bool = true, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
+    public static func load(
+        url: URL,
+        persist: Bool = true,
+        countsAsHistoryVisit: Bool = false,
+        source: String = "ReaderContentLoader.load"
+    ) async throws -> (any ReaderContentProtocol)? {
         let startedAt = Date()
         logReaderLoad(
-            "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit)"
+            "stage=contentLoader.load.begin url=\(url.absoluteString) persist=\(persist) countsAsHistoryVisit=\(countsAsHistoryVisit) source=\(source)"
         )
         let contentRef = try await { @RealmBackgroundActor () -> ReaderContentLoader.ContentReference? in
             try Task.checkCancellation()
@@ -437,10 +460,10 @@ public struct ReaderContentLoader {
         let content = try await contentRef?.resolveOnMainActor()
         if let content {
             logReaderLoad(
-                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))"
+                "stage=contentLoader.load.finish url=\(url.absoluteString) contentURL=\(content.url.absoluteString) contentType=\(String(describing: type(of: content))) key=\(content.compoundKey) readerDefault=\(content.isReaderModeByDefault) hasHTML=\(content.hasHTML) elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)"
             )
         } else {
-            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt)))")
+            logReaderLoad("stage=contentLoader.load.finish url=\(url.absoluteString) content=nil elapsed=\(String(format: "%.3fs", Date().timeIntervalSince(startedAt))) source=\(source)")
         }
         return content
     }
@@ -448,7 +471,11 @@ public struct ReaderContentLoader {
     @MainActor
     public static func load(urlString: String, countsAsHistoryVisit: Bool = false) async throws -> (any ReaderContentProtocol)? {
         guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme ?? ""), url.host != nil else { return nil }
-        return try await load(url: url, countsAsHistoryVisit: countsAsHistoryVisit)
+        return try await load(
+            url: url,
+            countsAsHistoryVisit: countsAsHistoryVisit,
+            source: "ReaderContentLoader.load.urlString"
+        )
     }
     
     @MainActor
@@ -1037,7 +1064,18 @@ This snippet loads when the pasteboard is empty in a debug build.
             }
         }()
 
-        return try await load(url: contentURL, persist: false, countsAsHistoryVisit: false)
+        logSnippetEvent(
+            "appendSnippetHTML.reload",
+            "contentURL=\(contentURL.absoluteString)",
+            "persist=false",
+            "countsAsHistoryVisit=false"
+        )
+        return try await load(
+            url: contentURL,
+            persist: false,
+            countsAsHistoryVisit: false,
+            source: "ReaderContentLoader.appendSnippetHTML.reload"
+        )
     }
 
     @MainActor

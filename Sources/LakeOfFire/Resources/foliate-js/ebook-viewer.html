@@ -26,10 +26,30 @@
                 html {
                     height: 100%;
                 }
+                html, body {
+                    overflow-x: hidden;
+                    overscroll-behavior-x: contain;
+                }
                 body {
                     --manabi-red: #ff4500;
                     --secondary-color: #7a7a7a;
-                    --tertiary-color: #fbfbfb;
+                    --tertiary-color: #c3c3c3;
+                    --nav-primary-font-size: 0.72rem;
+                    --nav-secondary-font-size: calc(0.86rem + 2px);
+                    --nav-accent-color: #3d3d3d;
+                    --nav-horizontal-padding: 34px;
+                    --nav-relocate-bg: rgba(0, 0, 0, 0.08);
+                    --scrubber-progress-color: color-mix(in srgb, var(--secondary-color) 70%, white 30%);
+                    --scrubber-track-rest-color: color-mix(in srgb, var(--secondary-color) 30%, transparent 70%);
+                    --nav-relocate-icon-color: var(--scrubber-progress-color);
+                    --nav-relocate-baseline-offset: 4px;
+                    --nav-section-progress-font-size: 16px;
+                    --nav-compact-percent-min-width: 72px;
+                    --manabi-toolbar-bottom-offset: 0px;
+                    --manabi-obscured-bottom-inset: 0px;
+                    --nav-left-aux-inset: 0px;
+                    --nav-right-aux-inset: 0px;
+                    --nav-side-cluster-gap: 8px;
                     
                     margin: 0 auto;
                     height: 100%;
@@ -41,6 +61,8 @@
                     body {
                         --secondary-color: #7f7f7f;
                         --tertiary-color: #1e1e1e;
+                        --nav-accent-color: #d0d0d0;
+                        --nav-relocate-bg: rgba(255, 255, 255, 0.14);
                     }
                 }
                 
@@ -75,18 +97,25 @@
                     stroke-width: 2px;
                     flex-shrink: 0;
                 }
+                .icon.finish-icon {
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
+                    stroke: currentcolor;
+                }
                 .empty-state-icon {
                     margin: auto;
                 }
                 .toolbar {
                     box-sizing: border-box;
                     position: absolute;
-                    z-index: 1;
+                    z-index: 4;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
                     width: 100dvw;
-                    height: 30px;
+                    height: 63px;
                     /*padding: 6px;*/
                     transition: opacity 250ms ease;
                     visibility: hidden;
@@ -102,6 +131,8 @@
                     justify-content: start;
                     min-width: 0;
                     gap: 4px;
+                    font-size: 12px;
+                    font-weight: 600;
                 }
                 /* Left stack: label left, icon right */
                 #left-stack .button-label {
@@ -152,67 +183,492 @@
                     color: green;
                 }
                 .button-stack{
-                    display: grid;          /* let children overlap yet contribute width */
+                    display: grid;
                 }
                 .button-stack > button{
-                    grid-area: 1 / 1;       /* all share same cell */
+                    grid-area: 1 / 1;
                 }
-                /* keep the hidden rule */
-                .button-stack > button[hidden] {
-                    visibility: hidden;
-                    pointer-events: none;
-                    display: block !important; /* ensure grid space is still taken */
-                    height: 0;
-                    overflow: hidden;
+                .button-stack > button[hidden],
+                .button-stack > button[aria-hidden="true"] {
+                    display: none !important;
                 }
                 #nav-bar {
-                    z-index: 3;
-                    bottom: 0;
+                    z-index: 5;
+                    left: 0;
+                    right: 0;
+                    bottom: var(--manabi-toolbar-bottom-offset, 0px);
+                    height: 39px !important;
+                    min-height: 39px;
+                    max-height: 39px;
+                    flex: 0 0 39px;
                     -webkit-backdrop-filter: blur(30px);
                     contain: strict;
+                    padding: 0;
                 }
-                #progress-button {
-                    all: unset; /* Remove default styling */
-                    margin: 0 5px;
-                    padding: 1px 8px;
-                    color: var(--secondary-color);
-                    border: 1px solid var(--secondary-color);
-                    cursor: pointer;
-                    background: none;
-                    font-size: x-small;
-                    font-weight: 600;
+                #reader-stage {
+                    position: absolute;
+                    inset: 0;
+                    overflow: hidden;
+                    z-index: 1;
+                }
+                body.nav-hidden {
+                    --manabi-highlight-opacity: 0.5;
+                }
+                .nav-relocate-button,
+                .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
+                #nav-primary-text,
+                #nav-primary-text-full,
+                #nav-primary-text-compact,
+                #nav-bottom-row,
+                #progress-wrapper,
+                #nav-top-row,
+                #nav-hidden-buttons button,
+                #btn-prev-chapter,
+                #btn-next-chapter,
+                .button-label,
+                .side-nav,
+                #nav-bar,
+                #nav-bar * {
+                    user-select: none;
                     -webkit-user-select: none;
-                    visibility: hidden;
-                    text-align: center;
-                    border-radius: 9999px; /* Creates a capsule shape */
-                    display: inline-block; /* Ensures proper rendering for pill shape */
                 }
-                #progress-button:hover {
-                    background: rgba(0, 0, 0, .1);
-                    color: currentcolor;
-                    border-color: currentcolor;
+                #nav-bar *,
+                #nav-bottom-row,
+                #progress-wrapper,
+                .nav-relocate-button,
+                .nav-section-progress,
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing,
+                #nav-primary-text {
+                    transition: opacity 240ms ease;
+                }
+                .nav-fade-out {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
+                #nav-content {
+                    display: flex;
+                    flex-direction: column;
+                    width: 100%;
+                    gap: 0;
+                }
+                #nav-top-row {
+                    position: relative;
+                    display: block;
+                    padding: 0 var(--nav-horizontal-padding);
+                    height: 39px;
+                    box-sizing: border-box;
+                }
+                #nav-primary-text {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    text-align: center;
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    position: absolute;
+                    top: 3px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    white-space: nowrap;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    pointer-events: auto;
+                    height: 26px;
+                    box-sizing: border-box;
+                }
+                .nav-action-link {
+                    display: block;
+                    background: none;
+                    border: none;
+                    color: inherit;
+                    cursor: pointer;
+                    font: inherit;
+                    margin: 0;
+                    padding: 0;
+                    text-decoration: none;
+                }
+                #nav-primary-percent {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    position: absolute;
+                    top: 3px;
+                    right: var(--nav-horizontal-padding);
+                    min-width: var(--nav-compact-percent-min-width);
+                    text-align: right;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    pointer-events: none;
+                    height: 12px;
+                    opacity: 0;
+                }
+                #nav-primary-text-compact,
+                #nav-primary-percent {
+                    margin-top: 14px;
+                }
+                .nav-primary-layer {
+                    position: absolute;
+                    inset: 0;
+                    display: block;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                }
+                #nav-primary-text {
+                    --label-variant: full;
+                }
+                #nav-primary-text[data-label-variant="full"] #nav-primary-text-full {
+                    opacity: 1;
+                }
+                #nav-primary-text[data-label-variant="full"] #nav-primary-text-compact {
+                    opacity: 0;
+                }
+                #nav-primary-text[data-label-variant="compact"] #nav-primary-text-full {
+                    opacity: 0;
+                }
+                #nav-primary-text[data-label-variant="compact"] ~ #nav-primary-percent,
+                #nav-primary-text[data-label-variant="compact"] #nav-primary-text-compact {
+                    opacity: 0.8;
+                }
+                #nav-primary-text-compact {
+                    text-align: left;
+                    box-sizing: border-box;
+                }
+                #nav-primary-percent[hidden] {
+                    display: none;
+                }
+                #nav-hidden-overlay {
+                    position: fixed;
+                    left: 50%;
+                    right: auto;
+                    transform: translateX(-50%);
+                    bottom: calc(16px + var(--manabi-toolbar-bottom-offset, 0px));
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 2px;
+                    pointer-events: none;
+                    opacity: 0;
+                    transition: opacity 240ms ease;
+                    z-index: 6;
+                    padding: 0;
+                    box-sizing: border-box;
+                    width: max-content;
+                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                }
+                #nav-hidden-overlay .nav-hidden-label {
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    font-size: 10px !important;
+                    line-height: 12px;
+                    white-space: nowrap;
+                    text-align: center;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                #nav-hidden-overlay .nav-hidden-percent {
+                    text-align: center;
+                }
+                #nav-hidden-primary-text {
+                    pointer-events: auto;
+                }
+                body.nav-hidden #nav-primary-text,
+                body.nav-hidden #nav-primary-percent {
+                    opacity: 0 !important;
+                    pointer-events: none !important;
+                }
+                body.nav-hidden #nav-hidden-overlay {
+                    opacity: 1;
+                }
+                #nav-bar.nav-hidden-due-to-scroll {
+                    display: none;
+                }
+                .nav-section-progress {
+                    font-size: var(--nav-section-progress-font-size, 14px);
+                    font-weight: 500;
+                    color: var(--secondary-color);
+                    white-space: nowrap;
+                    transition: opacity 375ms ease-out;
+                }
+                .nav-section-progress[hidden] {
+                    display: none;
+                }
+                .nav-relocate-button {
+                    display: flex;
+                    align-items: flex-end;
+                    justify-content: flex-start;
+                    flex-direction: row;
+                    gap: 4px;
+                    border: none;
+                    background-color: var(--nav-relocate-bg);
+                    color: var(--nav-relocate-icon-color, var(--nav-accent-color, var(--secondary-color)));
+                    font-size: var(--nav-section-progress-font-size, 16px);
+                    font-weight: 500;
+                    padding: 4px 12px;
+                    min-height: 26px;
+                    border-radius: 999px;
+                    cursor: pointer;
+                    transition: color 0.2s ease, opacity 375ms ease-out, background-color 0.2s ease;
+                    position: absolute;
+                    bottom: calc(-1 * var(--nav-relocate-baseline-offset));
+                    direction: ltr;
+                    line-height: 1.2;
+                }
+                .nav-relocate-button:disabled {
+                    opacity: 0.35;
+                    cursor: default;
+                }
+                .nav-relocate-button[hidden] {
+                    display: none;
+                }
+                .nav-relocate-button[data-nav-edge='left'] {
+                    left: calc(var(--nav-horizontal-padding) + var(--nav-left-aux-inset, 0px));
+                    right: auto;
+                }
+                .nav-relocate-button[data-nav-edge='right'] {
+                    right: calc(var(--nav-horizontal-padding) + var(--nav-right-aux-inset, 0px));
+                    left: auto;
+                }
+                .nav-relocate-icon {
+                    width: 1em;
+                    height: 1em;
+                    min-width: 1em;
+                    min-height: 1em;
+                    color: var(--nav-relocate-icon-color, currentColor);
+                    fill: currentColor;
+                    flex-shrink: 0;
+                }
+                .nav-relocate-page {
+                    min-width: 0;
+                    margin: 0;
+                    text-align: inherit;
+                    color: var(--nav-relocate-icon-color, currentColor);
+                    font-size: var(--nav-section-progress-font-size, 16px);
+                    white-space: nowrap;
+                    direction: ltr;
+                    unicode-bidi: plaintext;
+                }
+                .nav-relocate-button[data-nav-edge='left'] .nav-relocate-page {
+                    text-align: left;
+                }
+                .nav-relocate-button[data-nav-edge='right'] .nav-relocate-page {
+                    text-align: right;
+                }
+                #nav-bar.nav-hidden-due-to-scroll .nav-relocate-button,
+                #nav-bar.nav-hidden-due-to-scroll .nav-section-progress {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+                body.nav-hidden .nav-relocate-button,
+                body.nav-hidden .nav-section-progress,
+                body.nav-hidden #nav-section-progress-leading,
+                body.nav-hidden #nav-section-progress-trailing,
+                body.nav-hidden #nav-bottom-row,
+                body.nav-hidden #progress-wrapper {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+                #nav-bar.nav-hidden-due-to-scroll #progress-wrapper,
+                #nav-bar.nav-hidden-due-to-scroll #nav-bottom-row {
+                    opacity: 0;
+                    pointer-events: none;
+                }
+                #nav-bottom-row {
+                    width: 100%;
+                    padding: 5px var(--nav-horizontal-padding) 7px;
+                    box-sizing: border-box;
+                    display: flex;
+                    align-items: center;
+                    transition: opacity 375ms ease-out;
+                }
+                #completion-stack {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                    min-width: 0;
+                    width: auto;
+                    position: absolute;
+                    top: 2px;
+                    left: 50%;
+                    right: auto;
+                    transform: translateX(-50%);
+                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2));
+                    direction: ltr;
+                }
+                #completion-stack[hidden] {
+                    display: none;
+                }
+                #completion-stack button {
+                    border: none;
+                    border-radius: 999px;
+                    padding: 4px 6px;
+                    min-height: 26px;
+                    font-weight: 600;
+                    font-size: 14px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    white-space: nowrap;
+                    direction: ltr;
+                }
+                #completion-stack .button-label {
+                    margin: 0 !important;
+                    font-size: 14px;
                 }
                 #progress-slider {
                     flex-grow: 1;
-                    margin: 0 12px;
+                    margin: 0;
                     visibility: hidden;
-                    /*accent-color: GrayText;*/
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
+                }
+                #progress-wrapper {
+                    display: flex;
+                    align-items: center;
+                    width: 100%;
+                    flex: 1;
+                    --thumb-size: 24px;
+                    gap: 12px;
+                    user-select: none;
+                    -webkit-user-select: none;
+                    -moz-user-select: none;
+                    -ms-user-select: none;
+                    transition: opacity 375ms ease-out;
+                    position: relative;
+                }
+                #progress-ticks {
+                    position: absolute;
+                    left: calc(0.5 * var(--thumb-size));
+                    right: calc(0.5 * var(--thumb-size));
+                    bottom: -2px;
+                    height: 4px;
+                    pointer-events: none;
+                }
+                #progress-ticks .tick {
+                    position: absolute;
+                    bottom: 0;
+                    width: 1px;
+                    height: 3px;
+                    background: currentColor;
+                    opacity: 0.35;
+                    transform: translateX(-0.5px);
+                }
+                #nav-section-progress-leading,
+                #nav-section-progress-trailing {
+                    position: absolute;
+                    bottom: 0;
+                    font-size: var(--nav-section-progress-font-size, 14px);
+                    line-height: var(--nav-section-progress-font-size, 14px);
+                    white-space: nowrap;
+                    pointer-events: none;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                }
+                #nav-section-progress-leading {
+                    left: var(--nav-horizontal-padding);
+                    text-align: left;
+                }
+                #nav-section-progress-trailing {
+                    right: var(--nav-horizontal-padding);
+                    text-align: right;
+                }
+                #nav-section-progress-center {
+                    position: absolute;
+                    left: 50%;
+                    bottom: 0;
+                    transform: translateX(-50%);
+                    font-size: var(--nav-section-progress-font-size, 14px);
+                    line-height: var(--nav-section-progress-font-size, 14px);
+                    white-space: nowrap;
+                    pointer-events: none;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    text-align: center;
+                    max-width: calc(100% - (var(--nav-horizontal-padding) * 2) - var(--nav-left-aux-inset, 0px) - var(--nav-right-aux-inset, 0px));
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+                #nav-section-progress-center {
+                    pointer-events: auto;
+                }
+                #btn-finish {
+                    background-color: var(--finish-button-color, #1fa352);
+                    color: #fff;
+                    box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                    flex-direction: row;
+                }
+                #btn-finish .icon {
+                    color: inherit;
+                    order: 0;
+                }
+                #btn-finish .button-label {
+                    order: 1;
+                }
+                #btn-restart {
+                    background-color: var(--manabi-red, #ff4500);
+                    color: #fff;
+                    box-shadow: 0 3px 10px rgb(0 0 0 / 0.18);
+                }
+                #btn-restart .icon {
+                    color: inherit;
                 }
                 #page-tracking-container {
+                    position: absolute;
+                    bottom: calc(48px + var(--manabi-toolbar-bottom-offset, 0px));
+                    right: var(--nav-horizontal-padding);
+                    left: auto;
                     display: flex;
                     align-items: center;
                     justify-content: flex-end;
-                    margin-inline-start: 8px;
                     min-width: 0;
+                    z-index: 6;
+                    pointer-events: none;
+                }
+                body[data-book-dir="rtl"] #page-tracking-container {
+                    right: auto;
+                    left: var(--nav-horizontal-padding);
+                    justify-content: flex-start;
                 }
                 #page-tracking-buttons {
                     display: flex;
-                    align-items: center;
+                    flex-direction: column;
+                    align-items: flex-end;
                     gap: 6px;
                     min-width: 0;
+                    pointer-events: auto;
+                }
+                body[data-book-dir="rtl"] #page-tracking-buttons {
+                    align-items: flex-start;
                 }
                 #page-tracking-buttons[hidden] {
                     display: none;
+                }
+                #nav-hidden-buttons {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 1px;
+                    height: 1px;
+                    overflow: hidden;
+                    clip: rect(0 0 0 0);
+                    clip-path: inset(50%);
+                    pointer-events: none;
+                }
+                #nav-hidden-buttons button {
+                    position: absolute;
+                    left: -9999px;
                 }
                 .page-read-button {
                     border: 1px solid color-mix(in srgb, var(--secondary-color) 55%, transparent 45%);
@@ -597,23 +1053,22 @@
                 /* Generated with Input range slider CSS style generator (version 20211225)
                  https://toughengineer.github.io/demo/slider-styler */
                 input[type=range].styled-slider {
-                    height: 30px;
-                    /*-webkit-appearance: none;*/
+                    height: 20px;
                     background: transparent;
+                    --thumb-size: 24px;
                 }
                 input[type=range].styled-slider:focus {
                     outline: none;
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb {
                     -webkit-appearance: none;
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 16px;
+                    width: var(--thumb-size);
+                    height: 14px;
+                    border-radius: 14px;
                     background: var(--theme-background-color);
                     border: 1px solid var(--secondary-color);
-                    /*box-shadow: 0 0 1px CanvasText;*/
-                    box-shadow: 0 0 2px var(--secondary-color);
-                    margin-top: calc(2px * 0.5 - 16px * 0.5);
+                    box-shadow: 0 0 1px var(--secondary-color);
+                    margin-top: calc(2px * 0.5 - 14px * 0.5);
                 }
                 input[type=range].styled-slider::-webkit-slider-runnable-track {
                     height: 2px;
@@ -624,7 +1079,7 @@
                 }
                 input[type=range].styled-slider::-webkit-slider-thumb:hover,
                 input[type=range].styled-slider::-webkit-slider-thumb:active {
-                    background: CanvasText;
+                    background: var(--tertiary-color);
                     cursor: pointer;
                 }
                 input[type=range].styled-slider:hover::-webkit-slider-runnable-track,
@@ -632,24 +1087,34 @@
                     cursor: pointer;
                 }
                 input[type=range].styled-slider.slider-progress::-webkit-slider-runnable-track {
-                    background: linear-gradient(to right, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                    background: linear-gradient(to right, var(--scrubber-progress-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    var(--scrubber-track-rest-color);
                 }
                 input[type=range].styled-slider.slider-progress:dir(rtl)::-webkit-slider-runnable-track {
-                    background: linear-gradient(to left, var(--secondary-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
-                    color-mix(in srgb, var(--secondary-color) 50%, transparent 50%);
+                    background: linear-gradient(to left, var(--scrubber-progress-color) var(--sx), transparent 0) 0/100% 100% no-repeat,
+                    var(--scrubber-track-rest-color);
                 }
                 input[type=range].styled-slider.slider-progress {
                     --range: calc(var(--max) - var(--min));
                     --ratio: calc((var(--value) - var(--min)) / var(--range));
-                    --sx: calc(0.5 * 16px + var(--ratio) * (100% - 16px));
+                    --sx: calc(0.5 * var(--thumb-size) + var(--ratio) * (100% - var(--thumb-size)));
+                    accent-color: #ffffff;
                 }
                 
-                /* Performance optimization */
+                /* Avoid aggressive compositor isolation for the live ebook view.
+                   It has been causing visibly blank pages on Apple platforms even
+                   while the DOM/layout state looks healthy. */
                 foliate-view {
-                    contain: strict;
-                    will-change: transform;
-                    transform: translateZ(0);
+                    contain: none;
+                    will-change: auto;
+                    transform: none;
+                }
+                #reader-stage > foliate-view {
+                    position: absolute;
+                    inset: 0;
+                    display: block;
+                    width: 100%;
+                    height: 100%;
                 }
                 
                 /* View Transitions */
@@ -722,45 +1187,65 @@
             </div>
             <div id="toc-view"></div>
         </div>
+        <div id="reader-stage" aria-hidden="false"></div>
         <div id="nav-bar" class="toolbar">
-            <div id="left-button-container" style="display: grid; grid-template-columns: 1fr;">
-                <div id="left-stack" class="button-stack">
-                    <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter">
-                        <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
-                        <span class="button-label full">Previous</span>
-                        <span class="button-label short">Prev</span>
+                <div id="nav-content">
+                    <div id="nav-top-row">
+                    <a id="nav-primary-text" class="nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite" data-label-variant="full">
+                        <span id="nav-primary-text-full" class="nav-primary-layer"></span>
+                        <span id="nav-primary-text-compact" class="nav-primary-layer"></span>
+                    </a>
+                    <div id="nav-primary-percent" aria-live="polite" hidden></div>
+                    <div id="completion-stack" class="button-stack" hidden>
+                        <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
+                            <span class="button-label full">Finish Book</span>
+                            <span class="button-label short">Finish</span>
+                            <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
+                        </button>
+                        <button id="btn-restart" data-button-type="restart" aria-label="Start over">
+                            <span class="button-label full">Start Over</span>
+                            <span class="button-label short">Restart</span>
+                            <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
+                                <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <button id="nav-relocate-back" class="nav-relocate-button" data-nav-edge="left" aria-label="Jump back to previous position" disabled hidden>
+                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM247.5577 715.3277C233.3977 715.3277 219.7277 703.1277 219.7277 679.6877C219.7277 479.0077 305.1777 354.9777 499.0277 354.9777H506.8377V252.4377C506.8377 234.3777 520.0177 219.7277 539.0577 219.7277C552.7377 219.7277 561.0377 225.0977 575.1977 238.7677L789.0577 438.4777C799.8077 448.2377 803.2277 458.0077 803.2277 467.2877C803.2277 477.0477 799.8077 486.8177 789.0577 496.5777L575.1977 697.7577C562.4977 709.4677 552.2477 715.3277 538.5777 715.3277C520.0177 715.3277 506.8377 701.6577 506.8377 684.0777V580.0777H499.0277C394.0477 580.0777 328.1277 606.9377 280.7577 695.3077C271.9777 712.3977 259.2777 715.3277 247.5577 715.3277Z" />
+                        </svg>
+                        <span class="nav-relocate-page" id="nav-relocate-label-back"></span>
                     </button>
-                </div>
-            </div>
-            <div id="progress-wrapper" style="display: flex; flex: 1; justify-content: center; align-items: center;">
-                <button id="progress-button"></button>
-                <input id="progress-slider" class="styled-slider slider-progress" type="range" min="0" max="1" step="any" list="tick-marks">
-                    <datalist id="tick-marks"></datalist>
-                <div id="page-tracking-container" hidden aria-live="polite">
-                    <div id="page-tracking-buttons" hidden></div>
-                </div>
-            </div>
-            <div id="right-button-container" style="display: grid; grid-template-columns: 1fr;">
-                <div id="right-stack" class="button-stack">
-                    <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter">
-                        <span class="button-label full">Next</span>
-                        <span class="button-label short">Next</span>
-                        <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
-                    </button>
-                    <button id="btn-finish" data-button-type="finish" aria-label="Finished reading">
-                        <span class="button-label full">Finish Book</span>
-                        <span class="button-label short">Finish</span>
-                        <svg class="icon" width="24" height="24"><path d="M4 12l4 4 12-12"/></svg>
-                    </button>
-                    <button id="btn-restart" data-button-type="restart" aria-label="Start over">
-                        <span class="button-label full">Start Over</span>
-                        <span class="button-label short">Restart</span>
-                        <svg class="icon" width="24" height="24" viewBox="0 0 24 24">
-                            <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z" fill="currentColor" stroke="none"/>
+                    <button id="nav-relocate-forward" class="nav-relocate-button" data-nav-edge="right" aria-label="Jump forward to newer position" disabled hidden>
+                        <span class="nav-relocate-page" id="nav-relocate-label-forward"></span>
+                        <svg class="nav-relocate-icon" viewBox="0 0 996.09375 996.09375" aria-hidden="true">
+                            <path d="M498.0477 996.0977C770.5077 996.0977 996.0977 770.5077 996.0977 498.0477C996.0977 226.0777 770.0177 -0.0023 497.5577 -0.0023C225.5877 -0.0023 -0.0023 226.0777 -0.0023 498.0477C-0.0023 770.5077 226.0777 996.0977 498.0477 996.0977ZM451.6577 715.3277C438.4777 715.3277 428.2277 709.4677 415.5277 697.7577L201.1677 496.5777C190.9177 486.8177 187.4977 477.0477 187.4977 467.2877C187.4977 458.0077 190.9177 448.2377 201.1677 438.4777L415.5277 238.7677C429.6877 225.0977 437.9877 219.7277 451.1677 219.7277C470.2177 219.7277 483.8877 234.3777 483.8877 252.4377V354.9777H491.6977C685.5477 354.9777 770.9977 479.0077 770.9977 679.6877C770.9977 703.1277 756.8377 715.3277 742.6777 715.3277C730.9577 715.3277 718.7477 712.3977 709.4777 695.3077C662.5977 606.9377 596.1877 580.0777 491.6977 580.0777H483.8877V684.0777C483.8877 701.6577 470.2177 715.3277 451.6577 715.3277Z" />
                         </svg>
                     </button>
+                    <div id="nav-section-progress-leading" class="nav-section-progress" aria-live="polite"></div>
+                    <div id="nav-section-progress-trailing" class="nav-section-progress" aria-live="polite"></div>
+                    <a id="nav-section-progress-center" class="nav-section-progress nav-action-link" href="#" role="button" aria-label="Open Go To sheet" aria-live="polite"></a>
                 </div>
             </div>
+            <div id="page-tracking-container" hidden aria-live="polite">
+                <div id="page-tracking-buttons" hidden></div>
+            </div>
+            <div id="nav-hidden-buttons" aria-hidden="true">
+                <button id="btn-prev-chapter" data-button-type="prev" aria-label="Previous chapter" tabindex="-1">
+                    <svg class="icon" width="24" height="24"><path d="M 15 6 L 9 12 L 15 18"/></svg>
+                    <span class="button-label full">Previous</span>
+                    <span class="button-label short">Prev</span>
+                </button>
+                <button id="btn-next-chapter" data-button-type="next" aria-label="Next chapter" tabindex="-1">
+                    <span class="button-label full">Next</span>
+                    <span class="button-label short">Next</span>
+                    <svg class="icon" width="24" height="24"><path d="M 9 6 L 15 12 L 9 18"/></svg>
+                </button>
+            </div>
+        </div>
+        <div id="nav-hidden-overlay" aria-hidden="true">
+            <a id="nav-hidden-primary-text" class="nav-hidden-label nav-action-link" href="#" role="button" aria-label="Open Go To sheet"></a>
+            <span id="nav-hidden-primary-percent" class="nav-hidden-label nav-hidden-percent"></span>
         </div>
         <button id="btn-scroll-left" class="side-nav" aria-label="Scroll left">
             <svg class="icon" viewBox="0 0 24 54" fill="none" stroke-linecap="round" stroke-linejoin="round">

@@ -281,7 +281,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 )
                 let state = String(describing: result ?? "nil")
                 debugPrint(
-                    "# READER ebookViewerInitialized.fallback",
+                    "# EPUB  ebookViewerInitialized.fallback",
                     "mode=single-shot",
                     "state=\(state)",
                     "page=\(url.absoluteString)",
@@ -290,7 +290,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 )
             } catch {
                 debugPrint(
-                    "# READER ebookViewerInitialized.fallback.error",
+                    "# EPUB  ebookViewerInitialized.fallback.error",
                     "mode=single-shot",
                     "error=\(error)",
                     "page=\(url.absoluteString)"
@@ -378,10 +378,10 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     return
                 }
                 guard let payload = message.body as? [String: Any] else {
-                    debugPrint("# READER readabilityInit.swiftLog", "body=\(String(describing: message.body))")
+                    debugPrint("# EPUB  readabilityInit.swiftLog", "body=\(String(describing: message.body))")
                     return
                 }
-                let logMessage = payload["message"] as? String ?? "# READER SwiftReadability.print"
+                let logMessage = payload["message"] as? String ?? "# EPUB  SwiftReadability.print"
                 var components: [String] = []
                 if let windowURL = payload["windowURL"] as? String, !windowURL.isEmpty {
                     components.append("windowURL=\(windowURL)")
@@ -414,6 +414,9 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let hasReaderContent = body["hasReaderContent"] as? Bool ?? false
                 let readyState = body["readyState"] as? String ?? "unknown"
                 let reason = body["reason"] as? String ?? "unknown"
+                let manabiFontPending = body["manabiFontPending"].map { String(describing: $0) } ?? "nil"
+                let bodyVisibility = body["bodyVisibility"] as? String ?? "nil"
+                let bodyOpacity = body["bodyOpacity"].map { String(describing: $0) } ?? "nil"
 
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 readerModeViewModel.logSyntheticDocumentState(
@@ -421,13 +424,19 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                     readyState: readyState,
                     hasReaderContent: hasReaderContent,
                     hasReaderRenderReady: hasReaderRenderReady,
-                    reason: reason
+                    reason: reason,
+                    manabiFontPending: manabiFontPending,
+                    bodyVisibility: bodyVisibility,
+                    bodyOpacity: bodyOpacity
                 )
                 debugPrint(
                     "# READERLOAD stage=readerDocState.ready",
                     "pageURL=\(pageURL.absoluteString)",
                     "readyState=\(readyState)",
                     "hasReaderContent=\(hasReaderContent)",
+                    "manabiFontPending=\(manabiFontPending)",
+                    "bodyVisibility=\(bodyVisibility)",
+                    "bodyOpacity=\(bodyOpacity)",
                     "reason=\(reason)"
                 )
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
@@ -447,7 +456,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         arguments: ["bookKey": bookKey],
                         in: message.frameInfo
                     )
-                    debugPrint("# READER paginationBookKey.set", "key=\(bookKey.prefix(72))…")
+                    debugPrint("# EPUB  paginationBookKey.set", "key=\(bookKey.prefix(72))…")
                 }
             }),
             ("trackingSizeCache", { [weak self] message in
@@ -483,7 +492,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                         bucket.upsertSnapshot(snapshot, limit: trackingSizeHistoryLimit)
                         trackingSizeCache.setValue(bucket, forKey: bucketKey)
                         debugPrint(
-                            "# READER trackingSizeCache set",
+                            "# EPUB  trackingSizeCache set",
                             "bucket=\(bucketKey.prefix(72))…",
                             "cacheKey=\(key.prefix(72))…",
                             "entries=\(decoded.count)",
@@ -508,7 +517,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 }
                             }
                             debugPrint(
-                                "# READER trackingSizeCache hit",
+                                "# EPUB  trackingSizeCache hit",
                                 "bucket=\(bucketKey.prefix(72))…",
                                 "cacheKey=\(key.prefix(72))…",
                                 "entries=\(cached.count)",
@@ -525,7 +534,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                                 in: message.frameInfo
                             )
                         }
-                        debugPrint("# READER trackingSizeCache miss", "key=\(key.prefix(72))…")
+                        debugPrint("# EPUB  trackingSizeCache miss", "key=\(key.prefix(72))…")
                     }
                 default:
                     break
@@ -582,8 +591,33 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 }
                 // TODO: Reuse guard code across this and readabilityParsed
                 guard let url = result.windowURL,
-                      url == readerViewModel.state.pageURL,
-                      let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
+                      url == readerViewModel.state.pageURL else {
+                    return
+                }
+                debugPrint(
+                    "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableEvaluating",
+                    "windowURL=\(url.absoluteString)",
+                    "readerPageURL=\(readerContent.pageURL.absoluteString)",
+                    "readerStateURL=\(readerViewModel.state.pageURL.absoluteString)",
+                    "frameURL=\(message.frameInfo.request.url?.absoluteString ?? "nil")",
+                    "frameMainDocumentURL=\(message.frameInfo.request.mainDocumentURL?.absoluteString ?? "nil")",
+                    "isMainFrame=\(message.frameInfo.isMainFrame)",
+                    "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)",
+                    "isHandlingURL=\(readerModeViewModel.isReaderModeHandlingURL(url))",
+                    "hasReadabilityContent=\(readerModeViewModel.readabilityContent != nil)"
+                )
+                if readerModeViewModel.isReaderModeLoading || readerModeViewModel.isReaderModeHandlingURL(url) {
+                    debugPrint(
+                        "# READERLOAD stage=readerMessageHandlers.readabilityUnavailableSkipped",
+                        "reason=readerModeInFlight",
+                        "windowURL=\(url.absoluteString)",
+                        "readerPageURL=\(readerContent.pageURL.absoluteString)",
+                        "isMainFrame=\(message.frameInfo.isMainFrame)",
+                        "isReaderModeLoading=\(readerModeViewModel.isReaderModeLoading)"
+                    )
+                    return
+                }
+                guard let content = try? await contentForWindowURL(url, source: "readabilityModeUnavailable") else {
                     return
                 }
                 if !message.frameInfo.isMainFrame, readerModeViewModel.readabilityContent != nil, readerModeViewModel.readabilityContainerFrameInfo != message.frameInfo {
@@ -765,7 +799,7 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                    url.isEBookURL,
                    let loaderURL = URL(string: "\(scheme)://\(url.absoluteString.dropFirst("\(scheme)://".count))") {
                     debugPrint(
-                        "# READER ebookViewerInitialized",
+                        "# EPUB  ebookViewerInitialized",
                         "page=\(url.absoluteString)",
                         "frame=\(message.frameInfo.request.url?.absoluteString ?? "<nil>")"
                     )

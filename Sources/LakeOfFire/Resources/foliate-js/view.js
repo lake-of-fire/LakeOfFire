@@ -362,6 +362,45 @@ export class View extends HTMLElement {
                     console.error(`Could not get ${target}`)
                 }
     }
+    async getNavigationProgressOf(target) {
+        try {
+            const { index, anchor } = await this.resolveNavigation(target)
+            const doc = await this.book.sections[index].createDocument()
+            let range = null
+            if (typeof anchor === 'function') {
+                const frag = anchor(doc)
+                if (frag instanceof Range) {
+                    range = frag
+                } else if (frag instanceof Node) {
+                    range = doc.createRange()
+                    try {
+                        range.selectNodeContents(frag)
+                    } catch (_error) {
+                        range.selectNode(frag)
+                    }
+                }
+            }
+            if (!range) {
+                range = doc.createRange()
+                range.selectNodeContents(doc.body ?? doc.documentElement)
+                range.collapse(true)
+            }
+            const tocItem = this.#tocProgress?.getProgress(index, range) ?? null
+            const pageItem = this.#pageProgress?.getProgress(index, range) ?? null
+            const cfi = this.getCFI(index, range)
+            return {
+                index,
+                sectionIndex: index,
+                tocItem,
+                pageItem,
+                cfi,
+            }
+        } catch (e) {
+            console.error(e)
+            console.error(`Could not get navigation progress for ${target}`)
+            return null
+        }
+    }
     async prev(distance) {
         await this.renderer.prev(distance)
     }

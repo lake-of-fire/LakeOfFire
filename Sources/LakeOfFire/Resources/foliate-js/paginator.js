@@ -1877,7 +1877,9 @@ export class Paginator extends HTMLElement {
             const afterLoad = async (doc) => {
                 if (this.#isCacheWarmer) {
                     await onLoad?.({
-                        location: src,
+                        doc,
+                        location: doc?.location?.href || src,
+                        index,
                     })
                 } else {
                     if (doc.head) {
@@ -1898,8 +1900,14 @@ export class Paginator extends HTMLElement {
             }
 
             if (this.#isCacheWarmer) {
-                await fetch(src).then(r => r.text())
-                await afterLoad()
+                const response = await fetch(src)
+                const text = await response.text()
+                const contentType = response.headers.get('content-type') || ''
+                const parserType = /xml|xhtml/i.test(contentType)
+                    ? 'application/xhtml+xml'
+                    : 'text/html'
+                const doc = new DOMParser().parseFromString(text, parserType)
+                await afterLoad(doc)
             } else {
                 this.#skipTouchEndOpacity = true
                 const view = this.#createView()
