@@ -2281,6 +2281,10 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             }
             return nil
         }()
+        let hostDocumentIsLoaderAtRenderStart: Bool = {
+            let hostDocumentURL = resolvedFrameInfo?.request.url ?? readerContent.pageURL
+            return hostDocumentURL.isReaderURLLoaderURL
+        }()
         if url.isSnippetURL {
             debugPrint(
                 "# FLASH snippet.renderStart",
@@ -2650,7 +2654,8 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let bodyBytesAfterProcessForReaderMode = bodyByteCount(doc)
             try Task.checkCancellation()
             let sharedFontCSSBytes = sharedReaderFontCSS?.utf8.count ?? 0
-            if await shouldUseDeferredSharedReaderFontGate(for: url) {
+            if !hostDocumentIsLoaderAtRenderStart,
+               await shouldUseDeferredSharedReaderFontGate(for: url) {
                 let fontEmbedStartedAt = Date()
                 do {
                     try upsertDeferredSharedReaderFontGate(in: doc)
@@ -2671,6 +2676,14 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
                     }
                 }
                 fontEmbedElapsed = Date().timeIntervalSince(fontEmbedStartedAt)
+            } else if hostDocumentIsLoaderAtRenderStart {
+                await MainActor.run {
+                    debugPrint(
+                        "# FONTLOAD readerMode.embedFontCSS.skipLoaderHost",
+                        "url=\(url.absoluteString)",
+                        "hostDocument=loader"
+                    )
+                }
             }
             let docBytesAfterFontEmbed = documentByteCount(doc)
             let headBytesAfterFontEmbed = headByteCount(doc)
@@ -2739,80 +2752,6 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             let shouldPersistCanonicalSnippetHTML =
                 url.isSnippetURL
                 && persistedHTMLSnapshot != transformedContent
-            let totalProcessingElapsed = Date().timeIntervalSince(parseStartedAt)
-            let isSlowReadabilityProcessing = totalProcessingElapsed >= 2.5
-            || processorElapsed >= 2.5
-            || processHTMLElapsed >= 0.8
-            || transformedBytes >= 2_000_000
-            let processHTMLDeltaBytes = processHTMLOutputBytes - processHTMLInputBytes
-            debugPrint(
-                "# READERLOAD stage=readerMode.documentBoundaryRollup",
-                "url=\(url.absoluteString)",
-                "afterProcessorDocBytes=\(docBytesAfterProcessor)",
-                "afterPropagateDefaultsDocBytes=\(docBytesAfterPropagateDefaults)",
-                "afterBylineDocBytes=\(docBytesAfterBylineUpdate)",
-                "afterProcessForReaderModeDocBytes=\(docBytesAfterProcessForReaderMode)",
-                "afterFontEmbedDocBytes=\(docBytesAfterFontEmbed)",
-                "beforeSerializationDocBytes=\(docBytesBeforeSerialization)",
-                "serializedHTMLBytes=\(transformedBytes)",
-                "fontCSSBytes=\(sharedFontCSSBytes)",
-                "fontStyleElementBytes=\(sharedFontStyleElementBytes)",
-                "slow=\(isSlowReadabilityProcessing)"
-            )
-            debugPrint(
-                "# READERLOAD stage=readerMode.readabilityRollup",
-                "url=\(url.absoluteString)",
-                "inputBytes=\(readabilityBytes)",
-                "outputBytes=\(transformedBytes)",
-                "growth=\(formatMultiplier(transformedBytes, readabilityBytes))",
-                "processorTotal=\(formatInterval(processorElapsed))",
-                "processorCore=\(formatInterval(processorCoreElapsed))",
-                "processForReader=\(formatInterval(processForReaderModeElapsed))",
-                "processHTML=\(formatInterval(processHTMLElapsed))",
-                "outerHTML=\(formatInterval(serializeOuterHTMLElapsed))",
-                "preprocessCalls=\(preprocessSummary.callCount)",
-                "preprocessTotal=\(formatInterval(preprocessSummary.totalElapsed))",
-                "preprocessAvg=\(formatInterval(preprocessSummary.averageElapsed))",
-                "preprocessMax=\(formatInterval(preprocessSummary.maxElapsed))",
-                "docSegmentsReadability=\(segmentCountAfterReadability)",
-                "docSegmentsProcessed=\(segmentCountAfterProcessing)",
-                "htmlSegments=\(htmlSegmentCount)",
-                "slow=\(isSlowReadabilityProcessing)"
-            )
-            if isSlowReadabilityProcessing {
-                let pendingReaderModeDescription = await self.pendingReaderModeURL?.absoluteString ?? "nil"
-                debugPrint(
-                    "# READERLOAD stage=readerMode.readabilityRollupDetails",
-                    "url=\(url.absoluteString)",
-                    "method=\(processorMethod)",
-                    "total=\(formatInterval(totalProcessingElapsed))",
-                    "fallbackParse=\(formatInterval(parseFallbackElapsed))",
-                    "propagateDefaults=\(formatInterval(propagateDefaultsElapsed))",
-                    "bylineUpdate=\(formatInterval(bylineUpdateElapsed))",
-                    "fontEmbed=\(formatInterval(fontEmbedElapsed))",
-                    "processHTMLInputBytes=\(processHTMLInputBytes)",
-                    "processHTMLOutputBytes=\(processHTMLOutputBytes)",
-                    "processHTMLDeltaBytes=\(processHTMLDeltaBytes)",
-                    "preprocessSlowCalls=\(preprocessSummary.slowCallCount)",
-                    "pending=\(pendingReaderModeDescription)"
-                )
-                debugPrint(
-                    "# READERLOAD stage=readerMode.documentBoundaryRollupDetails",
-                    "url=\(url.absoluteString)",
-                    "afterProcessorHeadBytes=\(headBytesAfterProcessor)",
-                    "afterProcessorBodyBytes=\(bodyBytesAfterProcessor)",
-                    "afterPropagateDefaultsHeadBytes=\(headBytesAfterPropagateDefaults)",
-                    "afterPropagateDefaultsBodyBytes=\(bodyBytesAfterPropagateDefaults)",
-                    "afterBylineHeadBytes=\(headBytesAfterBylineUpdate)",
-                    "afterBylineBodyBytes=\(bodyBytesAfterBylineUpdate)",
-                    "afterProcessForReaderModeHeadBytes=\(headBytesAfterProcessForReaderMode)",
-                    "afterProcessForReaderModeBodyBytes=\(bodyBytesAfterProcessForReaderMode)",
-                    "afterFontEmbedHeadBytes=\(headBytesAfterFontEmbed)",
-                    "afterFontEmbedBodyBytes=\(bodyBytesAfterFontEmbed)",
-                    "beforeSerializationHeadBytes=\(headBytesBeforeSerialization)",
-                    "beforeSerializationBodyBytes=\(bodyBytesBeforeSerialization)"
-                )
-            }
             debugPrint(
                 "# READER readability.contentPrepared",
                 "url=\(url.absoluteString)",
@@ -3300,10 +3239,13 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
         try Task.checkCancellation()
         logTrace(.navCommitted, url: committedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
 
-        // Inject reader font via JS for non-ebook pages before any scroll/geometry restore runs.
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
-
         let isLoaderNavigation = newState.pageURL.isReaderURLLoaderURL
+
+        // The loader shell is transient. Defer reader-font injection until the real rendered page
+        // lands so we do not spend work on the disposable loader document.
+        if !isLoaderNavigation {
+            await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: committedURL)
+        }
 
         debugPrint(
             "# READERPERF readerMode.navCommit.flags",
@@ -3916,7 +3858,9 @@ public class ReaderModeViewModel: ObservableObject, ReaderModeLoadHandling {
             "isReaderModeLoading=\(isReaderModeLoading)",
             "isReaderMode=\(isReaderMode)"
         )
-        await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
+        if !newState.pageURL.isReaderURLLoaderURL {
+            await injectSharedFontIfNeeded(scriptCaller: scriptCaller, pageURL: newState.pageURL)
+        }
         if let trackedURL = pendingReaderModeURL {
             logTrace(.navFinished, url: trackedURL, details: "pageURL=\(newState.pageURL.absoluteString)")
         } else if loadTraceRecords[traceKey(for: newState.pageURL)] != nil {
@@ -4118,8 +4062,22 @@ extension ReaderModeViewModel {
         decodeSharedReaderFontCSS(from: await resolveSharedReaderFontCSSBase64())
     }
 
+    private func preferredSharedReaderFontStylesheetURLTemplate(for pageURL: URL) -> String? {
+        guard !pageURL.isReaderURLLoaderURL else {
+            return nil
+        }
+        if let template = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
+            return template
+        }
+        guard sharedReaderFontAsset != nil,
+              let internalLocalURL = URL(string: "internal://local/reader-font-host") else {
+            return nil
+        }
+        return sharedReaderFontStylesheetURLTemplate(for: internalLocalURL)
+    }
+
     private func shouldUseDeferredSharedReaderFontGate(for pageURL: URL) async -> Bool {
-        if sharedReaderFontUsesLocalScheme(for: pageURL) {
+        if preferredSharedReaderFontStylesheetURLTemplate(for: pageURL) != nil {
             return true
         }
         guard let base64 = await resolveSharedReaderFontCSSBase64() else { return false }
@@ -4142,17 +4100,25 @@ extension ReaderModeViewModel {
     ) async -> Bool {
         guard isReaderMode || isReaderModeLoading else { return true }
         guard !pageURL.isEBookURL, pageURL.absoluteString != "about:blank" else { return true }
+        guard !pageURL.isReaderURLLoaderURL else { return true }
         guard scriptCaller.hasAsyncCaller else { return true }
         guard #available(iOS 16.4, macOS 14, *) else { return true }
 
-        debugPrint(
-            "# READERLOAD stage=readerMode.fontReadinessProbe",
-            "phase=start",
-            "url=\(pageURL.absoluteString)"
-        )
-
         let js = """
         return await (async function() {
+            const href = window.location && typeof window.location.href === 'string'
+                ? window.location.href
+                : '';
+            if (href.startsWith('internal://local/load/reader')) {
+                return JSON.stringify({
+                    ready: true,
+                    readyFlag: false,
+                    pendingFlag: false,
+                    fontStatus: 'loaderShell',
+                    hasInjectedStyle: false,
+                    timedOut: false
+                });
+            }
             const body = document.body;
             const isReadabilityMode = !!body?.classList?.contains?.('readability-mode');
             if (!isReadabilityMode) {
@@ -4207,34 +4173,10 @@ extension ReaderModeViewModel {
             let rawString = rawResult as? String ?? String(describing: rawResult ?? "")
             guard let data = rawString.data(using: .utf8),
                   let probe = try? JSONDecoder().decode(ReaderFontReadinessProbeResult.self, from: data) else {
-                debugPrint(
-                    "# READERLOAD stage=readerMode.fontReadinessProbe",
-                    "phase=decodeFailed",
-                    "url=\(pageURL.absoluteString)",
-                    "raw=\(rawString)"
-                )
                 return true
             }
-
-            debugPrint(
-                "# READERLOAD stage=readerMode.fontReadinessProbe",
-                "phase=finish",
-                "url=\(pageURL.absoluteString)",
-                "ready=\(probe.ready)",
-                "readyFlag=\(probe.readyFlag)",
-                "pendingFlag=\(probe.pendingFlag)",
-                "fontStatus=\(probe.fontStatus)",
-                "hasInjectedStyle=\(probe.hasInjectedStyle)",
-                "timedOut=\(probe.timedOut)"
-            )
             return probe.ready || !probe.hasInjectedStyle
         } catch {
-            debugPrint(
-                "# READERLOAD stage=readerMode.fontReadinessProbe",
-                "phase=error",
-                "url=\(pageURL.absoluteString)",
-                "error=\(error.localizedDescription)"
-            )
             return true
         }
     }
@@ -4242,11 +4184,24 @@ extension ReaderModeViewModel {
     func injectSharedFontIfNeeded(scriptCaller: WebViewScriptCaller, pageURL: URL) async {
         guard isReaderMode || isReaderModeLoading else { return }
         guard pageURL.absoluteString != "about:blank" else { return }
+        guard !pageURL.isReaderURLLoaderURL else { return }
         guard scriptCaller.hasAsyncCaller else { return }
         guard #available(iOS 16.4, macOS 14, *) else { return }
-        if let stylesheetURLTemplate = sharedReaderFontStylesheetURLTemplate(for: pageURL) {
+        if let stylesheetURLTemplate = preferredSharedReaderFontStylesheetURLTemplate(for: pageURL) {
             let js = """
             (function() {
+                const href = window.location && typeof window.location.href === 'string'
+                    ? window.location.href
+                    : '';
+                if (href.startsWith('internal://local/load/reader')) {
+                    return;
+                }
+                const isLoaderShellDocument = () => {
+                    const currentHref = window.location && typeof window.location.href === 'string'
+                        ? window.location.href
+                        : '';
+                    return currentHref.startsWith('internal://local/load/reader');
+                };
                 const setFontPendingState = (pending) => {
                     const root = document.documentElement;
                     if (!root) return;
@@ -4263,6 +4218,7 @@ extension ReaderModeViewModel {
                     return stylesheetURLTemplate.replace('__MANABI_FONT_FAMILY__', encodeURIComponent(family));
                 };
                 const ensureReaderFontStyle = (desiredFamily) => {
+                    if (isLoaderShellDocument()) return null;
                     const root = document.documentElement;
                     if (!root) return null;
                     const family = desiredFamily
@@ -4302,6 +4258,7 @@ extension ReaderModeViewModel {
                     }
                 };
                 return (async () => {
+                    if (isLoaderShellDocument()) return;
                     const root = document.documentElement;
                     const desiredFamily =
                         root?.dataset?.manabiHorizontalFontFamily
@@ -4335,6 +4292,18 @@ extension ReaderModeViewModel {
         let fontHash = readerFontPayloadHash(base64)
         let js = """
         (function() {
+            const href = window.location && typeof window.location.href === 'string'
+                ? window.location.href
+                : '';
+            if (href.startsWith('internal://local/load/reader')) {
+                return;
+            }
+            const isLoaderShellDocument = () => {
+                const currentHref = window.location && typeof window.location.href === 'string'
+                    ? window.location.href
+                    : '';
+                return currentHref.startsWith('internal://local/load/reader');
+            };
             const postFontLoad = (event, payload) => {
                 try {
                     const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.print;
@@ -4372,6 +4341,7 @@ extension ReaderModeViewModel {
                 return nextBlobURL;
             };
             const ensureReaderFontStyle = (desiredFamily) => {
+                if (isLoaderShellDocument()) return null;
                 const root = document.documentElement;
                 if (!root) return null;
                 let style = document.getElementById('manabi-custom-fonts-inline');
@@ -4410,6 +4380,7 @@ extension ReaderModeViewModel {
                 }
             };
             return (async () => {
+                if (isLoaderShellDocument()) return;
                 const root = document.documentElement;
                 const desiredFamily =
                     root?.dataset?.manabiHorizontalFontFamily
@@ -5335,15 +5306,6 @@ public func processForReaderMode(
     injectEntryImageIntoHeader: Bool,
     defaultFontSize: CGFloat
 ) throws {
-    let processStartedAt = Date()
-    let inputDocBytes = readerModeProcessByteCount(for: doc)
-    let inputBodyBytes = readerModeProcessBodyByteCount(for: doc)
-    let inputSegmentCount = readerModeProcessSegmentCount(for: doc)
-    var writingDirectionElapsed: TimeInterval = 0
-    var bodyAttributeElapsed: TimeInterval = 0
-    var defaultTitleElapsed: TimeInterval = 0
-    var annoyingTitleFixElapsed: TimeInterval = 0
-    var headerImageElapsed: TimeInterval = 0
 
     // Migrate old cached versions
     // TODO: Update cache, if this is a performance issue.
@@ -5360,7 +5322,6 @@ public func processForReaderMode(
         if !isEBook {
             let writingDirectionStartedAt = Date()
             applyReaderModeWritingDirectionBootstrap(to: doc)
-            writingDirectionElapsed = Date().timeIntervalSince(writingDirectionStartedAt)
         }
 
         if let bodyTag = doc.body() {
@@ -5393,7 +5354,6 @@ public func processForReaderMode(
             _ = try? bodyTag.attr("style", bodyStyle)
             _ = try? bodyTag.attr("data-manabi-light-theme", lightModeTheme.rawValue)
             _ = try? bodyTag.attr("data-manabi-dark-theme", darkModeTheme.rawValue)
-            bodyAttributeElapsed = Date().timeIntervalSince(bodyAttributeStartedAt)
         }
 
         if let defaultTitle = defaultTitle, let existing = try? doc.getElementById("reader-title"), !existing.hasText() {
@@ -5407,7 +5367,6 @@ public func processForReaderMode(
                     "new=\(defaultTitle)"
                 )
             } catch { }
-            defaultTitleElapsed = Date().timeIntervalSince(defaultTitleStartedAt)
         }
 
         if !isEBook {
@@ -5415,7 +5374,6 @@ public func processForReaderMode(
             do {
                 try fixAnnoyingTitlesWithPipes(doc: doc)
             } catch { }
-            annoyingTitleFixElapsed = Date().timeIntervalSince(annoyingTitlesStartedAt)
         }
 
         if try injectEntryImageIntoHeader || (doc.body()?.getElementsByTag(UTF8Arrays.img).isEmpty() ?? true), let imageURL = imageURL, let existing = try? doc.select("img[src='\(imageURL.absoluteString)'"), existing.isEmpty() {
@@ -5423,46 +5381,7 @@ public func processForReaderMode(
             do {
                 try doc.getElementById("reader-header")?.prepend("<img src='\(imageURL.absoluteString)'>")
             } catch { }
-            headerImageElapsed = Date().timeIntervalSince(headerImageStartedAt)
         }
     }
 
-    let outputDocBytes = readerModeProcessByteCount(for: doc)
-    let outputBodyBytes = readerModeProcessBodyByteCount(for: doc)
-    let outputSegmentCount = readerModeProcessSegmentCount(for: doc)
-    let totalElapsed = Date().timeIntervalSince(processStartedAt)
-    let docGrowthBytes = outputDocBytes - inputDocBytes
-    let bodyGrowthBytes = outputBodyBytes - inputBodyBytes
-    let slowOrLarge = totalElapsed >= 0.8 || abs(docGrowthBytes) >= 250_000 || abs(bodyGrowthBytes) >= 250_000
-    debugPrint(
-        "# READERLOAD stage=readerMode.processForReaderModeRollup",
-        "url=\(url.absoluteString)",
-        "inputDocBytes=\(inputDocBytes)",
-        "outputDocBytes=\(outputDocBytes)",
-        "docGrowth=\(docGrowthBytes)",
-        "docGrowthFactor=\(readerModeProcessGrowthString(outputBytes: outputDocBytes, inputBytes: inputDocBytes))",
-        "inputBodyBytes=\(inputBodyBytes)",
-        "outputBodyBytes=\(outputBodyBytes)",
-        "bodyGrowth=\(bodyGrowthBytes)",
-        "bodyGrowthFactor=\(readerModeProcessGrowthString(outputBytes: outputBodyBytes, inputBytes: inputBodyBytes))",
-        "segmentsBefore=\(inputSegmentCount)",
-        "segmentsAfter=\(outputSegmentCount)",
-        "elapsed=\(String(format: "%.3fs", totalElapsed))",
-        "slow=\(slowOrLarge)"
-    )
-    if slowOrLarge {
-        debugPrint(
-            "# READERLOAD stage=readerMode.processForReaderModeRollupDetails",
-            "url=\(url.absoluteString)",
-            "writingDirection=\(String(format: "%.3fs", writingDirectionElapsed))",
-            "bodyAttributes=\(String(format: "%.3fs", bodyAttributeElapsed))",
-            "defaultTitle=\(String(format: "%.3fs", defaultTitleElapsed))",
-            "fixTitles=\(String(format: "%.3fs", annoyingTitleFixElapsed))",
-            "headerImage=\(String(format: "%.3fs", headerImageElapsed))",
-            "isEBook=\(isEBook)",
-            "isCacheWarmer=\(isCacheWarmer)",
-            "injectEntryImageIntoHeader=\(injectEntryImageIntoHeader)",
-            "hasImageURL=\(imageURL != nil)"
-        )
-    }
 }

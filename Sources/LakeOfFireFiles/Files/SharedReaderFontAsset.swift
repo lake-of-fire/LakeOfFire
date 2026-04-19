@@ -1,5 +1,15 @@
 import Foundation
 
+private func sharedReaderFontLog(_ stage: String, _ details: [String: String]) {
+    var segments: [String] = ["# READERLOAD stage=\(stage)"]
+    for key in details.keys.sorted() {
+        if let value = details[key] {
+            segments.append("\(key)=\(value)")
+        }
+    }
+    debugPrint(segments.joined(separator: " "))
+}
+
 public struct SharedReaderFontAsset: Equatable, Sendable {
     public let localFileURL: URL
     public let mimeType: String
@@ -180,6 +190,7 @@ public func sharedReaderFontResponse(
     for requestURL: URL,
     asset: SharedReaderFontAsset?
 ) -> SharedReaderFontServedResponse? {
+    let startedAt = Date()
     guard let route = sharedReaderFontRoute(for: requestURL, asset: asset) else { return nil }
     guard let asset else {
         let response = sharedReaderFontHTTPResponse(
@@ -193,6 +204,14 @@ public func sharedReaderFontResponse(
 
     switch route {
     case .stylesheet(let familyName):
+        sharedReaderFontLog(
+            "sharedReaderFont.stylesheetRequest",
+            [
+                "family": familyName,
+                "mode": sharedReaderFontInjectionMode(for: requestURL).rawValue,
+                "url": requestURL.absoluteString
+            ]
+        )
         guard asset.supportsFamily(familyName),
               let fontURL = sharedReaderFontFontURL(for: requestURL, asset: asset) else {
             let response = sharedReaderFontHTTPResponse(
@@ -223,6 +242,7 @@ public func sharedReaderFontResponse(
         return SharedReaderFontServedResponse(response: response, data: data)
 
     case .font:
+        let readStartedAt = Date()
         guard let data = try? Data(contentsOf: asset.localFileURL) else {
             let response = sharedReaderFontHTTPResponse(
                 url: requestURL,
@@ -232,6 +252,17 @@ public func sharedReaderFontResponse(
             )
             return SharedReaderFontServedResponse(response: response, data: Data())
         }
+        sharedReaderFontLog(
+            "sharedReaderFont.fontRead",
+            [
+                "bytes": String(data.count),
+                "elapsed": String(format: "%.3fs", Date().timeIntervalSince(readStartedAt)),
+                "file": asset.localFileURL.lastPathComponent,
+                "mode": sharedReaderFontInjectionMode(for: requestURL).rawValue,
+                "totalElapsed": String(format: "%.3fs", Date().timeIntervalSince(startedAt)),
+                "url": requestURL.absoluteString
+            ]
+        )
         let response = sharedReaderFontHTTPResponse(
             url: requestURL,
             statusCode: 200,

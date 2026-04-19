@@ -166,6 +166,15 @@ internal final class ReaderNavigationVisibilityCoordinator: ObservableObject {
 
 @MainActor
 fileprivate class ReaderMessageHandlers: Identifiable {
+    private struct ReaderDocStateLogSignature: Equatable {
+        let pageURL: String
+        let readyState: String
+        let hasReaderRenderReady: Bool
+        let hasReaderContent: Bool
+    }
+
+    private static var sharedLastReaderDocStateLogSignature: ReaderDocStateLogSignature?
+
     var forceReaderModeWhenAvailable: Bool
     
     var scriptCaller: WebViewScriptCaller
@@ -651,15 +660,23 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 let hasReaderContent = body["hasReaderContent"] as? Bool ?? false
                 let readyState = body["readyState"] as? String ?? "unknown"
                 let reason = body["reason"] as? String ?? "unknown"
-
-                debugPrint(
-                    "# READERLOAD stage=readerDocState",
-                    "pageURL=\(pageURL.absoluteString)",
-                    "readyState=\(readyState)",
-                    "hasReaderRenderReady=\(hasReaderRenderReady)",
-                    "hasReaderContent=\(hasReaderContent)",
-                    "reason=\(reason)"
+                let signature = ReaderDocStateLogSignature(
+                    pageURL: pageURL.absoluteString,
+                    readyState: readyState,
+                    hasReaderRenderReady: hasReaderRenderReady,
+                    hasReaderContent: hasReaderContent
                 )
+                if Self.sharedLastReaderDocStateLogSignature != signature {
+                    Self.sharedLastReaderDocStateLogSignature = signature
+                    debugPrint(
+                        "# READERLOAD stage=readerDocState",
+                        "pageURL=\(pageURL.absoluteString)",
+                        "readyState=\(readyState)",
+                        "hasReaderRenderReady=\(hasReaderRenderReady)",
+                        "hasReaderContent=\(hasReaderContent)",
+                        "reason=\(reason)"
+                    )
+                }
 
                 guard hasReaderRenderReady, !pageURL.isReaderURLLoaderURL else { return }
                 if readerContent.pageURL.matchesReaderURL(pageURL) {
@@ -743,12 +760,12 @@ fileprivate class ReaderMessageHandlers: Identifiable {
                 guard !resolvedURL.isReaderURLLoaderURL else { return }
                 let pendingMatches = readerModeViewModel.pendingReaderModeURL?.matchesReaderURL(resolvedURL) == true
                 let expectedMatches = readerModeViewModel.expectedSyntheticReaderLoaderURL?.matchesReaderURL(resolvedURL) == true
-                if message.isMainFrame,
-                   (readerModeViewModel.isReaderModeLoading || pendingMatches || expectedMatches) {
+                if readerModeViewModel.isReaderModeLoading || pendingMatches || expectedMatches {
                     debugPrint(
                         "# READERRELOAD readabilityUnavailable.skip",
                         "reason=readerModeInFlight",
                         "contentURL=\(resolvedURL.absoluteString)",
+                        "frameIsMain=\(message.isMainFrame)",
                         "isLoading=\(readerModeViewModel.isReaderModeLoading)",
                         "pending=\(readerModeViewModel.pendingReaderModeURL?.absoluteString ?? "nil")",
                         "expected=\(readerModeViewModel.expectedSyntheticReaderLoaderURL?.absoluteString ?? "nil")"

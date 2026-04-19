@@ -32,7 +32,17 @@ public extension WebViewNavigator {
             }
             debugPrint("# FLASH WebViewNavigator.load resolved url", navigationURL)
             if let readerModeViewModel {
-                let previouslyLoadedContent = try await ReaderContentLoader.load(url: navigationURL, persist: false, countsAsHistoryVisit: false)
+                let previouslyLoadedContent: (any ReaderContentProtocol)?
+                if navigationURL.isEBookURL || navigationURL.isReaderFileURL {
+                    previouslyLoadedContent = nil
+                } else {
+                    previouslyLoadedContent = try await ReaderContentLoader.load(
+                        url: navigationURL,
+                        persist: false,
+                        countsAsHistoryVisit: false,
+                        diagnosticFunction: "WebViewNavigator.load.prefetchPrevious"
+                    )
+                }
                 if navigationURL.isHTTP || navigationURL.isFileURL || navigationURL.isSnippetURL || navigationURL.isReaderURLLoaderURL {
                     let trackingContent = (previouslyLoadedContent ?? content)
                     let loaderBaseURL = navigationURL.isReaderURLLoaderURL ? ReaderContentLoader.getContentURL(fromLoaderURL: navigationURL) : nil

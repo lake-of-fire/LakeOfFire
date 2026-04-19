@@ -6507,70 +6507,262 @@ export class Paginator extends HTMLElement {
     async next(distance) {
         return await this._turnPage(1, distance)
     }
-    hostTurn(direction) {
+    async getTurnState() {
+        const sameDocumentMode = this._usesSameDocumentPagePositioningSync()
+        let currentPage = null
+        let pageCount = null
+        if (sameDocumentMode) {
+            const resolved = this._getSameDocumentResolvedNavigationStateSync()
+            currentPage = Number.isFinite(resolved?.pageIndex) ? resolved.pageIndex : null
+            pageCount = Number.isFinite(resolved?.pageCount) ? resolved.pageCount : null
+        } else {
+            currentPage = await this.page().catch(() => null)
+            pageCount = await this.pages().catch(() => null)
+            currentPage = Number.isFinite(currentPage) ? currentPage : null
+            pageCount = Number.isFinite(pageCount) ? pageCount : null
+        }
+        const currentSectionIndex = Number.isFinite(this._index) ? this._index : null
+        const currentSection = currentSectionIndex != null
+            ? (this.sections?.[currentSectionIndex] ?? null)
+            : null
+        const layoutMetrics = globalThis.manabiGetChunkLayoutMetrics?.() ?? null
+        const layoutWritingMode = layoutMetrics?.writingMode
+            ?? globalThis.getComputedStyle?.(this._view?.document?.body ?? null)?.writingMode
+            ?? null
+        const layoutVisibleUnitAxis = layoutWritingMode?.startsWith?.('vertical') || this._vertical
+            ? 'vertical'
+            : 'horizontal'
+        const canForward = Number.isFinite(currentPage) && Number.isFinite(pageCount)
+            ? currentPage < pageCount - 1 || this._adjacentIndex(1) != null
+            : this._adjacentIndex(1) != null
+        const canBackward = Number.isFinite(currentPage) && Number.isFinite(pageCount)
+            ? currentPage > 0 || this._adjacentIndex(-1) != null
+            : this._adjacentIndex(-1) != null
+        const diagnostics = globalThis.manabiSameDocumentHostTurnDiagnostics ?? null
+        return {
+            hasView: !!this._view,
+            hasRenderer: !!this._view?.renderer,
+            sameDocumentMode,
+            currentPage,
+            pageCount,
+            currentSectionIndex,
+            currentSectionHref: currentSection?.href ?? currentSection?.url ?? null,
+            canForward: !!canForward,
+            canBackward: !!canBackward,
+            layoutVisibleUnitAxis,
+            layoutWritingMode,
+            currentPageDisplayLabel: (
+                Number.isFinite(currentPage) && Number.isFinite(pageCount)
+                    ? `Page ${currentPage + 1} of ${pageCount}`
+                    : null
+            ),
+            sameDocumentHostTurnPhase: diagnostics?.phase ?? null,
+            sameDocumentHostTurnTargetPageIndex: Number.isFinite(diagnostics?.targetPageIndex)
+                ? diagnostics.targetPageIndex
+                : null,
+            sameDocumentHostTurnResult: diagnostics?.result ?? null,
+        }
+    }
+    async goToResolvedPage(pageIndex, reason = 'go-to-resolved-page') {
+        const before = await this.getTurnState()
+        const classifyMove = async (status, targetPageIndex = null, targetSectionIndex = null) => {
+            const after = await this.getTurnState()
+            const moved = (
+                after.currentPage !== before.currentPage
+                || after.currentSectionIndex !== before.currentSectionIndex
+                || after.pageCount !== before.pageCount
+            )
+            return {
+                direction: 'direct',
+                status,
+                moved,
+                before,
+                after,
+                targetPageIndex,
+                targetSectionIndex,
+            }
+        }
+        if (!before.hasView) {
+            return {
+                direction: 'direct',
+                status: 'no-view',
+                moved: false,
+                before,
+                after: before,
+                targetPageIndex: null,
+                targetSectionIndex: null,
+            }
+        }
+        if (!before.sameDocumentMode) {
+            return {
+                direction: 'direct',
+                status: 'unsupported',
+                moved: false,
+                before,
+                after: before,
+                targetPageIndex: null,
+                targetSectionIndex: null,
+            }
+        }
+        const requestedPageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.floor(pageIndex)) : null
+        if (requestedPageIndex == null) {
+            return {
+                direction: 'direct',
+                status: 'invalid-target',
+                moved: false,
+                before,
+                after: before,
+                targetPageIndex: null,
+                targetSectionIndex: null,
+            }
+        }
+        const prepared = await this._getSameDocumentPreparedNavigationState(
+            requestedPageIndex,
+            reason
+        )
+        const preparedPageCount = Number.isFinite(prepared?.pageCount) ? prepared.pageCount : before.pageCount
+        const targetPageIndex = Math.max(0, Math.min(
+            Math.max(0, (preparedPageCount ?? 1) - 1),
+            requestedPageIndex
+        ))
+        if (targetPageIndex === before.currentPage) {
+            return await classifyMove('noop', targetPageIndex, before.currentSectionIndex)
+        }
+        const positioned = await this._applySameDocumentPagePosition(targetPageIndex, {
+            reason,
+            smooth: true,
+            resolvedPageCountOverride: preparedPageCount,
+        })
+        if (!positioned) {
+            return await classifyMove('stalled', targetPageIndex, before.currentSectionIndex)
+        }
+        await this._afterScroll(reason)
+        const result = await classifyMove('page', targetPageIndex, before.currentSectionIndex)
+        setSameDocumentHostTurnDiagnostics({
+            phase: result.moved ? 'host-turn-direct-page' : 'host-turn-direct-stalled',
+            direction: 'direct',
+            currentPageIndex: result.after.currentPage,
+            pageCount: result.after.pageCount,
+            targetPageIndex,
+            result: result.moved ? 'page' : 'stalled',
+        })
+        return result
+    }
+    async performSameDocumentTurn(direction) {
         const dir = direction === 'backward' ? -1 : 1
-        if (this._usesSameDocumentPagePositioningSync()) {
-            return Promise.resolve().then(async () => {
-                let { pageIndex: currentPage, pageCount } = this._getSameDocumentResolvedNavigationStateSync()
-                let targetPage = Math.max(0, Math.min(pageCount - 1, currentPage + dir))
-                setSameDocumentHostTurnDiagnostics({
-                    phase: 'host-turn-begin',
-                    direction,
-                    currentPageIndex: currentPage,
-                    pageCount,
-                    targetPageIndex: targetPage,
-                })
-                if (dir < 0) {
-                    await this._scrollPrev()
-                } else {
-                    await this._scrollNext()
-                }
-                const settledState = this._getSameDocumentResolvedNavigationStateSync()
-                const settledPageIndex = settledState.pageIndex
-                const settledPageCount = settledState.pageCount
-                const moved = settledPageIndex !== currentPage
-                targetPage = Math.max(0, Math.min(settledPageCount - 1, currentPage + dir))
-                if (moved) {
+        const before = await this.getTurnState()
+        if (!before.hasView) {
+            return {
+                direction,
+                status: 'no-view',
+                moved: false,
+                before,
+                after: before,
+                targetPageIndex: null,
+                targetSectionIndex: null,
+            }
+        }
+        const classifyMove = async (status, targetPageIndex = null, targetSectionIndex = null) => {
+            const after = await this.getTurnState()
+            const moved = (
+                after.currentPage !== before.currentPage
+                || after.currentSectionIndex !== before.currentSectionIndex
+                || after.pageCount !== before.pageCount
+            )
+            return {
+                direction,
+                status,
+                moved,
+                before,
+                after,
+                targetPageIndex,
+                targetSectionIndex,
+            }
+        }
+
+        setSameDocumentHostTurnDiagnostics({
+            phase: 'host-turn-begin',
+            direction,
+            currentPageIndex: before.currentPage,
+            pageCount: before.pageCount,
+            targetPageIndex: null,
+            result: null,
+        })
+
+        if (before.sameDocumentMode && Number.isFinite(before.currentPage) && Number.isFinite(before.pageCount)) {
+            const prepared = await this._getSameDocumentPreparedNavigationState(
+                before.currentPage + dir,
+                `perform-turn-${direction}`
+            )
+            const preparedPageIndex = Number.isFinite(prepared?.pageIndex) ? prepared.pageIndex : before.currentPage
+            const preparedPageCount = Number.isFinite(prepared?.pageCount) ? prepared.pageCount : before.pageCount
+            const targetPageIndex = Math.max(0, Math.min(preparedPageCount - 1, preparedPageIndex + dir))
+            const targetSectionIndex = this._adjacentIndex(dir)
+            if (targetPageIndex !== before.currentPage) {
+                const pageResult = await this.goToResolvedPage(
+                    targetPageIndex,
+                    `perform-turn-${direction}`
+                )
+                if (pageResult?.moved) {
                     setSameDocumentHostTurnDiagnostics({
                         phase: 'host-turn-complete',
                         direction,
-                        currentPageIndex: settledPageIndex,
-                        pageCount: settledPageCount,
-                        targetPageIndex: targetPage,
+                        currentPageIndex: pageResult.after.currentPage,
+                        pageCount: pageResult.after.pageCount,
+                        targetPageIndex,
                         result: 'page',
                     })
-                    return true
+                    pageResult.direction = direction
+                    return pageResult
                 }
-                const adjacentIndex = this._adjacentIndex(dir)
-                if (adjacentIndex != null) {
-                    setSameDocumentHostTurnDiagnostics({
-                        phase: 'host-turn-section',
-                        direction,
-                        currentPageIndex: currentPage,
-                        pageCount,
-                        adjacentSectionIndex: adjacentIndex,
-                        result: 'section',
-                    })
-                    return this._goTo({
-                        index: adjacentIndex,
-                        anchor: dir < 0 ? () => 1 : () => 0,
-                        reason: 'page',
-                    })
-                }
-                setSameDocumentHostTurnDiagnostics({
-                    phase: 'host-turn-unavailable',
-                    direction,
-                    currentPageIndex: settledPageIndex,
-                    pageCount: settledPageCount,
-                    targetPageIndex: targetPage,
-                    result: 'unavailable',
+            }
+            if (targetSectionIndex != null) {
+                const didNavigate = await this._goTo({
+                    index: targetSectionIndex,
+                    anchor: dir < 0 ? () => 1 : () => 0,
+                    reason: 'page',
                 })
-                return false
+                if (didNavigate) {
+                    await wait(100)
+                    const result = await classifyMove('section', null, targetSectionIndex)
+                    setSameDocumentHostTurnDiagnostics({
+                        phase: result.moved ? 'host-turn-section' : 'host-turn-stalled',
+                        direction,
+                        currentPageIndex: result.after.currentPage,
+                        pageCount: result.after.pageCount,
+                        targetPageIndex: result.after.currentPage,
+                        result: result.moved ? 'section' : 'stalled',
+                    })
+                    return result
+                }
+            }
+            const result = await classifyMove('blocked', targetPageIndex, targetSectionIndex)
+            setSameDocumentHostTurnDiagnostics({
+                phase: 'host-turn-unavailable',
+                direction,
+                currentPageIndex: result.after.currentPage,
+                pageCount: result.after.pageCount,
+                targetPageIndex,
+                result: 'blocked',
             })
+            return result
         }
-        return dir < 0
-            ? this.prev()
-            : this.next()
+
+        const didTurn = dir < 0
+            ? await this.prev()
+            : await this.next()
+        await wait(100)
+        const result = await classifyMove(didTurn ? 'page' : 'stalled', null, null)
+        if (!result.moved && didTurn && result.after.currentSectionIndex !== before.currentSectionIndex) {
+            result.status = 'section'
+            result.moved = true
+        }
+        return result
+    }
+    hostTurn(direction) {
+        return Promise.resolve()
+            .then(() => this.performSameDocumentTurn(direction))
+            .then(result => !!result?.moved)
     }
     async prevSection() {
         const targetIndex = this._adjacentIndex(-1)
